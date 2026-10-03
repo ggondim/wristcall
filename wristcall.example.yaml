@@ -1,0 +1,49 @@
+# Example wristcall config. Copy to wristcall.yaml and adjust.
+# ${VAR} values come from the container environment (see docker-compose.example.yml).
+server:
+  public_url: https://${WRISTCALL_DOMAIN}
+  directory_url: https://wristcall-pair.trigram.com.br   # the project's public directory; delete the line to type the URL on the watch
+  pairing_approval: code        # code: only the code from `wristcall pair` | manual: accepts requests and approves them in the CLI
+  data_dir: /data
+
+providers:
+  openai-stt:
+    type: openai_stt
+    base_url: https://api.openai.com/v1
+    api_key: ${OPENAI_API_KEY}
+    model: whisper-1
+  openai-chat:
+    type: openai_chat
+    base_url: https://api.openai.com/v1
+    api_key: ${OPENAI_API_KEY}
+    model: ${CHAT_MODEL}
+  openai-tts:
+    type: openai_tts
+    base_url: https://api.openai.com/v1
+    api_key: ${OPENAI_API_KEY}
+    model: tts-1
+    voice: alloy
+  # Fake providers: exercise the whole call without any API key.
+  demo-stt:
+    type: fake_stt
+    text: hello
+  demo-chat:
+    type: echo_chat
+  demo-tts:
+    type: tone_tts
+
+profiles:
+  default:
+    display_name: Agent
+    language: en
+    stt: openai-stt
+    responder: openai-chat
+    tts: openai-tts
+    system_prompt: |
+      You are a voice assistant. Answer in short sentences, with no lists or formatting,
+      because everything is read aloud.
+  demo:
+    display_name: Demo
+    stt: demo-stt
+    responder: demo-chat
+    tts: demo-tts

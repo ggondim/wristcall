@@ -1,0 +1,15 @@
+{
+  "name": "wristcall-directory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "vitest": "^5.0.3",
+    "wrangler": "^4.145.0"
+  }
+}

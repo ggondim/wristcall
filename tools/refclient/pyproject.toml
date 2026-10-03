@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wristcall-refclient"
+version = "0.1.0"
+description = "Reference client for the wristcall v1 protocol (Mac/Linux)"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = ["websockets>=15", "httpx>=0.28"]
+
+[project.optional-dependencies]
+mic = ["sounddevice>=0.5"]
+
+[project.scripts]
+wristcall-refclient = "refclient.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/refclient"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

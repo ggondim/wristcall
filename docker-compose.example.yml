@@ -1,0 +1,30 @@
+# Self-host wristcall with automatic TLS (Caddy). Guide in the README.
+# Requires: a domain pointing to this machine and ports 80/443 open.
+services:
+  wristcall:
+    build: ./server
+    # Once a published image exists, replace the build with:
+    # image: ghcr.io/ggondim/wristcall-server:latest
+    restart: unless-stopped
+    environment:
+      WRISTCALL_DOMAIN: ${WRISTCALL_DOMAIN}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      CHAT_MODEL: ${CHAT_MODEL}
+      FORWARDED_ALLOW_IPS: "*"   # only Caddy reaches this service (port 8080 is not published) and it rewrites X-Forwarded-For with the real IP
+    volumes:
+      - ./wristcall.yaml:/config/wristcall.yaml:ro
+      - wristcall-data:/data
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    command: caddy reverse-proxy --from ${WRISTCALL_DOMAIN} --to wristcall:8080
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data
+
+volumes:
+  wristcall-data:
+  caddy-data:

@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -e 'server[dev]'
+      - run: pytest -q
+        working-directory: server
+      - run: pip install -e tools/refclient
+      - run: pytest -q tests
+        working-directory: tools/refclient
+
+  directory:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: directory
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - run: npm ci
+      - run: npm test

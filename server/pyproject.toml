@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wristcall"
+version = "0.1.0"
+description = "wristcall server: voice calls from the Apple Watch with pluggable providers"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.142",
+  "uvicorn[standard]>=0.54",
+  "httpx>=0.28",
+  "pydantic>=2.13",
+  "pyyaml>=6.0",
+  "typer>=0.27",
+  "numpy>=2.3",
+  "onnxruntime>=1.22",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9", "pytest-asyncio>=1.4", "respx>=0.23", "websockets>=15"]
+
+[project.scripts]
+wristcall = "wristcall.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wristcall"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = ["integration: needs the real providers (WRISTCALL_INTEGRATION_CONFIG)"]
+addopts = "-m 'not integration'"

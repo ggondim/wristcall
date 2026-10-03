@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "wristcall-directory",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  // Domain of the project's public directory.
+  // If you run your own directory, replace it with your domain or delete it to use *.workers.dev.
+  "routes": [{ "pattern": "wristcall-pair.trigram.com.br", "custom_domain": true }],
+  "kv_namespaces": [
+    // Namespace of the public directory (wristcall-pair.trigram.com.br). If you run your own directory, create yours with `wrangler kv namespace create CODES` and replace the id.
+    { "binding": "CODES", "id": "eca4e587bcc0474abbf0c1e5bb8ef038" }
+  ],
+  "ratelimits": [
+    { "name": "RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } }
+  ]
+}
