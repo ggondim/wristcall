@@ -50,7 +50,8 @@ struct HomeView: View {
     }
 }
 
-/// Placeholder call screen; tasks 8 to 10 put CallKit and audio behind it.
+/// The app's own call screen (behind the system call UI on the watch): who, what is happening, "End".
+/// Mute lives in the system call UI.
 struct InCallView: View {
     let model: AppModel
     let profile: Profile?
@@ -59,7 +60,7 @@ struct InCallView: View {
         VStack(spacing: 8) {
             Text(profile?.displayName ?? "wristcall")
                 .font(.title3)
-            Text("In call")
+            Text(model.callActivity.label)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             Button(role: .destructive) {

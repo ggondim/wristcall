@@ -61,11 +61,16 @@ final class RecordingCallControllerDelegate: CallControllerDelegate {
     }
 
     private(set) var events: [Event] = []
+    /// Runs when the end is forwarded (to look at the action at that moment).
+    var onEnded: (() -> Void)?
 
     func callControllerDidActivateAudio() { events.append(.activated) }
     func callControllerDidDeactivateAudio() { events.append(.deactivated) }
     func callControllerDidSetMuted(_ muted: Bool, callID: UUID) { events.append(.muted(muted, callID)) }
-    func callControllerDidEndCall(_ callID: UUID) { events.append(.ended(callID)) }
+    func callControllerDidEndCall(_ callID: UUID) {
+        events.append(.ended(callID))
+        onEnded?()
+    }
     func callControllerDidReset() { events.append(.reset) }
 }
 
@@ -78,6 +83,11 @@ final class FakeCallControl: CallControlling {
         let displayName: String
     }
 
+    struct End: Equatable {
+        let id: UUID
+        let cause: CallEndCause
+    }
+
     weak var delegate: (any CallControllerDelegate)?
     var startError: (any Error)?
     var endError: (any Error)?
@@ -85,7 +95,8 @@ final class FakeCallControl: CallControlling {
     private(set) var starts: [Start] = []
     private(set) var endRequests: [UUID] = []
     private(set) var connected: [UUID] = []
-    private(set) var ended: [CallEndCause] = []
+    /// Every `reportEnded(id:cause:)`, in order.
+    private(set) var ends: [End] = []
 
     var callID: UUID? { starts.last?.id }
 
@@ -105,7 +116,7 @@ final class FakeCallControl: CallControlling {
     }
 
     func reportEnded(id: UUID, cause: CallEndCause) {
-        ended.append(cause)
+        ends.append(End(id: id, cause: cause))
     }
 
     // MARK: - Playing the system

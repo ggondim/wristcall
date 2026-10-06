@@ -3,7 +3,18 @@ import WristcallKit
 
 @main
 struct WristcallApp: App {
-    @State private var model = AppModel()
+    @State private var model: AppModel
+    /// Owned here for the app's lifetime; `AppModel.callHandler` points to it.
+    private let coordinator: CallCoordinator
+
+    init() {
+        let model = AppModel()
+        let coordinator = CallCoordinator(callControl: Self.makeCallControl(), audio: Self.makeAudio())
+        coordinator.model = model
+        model.callHandler = coordinator
+        _model = State(initialValue: model)
+        self.coordinator = coordinator
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -12,9 +23,29 @@ struct WristcallApp: App {
                     await model.launch()
                     #if DEBUG
                     DebugPairing.run(model, arguments: ProcessInfo.processInfo.arguments)
+                    await DebugCall.run(model, arguments: ProcessInfo.processInfo.arguments)
                     #endif
                 }
         }
+    }
+
+    @MainActor
+    private static func makeCallControl() -> any CallControlling {
+        #if DEBUG
+        if !DebugCall.usesCallKit(ProcessInfo.processInfo.arguments) {
+            return DirectAudioCallControl()
+        }
+        #endif
+        return CallController()
+    }
+
+    @MainActor
+    private static func makeAudio() -> any CallAudio {
+        let audio = AudioIO()
+        #if DEBUG
+        audio.useSyntheticMic = DebugCall.usesSyntheticMic(ProcessInfo.processInfo.arguments)
+        #endif
+        return audio
     }
 }
 

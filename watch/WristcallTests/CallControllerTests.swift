@@ -85,6 +85,19 @@ struct CallControllerTests {
         #expect(reporter.reports.isEmpty)
     }
 
+    /// The coordinator stops the microphone and the player before CallKit hears the action is done.
+    @Test func performEndForwardsBeforeFulfilling() {
+        let controller = makeController()
+        let action = SpyEndCallAction(call: id)
+        var fulfilledWhenForwarded: Bool?
+        delegate.onEnded = { fulfilledWhenForwarded = action.fulfilled }
+
+        withProvider { controller.provider($0, perform: action) }
+
+        #expect(fulfilledWhenForwarded == false)
+        #expect(action.fulfilled)
+    }
+
     @Test func performMuteFulfillsAndForwards() {
         let controller = makeController()
         let mute = SpyMutedCallAction(call: id, muted: true)

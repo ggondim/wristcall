@@ -19,6 +19,27 @@ enum AppPhase: Equatable {
     case inCall(Profile?)
 }
 
+/// What the call screen shows while a call is open (task 10).
+enum CallActivity: Equatable {
+    /// Waiting for CallKit, the socket and `session.ready`.
+    case connecting
+    /// The microphone is open and the server is listening.
+    case listening
+    /// The user's turn closed; the server is transcribing and answering.
+    case thinking
+    /// The agent's audio is playing.
+    case agentSpeaking
+
+    var label: String {
+        switch self {
+        case .connecting: "Connecting…"
+        case .listening: "Listening"
+        case .thinking: "Thinking…"
+        case .agentSpeaking: "Speaking"
+        }
+    }
+}
+
 /// What the call layer (tasks 8 to 10) needs to open a call.
 struct CallRequest: Sendable, Equatable {
     let credentials: Credentials
@@ -58,6 +79,8 @@ final class AppModel {
         static let keychain = "Couldn't access the pairing on this watch."
         static let unpairedOffline = "Unpaired here. The server was unreachable: revoke this watch there."
         static let connectionLost = "Connection lost"
+        static let callNotStarted = "Couldn't start the call."
+        static let microphoneUnavailable = "Microphone unavailable."
     }
 
     static let directoryDefaultsKey = "pairingDirectoryURL"
@@ -72,6 +95,8 @@ final class AppModel {
     /// Where codes are resolved. Persisted in `UserDefaults`.
     private(set) var directoryURL: URL
     private(set) var isUnpairing = false
+    /// What the call screen shows; meaningful only in `.inCall`.
+    private(set) var callActivity: CallActivity = .connecting
     /// Set by the app at launch (task 10). Without one, a call is only a screen with an "End" button.
     var callHandler: (any CallHandling)?
 
@@ -358,6 +383,7 @@ final class AppModel {
         guard case .ready(let info) = phase, let credentials else { return }
         let request = CallRequest(credentials: credentials, profile: info.profiles.first)
         message = nil
+        callActivity = .connecting
         phase = .inCall(request.profile)
         callHandler?.startCall(request)
     }
@@ -389,6 +415,24 @@ final class AppModel {
         case .normal:
             message = nil
         }
+        returnHome()
+    }
+
+    /// Reported by the call layer when the call could not start or go on for a local reason
+    /// (CallKit refused it, the audio never activated, no microphone). Back to Home with `message`.
+    func callDidFail(message: String) {
+        guard case .inCall = phase else { return }
+        self.message = message
+        returnHome()
+    }
+
+    /// Reported by the call layer as the server's events arrive.
+    func callActivityDidChange(_ activity: CallActivity) {
+        guard case .inCall = phase else { return }
+        callActivity = activity
+    }
+
+    private func returnHome() {
         if let deviceInfo {
             phase = .ready(deviceInfo)
         } else {

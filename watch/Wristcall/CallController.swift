@@ -171,8 +171,9 @@ extension CallController: @preconcurrency CXProviderDelegate {
     }
 
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
-        action.fulfill()
+        // The coordinator stops the microphone and the player first; then CallKit hears it is done.
         delegate?.callControllerDidEndCall(action.callUUID)
+        action.fulfill()
     }
 
     func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
