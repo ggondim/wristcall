@@ -33,9 +33,10 @@ make -C watch test-sim                 # app build + WristcallTests on a watch s
 make -C watch test-sim DESTINATION='platform=watchOS Simulator,id=<UDID>'
 ```
 
-The default `DESTINATION` is the maintainer's simulator; list yours with
-`xcrun simctl list devices watchOS`. To create an Apple Watch Series 7 (45mm) on watchOS 26.5:
-`python3 watch/scripts/ensure_simulator.py 'Apple Watch Series 7 (45mm)' 26.5` (prints its UDID).
+The default `DESTINATION` is an Apple Watch Series 7 (45mm) simulator on watchOS 26.5, the one CI
+uses. To create it: `python3 watch/scripts/ensure_simulator.py 'Apple Watch Series 7 (45mm)' 26.5`
+(prints its UDID). To use another simulator, pass its UDID as in the last line above; list yours
+with `xcrun simctl list devices watchOS`.
 
 Integration tests talk to a local server with fake providers (no API keys,
 config in `WristcallKit/Tests/test-server.yaml`). In one shell:
@@ -50,12 +51,31 @@ In another:
 WRISTCALL_TEST_SERVER=http://127.0.0.1:8765 make -C watch test-integration
 ```
 
-Without `WRISTCALL_TEST_SERVER` the integration suites are skipped.
+A plain `swift test` in `WristcallKit/` skips the integration suites when `WRISTCALL_TEST_SERVER`
+is not set; `make -C watch test-integration` requires it and stops with an error without it.
 
 ## Run in the simulator
 
 Open `watch/Wristcall.xcodeproj`, pick the `Wristcall` scheme and a watch simulator, and press Run.
 No signing setup is needed for the simulator.
+
+The simulator has no CallKit call UI, never activates the call's audio session and gets no
+microphone, so a call there needs two launch arguments (Debug builds only; in Xcode add them under
+Product > Scheme > Edit Scheme > Run > Arguments):
+
+- `-noCallKit`: activates the audio session directly instead of going through CallKit.
+- `-syntheticMic`: a generated tone replaces the microphone.
+
+Typing the pairing code on the simulated watch is slow; `-pairServer <URL> -pairCode <8 digits>`
+pairs at launch (without `-pairCode` it sends an approval request). From the command line, once
+the app is installed (the bundle id changes if you set `BUNDLE_ID_PREFIX`):
+
+```sh
+xcrun simctl launch <UDID> io.github.ggondim.wristcall \
+  -pairServer http://127.0.0.1:8765 -pairCode 12345678 -noCallKit -syntheticMic
+```
+
+`-autoCall` starts a call once the app is ready and `-endCallAfter <seconds>` ends it.
 
 ## Install on your watch with a free Apple ID
 

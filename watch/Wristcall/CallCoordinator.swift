@@ -90,7 +90,13 @@ final class CallCoordinator: CallHandling {
                 try await self?.callControl.startCall(id: id, displayName: name)
             } catch {
                 self?.failBeforeConnecting(id, message: AppModel.Message.callNotStarted, report: nil)
+                return
             }
+            // The call was released while the request was in flight (activation timeout, or
+            // End tapped): CallKit has just registered it and nobody else will end it.
+            guard let self, self.call?.id != id else { return }
+            Self.log.notice("CallKit accepted a call that already ended")
+            self.callControl.reportEnded(id: id, cause: .failed)
         })
         call.tasks.append(Task { [weak self, activationTimeout] in
             try? await Task.sleep(for: activationTimeout)
@@ -107,7 +113,10 @@ final class CallCoordinator: CallHandling {
                 // CallKit runs the end action, which comes back as callControllerDidEndCall(_:).
                 try await self?.callControl.endCall(id: id)
             } catch {
-                // CallKit does not know the call (it never registered it): end it here.
+                // CallKit refused the end action: report the call ended so it does not linger,
+                // then end it here.
+                Self.log.error("CallKit refused to end the call: \(error.localizedDescription, privacy: .public)")
+                self?.callControl.reportEnded(id: id, cause: .failed)
                 self?.endByUser(id)
             }
         }

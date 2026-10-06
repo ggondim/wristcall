@@ -53,12 +53,21 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Install XcodeGen 2.46.0
+        env:
+          XCODEGEN_VERSION: 2.46.0
+          XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/$XCODEGEN_VERSION/xcodegen.zip"
+          echo "$XCODEGEN_SHA256  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/xcodegen/bin/xcodegen" --version
       - name: Simulator (Apple Watch Series 7 45mm, watchOS 26.5)
         id: sim
         run: |
           udid=$(python3 watch/scripts/ensure_simulator.py 'Apple Watch Series 7 (45mm)' 26.5)
           echo "udid=$udid" >> "$GITHUB_OUTPUT"
-      - name: Build and test (unsigned)
+      - name: Build and test (simulator, signed ad hoc)
         run: make -C watch test-sim "DESTINATION=platform=watchOS Simulator,id=${{ steps.sim.outputs.udid }}"

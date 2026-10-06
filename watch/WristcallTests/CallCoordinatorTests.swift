@@ -337,6 +337,55 @@ struct CallCoordinatorTests {
         #expect(transportsMade.all.isEmpty)
     }
 
+    @Test func startAcceptedAfterTheActivationTimeoutIsReportedEnded() async throws {
+        callKit.holdsStart = true
+        let (coordinator, model) = try await makeCoordinator(activationTimeout: .milliseconds(50))
+        model.startCall()
+        await waitUntil { model.phase == .ready(info) }
+        let start = try #require(callKit.starts.first)
+        try #require(callKit.ends == [FakeCallControl.End(id: start.id, cause: .unanswered)])
+
+        callKit.completeStart()
+
+        await waitUntil { callKit.ends.count == 2 }
+        #expect(callKit.ends.last == FakeCallControl.End(id: start.id, cause: .failed))
+        #expect(coordinator.currentCallID == nil)
+        #expect(model.phase == .ready(info))
+    }
+
+    @Test func startAcceptedAfterTheUserEndedIsReportedEnded() async throws {
+        callKit.holdsStart = true
+        let (coordinator, model) = try await makeCoordinator()
+        model.startCall()
+        await waitUntil { callKit.isStartPending }
+        try #require(callKit.isStartPending)
+
+        model.endCall()
+        await waitUntil { model.phase == .ready(info) }
+        try #require(coordinator.currentCallID == nil)
+        try #require(callKit.ends.isEmpty)
+        callKit.completeStart()
+
+        await waitUntil { !callKit.ends.isEmpty }
+        #expect(try callKit.ends == endReportedForTheStartedCall(.failed))
+        #expect(transportsMade.all.isEmpty)
+    }
+
+    @Test func endRefusedByCallKitIsReportedEndedAndReturnsHome() async throws {
+        let (coordinator, model) = try await connectedCall()
+        callKit.endError = FakeCallKitError()
+
+        model.endCall()
+
+        await waitUntil { model.phase == .ready(info) }
+        #expect(model.phase == .ready(info))
+        #expect(model.message == nil)
+        #expect(try callKit.ends == endReportedForTheStartedCall(.failed))
+        #expect(!audio.isRunning)
+        #expect(coordinator.currentCallID == nil)
+        try await transport.waitUntilSent { $0.last == .close(1000) }
+    }
+
     @Test func microphoneFailureEndsTheCallAsFailed() async throws {
         audio.startError = AudioIOError.microphoneUnavailable
         let (_, model) = try await makeCoordinator()

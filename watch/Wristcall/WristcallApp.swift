@@ -26,6 +26,9 @@ struct WristcallApp: App {
             RootView(model: model)
                 .task {
                     await model.launch()
+                    // On a cold start the intent may record its request before `onReceive`
+                    // subscribes, with the scene already active: check once after launch.
+                    await shortcuts.check()
                     #if DEBUG
                     DebugPairing.run(model, arguments: ProcessInfo.processInfo.arguments)
                     await DebugCall.run(model, arguments: ProcessInfo.processInfo.arguments)

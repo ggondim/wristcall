@@ -91,18 +91,32 @@ final class FakeCallControl: CallControlling {
     weak var delegate: (any CallControllerDelegate)?
     var startError: (any Error)?
     var endError: (any Error)?
+    /// When set, `startCall(id:displayName:)` stays in flight until `completeStart()`,
+    /// like a CallKit start request that has not answered yet.
+    var holdsStart = false
 
     private(set) var starts: [Start] = []
     private(set) var endRequests: [UUID] = []
     private(set) var connected: [UUID] = []
     /// Every `reportEnded(id:cause:)`, in order.
     private(set) var ends: [End] = []
+    private var pendingStart: CheckedContinuation<Void, Never>?
 
     var callID: UUID? { starts.last?.id }
+    var isStartPending: Bool { pendingStart != nil }
 
     func startCall(id: UUID, displayName: String) async throws {
         starts.append(Start(id: id, displayName: displayName))
+        if holdsStart {
+            await withCheckedContinuation { pendingStart = $0 }
+        }
         if let startError { throw startError }
+    }
+
+    /// CallKit accepts the held start request: `startCall(id:displayName:)` returns.
+    func completeStart() {
+        pendingStart?.resume()
+        pendingStart = nil
     }
 
     func endCall(id: UUID) async throws {
