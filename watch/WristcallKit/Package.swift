@@ -9,12 +9,18 @@ let package = Package(
     ],
     products: [
         .library(name: "WristcallKit", targets: ["WristcallKit"]),
+        // Test doubles (FakeTransport) for this package's tests and the app's tests. Not linked into the app.
+        .library(name: "WristcallKitTesting", targets: ["WristcallKitTesting"]),
     ],
     targets: [
         .target(name: "WristcallKit"),
+        .target(
+            name: "WristcallKitTesting",
+            dependencies: ["WristcallKit"]
+        ),
         .testTarget(
             name: "WristcallKitTests",
-            dependencies: ["WristcallKit"]
+            dependencies: ["WristcallKit", "WristcallKitTesting"]
         ),
         // Talks to a running wristcall server. Every test is skipped unless
         // WRISTCALL_TEST_SERVER is set (see watch/README.md).

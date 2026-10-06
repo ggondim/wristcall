@@ -54,6 +54,9 @@ targets:
       - WristcallTests
     dependencies:
       - target: Wristcall
+      # FakeTransport for the call tests (tasks 8 and 10).
+      - package: WristcallKit
+        product: WristcallKitTesting
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).wristcall.tests
