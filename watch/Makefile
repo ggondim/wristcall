@@ -6,8 +6,10 @@ SCHEME := Wristcall
 # (Apple Watch Series 7 45mm, watchOS 26.5); list yours with `xcrun simctl list devices watchOS`.
 DESTINATION ?= platform=watchOS Simulator,id=17F60D6F-5995-4C9D-8FF8-36F7367860A3
 DERIVED_DATA := build/DerivedData
+# Simulator builds are signed ad hoc ("Sign to Run Locally"; no team or certificate needed).
+# Do not pass CODE_SIGNING_ALLOWED=NO: an unsigned app gets errSecMissingEntitlement (-34018) from the Keychain.
 XCODEBUILD := xcodebuild -project $(PROJECT) -scheme $(SCHEME) -destination '$(DESTINATION)' \
-	-derivedDataPath $(DERIVED_DATA) CODE_SIGNING_ALLOWED=NO
+	-derivedDataPath $(DERIVED_DATA)
 
 # Integration tests (see README.md): a local wristcall server with fake providers.
 TEST_SERVER_PORT ?= 8765
