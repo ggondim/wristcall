@@ -1,0 +1,27 @@
+# wristcall server config for the WristcallKit integration tests.
+# Fake providers only: no API keys, no network. Used by `make test-integration` (see watch/README.md)
+# and by .github/workflows/watch.yml.
+server:
+  public_url: ${WRISTCALL_TEST_SERVER}
+  pairing_approval: code
+  data_dir: ${WRISTCALL_TEST_DATA_DIR}
+
+providers:
+  demo-stt:
+    type: fake_stt
+    text: hello
+  demo-chat:
+    type: echo_chat
+  demo-tts:
+    type: tone_tts
+
+profiles:
+  default:
+    display_name: Agent
+    stt: demo-stt
+    responder: demo-chat
+    tts: demo-tts
+    vad:
+      type: energy
+  demo:
+    display_name: Demo

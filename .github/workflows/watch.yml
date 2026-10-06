@@ -1,0 +1,64 @@
+name: watch
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "watch/**"
+      - "server/**"
+      - "docs/protocol.md"
+      - ".github/workflows/watch.yml"
+  pull_request:
+    paths:
+      - "watch/**"
+      - "server/**"
+      - "docs/protocol.md"
+      - ".github/workflows/watch.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  kit:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      WRISTCALL_TEST_SERVER: http://127.0.0.1:8765
+    steps:
+      - uses: actions/checkout@v7
+      - name: Unit tests
+        run: make -C watch test-kit
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install the server
+        run: pip install -e server
+      - name: Start the test server
+        run: |
+          nohup make -C watch test-server > "$RUNNER_TEMP/test-server.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            if curl -sf "$WRISTCALL_TEST_SERVER/v1/health"; then exit 0; fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/test-server.log"
+          exit 1
+      - name: Integration tests
+        run: make -C watch test-integration
+      - name: Test server log
+        if: always()
+        run: cat "$RUNNER_TEMP/test-server.log" || true
+
+  app:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Simulator (Apple Watch Series 7 45mm, watchOS 26.5)
+        id: sim
+        run: |
+          udid=$(python3 watch/scripts/ensure_simulator.py 'Apple Watch Series 7 (45mm)' 26.5)
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+      - name: Build and test (unsigned)
+        run: make -C watch test-sim "DESTINATION=platform=watchOS Simulator,id=${{ steps.sim.outputs.udid }}"

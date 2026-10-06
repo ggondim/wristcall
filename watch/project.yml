@@ -1,0 +1,60 @@
+# XcodeGen spec for the wristcall watch app. Generate the project with `make generate`;
+# Wristcall.xcodeproj is not committed.
+name: Wristcall
+
+options:
+  deploymentTarget:
+    watchOS: "26.0"
+  createIntermediateGroups: true
+
+configFiles:
+  Debug: Config/Base.xcconfig
+  Release: Config/Base.xcconfig
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+packages:
+  WristcallKit:
+    path: WristcallKit
+
+targets:
+  Wristcall:
+    type: application
+    platform: watchOS
+    deploymentTarget: "26.0"
+    sources:
+      - Wristcall
+    dependencies:
+      - package: WristcallKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).wristcall
+        PRODUCT_NAME: Wristcall
+        GENERATE_INFOPLIST_FILE: YES
+        # Keys the generated Info.plist cannot express (arrays) live in this file and are merged in.
+        INFOPLIST_FILE: Wristcall/Info.plist
+        INFOPLIST_KEY_CFBundleDisplayName: Wristcall
+        INFOPLIST_KEY_WKWatchOnly: YES
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: Wristcall sends your voice to your own wristcall server during a call.
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown
+        ENABLE_PREVIEWS: YES
+    scheme:
+      testTargets:
+        - WristcallTests
+
+  WristcallTests:
+    type: bundle.unit-test
+    platform: watchOS
+    deploymentTarget: "26.0"
+    sources:
+      - WristcallTests
+    dependencies:
+      - target: Wristcall
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).wristcall.tests
+        GENERATE_INFOPLIST_FILE: YES

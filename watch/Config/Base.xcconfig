@@ -1,0 +1,14 @@
+// Shared build settings for the wristcall watch app (all targets, all configurations).
+//
+// Personal signing values go in Config/Local.xcconfig, which is gitignored:
+//
+//   DEVELOPMENT_TEAM = ABCDE12345
+//   BUNDLE_ID_PREFIX = com.example.yourname
+//
+// A free Apple ID (Personal Team) works; see watch/README.md.
+
+BUNDLE_ID_PREFIX = io.github.ggondim
+DEVELOPMENT_TEAM =
+CODE_SIGN_STYLE = Automatic
+
+#include? "Local.xcconfig"
