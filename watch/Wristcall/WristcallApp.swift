@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import WristcallKit
 
@@ -6,6 +7,9 @@ struct WristcallApp: App {
     @State private var model: AppModel
     /// Owned here for the app's lifetime; `AppModel.callHandler` points to it.
     private let coordinator: CallCoordinator
+    /// Starts the calls that the App Intent asked for (phase 5).
+    private let shortcuts: ShortcutCalls
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         let model = AppModel()
@@ -14,6 +18,7 @@ struct WristcallApp: App {
         model.callHandler = coordinator
         _model = State(initialValue: model)
         self.coordinator = coordinator
+        shortcuts = ShortcutCalls(store: PendingCallStore(), model: model)
     }
 
     var body: some Scene {
@@ -25,6 +30,15 @@ struct WristcallApp: App {
                     DebugPairing.run(model, arguments: ProcessInfo.processInfo.arguments)
                     await DebugCall.run(model, arguments: ProcessInfo.processInfo.arguments)
                     #endif
+                }
+                // A shortcut may record its request before or after the app becomes active.
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active {
+                        Task { await shortcuts.check() }
+                    }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: PendingCallStore.didRequest)) { _ in
+                    Task { await shortcuts.check() }
                 }
         }
     }
