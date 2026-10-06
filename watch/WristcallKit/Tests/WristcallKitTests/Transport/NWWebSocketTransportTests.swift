@@ -78,4 +78,23 @@ struct NWWebSocketTransportTests {
             }
         }
     }
+
+    /// The server closes right after the handshake (like 4401 for a bad token) and drops TCP.
+    /// The Network framework of macOS 26/watchOS 26 may report the connection as failed before
+    /// the pending receive delivers the close frame, or deliver the frame with a receive error;
+    /// either way the stream must end with the server's code, not `nil`.
+    @Test func closeRightAfterHandshakeReportsTheServerCode() async throws {
+        let server = try LoopbackWebSocketServer(closeOnAccept: 4401)
+        let url = try await server.start()
+        defer { server.stop() }
+        for _ in 0..<25 {
+            let transport = NWWebSocketTransport(webSocketURL: url, token: "t")
+            try await transport.connect()
+            var events: [TransportEvent] = []
+            for await event in transport.events {
+                events.append(event)
+            }
+            #expect(events == [.closed(code: 4401)])
+        }
+    }
 }

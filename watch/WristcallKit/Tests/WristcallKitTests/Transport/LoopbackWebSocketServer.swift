@@ -7,13 +7,17 @@ import WristcallKit
 ///
 /// It accepts every handshake and reads (and drops) whatever the client sends. Its Network
 /// stack answers the client's close frame by itself, echoing the client's close code.
+/// With `closeOnAccept`, it behaves like the wristcall server with a bad token: it sends a
+/// close frame with that code right after the handshake and drops the TCP connection at once.
 final class LoopbackWebSocketServer: Sendable {
+    let closeOnAccept: UInt16?
     private let listener: NWListener
     private let queue = DispatchQueue(label: "loopback-websocket-server")
     private let connections = Mutex<[NWConnection]>([])
     private let readyWaiter = Mutex<CheckedContinuation<UInt16, any Error>?>(nil)
 
-    init() throws {
+    init(closeOnAccept: UInt16? = nil) throws {
+        self.closeOnAccept = closeOnAccept
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: .any)
         let webSocket = NWProtocolWebSocket.Options()
@@ -67,8 +71,22 @@ final class LoopbackWebSocketServer: Sendable {
 
     private func accept(_ connection: NWConnection) {
         connections.withLock { $0.append(connection) }
+        if let code = closeOnAccept {
+            connection.stateUpdateHandler = { [weak self] state in
+                if case .ready = state { self?.sendClose(code, on: connection) }
+            }
+        }
         connection.start(queue: queue)
         receive(on: connection)
+    }
+
+    private func sendClose(_ code: UInt16, on connection: NWConnection) {
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .close)
+        metadata.closeCode = code >= 4000 ? .privateCode(code) : .applicationCode(code)
+        let context = NWConnection.ContentContext(identifier: "close", metadata: [metadata])
+        connection.send(content: nil, contentContext: context, isComplete: true, completion: .contentProcessed { _ in
+            connection.forceCancel()
+        })
     }
 
     private func receive(on connection: NWConnection) {

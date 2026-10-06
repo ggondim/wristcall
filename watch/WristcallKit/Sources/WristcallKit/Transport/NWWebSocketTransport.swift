@@ -13,6 +13,8 @@ public final class NWWebSocketTransport: CallTransport {
     public static let deadConnectionSeconds = 10
     /// Maximum wait for the close frame to be handed to the network before tearing down.
     public static let closeFlushTimeout: Duration = .seconds(1)
+    /// After the connection fails, how long the pending receive gets to deliver a close frame.
+    static let pendingReceiveGraceMilliseconds = 500
 
     /// The WebSocket URL (`ws://` or `wss://`, path `/v1/call`).
     public let url: URL
@@ -160,13 +162,29 @@ public final class NWWebSocketTransport: CallTransport {
             // A call must fail fast instead.
             fail(TransportError.connectionFailed(error.localizedDescription))
         case .failed(let error):
-            fail(TransportError.connectionFailed(error.localizedDescription))
+            connectionEnded(TransportError.connectionFailed(error.localizedDescription))
         case .cancelled:
-            fail(TransportError.connectionFailed("cancelled"))
+            connectionEnded(TransportError.connectionFailed("cancelled"))
         case .setup, .preparing:
             break
         @unknown default:
             break
+        }
+    }
+
+    /// The connection failed or was cancelled.
+    ///
+    /// Before `.ready`, `connect()` fails right away. Once ready, a receive is always pending,
+    /// and the state can change before that receive delivers a close frame the server sent
+    /// just before dropping TCP (4401 right after the handshake). So the pending receive ends
+    /// the stream (with the close code, if any); `fail` runs only if it never completes.
+    private func connectionEnded(_ error: TransportError) {
+        guard state.withLock({ $0.phase == .ready }) else {
+            fail(error)
+            return
+        }
+        queue.asyncAfter(deadline: .now() + .milliseconds(Self.pendingReceiveGraceMilliseconds)) { [weak self] in
+            self?.fail(error)
         }
     }
 
@@ -215,12 +233,14 @@ public final class NWWebSocketTransport: CallTransport {
     private func receiveNext() {
         connection.receiveMessage { [weak self] content, context, _, error in
             guard let self else { return }
-            if error != nil {
+            let metadata = context?.protocolMetadata(definition: NWProtocolWebSocket.definition)
+                as? NWProtocolWebSocket.Metadata
+            // A close frame can arrive together with an error (the server dropped TCP right
+            // after it): the frame wins, so the caller still sees the server's close code.
+            if error != nil, metadata?.opcode != .close {
                 self.fail(TransportError.connectionFailed("receive failed"))
                 return
             }
-            let metadata = context?.protocolMetadata(definition: NWProtocolWebSocket.definition)
-                as? NWProtocolWebSocket.Metadata
             switch metadata?.opcode {
             case .text:
                 self.continuation.yield(.text(String(decoding: content ?? Data(), as: UTF8.self)))

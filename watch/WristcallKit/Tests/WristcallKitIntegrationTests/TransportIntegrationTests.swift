@@ -31,7 +31,8 @@ struct TransportIntegrationTests {
         let transport = try NWWebSocketTransport(server: try TestServer.requireBaseURL(), token: "not-a-real-token")
         try await transport.connect()
         var events = transport.events.makeAsyncIterator()
-        #expect(await events.next() == .closed(code: CloseCode.unauthorized.rawValue))
+        let event = await events.next()
+        #expect(event == .closed(code: CloseCode.unauthorized.rawValue))
         #expect(await events.next() == nil)
         await #expect(throws: TransportError.notConnected) {
             try await transport.send(text: "{}")
@@ -44,7 +45,8 @@ struct TransportIntegrationTests {
         let transport = try NWWebSocketTransport(server: try TestServer.requireBaseURL(), token: device.token)
         try await transport.connect()
         var events = transport.events.makeAsyncIterator()
-        #expect(await events.next() == .closed(code: CloseCode.unauthorized.rawValue))
+        let event = await events.next()
+        #expect(event == .closed(code: CloseCode.unauthorized.rawValue))
     }
 
     @Test func unreachableServerFailsToConnect() async throws {
