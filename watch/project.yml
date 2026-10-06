@@ -30,6 +30,8 @@ targets:
       - Wristcall
     dependencies:
       - package: WristcallKit
+      # Complication and Control Center control (phase 5), embedded in PlugIns/.
+      - target: WristcallWidgets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).wristcall
@@ -61,3 +63,23 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).wristcall.tests
         GENERATE_INFOPLIST_FILE: YES
+
+  WristcallWidgets:
+    type: app-extension
+    platform: watchOS
+    deploymentTarget: "26.0"
+    sources:
+      - WristcallWidgets
+      # The control runs this intent; the app compiles it too, so the system runs it in the app.
+      - path: Wristcall/Intents/StartCallIntent.swift
+    dependencies:
+      - package: WristcallKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).wristcall.widgets
+        PRODUCT_NAME: WristcallWidgets
+        GENERATE_INFOPLIST_FILE: YES
+        # NSExtension (a dictionary) lives in this file and is merged in.
+        INFOPLIST_FILE: WristcallWidgets/Info.plist
+        INFOPLIST_KEY_CFBundleDisplayName: Wristcall
+        SKIP_INSTALL: YES

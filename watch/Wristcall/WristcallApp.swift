@@ -40,6 +40,11 @@ struct WristcallApp: App {
                 .onReceive(NotificationCenter.default.publisher(for: PendingCallStore.didRequest)) { _ in
                     Task { await shortcuts.check() }
                 }
+                // The complication opens `wristcall://call`.
+                .onOpenURL { url in
+                    guard ShortcutLink.isCall(url) else { return }
+                    PendingCallStore().request()
+                }
         }
     }
 
