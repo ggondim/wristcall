@@ -45,6 +45,8 @@ struct CallRequest: Sendable, Equatable {
     let credentials: Credentials
     /// The profile to ask for in `session.start`; its `displayName` is the CallKit caller name.
     let profile: Profile?
+    /// How the user's turn ends in this call (`session.start` `turn_end`).
+    var turnEnd: TurnEnd = .auto
 }
 
 /// Implemented by the `CallCoordinator` (task 10). `AppModel` keeps a strong reference;
@@ -378,10 +380,10 @@ final class AppModel {
 
     // MARK: - Call (wired by tasks 8 to 10)
 
-    /// The "Call" button. Only from `.ready`.
-    func startCall() {
+    /// The "Call" button (auto) or a choice on the call options screen. Only from `.ready`.
+    func startCall(turnEnd: TurnEnd = .auto) {
         guard case .ready(let info) = phase, let credentials else { return }
-        let request = CallRequest(credentials: credentials, profile: info.profiles.first)
+        let request = CallRequest(credentials: credentials, profile: info.profiles.first, turnEnd: turnEnd)
         message = nil
         callActivity = .connecting
         phase = .inCall(request.profile)

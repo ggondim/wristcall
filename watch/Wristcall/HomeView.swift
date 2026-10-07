@@ -1,7 +1,7 @@
 import SwiftUI
 import WristcallKit
 
-/// Home: profile name, status and the "Call" button.
+/// Home: profile name, status, the "Call" button (auto turn end) and "…" (call options).
 struct HomeView: View {
     let model: AppModel
 
@@ -15,15 +15,26 @@ struct HomeView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                Button {
-                    model.startCall()
-                } label: {
-                    Label("Call", systemImage: "phone.fill")
-                        .font(.title3)
-                        .frame(maxWidth: .infinity, minHeight: 56)
+                HStack(spacing: 4) {
+                    Button {
+                        model.startCall()
+                    } label: {
+                        Label("Call", systemImage: "phone.fill")
+                            .font(.title3)
+                            .frame(maxWidth: .infinity, minHeight: 56)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.green)
+                    NavigationLink {
+                        CallOptionsView(model: model)
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .frame(minHeight: 56)
+                    }
+                    .buttonStyle(.bordered)
+                    .frame(width: 44)
+                    .accessibilityLabel("Call options")
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.green)
                 .disabled(!model.canCall)
                 if model.phase == .unavailable {
                     Button("Retry") {

@@ -140,6 +140,7 @@ final class CallCoordinator: CallHandling {
         }
         let id = call.id
         let profile = call.request.profile?.name
+        let turnEnd = call.request.turnEnd
         call.tasks.append(Task { [weak self] in
             for await event in session.events {
                 self?.handle(event, callID: id)
@@ -147,7 +148,7 @@ final class CallCoordinator: CallHandling {
         })
         call.tasks.append(Task { [weak self] in
             // Failures arrive as `.ended` on the event stream.
-            guard let ready = try? await session.start(profile: profile) else { return }
+            guard let ready = try? await session.start(profile: profile, turnEnd: turnEnd) else { return }
             self?.sessionReady(ready, callID: id)
         })
     }

@@ -339,6 +339,28 @@ struct AppModelTests {
         #expect(model.message == "Connection lost")
     }
 
+    @Test func startCallDefaultsToAutoTurnEnd() async throws {
+        let model = try await makePairedModel()
+        let handler = StubCallHandler()
+        model.callHandler = handler
+
+        model.startCall()
+
+        #expect(handler.started.map(\.turnEnd) == [.auto])
+    }
+
+    @Test func startCallInManualModeHandsManualToTheHandler() async throws {
+        let model = try await makePairedModel()
+        let handler = StubCallHandler()
+        model.callHandler = handler
+
+        model.startCall(turnEnd: .manual)
+
+        let agent = Profile(name: "default", displayName: "Agent")
+        #expect(model.phase == .inCall(agent))
+        #expect(handler.started == [CallRequest(credentials: Credentials(serverURL: server, device: device), profile: agent, turnEnd: .manual)])
+    }
+
     @Test func callEndedAsUnauthorizedGoesBackToPairing() async throws {
         let model = try await makePairedModel()
         model.callHandler = StubCallHandler()

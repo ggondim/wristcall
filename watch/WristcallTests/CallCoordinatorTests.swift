@@ -127,6 +127,32 @@ struct CallCoordinatorTests {
         #expect(start.contains(#""profile":"default""#))
     }
 
+    @Test func autoCallSendsNoTurnEndInSessionStart() async throws {
+        let (_, model) = try await makeCoordinator()
+        model.startCall()
+        await waitUntil { callKit.starts.count == 1 }
+
+        callKit.activateAudio()
+
+        try await transport.waitUntilSent { $0.count == 1 }
+        let start = try #require(transport.sentTexts.first)
+        #expect(start.contains(#""type":"session.start""#))
+        #expect(!start.contains("turn_end"))
+    }
+
+    @Test func manualCallSendsTurnEndManualInSessionStart() async throws {
+        let (_, model) = try await makeCoordinator()
+        model.startCall(turnEnd: .manual)
+        await waitUntil { callKit.starts.count == 1 }
+
+        callKit.activateAudio()
+
+        try await transport.waitUntilSent { $0.count == 1 }
+        let start = try #require(transport.sentTexts.first)
+        #expect(start.contains(#""type":"session.start""#))
+        #expect(start.contains(#""turn_end":"manual""#))
+    }
+
     @Test func readyConnectsTheCallAndStartsTheAudioAtTheAgentRate() async throws {
         let (coordinator, model) = try await connectedCall()
 
