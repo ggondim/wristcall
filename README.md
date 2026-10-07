@@ -9,8 +9,8 @@ the watch, transcribes it, asks your agent and sends back the spoken answer. Eac
 stage is a provider you can swap through configuration: any OpenAI compatible
 API works (OpenAI, Speaches, openedai-speech, LiteLLM, Ollama, vLLM).
 
-Status: server, reference client and pairing directory are ready; the watch app
-is in development.
+Status: server, reference client, pairing directory and watch app are ready. The
+watch app is built and installed with Xcode; see [watch/README.md](watch/README.md).
 
 ## Run the server in 5 minutes
 

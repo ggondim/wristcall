@@ -1,8 +1,21 @@
 # Changelog
 
-Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Server versions follow [SemVer](https://semver.org/) and are published by the `server-vX.Y.Z` tag.
+Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each component follows [SemVer](https://semver.org/) on its own: the server is published by the `server-vX.Y.Z` tag (Docker image); the watch app is marked by the `watch-vX.Y.Z` tag and has no published binary (build it with Xcode, see [watch/README.md](watch/README.md)).
 
-## [0.2.0] - Unreleased
+## [watch-0.1.0] - 2026-10-07
+
+First version of the watch app (`watch/`), validated on an Apple Watch Series 7 signed with a free Apple ID.
+
+### Watch app
+
+- Watch-only app for watchOS 26: pairs with a wristcall server by 8 digit code (through the pairing directory or a server URL) or by owner approval, and keeps the device token only in the Keychain.
+- Calls through the native call screen (CallKit): microphone at any format converted to 16 kHz frames, the agent's voice played back at the server's rate, mute and hang up from the system screen.
+- Per call end of turn: the Call button ends your turn when you pause; "…" opens call options with "Call (auto)" and "Call (manual)", where only the mute button ends your turn (needs server 0.2.0).
+- Works over Wi-Fi and cellular without the iPhone. With no network at all the app shows "No connection" instead of starting a call.
+- Starts a call from a complication, a Control Center control or the "Call agent" shortcut.
+- `WristcallKit` Swift package with the protocol, pairing, audio and call session logic, tested on the Mac and in CI.
+
+## [0.2.0] - 2026-10-07
 
 ### Protocol
 
