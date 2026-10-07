@@ -390,7 +390,7 @@ final class AppModel {
     /// one the call would fail, and watchOS 26's "Call Failed" alert crashed the system UI.
     func startCall(turnEnd: TurnEnd = .auto) {
         guard case .ready(let info) = phase, let credentials else { return }
-        guard reachability?.isSatisfied != false else {
+        guard reachability?.hasNetworkPath != false else {
             message = Message.noConnection
             return
         }

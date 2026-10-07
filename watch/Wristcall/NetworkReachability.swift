@@ -6,7 +6,7 @@ import os
 @MainActor
 protocol NetworkReachability: AnyObject {
     /// `false` when the system reported no usable path; `nil` before its first report.
-    var isSatisfied: Bool? { get }
+    var hasNetworkPath: Bool? { get }
 }
 
 /// `NWPathMonitor` for the app's lifetime. Created at launch, so the answer is ready when the
@@ -18,7 +18,7 @@ protocol NetworkReachability: AnyObject {
 /// a wrong "no" would block every call.
 @MainActor
 final class NetworkPathMonitor: NetworkReachability {
-    private(set) var isSatisfied: Bool?
+    private(set) var hasNetworkPath: Bool?
 
     private let monitor = NWPathMonitor()
     private static let log = Logger(subsystem: "io.github.ggondim.wristcall", category: "network")
@@ -43,6 +43,6 @@ final class NetworkPathMonitor: NetworkReachability {
         Self.log.notice(
             "path \(String(describing: path.status), privacy: .public) reason \(String(describing: path.unsatisfiedReason), privacy: .public) interfaces [\(interfaces, privacy: .public)] usable=\(usable)"
         )
-        isSatisfied = usable
+        hasNetworkPath = usable
     }
 }

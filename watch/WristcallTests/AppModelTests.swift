@@ -380,7 +380,7 @@ struct AppModelTests {
         #expect(model.message == "No connection")
         #expect(model.canCall)
 
-        network.isSatisfied = true
+        network.hasNetworkPath = true
         model.startCall(turnEnd: turnEnd)
 
         #expect(handler.started.map(\.turnEnd) == [turnEnd])

@@ -123,10 +123,10 @@ final class StubCallHandler: CallHandling {
 /// Stands in for `NetworkPathMonitor`: the test sets what the "monitor" last reported.
 @MainActor
 final class FakeNetworkReachability: NetworkReachability {
-    var isSatisfied: Bool?
+    var hasNetworkPath: Bool?
 
-    init(_ isSatisfied: Bool?) {
-        self.isSatisfied = isSatisfied
+    init(_ hasNetworkPath: Bool?) {
+        self.hasNetworkPath = hasNetworkPath
     }
 }
 

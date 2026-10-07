@@ -109,14 +109,11 @@ In both modes:
   as noise: no `turn.user_end`, no transcription, and a new turn starts.
 
 `turn_end` was added in server 0.2.0 without changing the protocol version.
-Servers 0.1.x ignore the field (unknown fields are ignored) and run every call
-as `"auto"`, so a `"manual"` call to such a server still works but may also end
-the turn by silence (`reason: "vad"`). Clients that need to know can read the
-server `version` from `GET /v1/health`.
-
-Clients must only send `turn_end` values that the server version supports
-(check `version` in `GET /v1/health`): an unknown field is ignored, but an
-unknown value of a known field is a fatal `bad_message` (close 4400).
+Servers 0.1.x ignore the field (unknown fields are ignored), so a `"manual"`
+call to such a server behaves as `"auto"` and may end turns by silence
+(`reason: "vad"`). A value the server does not know (for example a future
+mode) is a fatal `bad_message` (close 4400). Clients therefore check `version`
+in `GET /v1/health` before sending a non-default value.
 
 ### Client messages
 
