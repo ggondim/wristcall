@@ -45,6 +45,7 @@ class CallSession:
         playback_margin_ms: int = 200,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] = time.monotonic,
+        turn_end: protocol.TurnEnd = "auto",
     ) -> None:
         self.profile = profile
         self.providers = providers
@@ -55,6 +56,7 @@ class CallSession:
             min_speech_ms=profile.vad.min_speech_ms,
             max_turn_ms=profile.vad.max_turn_ms,
             pre_roll_ms=profile.vad.pre_roll_ms,
+            turn_end=turn_end,
         )
         self.history: list[dict[str, str]] = []
         self._frames = FrameAssembler(FRAME_BYTES_IN)

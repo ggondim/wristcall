@@ -11,6 +11,9 @@ CLOSE_NORMAL = 1000
 CLOSE_PROTOCOL_ERROR = 4400
 CLOSE_UNAUTHORIZED = 4401
 
+# How the user's turn ends: "auto" by silence (VAD), mute or limit; "manual" only by mute or limit.
+TurnEnd = Literal["auto", "manual"]
+
 
 class ErrorCode:
     BAD_MESSAGE = "bad_message"
@@ -42,6 +45,7 @@ class SessionStart(BaseModel):
     protocol: int
     profile: str | None = None
     audio_in: AudioFormat
+    turn_end: TurnEnd = "auto"
 
 
 class Mute(BaseModel):

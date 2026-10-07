@@ -178,14 +178,14 @@ def create_app(
 
         provider_set = providers[profile_name]
         transport = _WsTransport(ws)
-        session = CallSession(profile, provider_set, build_vad(profile.vad), transport)
+        session = CallSession(profile, provider_set, build_vad(profile.vad), transport, turn_end=start.turn_end)
         session_id = secrets.token_hex(8)
         await transport.send_json(
             protocol.session_ready(
                 session_id, profile_name, profile.display_name, protocol.AudioFormat(sample_rate=provider_set.tts.sample_rate)
             )
         )
-        log.info("call %s started: device=%s profile=%s", session_id, device.id, profile_name)
+        log.info("call %s started: device=%s profile=%s turn_end=%s", session_id, device.id, profile_name, start.turn_end)
         warming = asyncio.create_task(warm_all(call_targets)) if call_targets else None
         try:
             while True:

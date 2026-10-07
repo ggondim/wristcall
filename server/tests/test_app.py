@@ -35,7 +35,7 @@ def auth(token: str) -> dict:
 
 
 def test_health(client):
-    assert client.get("/v1/health").json() == {"status": "ok", "version": "0.1.0", "protocol": 1}
+    assert client.get("/v1/health").json() == {"status": "ok", "version": "0.2.0", "protocol": 1}
 
 
 def test_flow_a_me_and_unpair(client, svc):
@@ -119,6 +119,20 @@ def test_call_round_trip(client, svc):
         ws.send_json({"type": "session.end"})
 
 
+def test_manual_call_ends_turn_on_mute_not_on_silence(client, svc):
+    """3 s of silence after speech would close an auto turn by "vad"; in manual only the mute closes it."""
+    token = pair(client, svc)
+    with client.websocket_connect("/v1/call", headers=auth(token)) as ws:
+        ws.send_json({**START, "turn_end": "manual"})
+        assert ws.receive_json()["type"] == "session.ready"
+        ws.send_bytes(tone(500) + silence(3000))
+        ws.send_json({"type": "mute", "muted": True})
+        assert ws.receive_json() == {"type": "turn.user_end", "reason": "mute"}
+        events = read_until_agent_end(ws)
+        assert events[:2] == ["transcript", "turn.agent_start"]
+        ws.send_json({"type": "session.end"})
+
+
 def test_bad_message_mid_call_is_not_fatal(client, svc):
     token = pair(client, svc)
     with client.websocket_connect("/v1/call", headers=auth(token)) as ws:
@@ -153,6 +167,7 @@ def test_ws_rejects_missing_or_revoked_token(client, svc):
         ({**START, "protocol": 2}, "unsupported_protocol"),
         ({**START, "profile": "does_not_exist"}, "unknown_profile"),
         ({**START, "audio_in": {"codec": "pcm16", "sample_rate": 8000, "channels": 1}}, "unsupported_audio"),
+        ({**START, "turn_end": "push_to_talk"}, "bad_message"),
     ],
 )
 def test_ws_fatal_opening_errors(client, svc, first, code):

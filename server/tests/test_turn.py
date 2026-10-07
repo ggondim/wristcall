@@ -162,3 +162,76 @@ def test_end_is_terminal():
     assert feed(m, SPEECH, 25) == []
     m.on_agent_done()
     assert m.state is State.ENDED
+
+
+# ---------- manual turn end ----------
+
+
+def test_manual_silence_never_closes_after_speech():
+    m = machine(turn_end="manual")
+    feed(m, SPEECH, 25)
+    assert feed(m, SIL, 1000) == []
+    assert m.state is State.LISTENING
+
+
+def test_manual_mute_closes_with_all_audio_including_pauses_and_pre_roll():
+    m = machine(turn_end="manual")
+    feed(m, SIL, 5)
+    feed(m, SPEECH, 25)
+    feed(m, SIL, 200)
+    feed(m, SPEECH, 10)
+    feed(m, SIL, 3)
+    closed = m.on_mute(True)
+    assert closed == TurnClosed(audio=SIL * 5 + SPEECH * 25 + SIL * 200 + SPEECH * 10 + SIL * 3, reason="mute")
+    assert m.state is State.TRANSCRIBING
+
+
+def test_manual_short_speech_followed_by_long_silence_is_kept():
+    """A short answer ("yes"), a pause and then mute: nothing is dropped, mute closes even below min_speech_ms."""
+    m = machine(turn_end="manual")
+    feed(m, SPEECH, 2)
+    assert feed(m, SIL, 100) == []
+    assert m.on_mute(True) == TurnClosed(audio=SPEECH * 2 + SIL * 100, reason="mute")
+
+
+def test_manual_pre_roll_is_bounded():
+    m = machine(turn_end="manual")
+    feed(m, SIL, 100)
+    feed(m, SPEECH, 25)
+    assert len(m.on_mute(True).audio) == (15 + 25) * 640
+
+
+def test_manual_mute_without_speech_does_nothing():
+    m = machine(turn_end="manual")
+    feed(m, SIL, 100)
+    assert m.on_mute(True) is None
+    assert feed(m, SPEECH, 50) == []
+    assert m.state is State.LISTENING
+
+
+def test_manual_max_turn_limit_still_applies_from_speech_start():
+    m = machine(turn_end="manual", max_turn_ms=1000)
+    feed(m, SIL, 100)
+    feed(m, SPEECH, 10)
+    closed = feed(m, SIL, 100)
+    assert [t.reason for t in closed] == ["limit"]
+    assert len(closed[0].audio) == (15 + 50) * 640
+
+
+def test_manual_next_turn_is_manual_too():
+    m = machine(turn_end="manual")
+    feed(m, SPEECH, 25)
+    m.on_mute(True)
+    m.on_transcript("hi")
+    m.on_agent_start()
+    m.on_agent_done()
+    m.on_mute(False)
+    feed(m, SPEECH, 25)
+    assert feed(m, SIL, 200) == []
+    assert m.on_mute(True).reason == "mute"
+
+
+def test_auto_is_the_default():
+    m = machine()
+    assert m.turn_end == "auto"
+    assert machine(turn_end="manual").turn_end == "manual"

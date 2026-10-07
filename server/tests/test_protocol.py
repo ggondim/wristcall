@@ -82,3 +82,19 @@ def test_server_message_shapes():
     assert p.agent_start() == {"type": "turn.agent_start"}
     assert p.agent_end() == {"type": "turn.agent_end"}
     assert p.error("stt_failed", "x", False) == {"type": "error", "code": "stt_failed", "message": "x", "fatal": False}
+
+
+def test_turn_end_defaults_to_auto():
+    assert p.parse_client_message(start()).turn_end == "auto"
+
+
+@pytest.mark.parametrize("mode", ["auto", "manual"])
+def test_turn_end_accepts_known_modes(mode):
+    assert p.parse_client_message(start(turn_end=mode)).turn_end == mode
+
+
+@pytest.mark.parametrize("mode", ["push", "", None, 1, "MANUAL"])
+def test_turn_end_unknown_value_is_bad_message(mode):
+    with pytest.raises(p.ProtocolError) as e:
+        p.parse_client_message(start(turn_end=mode))
+    assert e.value.code == p.ErrorCode.BAD_MESSAGE

@@ -93,12 +93,13 @@ class Sleeps:
         self.calls.append(seconds)
 
 
-def make(stt=None, llm=None, tts=None, sleep=None, **profile_over):
+def make(stt=None, llm=None, tts=None, sleep=None, turn_end=None, **profile_over):
     cfg = fake_config(**profile_over)
     profile = cfg.profiles["default"]
     transport = FakeTransport()
     sleeps = sleep or Sleeps()
-    s = CallSession(profile, ProviderSet(stt or Stt(), llm or Llm(), tts or Tts()), ByteVad(), transport, sleep=sleeps)
+    extra = {} if turn_end is None else {"turn_end": turn_end}
+    s = CallSession(profile, ProviderSet(stt or Stt(), llm or Llm(), tts or Tts()), ByteVad(), transport, sleep=sleeps, **extra)
     return s, transport, sleeps
 
 
@@ -354,3 +355,20 @@ async def test_playback_wait_accounts_for_gaps_between_sentences():
     assert clock.now == 1.5
     assert sleeps.calls == [pytest.approx(1.0 + 0.2, abs=1e-6)]
     assert s.machine.state is State.LISTENING
+
+
+async def test_session_defaults_to_auto_turn_end():
+    s, _, _ = make()
+    assert s.machine.turn_end == "auto"
+
+
+async def test_manual_call_ends_turn_only_on_mute():
+    stt = Stt()
+    s, t, _ = make(stt=stt, turn_end="manual")
+    await speak(s, speech_frames=25, silence_frames=500)
+    await s.wait_idle()
+    assert t.events == [] and stt.calls == 0
+    await s.on_mute(True)
+    await s.wait_idle()
+    assert t.events[0] == {"type": "turn.user_end", "reason": "mute"}
+    assert "turn.agent_end" in t.types() and stt.calls == 1

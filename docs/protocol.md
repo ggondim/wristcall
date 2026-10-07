@@ -16,7 +16,7 @@ or any other) and a wristcall server. Version: **1**.
 
 | Route | Body | Responses |
 |---|---|---|
-| `GET /v1/health` | | `200 {"status":"ok","version":"0.1.0","protocol":1}` |
+| `GET /v1/health` | | `200 {"status":"ok","version":"0.2.0","protocol":1}` |
 | `POST /v1/pair` | `{"code": "12345678" \| null, "device_name": "Apple Watch"}` | `200 {"device_id","token"}`: paired (flow A). `202 {"request_id","poll_token","expires_at"}`: waiting for the owner's approval (flow B). `401 {"error":"invalid_code"}`. `429 {"error":"rate_limited"}` |
 | `POST /v1/pair/poll` | `{"poll_token": "..."}` | `202 {"request_id","expires_at"}`: pending. `200 {"device_id","token"}`: approved (delivered only once). `410 {"error":"gone"}`: expired or already delivered. `422`: body without `poll_token` or with more than 128 characters |
 | `GET /v1/me` | | `200 {"device_id","device_name","profiles":[{"name","display_name"}]}`. `401` |
@@ -64,9 +64,12 @@ Text frames are JSON control messages. Binary frames are audio.
 2. Within 10 s, the client sends:
    ```json
    {"type":"session.start","protocol":1,"profile":"default",
-    "audio_in":{"codec":"pcm16","sample_rate":16000,"channels":1}}
+    "audio_in":{"codec":"pcm16","sample_rate":16000,"channels":1},"turn_end":"auto"}
    ```
    `profile` is optional (absent = `default`).
+   `turn_end` is optional (absent = `"auto"`) and chooses, for this call only,
+   how the user's turn ends (see [End of the user's turn](#end-of-the-users-turn)).
+   Any value other than `"auto"` or `"manual"` is a `bad_message` error.
 3. The server answers:
    ```json
    {"type":"session.ready","session_id":"9f2c...","profile":{"name":"default","display_name":"Agent"},
@@ -83,6 +86,31 @@ Text frames are JSON control messages. Binary frames are audio.
   frames. The last frame of each response is padded with silence.
 - While muted, the client does not send audio.
 
+### End of the user's turn
+
+The turn starts with the first frame the server detects as speech (plus up to
+300 ms of audio from just before it; values here are defaults, configurable per
+profile). How it ends depends on the `turn_end` of
+`session.start`:
+
+| `turn_end` | The turn ends by | `turn.user_end` reasons |
+|---|---|---|
+| `"auto"` (default) | 800 ms of silence after speech (VAD; speech shorter than 300 ms followed by silence is dropped as noise), mute, or the duration limit | `"vad"`, `"mute"`, `"limit"` |
+| `"manual"` | mute or the duration limit only; silence never ends it, however long | `"mute"`, `"limit"` |
+
+In both modes:
+- Mute before any speech ends nothing; while muted, audio is ignored.
+- The duration limit (60 s) counts from the start of speech, pauses included.
+  It is a safety limit.
+- In `"manual"`, every frame from the start of speech until the mute is part of
+  the turn, pauses included, even if the speech was short.
+
+`turn_end` was added in server 0.2.0 without changing the protocol version.
+Servers 0.1.x ignore the field (unknown fields are ignored) and run every call
+as `"auto"`, so a `"manual"` call to such a server still works but may also end
+the turn by silence (`reason: "vad"`). Clients that need to know can read the
+server `version` from `GET /v1/health`.
+
 ### Client messages
 
 | Message | When |
@@ -97,7 +125,7 @@ Unknown fields are ignored (future compatibility).
 
 | Message | Meaning |
 |---|---|
-| `{"type":"turn.user_end","reason":"vad"\|"mute"\|"limit"}` | the user's turn closed: by silence, by mute or by going over 60 s (default, configurable per profile) |
+| `{"type":"turn.user_end","reason":"vad"\|"mute"\|"limit"}` | the user's turn closed: by silence (`"auto"` calls only), by mute or by going over the duration limit (60 s by default, configurable per profile). See [End of the user's turn](#end-of-the-users-turn) |
 | `{"type":"transcript","role":"user"\|"assistant","text":"..."}` | text of the turn (informational) |
 | `{"type":"turn.agent_start"}` | the response audio is about to start |
 | `{"type":"turn.agent_end"}` | all of the response audio has been sent |
@@ -110,7 +138,7 @@ starts listening again after the estimated playback time of the audio sent plus 
 
 | Code | Fatal | Cause |
 |---|---|---|
-| `bad_message` | at opening, yes; afterwards, no | invalid JSON or unknown type in the middle of the call |
+| `bad_message` | at opening, yes; afterwards, no | invalid JSON, unknown type or invalid field (for example an unknown `turn_end`) |
 | `not_started` | yes | the first message was not `session.start`, or it did not arrive within 10 s |
 | `unsupported_protocol` | yes | `protocol` other than 1 |
 | `unsupported_audio` | yes | `audio_in` other than pcm16 16 kHz mono |
