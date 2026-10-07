@@ -23,6 +23,14 @@ public enum CloseCode: UInt16, Sendable {
     case unauthorized = 4401
 }
 
+/// How the user's turn ends during a call (`turn_end` in `session.start`).
+public enum TurnEnd: String, Sendable, Equatable, Hashable, CaseIterable {
+    /// The server closes the turn on silence, mute or the duration limit. The default; not sent on the wire.
+    case auto
+    /// Only mute (or the duration limit) closes the turn; silence never does.
+    case manual
+}
+
 /// An audio stream format as written in `audio_in` / `audio_out`.
 public struct AudioFormat: Codable, Sendable, Equatable {
     public var codec: String

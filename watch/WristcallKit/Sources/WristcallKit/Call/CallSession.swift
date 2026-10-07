@@ -85,13 +85,13 @@ public final class CallSession: Sendable {
 
     // MARK: - Opening
 
-    /// Connects, sends `session.start` and waits for `session.ready`.
+    /// Connects, sends `session.start` (with `turnEnd`, omitted on the wire when `.auto`) and waits for `session.ready`.
     ///
     /// Throws `CallSessionError`: `.timedOut` (no ready within the timeout; the call ends with
     /// `.connectionLost`), `.ended(reason)` (4401, fatal opening error, connection failure, or
     /// `end()` while opening), `.alreadyStarted`. Every failure also emits `.ended`.
     @discardableResult
-    public func start(profile: String? = nil) async throws -> SessionReady {
+    public func start(profile: String? = nil, turnEnd: TurnEnd = .auto) async throws -> SessionReady {
         try state.withLock { state in
             switch state.phase {
             case .idle:
@@ -110,7 +110,7 @@ public final class CallSession: Sendable {
             throw CallSessionError.ended(endReason ?? .connectionLost)
         }
 
-        let startText = try ClientMessage.sessionStart(profile: profile).jsonText()
+        let startText = try ClientMessage.sessionStart(profile: profile, turnEnd: turnEnd).jsonText()
         return try await withCheckedThrowingContinuation { waiter in
             let endedEarly = state.withLock { state -> CallEndReason? in
                 guard case .connecting = state.phase else {

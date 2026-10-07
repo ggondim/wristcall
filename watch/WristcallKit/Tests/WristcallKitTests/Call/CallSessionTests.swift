@@ -48,6 +48,26 @@ struct CallSessionTests {
         #expect(transport.sentTexts == [#"{"audio_in":{"channels":1,"codec":"pcm16","sample_rate":16000},"protocol":1,"type":"session.start"}"#])
     }
 
+    @Test func autoStartSendsNoTurnEnd() async throws {
+        let session = CallSession(transport: transport)
+        async let ready = session.start(profile: "demo", turnEnd: .auto)
+        try await transport.waitUntilSent { $0.count == 1 }
+        transport.serverSends(Self.ready)
+        _ = try await ready
+        #expect(!transport.sentTexts[0].contains("turn_end"))
+        #expect(transport.sent == [try startText("demo")])
+    }
+
+    @Test func manualStartSendsTurnEndManual() async throws {
+        let session = CallSession(transport: transport)
+        async let ready = session.start(profile: "demo", turnEnd: .manual)
+        try await transport.waitUntilSent { $0.count == 1 }
+        transport.serverSends(Self.ready)
+        _ = try await ready
+        #expect(transport.sentTexts[0].contains(#""turn_end":"manual""#))
+        #expect(transport.sent == [.text(try ClientMessage.sessionStart(profile: "demo", turnEnd: .manual).jsonText())])
+    }
+
     @Test func startTwiceIsRefused() async throws {
         let session = CallSession(transport: transport)
         _ = try await open(session)
