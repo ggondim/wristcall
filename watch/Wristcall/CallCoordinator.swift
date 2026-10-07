@@ -13,8 +13,8 @@ import WristcallKit
 /// - by the user (system UI or the app's "End", which asks CallKit): audio stops, the screen goes
 ///   Home, `session.end` + close 1000 go out in the background. CallKit already knows; no report.
 /// - by the server or the network: CallKit gets `reportEnded` (`.remoteEnded` for a normal close,
-///   `.failed` otherwise) and `AppModel.callDidEnd(_:)` picks the message ("Connection lost",
-///   pairing again after 4401...).
+///   `.failed` otherwise; CallKit sees both as "remote ended", see `CallEndCause.callKitReason`)
+///   and `AppModel.callDidEnd(_:)` picks the message ("Connection lost", pairing again after 4401...).
 /// - before the call exists (CallKit refused, audio never activated, no microphone):
 ///   `AppModel.callDidFail(message:)`.
 @MainActor

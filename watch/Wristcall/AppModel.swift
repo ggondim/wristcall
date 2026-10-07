@@ -83,6 +83,7 @@ final class AppModel {
         static let connectionLost = "Connection lost"
         static let callNotStarted = "Couldn't start the call."
         static let microphoneUnavailable = "Microphone unavailable."
+        static let noConnection = "No connection"
     }
 
     static let directoryDefaultsKey = "pairingDirectoryURL"
@@ -111,12 +112,15 @@ final class AppModel {
     private let defaults: UserDefaults
     private let deviceName: String
     private let sleep: PairingClient.Sleep
+    /// Asked before every call; `nil` (tests, previews) never blocks one.
+    private let reachability: (any NetworkReachability)?
 
     init(
         pairing: any PairingService = PairingClient(),
         store: any CredentialStore = KeychainCredentialStore(),
         defaults: UserDefaults = .standard,
         deviceName: String = AppModel.defaultDeviceName,
+        reachability: (any NetworkReachability)? = nil,
         sleep: @escaping PairingClient.Sleep = { try await Task.sleep(for: $0) }
     ) {
         self.pairing = pairing
@@ -124,6 +128,7 @@ final class AppModel {
         self.defaults = defaults
         self.deviceName = deviceName
         self.sleep = sleep
+        self.reachability = reachability
         directoryURL = defaults.string(forKey: Self.directoryDefaultsKey).flatMap(ServerAddress.parse)
             ?? PairingClient.defaultDirectory
     }
@@ -380,9 +385,15 @@ final class AppModel {
 
     // MARK: - Call (wired by tasks 8 to 10)
 
-    /// The "Call" button (auto) or a choice on the call options screen. Only from `.ready`.
+    /// The "Call" button (auto), a choice on the call options screen, a shortcut, the complication,
+    /// the control or the system's redial. Only from `.ready`, and only with a network path: without
+    /// one the call would fail, and watchOS 26's "Call Failed" alert crashed the system UI.
     func startCall(turnEnd: TurnEnd = .auto) {
         guard case .ready(let info) = phase, let credentials else { return }
+        guard reachability?.isSatisfied != false else {
+            message = Message.noConnection
+            return
+        }
         let request = CallRequest(credentials: credentials, profile: info.profiles.first, turnEnd: turnEnd)
         message = nil
         callActivity = .connecting

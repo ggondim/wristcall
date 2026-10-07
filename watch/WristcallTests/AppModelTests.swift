@@ -16,14 +16,17 @@ struct AppModelTests {
     ])
     let pending = PairingRequest(requestId: "4821", pollToken: "poll-secret", expiresAt: .now.addingTimeInterval(600))
 
-    func makeModel(sleep: @escaping PairingClient.Sleep = { _ in }) -> AppModel {
-        AppModel(pairing: pairing, store: store, defaults: defaults, sleep: sleep)
+    func makeModel(
+        reachability: (any NetworkReachability)? = nil,
+        sleep: @escaping PairingClient.Sleep = { _ in }
+    ) -> AppModel {
+        AppModel(pairing: pairing, store: store, defaults: defaults, reachability: reachability, sleep: sleep)
     }
 
-    func makePairedModel() async throws -> AppModel {
+    func makePairedModel(reachability: (any NetworkReachability)? = nil) async throws -> AppModel {
         try store.save(Credentials(serverURL: server, device: device))
         pairing.meResults = [.success(info)]
-        let model = makeModel()
+        let model = makeModel(reachability: reachability)
         await model.launch()
         try #require(model.phase == .ready(info))
         return model
@@ -359,6 +362,54 @@ struct AppModelTests {
         let agent = Profile(name: "default", displayName: "Agent")
         #expect(model.phase == .inCall(agent))
         #expect(handler.started == [CallRequest(credentials: Credentials(serverURL: server, device: device), profile: agent, turnEnd: .manual)])
+    }
+
+    /// Without a network path no CallKit call starts (its "Call Failed" alert crashes the
+    /// watch's system UI): Home stays, with a message.
+    @Test(arguments: TurnEnd.allCases)
+    func noNetworkPathKeepsHomeAndShowsNoConnection(turnEnd: TurnEnd) async throws {
+        let network = FakeNetworkReachability(false)
+        let model = try await makePairedModel(reachability: network)
+        let handler = StubCallHandler()
+        model.callHandler = handler
+
+        model.startCall(turnEnd: turnEnd)
+
+        #expect(handler.started.isEmpty)
+        #expect(model.phase == .ready(info))
+        #expect(model.message == "No connection")
+        #expect(model.canCall)
+
+        network.isSatisfied = true
+        model.startCall(turnEnd: turnEnd)
+
+        #expect(handler.started.map(\.turnEnd) == [turnEnd])
+        #expect(model.message == nil)
+    }
+
+    @Test(arguments: TurnEnd.allCases)
+    func satisfiedNetworkPathStartsTheCall(turnEnd: TurnEnd) async throws {
+        let model = try await makePairedModel(reachability: FakeNetworkReachability(true))
+        let handler = StubCallHandler()
+        model.callHandler = handler
+
+        model.startCall(turnEnd: turnEnd)
+
+        #expect(handler.started.map(\.turnEnd) == [turnEnd])
+        #expect(model.phase == .inCall(Profile(name: "default", displayName: "Agent")))
+    }
+
+    /// A monitor that has not reported yet does not block the call.
+    @Test(arguments: TurnEnd.allCases)
+    func unknownNetworkPathStartsTheCall(turnEnd: TurnEnd) async throws {
+        let model = try await makePairedModel(reachability: FakeNetworkReachability(nil))
+        let handler = StubCallHandler()
+        model.callHandler = handler
+
+        model.startCall(turnEnd: turnEnd)
+
+        #expect(handler.started.map(\.turnEnd) == [turnEnd])
+        #expect(model.phase == .inCall(Profile(name: "default", displayName: "Agent")))
     }
 
     @Test func callEndedAsUnauthorizedGoesBackToPairing() async throws {

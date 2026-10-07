@@ -58,13 +58,17 @@ struct CallCoordinatorTests {
     let transport = FakeTransport()
     let transportsMade = Recorder<Credentials>()
 
-    func makeCoordinator(activationTimeout: Duration = .seconds(10)) async throws -> (CallCoordinator, AppModel) {
+    /// `transport`: what the factory returns; `self.transport` when `nil`.
+    func makeCoordinator(
+        activationTimeout: Duration = .seconds(10),
+        transport: FakeTransport? = nil
+    ) async throws -> (CallCoordinator, AppModel) {
         try store.save(credentials)
         pairing.meResults = [.success(info)]
         let model = AppModel(pairing: pairing, store: store, defaults: defaults, sleep: { _ in })
         await model.launch()
         try #require(model.phase == .ready(info))
-        let transport = transport
+        let transport = transport ?? self.transport
         let made = transportsMade
         let coordinator = CallCoordinator(callControl: callKit, audio: audio, activationTimeout: activationTimeout) { credentials in
             made.append(credentials)
@@ -295,6 +299,23 @@ struct CallCoordinatorTests {
         #expect(model.message == "Connection lost")
         #expect(!audio.isRunning)
         #expect(audio.stops >= 1)
+    }
+
+    /// No network: CallKit activates the audio, but the server never answers.
+    @Test func serverThatDoesNotAnswerEndsWithoutTheFailedCallAlert() async throws {
+        let unreachable = FakeTransport(connectError: .connectionFailed("The operation timed out."))
+        let (coordinator, model) = try await makeCoordinator(transport: unreachable)
+        model.startCall()
+        await waitUntil { callKit.starts.count == 1 }
+
+        callKit.activateAudio()
+
+        await waitUntil { model.phase == .ready(info) }
+        #expect(try callKit.ends == endReportedForTheStartedCall(.failed))
+        #expect(callKit.ends.allSatisfy { $0.cause.callKitReason != .failed })
+        #expect(model.message == "Connection lost")
+        #expect(coordinator.currentCallID == nil)
+        #expect(!audio.isRunning)
     }
 
     @Test func fatalServerErrorEndsTheCallAsFailed() async throws {

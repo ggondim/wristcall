@@ -120,6 +120,16 @@ final class StubCallHandler: CallHandling {
     }
 }
 
+/// Stands in for `NetworkPathMonitor`: the test sets what the "monitor" last reported.
+@MainActor
+final class FakeNetworkReachability: NetworkReachability {
+    var isSatisfied: Bool?
+
+    init(_ isSatisfied: Bool?) {
+        self.isSatisfied = isSatisfied
+    }
+}
+
 /// Collects values from `@Sendable` closures (the injected `sleep`).
 final class Recorder<Value: Sendable>: Sendable {
     private let values = Mutex<[Value]>([])

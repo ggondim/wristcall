@@ -4,7 +4,7 @@ import Foundation
 import os
 
 /// Why the app ends a call by itself, without an end action from the user.
-enum CallEndCause: Equatable, Sendable {
+enum CallEndCause: Equatable, Sendable, CaseIterable {
     /// The server closed the call normally (1000).
     case remoteEnded
     /// Connection lost, server error, revoked token or no microphone.
@@ -12,11 +12,14 @@ enum CallEndCause: Equatable, Sendable {
     /// CallKit never activated the audio session.
     case unanswered
 
+    /// Always `.remoteEnded`. `.failed` makes watchOS show its "Call Failed" alert (with redial),
+    /// and that alert crashed the system UI (Carousel, inside Screen Time) on watchOS 26 when a call
+    /// failed without network. Whether `.unanswered` shows the same alert is not documented, so it
+    /// gets `.remoteEnded` too. The app shows its own message for each cause. To give CallKit the
+    /// real reason again, map `.failed` and `.unanswered` back here.
     var callKitReason: CXCallEndedReason {
         switch self {
-        case .remoteEnded: .remoteEnded
-        case .failed: .failed
-        case .unanswered: .unanswered
+        case .remoteEnded, .failed, .unanswered: .remoteEnded
         }
     }
 }

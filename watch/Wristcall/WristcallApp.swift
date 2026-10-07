@@ -12,7 +12,8 @@ struct WristcallApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
-        let model = AppModel()
+        // The path monitor starts here, at launch, so it has an answer before the first "Call".
+        let model = AppModel(reachability: NetworkPathMonitor())
         let coordinator = CallCoordinator(callControl: Self.makeCallControl(), audio: Self.makeAudio())
         coordinator.model = model
         model.callHandler = coordinator
@@ -48,8 +49,16 @@ struct WristcallApp: App {
                     guard ShortcutLink.isCall(url) else { return }
                     PendingCallStore().request()
                 }
+                // Redial on the system call UI. Like a shortcut, so a cold start waits for launch.
+                .onContinueUserActivity(Self.startCallActivity) { _ in
+                    PendingCallStore().request()
+                }
         }
     }
+
+    /// The `NSUserActivity` type of the system's redial (`INStartCallIntent`). Receiving it needs
+    /// no Intents entitlement.
+    private static let startCallActivity = "INStartCallIntent"
 
     @MainActor
     private static func makeCallControl() -> any CallControlling {

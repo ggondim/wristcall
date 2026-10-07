@@ -133,11 +133,19 @@ struct CallControllerTests {
         controller.reportEnded(id: id, cause: .failed)
         controller.reportEnded(id: id, cause: .unanswered)
 
+        // Every cause reaches CallKit as `.remoteEnded` (see `CallEndCause.callKitReason`).
         #expect(reporter.reports == [
             .connected(id),
             .ended(id, .remoteEnded),
-            .ended(id, .failed),
-            .ended(id, .unanswered),
+            .ended(id, .remoteEnded),
+            .ended(id, .remoteEnded),
         ])
+    }
+
+    /// `.failed` (and possibly `.unanswered`) makes watchOS show its "Call Failed" alert, which
+    /// crashed the system UI on watchOS 26: no end cause may reach CallKit as either.
+    @Test(arguments: CallEndCause.allCases)
+    func noEndCauseShowsTheSystemFailedCallAlert(cause: CallEndCause) {
+        #expect(cause.callKitReason == .remoteEnded)
     }
 }
