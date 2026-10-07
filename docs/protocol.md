@@ -96,7 +96,7 @@ profile). How it ends depends on the `turn_end` of
 | `turn_end` | The turn ends by | `turn.user_end` reasons |
 |---|---|---|
 | `"auto"` (default) | 800 ms of silence after speech (VAD; speech shorter than 300 ms followed by silence is dropped as noise), mute, or the duration limit | `"vad"`, `"mute"`, `"limit"` |
-| `"manual"` | mute or the duration limit only; silence never ends it, however long | `"mute"`, `"limit"` |
+| `"manual"` | mute or the duration limit only; silence never ends it, however long (a turn that reaches the limit with less than 300 ms of speech is dropped as noise) | `"mute"`, `"limit"` |
 
 In both modes:
 - Mute before any speech ends nothing; while muted, audio is ignored.
@@ -104,12 +104,19 @@ In both modes:
   It is a safety limit.
 - In `"manual"`, every frame from the start of speech until the mute is part of
   the turn, pauses included, even if the speech was short.
+- In `"manual"`, if the duration limit is reached and the turn has less than
+  300 ms of speech (a blip followed by silence), the server drops it silently,
+  as noise: no `turn.user_end`, no transcription, and a new turn starts.
 
 `turn_end` was added in server 0.2.0 without changing the protocol version.
 Servers 0.1.x ignore the field (unknown fields are ignored) and run every call
 as `"auto"`, so a `"manual"` call to such a server still works but may also end
 the turn by silence (`reason: "vad"`). Clients that need to know can read the
 server `version` from `GET /v1/health`.
+
+Clients must only send `turn_end` values that the server version supports
+(check `version` in `GET /v1/health`): an unknown field is ignored, but an
+unknown value of a known field is a fatal `bad_message` (close 4400).
 
 ### Client messages
 

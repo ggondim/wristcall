@@ -212,7 +212,7 @@ def test_manual_mute_without_speech_does_nothing():
 def test_manual_max_turn_limit_still_applies_from_speech_start():
     m = machine(turn_end="manual", max_turn_ms=1000)
     feed(m, SIL, 100)
-    feed(m, SPEECH, 10)
+    feed(m, SPEECH, 20)
     closed = feed(m, SIL, 100)
     assert [t.reason for t in closed] == ["limit"]
     assert len(closed[0].audio) == (15 + 50) * 640
@@ -235,3 +235,15 @@ def test_auto_is_the_default():
     m = machine()
     assert m.turn_end == "auto"
     assert machine(turn_end="manual").turn_end == "manual"
+
+
+def test_manual_limit_with_only_noise_resets_silently():
+    """A blip below min_speech_ms followed by silence until the limit is noise: no turn, start fresh."""
+    vad = ByteVad()
+    m = machine(vad, turn_end="manual", max_turn_ms=1000)
+    feed(m, SPEECH, 2)
+    before = vad.resets
+    assert feed(m, SIL, 100) == []
+    assert m.state is State.LISTENING and vad.resets == before + 1
+    feed(m, SPEECH, 25)
+    assert m.on_mute(True) == TurnClosed(audio=SIL * 15 + SPEECH * 25, reason="mute")

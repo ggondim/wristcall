@@ -10,7 +10,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Server
 
 ### Server (`server/`)
 
-- Added: per call end of turn mode. `"auto"` keeps the current behaviour (silence, mute or duration limit). `"manual"` never ends the turn by silence: only the mute or the duration limit end it, and every frame from the start of speech is kept, pauses included.
+- Added: per call end of turn mode. `"auto"` keeps the current behaviour (silence, mute or duration limit). `"manual"` never ends the turn by silence: only the mute or the duration limit end it, and every frame from the start of speech is kept, pauses included. A manual turn that reaches the limit with less than `min_speech_ms` of speech is dropped silently as noise.
 - An unknown `turn_end` value is rejected at opening with `bad_message`.
 
 ## [0.1.0] - 2026-10-03

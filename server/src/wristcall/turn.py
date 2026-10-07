@@ -41,7 +41,7 @@ class TurnMachine:
         turn_end: TurnEnd = "auto",
     ) -> None:
         self._vad = vad
-        # In "manual" silence never closes (nor discards) a turn that has speech: only mute or the limit do.
+        # In "manual" silence never closes a turn that has speech: only mute or the limit do.
         self.turn_end: TurnEnd = turn_end
         self._silence_limit = silence_ms
         self._min_speech = min_speech_ms
@@ -95,6 +95,10 @@ class TurnMachine:
         else:
             self._silence_ms += self._frame_ms
         if self._turn_ms >= self._max_turn:
+            if self.turn_end == "manual" and self._speech_ms < self._min_speech:
+                # Only noise (a blip, then silence) up to the limit: no intent to speak, start fresh.
+                self._reset_turn()
+                return None
             return self._close("limit")
         if self.turn_end == "auto" and self._silence_ms >= self._silence_limit:
             if self._speech_ms >= self._min_speech:
