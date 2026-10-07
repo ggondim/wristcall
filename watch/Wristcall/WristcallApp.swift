@@ -53,12 +53,17 @@ struct WristcallApp: App {
                 .onContinueUserActivity(Self.startCallActivity) { _ in
                     PendingCallStore().request()
                 }
+                .onContinueUserActivity(Self.startAudioCallActivity) { _ in
+                    PendingCallStore().request()
+                }
         }
     }
 
-    /// The `NSUserActivity` type of the system's redial (`INStartCallIntent`). Receiving it needs
+    /// The `NSUserActivity` types of the system's redial: `INStartCallIntent`, or the older
+    /// `INStartAudioCallIntent` for an app that declares no calling intents. Receiving them needs
     /// no Intents entitlement.
     private static let startCallActivity = "INStartCallIntent"
+    private static let startAudioCallActivity = "INStartAudioCallIntent"
 
     @MainActor
     private static func makeCallControl() -> any CallControlling {

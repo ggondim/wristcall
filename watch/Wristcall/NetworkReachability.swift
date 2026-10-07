@@ -32,8 +32,13 @@ final class NetworkPathMonitor: NetworkReachability {
         monitor.start(queue: .main)
     }
 
+    /// The rule: only an unsatisfied path with no interface at all means "no network".
+    nonisolated static func isUsable(status: NWPath.Status, interfaceCount: Int) -> Bool {
+        status != .unsatisfied || interfaceCount > 0
+    }
+
     private func update(_ path: NWPath) {
-        let usable = path.status != .unsatisfied || !path.availableInterfaces.isEmpty
+        let usable = Self.isUsable(status: path.status, interfaceCount: path.availableInterfaces.count)
         let interfaces = path.availableInterfaces.map { "\($0.type)" }.joined(separator: ",")
         Self.log.notice(
             "path \(String(describing: path.status), privacy: .public) reason \(String(describing: path.unsatisfiedReason), privacy: .public) interfaces [\(interfaces, privacy: .public)] usable=\(usable)"

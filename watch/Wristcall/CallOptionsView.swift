@@ -1,14 +1,10 @@
 import SwiftUI
 import WristcallKit
 
-/// Agent options ("…" on Home): ways to call the agent. Each kind of option is its own section,
-/// so new ones (other profiles, for example) are new sections.
-///
-/// Starting a call moves `AppModel.phase` to `.inCall`: `RootView` drops Home and its
-/// `NavigationStack`, so this screen is gone and the call ends on a fresh Home.
 /// Agent options behind "…" on Home: how the call ends the user's turn. One section per kind of
 /// option, so later ones (other profiles, contacts) are new sections. Starting a call switches
-/// `RootView` to the call screen, which drops this navigation stack; the call ends on Home.
+/// `RootView` to the call screen, which drops this navigation stack; the call ends on Home. A call
+/// that does not start (no connection) leaves this screen up, with the model's message below.
 struct CallOptionsView: View {
     let model: AppModel
 
@@ -27,6 +23,12 @@ struct CallOptionsView: View {
                         }
                     }
                     .disabled(!model.canCall)
+                }
+            } footer: {
+                if let message = model.message {
+                    Text(message)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
