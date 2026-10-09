@@ -16,7 +16,7 @@ or any other) and a wristcall server. Version: **1**.
 
 | Route | Body | Responses |
 |---|---|---|
-| `GET /v1/health` | | `200 {"status":"ok","version":"0.4.0","protocol":1,"account":null}`. `account` is `{"issuer","device_credential"}` when the server accepts a [central account](#central-account-optional), `null` otherwise (older servers omit it) |
+| `GET /v1/health` | | `200 {"status":"ok","version":"0.5.0","protocol":1,"account":null}`. `account` is `{"issuer","device_credential"}` when the server accepts a [central account](#central-account-optional), `null` otherwise (older servers omit it) |
 | `POST /v1/pair` | `{"code": "12345678" \| null, "device_name": "Apple Watch"}` | `200 {"device_id","token"}`: paired (flow A). `202 {"request_id","poll_token","expires_at"}`: waiting for the owner's approval (flow B). `401 {"error":"invalid_code"}`. `429 {"error":"rate_limited"}` |
 | `POST /v1/pair/poll` | `{"poll_token": "..."}` | `202 {"request_id","expires_at"}`: pending. `200 {"device_id","token"}`: approved (delivered only once). `403 {"error":"limit"}`: approved, but the user is at the device limit, so the device cannot be collected yet (the request stays valid; try again after a device is revoked). `410 {"error":"gone"}`: expired, denied or already delivered. `422`: body without `poll_token` or with more than 128 characters |
 | `GET /v1/calls/{call_id}` | | `200 call` (see [One-way calls](#one-way-calls-one-shot-monologue)): a call of this token's user, with a device or an API token. `404 {"error":"not_found"}`. `401` |
@@ -324,10 +324,10 @@ The call goes like this:
    `GET /v1/calls/{call_id}` every 1 to 2 s until the status is final. The
    WebSocket is closed by then: this is plain HTTPS, with the device token.
 
-`GET /v1/calls/{call_id}` answers:
+`GET /v1/calls/{call_id}` answers (the fields after `finished_at` since server 0.5.0, see [History](#history)):
 
 ```json
-{"id":"c_5d1f...","agent_id":"ag_3f9c0a1b2c3d","call_type":"one-shot","status":"delivered","error":null,"text":"buy milk","attempts":1,"last_http_status":204,"created_at":1760000000.0,"ended_at":1760000004.2,"finished_at":1760000005.1}
+{"id":"c_5d1f...","agent_id":"ag_3f9c0a1b2c3d","call_type":"one-shot","status":"delivered","error":null,"text":"buy milk","attempts":1,"last_http_status":204,"created_at":1760000000.0,"ended_at":1760000004.2,"finished_at":1760000005.1,"agent":{"id":"ag_3f9c0a1b2c3d","slug":"note","display_name":"Note"},"expires_at":null,"entries":[{"role":"user","text":"buy milk","error":null,"at":1760000004.9}]}
 ```
 
 | `status` | Final | Meaning |
@@ -345,7 +345,8 @@ The call goes like this:
 | `interrupted` | the server stopped while processing; `text` is kept if it was ready |
 | `internal` | unexpected server error |
 
-Text is kept after delivery too (the history of a later version builds on it).
+Text is kept after delivery too: every call is part of its agent's [history](#history). A call that ended
+`delivery_failed`, or `interrupted` with its text, can be delivered again (`POST /v1/calls/{id}/redeliver`).
 
 ### Delivery to the webhook
 
@@ -367,6 +368,40 @@ After transcribing, the server sends `POST <url>` with the agent's `headers` and
 A watch app older than 0.4.0 (for example watch 0.1.0) can call a one-way agent:
 it records, the call ends normally, and the delivery happens; it just never shows
 the result.
+
+## History
+
+Since server 0.5.0 every call is recorded, delivered or not, conversations included (one per WebSocket session).
+Only text is kept, never audio.
+
+- A **conversation**'s `session.ready` also carries `call_id`. Its record is `recording` while the call is open,
+  then `ended` (`empty` when nothing was said; `ended` with `error: "interrupted"` if the server stopped during the
+  call). Its `entries` alternate what the user said (`role: "user"`) and the agent's answer (`role: "agent"`).
+  An entry's `error` tells why its text is missing or partial: `stt_failed` (not understood, `text` null),
+  `responder_failed` (no answer, or cut: `text` has what was said), `tts_failed` (the answer was written but not
+  spoken), `unreadable` (encrypted with a key this server does not have).
+- A **one-way** call has one `user` entry with the transcript. `text` (top level) is what the user said, joined.
+- `agent` is the agent as it was at call time (`slug`, `display_name`): an agent can be renamed or deleted and its
+  history stays. Deleting an agent keeps its calls.
+- `expires_at`: when the server deletes the call (Unix seconds), from the agent's `retention_days` within the
+  operator's ceiling (see [Agents](#agents)); `null` keeps it until the user deletes it. Expired calls are deleted
+  within the hour.
+
+With the user's API token (a device token answers `403 forbidden`, except for `GET /v1/calls/{id}`):
+
+| Route | Responses |
+|---|---|
+| `GET /v1/calls` | `200 {"calls":[call],"next_before":id\|null}`, newest first, each call as `GET /v1/calls/{id}`. Query: `agent` (slug or id, also a deleted agent's id), `q` (search), `since` and `until` (Unix seconds or ISO 8601; without an offset, UTC; `until` excluded), `limit` (1 to 100, default 50), `before` (the `next_before` of the previous page: an opaque position, still valid if that call was deleted meanwhile). `404 not_found` (agent), `422 invalid` |
+| `GET /v1/calls/{id}` | `200 call` (device or API token). `404` |
+| `DELETE /v1/calls/{id}` | `204`. `404` |
+| `DELETE /v1/calls?agent=<ref>` or `?all=true` | `200 {"deleted":n}`. `422` with neither or both |
+| `GET /v1/calls/export?format=md\|json` | `200`, a file (`Content-Disposition: attachment`): Markdown to read, or JSON `{"version":1,"exported_at","calls":[call]}`. Same `agent`, `since`, `until`; every matching call, newest first, times in UTC |
+| `POST /v1/calls/{id}/redeliver` | `202 call` (now `processing`; poll `GET /v1/calls/{id}`). `409` with `error`: `not_failed` (only `delivery_failed`, or `interrupted` with text), `busy`, `no_text`, `not_one_way`, `agent_gone` (agent deleted), `agent_unavailable` |
+
+Search (`q`) matches whole words, all of them in the same call (in what the user said or in the agent's answers),
+ignoring case and accents: `reuniao` finds "Reunião". No prefixes, phrases or operators: anything that is not a
+letter or a digit separates words; an empty `q` does not filter. Redelivery sends the kept text to the agent's webhook as it is configured now, with the same
+`Idempotency-Key` (the call id) and three more attempts; `attempts` adds them up.
 
 ## Agents
 
@@ -395,7 +430,10 @@ or `authorization`, at any depth (`extra_body`, `extra_form`), are returned as
 `"***"`; sending `"***"` back in an update of the same `type` keeps the stored value,
 and `"***"` anywhere else is `invalid`. `vad` and `timeouts` values are bounded
 (for example `silence_ms` 100 to 10000, `max_turn_ms` up to 300000, timeouts up to
-120 s).
+120 s). `retention_days` (since 0.5.0) is how long the agent's calls stay in the [history](#history): a number of
+days (1 to 36500), `"forever"`, or `null` for the operator's default; the owner's view also has
+`effective_retention_days`, the one in force within the operator's ceiling (`null`: kept until deleted). Changing it
+also moves the expiry of the agent's past calls.
 
 A one-way agent's `action` is a webhook: a provider of kind `webhook` or
 `{"type":"webhook","url":"https://...","headers":{"Authorization":"Bearer ..."}}`
@@ -445,6 +483,7 @@ A body that is not valid JSON or not a JSON object answers `422 {"error":"invali
 | `GET /v1/pairing-requests` | | `200 {"requests":[...]}` |
 | `POST /v1/pairing-requests/{id}/approve` | | `200 {"device_name"}`. `403 limit`. `404` |
 | `POST /v1/pairing-requests/{id}/deny` | | `204`. `404` |
+| `/v1/calls...` | | the call history: see [History](#history) |
 
 Missing or invalid token: `401 {"error":"unauthorized"}`. The central account routes answer `404 not_configured` when the server has no `central_account`.
 

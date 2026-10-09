@@ -89,6 +89,43 @@ watches and agents live in the server's database (`data_dir/wristcall.db`).
   `on_start: true` warms up when the server starts; `every_s: 240` keeps the model
   always loaded (uses GPU memory). Example: `warmup: {on_call: true}`.
 - Behind a proxy: the server trusts `X-Forwarded-For` only from the IPs in `FORWARDED_ALLOW_IPS` (the example compose already sets it). Behind Cloudflare, use `server.client_ip_header: CF-Connecting-IP`.
+- `history`: how long calls stay and whether their text is encrypted (see [Call history](#call-history)).
+
+## Call history
+
+Every call is kept as text (never audio): what the user said, the agent's answers in a conversation, and how a
+one-shot or monologue delivery went. Users list, search, export and delete their calls with the API
+([docs/protocol.md](docs/protocol.md#history)) or `wristcall history`.
+
+```yaml
+history:
+  default_retention_days: 90     # when an agent does not choose; absent or null = keep until deleted
+  max_retention_days: 365        # ceiling for every agent, "forever" included; needs default_retention_days
+  encryption_key: ${WRISTCALL_HISTORY_KEY}   # optional: encrypts the text at rest (wristcall history new-key)
+```
+
+- Retention: each agent may set `retention_days` (`wristcall agents edit note --retention 30`, `forever`, or
+  `default`); the server deletes expired calls at start and every hour. Without a `history` section nothing is
+  deleted automatically. Deleting an agent keeps its calls; `wristcall history clear --agent <id>` removes them.
+- Turning retention on (or lowering it) applies to past calls at the next start: they are deleted then.
+- Encryption: with `encryption_key`, new text is stored with AES-256-GCM and searched through keyed hashes of its
+  words (the database shows which entries share a word, not the word). The server records which key it uses and
+  refuses to start with another one, or without one, once something was encrypted: **losing the key loses the
+  history.** To turn it on, stop the server, add the key, run `wristcall history encrypt` (it encrypts calls
+  made before) and start again; to turn it off, stop the server, run `wristcall history decrypt` (with the key still
+  set), remove the key and start again.
+- Search finds calls with all the given whole words, ignoring case and accents, in the user's speech and in the
+  agent's answers.
+- Deleted and re-encrypted text is overwritten in the database file (`secure_delete`); `encrypt` and `decrypt` also
+  compact the file, so no clear text is left behind.
+
+```bash
+wristcall history list --search "milk"                  # newest first
+wristcall history show c_5d1f0a2b3c4d5e6f
+wristcall history export --format md --since 2026-10-01 -o october.md
+wristcall history redeliver c_5d1f0a2b3c4d5e6f          # a one-shot whose webhook failed
+wristcall history rm c_5d1f0a2b3c4d5e6f
+```
 
 ## Central account (optional)
 
@@ -129,12 +166,17 @@ Know before you turn it on:
 
 ## Upgrading from 0.4.0
 
-1. Back up `data_dir` first: stop the server and copy it, or run `sqlite3 <db> ".backup <file>"`. The database migrates to schema 4 on start (a nullable `central_subject`
-   on users and a target on pairing requests); the YAML stays as it is and nothing changes until you add `central_account`.
-2. The server gains the `PyJWT[crypto]` dependency (included in the image).
+1. Back up `data_dir` first: stop the server and copy it, or run `sqlite3 <db> ".backup <file>"`. The database
+   migrates to schema 5 on start: a nullable `central_subject` on users and a target on pairing requests (step 4),
+   then the call history (step 5: the text of 0.4.0's one-way calls moves to the new `call_entries` table and its
+   search index). The YAML stays as it is: nothing is deleted or encrypted until you add a `history` section, and
+   nothing changes for pairing until you add `central_account`.
+2. The server gains the `PyJWT[crypto]` dependency (included in the image). Replace the old server before starting
+   the new one (`stop-first`), as before.
 3. Rolling back to 0.4.0 needs the backup taken before the upgrade: 0.4.0 refuses the newer schema, and
    setting `user_version` back by hand makes the next upgrade fail with a duplicate column error, because step 4 runs again on
-   a migrated database.
+   a migrated database. Calls made after the upgrade are lost with the restore: keep them with
+   `wristcall history export --format json -o calls.json` before rolling back.
 
 ## Upgrading from 0.3.0
 
@@ -216,14 +258,17 @@ With more than one user, add `--user <handle>` to `pair`, `devices list|approve|
 | `wristcall users list\|add\|edit\|rm` | manages users (`list` shows which are linked to the central account) |
 | `wristcall users unlink <handle>` | removes a user's link to the central account |
 | `wristcall users tokens add\|list\|revoke` | API tokens for the management API |
-| `wristcall agents list\|show\|add\|edit\|rm` | manages a user's agents |
+| `wristcall agents list\|show\|add\|edit\|rm` | manages a user's agents (`--retention` for the history) |
+| `wristcall history list\|show\|rm\|clear\|export\|redeliver` | a user's call history |
+| `wristcall history new-key\|encrypt\|decrypt` | encryption of the history at rest |
 
 ## Management API
 
 With an API token (`wristcall users tokens add`), in `Authorization: Bearer wc_pat_...`:
 `GET/POST /v1/agents`, `GET/PATCH/DELETE /v1/agents/{slug or id}`, `GET /v1/providers`,
 `GET /v1/devices`, `DELETE /v1/devices/{id}`, `POST /v1/pairing-codes`. With `central_account`:
-`POST/DELETE /v1/account/link` and `GET /v1/pairing-requests` with `POST .../{id}/approve|deny`. The JSON fields are
+`POST/DELETE /v1/account/link` and `GET /v1/pairing-requests` with `POST .../{id}/approve|deny`. Call history:
+`GET/DELETE /v1/calls`, `GET/DELETE /v1/calls/{id}`, `GET /v1/calls/export`, `POST /v1/calls/{id}/redeliver`. The JSON fields are
 the ones `wristcall agents show` prints. See [docs/protocol.md](docs/protocol.md#management-api).
 
 ## Documentation

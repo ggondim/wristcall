@@ -12,6 +12,12 @@ server:
 #   clients: ["<watch client id>", "<iOS client id>", "<PWA client id>"]  # app client ids, not the project id
 #   device_credential: approval   # approval (you approve each new device) | attestation (any linked login pairs)
 
+# Call history (optional): how long calls stay and whether their text is encrypted at rest.
+# history:
+#   default_retention_days: 90     # agents without their own retention_days; absent = keep until deleted
+#   max_retention_days: 365        # ceiling for every agent ("forever" included)
+#   encryption_key: ${WRISTCALL_HISTORY_KEY}   # `wristcall history new-key`; losing it loses the history
+
 providers:
   openai-stt:
     type: openai_stt

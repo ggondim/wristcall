@@ -2,10 +2,24 @@
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each component follows [SemVer](https://semver.org/) on its own: the server is published by the `server-vX.Y.Z` tag (Docker image); the watch app is marked by the `watch-vX.Y.Z` tag and has no published binary (build it with Xcode, see [watch/README.md](watch/README.md)).
 
-## Unreleased
+## [0.5.0] - 2026-10-09
 
 ### Added
 
+- Call history: every call is recorded as text, delivered or not, conversations included (what the user said and
+  the agent's answers; one-shot and monologue keep the transcript and the delivery status). Never audio.
+- `GET /v1/calls` lists and searches a user's calls (`agent`, `q`, `since`, `until`, `before`, `limit`); search finds
+  whole words ignoring case and accents, with SQLite FTS5.
+- `DELETE /v1/calls/{id}`, `DELETE /v1/calls?agent=<ref>|all=true`, `GET /v1/calls/export?format=md|json` and
+  `POST /v1/calls/{id}/redeliver` (a failed one-way delivery, again to the agent's webhook with the same
+  `Idempotency-Key`). User API token only.
+- `GET /v1/calls/{id}` adds `agent`, `expires_at` and `entries`; a conversation's `session.ready` adds `call_id`.
+- Agents have `retention_days` (days, `"forever"` or `null` for the operator's default) and show
+  `effective_retention_days`; operator settings in the new `history` section (`default_retention_days`,
+  `max_retention_days`, `purge_every_s`). Without it nothing is deleted.
+- Optional encryption at rest (`history.encryption_key`): AES-256-GCM for the text, keyed hashes of the words for the
+  search. CLI: `wristcall history new-key|encrypt|decrypt`.
+- CLI: `wristcall history list|show|rm|clear|export|redeliver` and `wristcall agents add|edit --retention`.
 - Central account (optional, `central_account` in `wristcall.yaml`: `issuer`, `clients`, `device_credential`).
   Without it the server behaves as 0.4.0 and the new routes answer `404 not_configured`.
 - `POST /v1/account/link` links a user to a central account login, proved by an API token or by an
@@ -25,6 +39,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 
 - `wristcall devices approve` ignores requests aimed at another user.
 - New dependency: `PyJWT[crypto]>=2.10`.
+- A conversation record goes `recording` → `ended` (or `empty`); a server restart closes it with `error: "interrupted"`.
 
 ### Security
 
@@ -40,10 +55,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
   "Home" entry). Only `DELETE /v1/account` is restricted (iOS and PWA clients). Per-server token audiences (epic E6)
   must ship before the Cloud API is deployed.
 
+- With an encryption key set, the server records which key it is and refuses to start with another key or without
+  one: losing the key loses the encrypted history. The search index of encrypted text reveals which entries share a
+  word (not the word).
+- History routes take the user's API token only: a device token can read just one call (`GET /v1/calls/{id}`).
+
 ### Upgrade note
 
-- The database gains schema step 4; rolling back to 0.4.0 needs the backup taken before the upgrade
-  (running step 4 again on a migrated database fails with a duplicate column error).
+- The database gains schema steps 4 (central account) and 5 (history: the text of 0.4.0's one-way calls moves to
+  `call_entries`); rolling back to 0.4.0 needs the backup taken before the upgrade (running step 4 again on a
+  migrated database fails with a duplicate column error). Export the history first to keep calls made since.
 
 ## [0.4.0] - 2026-10-09
 
