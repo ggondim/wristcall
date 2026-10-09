@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__, protocol
 from .agents import AgentError, AgentService, agent_summary, build_agent_providers
+from .api import management_router
 from .auth import Authenticator, Principal
 from .bootstrap import bootstrap, log_report
 from .config import AppConfig
@@ -88,6 +89,7 @@ def create_app(
     app.state.pairing = pairing_svc
     app.state.agents = agents
     app.state.auth = auth
+    app.include_router(management_router(config, auth, agents, pairing_svc))
 
     def client_ip(request: Request) -> str:
         header = config.server.client_ip_header
