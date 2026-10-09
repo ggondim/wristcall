@@ -76,8 +76,8 @@ Text frames are JSON control messages. Binary frames are audio.
    `agent` (an agent `slug` or `id`) and `profile` (a `slug`, the 0.2.x name) are
    optional; when both are present `agent` wins; when both are absent the call goes
    to the user's first agent. An agent of another user is unknown.
-   `turn_end` is optional (absent = the agent's own `turn_end`, `"auto"` unless
-   its owner changed it) and chooses, for this call only, how the user's turn ends
+   `turn_end` is optional (absent = the agent's own `turn_end` when `agent` is
+   present, `"auto"` otherwise) and chooses, for this call only, how the user's turn ends
    (see [End of the user's turn](#end-of-the-users-turn)). Any value other than
    `"auto"` or `"manual"` (including `null`) is a `bad_message` error.
 3. The server answers:
@@ -104,12 +104,12 @@ Text frames are JSON control messages. Binary frames are audio.
 
 The turn starts with the first frame the server detects as speech (plus up to
 300 ms of audio from just before it; values here are defaults, configurable per
-profile). How it ends depends on the `turn_end` of
+agent). How it ends depends on the `turn_end` of
 `session.start`:
 
 | `turn_end` | The turn ends by | `turn.user_end` reasons |
 |---|---|---|
-| `"auto"` (default) | 800 ms of silence after speech (VAD; speech shorter than 300 ms followed by silence is dropped as noise), mute, or the duration limit | `"vad"`, `"mute"`, `"limit"` |
+| `"auto"` (default for 0.2.x clients and agents set to auto) | 800 ms of silence after speech (VAD; speech shorter than 300 ms followed by silence is dropped as noise), mute, or the duration limit | `"vad"`, `"mute"`, `"limit"` |
 | `"manual"` | mute or the duration limit only; silence never ends it, however long (a turn that reaches the limit with less than 300 ms of speech is dropped as noise) | `"mute"`, `"limit"` |
 
 In both modes:
@@ -129,10 +129,11 @@ call to such a server behaves as `"auto"` and may end turns by silence
 mode) is a fatal `bad_message` (close 4400). Clients therefore check `version`
 in `GET /v1/health` before sending a non-default value.
 
-Since server 0.3.0, an absent `turn_end` means the agent's own mode, which is
-`"auto"` unless the agent's owner set it to `"manual"`. A client that wants
-`"auto"` regardless of the agent sends `"turn_end":"auto"` explicitly.
-`session.ready.turn_end` tells which mode is in force.
+Since server 0.3.0, when `session.start` names the agent with `agent`, an
+absent `turn_end` means that agent's own mode (`"auto"` unless its owner set it
+to `"manual"`). Without `agent` (only `profile`, or neither, as 0.2.x clients
+send), an absent `turn_end` stays `"auto"`, as in 0.2.0. `session.ready.turn_end`
+tells which mode is in force.
 
 ### Client messages
 
@@ -148,7 +149,7 @@ Unknown fields are ignored (future compatibility).
 
 | Message | Meaning |
 |---|---|
-| `{"type":"turn.user_end","reason":"vad"\|"mute"\|"limit"}` | the user's turn closed: by silence (`"auto"` calls only), by mute or by going over the duration limit (60 s by default, configurable per profile). See [End of the user's turn](#end-of-the-users-turn) |
+| `{"type":"turn.user_end","reason":"vad"\|"mute"\|"limit"}` | the user's turn closed: by silence (`"auto"` calls only), by mute or by going over the duration limit (60 s by default, configurable per agent). See [End of the user's turn](#end-of-the-users-turn) |
 | `{"type":"transcript","role":"user"\|"assistant","text":"..."}` | text of the turn (informational) |
 | `{"type":"turn.agent_start"}` | the response audio is about to start |
 | `{"type":"turn.agent_end"}` | all of the response audio has been sent |
@@ -200,9 +201,20 @@ the agent to that index and renumbers the rest), `language`, `stt` (input),
 `timeouts`. `stt`, `action` and `tts` are either `{"provider":"<name>"}`, a
 provider the server offers (`GET /v1/providers`), or the user's own service:
 `{"type":"openai_stt"|"openai_chat"|"openai_tts", "base_url": ..., "model": ..., ...}`,
-accepted only when the server allows custom endpoints. Options whose name contains
-`key`, `token`, `secret` or `password` are returned as `"***"`; sending `"***"` back
-in an update keeps the stored value.
+accepted only when the server allows custom endpoints. `base_url` must be an
+`http(s)` URL without credentials, query or fragment (secrets go in options such as
+`api_key`). Options whose name has a word like `key`, `token`, `secret`, `password`
+or `authorization`, at any depth (`extra_body`, `extra_form`), are returned as
+`"***"`; sending `"***"` back in an update of the same `type` keeps the stored value,
+and `"***"` anywhere else is `invalid`. `vad` and `timeouts` values are bounded
+(for example `silence_ms` 100 to 10000, `max_turn_ms` up to 300000, timeouts up to
+120 s).
+
+Custom endpoints make the server send requests to URLs that users choose, including
+addresses inside the server's own network (SSRF). They are on by default for a
+self-hosted server whose users are trusted; on a server with users you do not
+trust, set `limits.custom_endpoints: false` so agents can only use the providers
+the operator offers.
 
 ## Management API
 
@@ -211,7 +223,7 @@ in an update keeps the stored value.
 token may only read `GET /v1/agents` and `GET /v1/agents/{ref}` (summary view);
 anything else answers `403 {"error":"forbidden"}`. Errors are
 `{"error": code, "message": text}`.
-A body that is not a JSON object answers `422 {"error":"invalid"}`.
+A body that is not valid JSON or not a JSON object answers `422 {"error":"invalid"}`.
 
 | Route | Body | Responses |
 |---|---|---|

@@ -5,7 +5,9 @@ import sqlite3
 from pathlib import Path
 
 from .database import Database, database_path
-from .models import AgentRecord, ApiToken, Conflict, Device, PairingRequest, User
+from .models import AgentRecord, ApiToken, Conflict, Device, LimitReached, PairingRequest, User
+
+TOKEN_TOUCH_S = 60  # last_used_at precision: one write a minute per token at most
 
 
 def _unique(e: sqlite3.IntegrityError) -> bool:
@@ -97,11 +99,14 @@ class _Tokens:
         return ApiToken(id=token_id, user_id=user_id, name=name, created_at=now, last_used_at=None, revoked_at=None)
 
     async def authenticate(self, token_hash: str, now: float) -> ApiToken | None:
-        rows = self._db.query(
-            "UPDATE api_tokens SET last_used_at = ? WHERE token_hash = ? AND revoked_at IS NULL RETURNING *",
-            (now, token_hash),
-        )
-        return _token(rows[0]) if rows else None
+        rows = self._db.query("SELECT * FROM api_tokens WHERE token_hash = ? AND revoked_at IS NULL", (token_hash,))
+        if not rows:
+            return None
+        token = _token(rows[0])
+        if token.last_used_at is None or now - token.last_used_at >= TOKEN_TOUCH_S:
+            self._db.execute("UPDATE api_tokens SET last_used_at = ? WHERE id = ?", (now, token.id))
+            token = ApiToken(**{**token.__dict__, "last_used_at": now})
+        return token
 
     async def list(self, user_id: str) -> list[ApiToken]:
         rows = self._db.query(
@@ -152,6 +157,11 @@ class _Devices:
 
     async def adopt_orphans(self, user_id: str) -> int:
         return self._db.execute("UPDATE devices SET user_id = ? WHERE user_id IS NULL", (user_id,))
+
+    async def assign(self, device_id: str, user_id: str) -> bool:
+        return self._db.execute(
+            "UPDATE devices SET user_id = ? WHERE id = ? AND revoked_at IS NULL", (user_id, device_id)
+        ) == 1
 
 
 class _Pairing:
@@ -234,21 +244,26 @@ class _Agents:
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    async def create(self, record: AgentRecord) -> AgentRecord:
+    async def create(self, record: AgentRecord, max_count: int | None = None) -> AgentRecord:
+        # One statement: the count check and the insert cannot interleave with another writer.
         try:
             rows = self._db.query(
                 "INSERT INTO agents (id, user_id, slug, display_name, icon, call_type, position, spec, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM agents WHERE user_id = ?), ?, ?, ?) "
+                "SELECT ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM agents WHERE user_id = ?), ?, ?, ? "
+                "WHERE ? IS NULL OR (SELECT COUNT(*) FROM agents WHERE user_id = ?) < ? "
                 "RETURNING *",
                 (
                     record.id, record.user_id, record.slug, record.display_name, record.icon, record.call_type,
                     record.user_id, json.dumps(record.spec), record.created_at, record.updated_at,
+                    max_count, record.user_id, max_count,
                 ),
             )
         except sqlite3.IntegrityError as e:
             if not _unique(e):
                 raise
             raise Conflict(f"agent slug already exists: {record.slug}") from e
+        if not rows:
+            raise LimitReached(f"agent limit reached ({max_count})")
         return _agent(rows[0])
 
     async def get(self, user_id: str, ref: str) -> AgentRecord | None:
@@ -276,6 +291,20 @@ class _Agents:
         if not rows:
             raise KeyError(record.id)
         return _agent(rows[0])
+
+    async def move(self, user_id: str, agent_id: str, index: int) -> AgentRecord | None:
+        with self._db.transaction() as conn:
+            ids = [r["id"] for r in conn.execute(
+                "SELECT id FROM agents WHERE user_id = ? ORDER BY position, created_at", (user_id,)
+            )]
+            if agent_id not in ids:
+                return None
+            ids.remove(agent_id)
+            ids.insert(min(max(index, 0), len(ids)), agent_id)
+            for position, each in enumerate(ids):
+                conn.execute("UPDATE agents SET position = ? WHERE id = ? AND position != ?", (position, each, position))
+            row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
+        return _agent(row)
 
     async def delete(self, user_id: str, agent_id: str) -> bool:
         return self._db.execute("DELETE FROM agents WHERE id = ? AND user_id = ?", (agent_id, user_id)) == 1

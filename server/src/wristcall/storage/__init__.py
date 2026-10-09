@@ -3,11 +3,11 @@
 from .base import AgentStore, DeviceStore, MetaStore, PairingStore, Storage, TokenStore, UserStore
 from .database import Database, DatabaseError
 from .migrations import MigrationError
-from .models import AgentRecord, ApiToken, Conflict, Device, PairingRequest, StorageError, User
+from .models import AgentRecord, ApiToken, Conflict, Device, LimitReached, NotSupported, PairingRequest, StorageError, User
 from .sqlite import SqliteStorage, open_sqlite_storage
 
 __all__ = [
     "AgentRecord", "AgentStore", "ApiToken", "Conflict", "Database", "DatabaseError", "Device", "DeviceStore",
-    "MetaStore", "MigrationError", "PairingRequest", "PairingStore", "SqliteStorage", "Storage", "StorageError",
+    "LimitReached", "MetaStore", "NotSupported", "MigrationError", "PairingRequest", "PairingStore", "SqliteStorage", "Storage", "StorageError",
     "TokenStore", "User", "UserStore", "open_sqlite_storage",
 ]

@@ -206,7 +206,9 @@ def create_app(
             await fatal(ws, e)
             return
 
-        turn_end = start.turn_end or agent.spec.turn_end
+        # Clients that name the agent get its mode; 0.2.x clients (profile or nothing) keep 0.2.0's default,
+        # because watch 0.1.0 omits turn_end when the user picks auto.
+        turn_end = start.turn_end or (agent.spec.turn_end if start.agent else "auto")
         transport = _WsTransport(ws)
         session = CallSession(agent.spec, provider_set, build_vad(agent.spec.vad), transport, turn_end=turn_end)
         session_id = secrets.token_hex(8)

@@ -140,3 +140,28 @@ def test_non_mapping_default_profile_is_config_error():
 def test_non_mapping_nested_section_is_config_error():
     with pytest.raises(ConfigError, match="vad"):
         parse_config(base(coach={"vad": 5}), ENV)
+
+
+@pytest.mark.parametrize(
+    "section, values",
+    [
+        ("vad", {"silence_ms": 0}),
+        ("vad", {"silence_ms": 60_000}),
+        ("vad", {"max_turn_ms": 10_000_000}),
+        ("vad", {"threshold": 2}),
+        ("timeouts", {"stt_s": 0}),
+        ("timeouts", {"tts_s": 3600}),
+    ],
+)
+def test_turn_and_timeout_values_are_bounded(section, values):
+    data = base()
+    data["profiles"]["default"][section] = values
+    with pytest.raises(ConfigError, match=list(values)[0]):
+        parse_config(data, ENV)
+
+
+def test_production_values_are_within_bounds():
+    data = base()
+    data["profiles"]["default"]["vad"] = {"silence_ms": 2000}
+    data["profiles"]["default"]["timeouts"] = {"stt_s": 30, "first_token_s": 20, "tts_s": 30}
+    assert parse_config(data, ENV).profiles["default"].vad.silence_ms == 2000

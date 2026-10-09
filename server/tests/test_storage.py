@@ -4,14 +4,23 @@ import sqlite3
 
 import pytest
 
-from wristcall.storage import AgentRecord, Conflict, Storage, open_sqlite_storage
+from memory_storage import MemoryStorage
+from wristcall.storage import AgentRecord, Conflict, LimitReached, Storage, open_sqlite_storage
 
 
-@pytest.fixture(params=["sqlite"])
+@pytest.fixture(params=["sqlite", "memory"])
 async def storage(request) -> Storage:
-    st = open_sqlite_storage(":memory:")
+    st = open_sqlite_storage(":memory:") if request.param == "sqlite" else MemoryStorage()
     yield st
     await st.close()
+
+
+def add_orphan(st, device_id: str, token_hash: str) -> None:
+    """A device paired by 0.2.0 (no owner): only the adapters' own setup can create one."""
+    if isinstance(st, MemoryStorage):
+        st.devices.add_orphan(device_id, "Old", token_hash, 1.0)
+    else:
+        st.db.execute("INSERT INTO devices (id, name, token_hash, created_at) VALUES (?, 'Old', ?, 1.0)", (device_id, token_hash))
 
 
 def agent(user_id: str, slug: str, agent_id: str | None = None, **over) -> AgentRecord:
@@ -47,7 +56,7 @@ async def test_deleting_a_user_cascades(storage):
     assert await storage.pairing.add_code("12345678", "u_a", 9e9)
     await storage.users.delete("u_a")
     assert await storage.devices.by_token("h1") is None
-    assert await storage.tokens.authenticate("th1", 2.0) is None
+    assert await storage.tokens.authenticate("th1", 200.0) is None
     assert await storage.agents.list("u_a") == []
     assert await storage.pairing.claim_code("12345678", 2.0, 5) is None
 
@@ -84,8 +93,7 @@ async def test_devices(storage):
 
 async def test_adopt_orphan_devices(storage):
     st = storage
-    # A device paired by 0.2.0 has no owner; the SQLite adapter exposes the raw table for this setup.
-    st.db.execute("INSERT INTO devices (id, name, token_hash, created_at) VALUES ('d0', 'Old', 'h0', 1.0)")
+    add_orphan(st, "d0", "h0")
     assert (await st.devices.by_token("h0")).user_id is None
     await st.users.create("u_a", "alice", "Alice", 1.0)
     assert await st.devices.adopt_orphans("u_a") == 1
@@ -154,10 +162,55 @@ async def test_agents(storage):
     assert await storage.agents.count("u_a") == 1
 
 
-async def test_call_type_is_checked_by_the_database(storage):
+async def test_call_type_is_checked_by_the_storage(storage):
     await storage.users.create("u_a", "alice", "Alice", 1.0)
-    with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+    with pytest.raises((sqlite3.IntegrityError, ValueError)):
         await storage.agents.create(agent("u_a", "x", call_type="podcast"))
+
+
+async def test_agent_limit_is_checked_on_create(storage):
+    await storage.users.create("u_a", "alice", "Alice", 1.0)
+    await storage.agents.create(agent("u_a", "one"), max_count=2)
+    await storage.agents.create(agent("u_a", "two"), max_count=2)
+    with pytest.raises(LimitReached):
+        await storage.agents.create(agent("u_a", "three"), max_count=2)
+    assert await storage.agents.count("u_a") == 2
+    await storage.agents.create(agent("u_a", "three"))  # no limit given
+
+
+async def test_move_renumbers(storage):
+    await storage.users.create("u_a", "alice", "Alice", 1.0)
+    for slug in ("a", "b", "c", "d"):
+        await storage.agents.create(agent("u_a", slug))
+    moved = await storage.agents.move("u_a", "ag_d", 1)
+    assert moved.slug == "d" and moved.position == 1
+    assert [(a.slug, a.position) for a in await storage.agents.list("u_a")] == [("a", 0), ("d", 1), ("b", 2), ("c", 3)]
+    assert (await storage.agents.move("u_a", "ag_a", 99)).position == 3
+    assert (await storage.agents.move("u_a", "ag_b", -5)).position == 0
+    assert [a.slug for a in await storage.agents.list("u_a")] == ["b", "d", "c", "a"]
+    assert await storage.agents.move("u_a", "ag_missing", 0) is None
+    await storage.users.create("u_b", "bob", "Bob", 1.0)
+    assert await storage.agents.move("u_b", "ag_a", 0) is None  # not hers
+
+
+async def test_token_last_used_is_written_at_most_once_a_minute(storage):
+    await storage.users.create("u_a", "alice", "Alice", 1.0)
+    await storage.tokens.create("t1", "u_a", "cli", "th1", 1.0)
+    assert (await storage.tokens.authenticate("th1", 100.0)).last_used_at == 100.0
+    assert (await storage.tokens.authenticate("th1", 130.0)).last_used_at == 100.0
+    assert (await storage.tokens.authenticate("th1", 161.0)).last_used_at == 161.0
+    assert (await storage.tokens.list("u_a"))[0].last_used_at == 161.0
+
+
+async def test_assign_device(storage):
+    await storage.users.create("u_a", "alice", "Alice", 1.0)
+    await storage.users.create("u_b", "bob", "Bob", 1.0)
+    add_orphan(storage, "d0", "h0")
+    assert await storage.devices.assign("d0", "u_b") is True
+    assert (await storage.devices.by_token("h0")).user_id == "u_b"
+    assert await storage.devices.assign("missing", "u_b") is False
+    await storage.devices.revoke("d0", 2.0)
+    assert await storage.devices.assign("d0", "u_a") is False
 
 
 async def test_meta(storage):

@@ -274,3 +274,14 @@ def test_agents_unreadable_files_exit_1_without_traceback(tmp_path):
     ]:
         r = invoke(cfg, *args)
         assert r.exit_code == 1 and fragment in r.output and "Traceback" not in r.output, (args, r.output)
+
+
+def test_devices_assign(tmp_path):
+    cfg = write_config(tmp_path)
+    ok(cfg, "users", "add", "bob")  # bootstrap (owner) and a second user
+    st = open_sqlite_storage(tmp_path / "data")
+    st.db.execute("INSERT INTO devices (id, name, token_hash, created_at) VALUES ('d0', 'Old', 'h0', 1.0)")
+    assert "d0  Old  -  paired" in ok(cfg, "devices", "list")  # two users: no automatic adoption
+    assert "Assigned d0 to bob" in ok(cfg, "devices", "assign", "d0", "--user", "bob")
+    assert "d0  Old  bob" in ok(cfg, "devices", "list")
+    assert invoke(cfg, "devices", "assign", "missing", "--user", "bob").exit_code == 1

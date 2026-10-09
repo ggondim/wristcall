@@ -1,7 +1,15 @@
 """Storage interface. Async because the cloud adapter (epic E9) talks to the Cloud API over the network.
 
-Adapters: SQLite (sqlite.py, self-hosted). Every method is scoped by the caller; ownership checks
-(user_id) are passed explicitly so an adapter never guesses who is asking.
+Adapters: SQLite (sqlite.py, self-hosted); tests/memory_storage.py proves the interface needs no SQL.
+Every method is scoped by the caller; ownership checks (user_id) are passed explicitly so an adapter
+never guesses who is asking. Rules that span several records (limits, ordering) are single calls,
+so an adapter can make them atomic.
+
+Two groups of methods:
+- call path, used on every request (authenticate, agents.get/list, pairing): every adapter implements it;
+- operator (marked "Operator"): listing every user or device, adopting orphans, the profile import.
+  The SQLite adapter implements it; the Cloud API adapter may raise NotSupported, and a cloud server
+  does not run the bootstrap.
 """
 
 from typing import Protocol
@@ -19,7 +27,7 @@ class UserStore(Protocol):
     async def by_handle(self, handle: str) -> User | None: ...
 
     async def list(self) -> list[User]:
-        """Oldest first."""
+        """Operator. Oldest first."""
         ...
 
     async def update(self, user_id: str, *, handle: str | None = None, display_name: str | None = None) -> User | None:
@@ -35,7 +43,7 @@ class TokenStore(Protocol):
     async def create(self, token_id: str, user_id: str, name: str, token_hash: str, now: float) -> ApiToken: ...
 
     async def authenticate(self, token_hash: str, now: float) -> ApiToken | None:
-        """Active token with this hash; records last_used_at."""
+        """Active token with this hash. Records last_used_at, at most once a minute (no write per request)."""
         ...
 
     async def list(self, user_id: str) -> list[ApiToken]:
@@ -53,7 +61,7 @@ class DeviceStore(Protocol):
         ...
 
     async def list(self, user_id: str | None = None) -> list[Device]:
-        """Active devices (of one user, or all), oldest first."""
+        """Active devices of one user, oldest first. Operator: user_id None lists everyone's."""
         ...
 
     async def count(self, user_id: str) -> int: ...
@@ -63,7 +71,11 @@ class DeviceStore(Protocol):
         ...
 
     async def adopt_orphans(self, user_id: str) -> int:
-        """Gives devices without an owner (paired by 0.2.0) to this user; returns how many."""
+        """Operator. Gives devices without an owner (paired by 0.2.0) to this user; returns how many."""
+        ...
+
+    async def assign(self, device_id: str, user_id: str) -> bool:
+        """Operator. Moves an active device to this user; False if there is no such device."""
         ...
 
 
@@ -104,12 +116,17 @@ class PairingStore(Protocol):
 
     async def set_request_device(self, poll_hash: str, device_id: str) -> None: ...
 
-    async def list_pending(self, now: float) -> list[PairingRequest]: ...
+    async def list_pending(self, now: float) -> list[PairingRequest]:
+        """Operator. Every pending request (manual approval has no target user before approval)."""
+        ...
 
 
 class AgentStore(Protocol):
-    async def create(self, record: AgentRecord) -> AgentRecord:
-        """Appends the agent at the end of the user's list (record.position is ignored). Raises Conflict on slug."""
+    async def create(self, record: AgentRecord, max_count: int | None = None) -> AgentRecord:
+        """Appends the agent at the end of the user's list (record.position is ignored).
+
+        Raises Conflict on slug, LimitReached if the user already has max_count agents (checked atomically).
+        """
         ...
 
     async def get(self, user_id: str, ref: str) -> AgentRecord | None:
@@ -122,6 +139,13 @@ class AgentStore(Protocol):
 
     async def update(self, record: AgentRecord) -> AgentRecord:
         """Replaces every field but id, user_id and created_at. Raises Conflict on slug, KeyError if it is gone."""
+        ...
+
+    async def move(self, user_id: str, agent_id: str, index: int) -> AgentRecord | None:
+        """Puts the agent at that index of the user's list (past the end = last) and renumbers 0..n-1, atomically.
+
+        Returns the moved agent, None if it does not exist.
+        """
         ...
 
     async def delete(self, user_id: str, agent_id: str) -> bool: ...

@@ -97,8 +97,10 @@ the server offers more than one of that kind) or a JSON object with your own ser
 example `--action '{"type": "openai_chat", "base_url": "https://llm.example/v1", "model": "m", "api_key": "..."}'`.
 Keys come back as `***`; sending `***` back keeps the stored key.
 The same `coach.json` also works with `agents add <new-slug> --from-json coach.json`, which copies the agent.
+Custom endpoints make the server request URLs your users choose, including your internal network:
+keep `limits.custom_endpoints: true` only when you trust every user of the server.
 
-With more than one user, add `--user <handle>` to `pair`, `agents` and `users tokens`.
+With more than one user, add `--user <handle>` to `pair`, `devices list|approve`, `agents` and `users tokens add|list`.
 
 ## CLI
 
@@ -109,6 +111,7 @@ With more than one user, add `--user <handle>` to `pair`, `agents` and `users to
 | `wristcall devices list` | lists paired watches (and their user) and pending requests |
 | `wristcall devices approve <id> [--user]` | approves a request for a user |
 | `wristcall devices revoke <id>` | revokes a watch |
+| `wristcall devices assign <id> --user <handle>` | gives a watch to a user |
 | `wristcall users list\|add\|edit\|rm` | manages users |
 | `wristcall users tokens add\|list\|revoke` | API tokens for the management API |
 | `wristcall agents list\|show\|add\|edit\|rm` | manages a user's agents |

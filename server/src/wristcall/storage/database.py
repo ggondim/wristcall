@@ -3,6 +3,8 @@
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from .migrations import migrate
@@ -58,6 +60,18 @@ class Database:
     def execute(self, sql: str, params: tuple = ()) -> int:
         with self._lock:
             return self._conn.execute(sql, params).rowcount
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """Several statements as one unit: holds the connection lock and an immediate (write) transaction."""
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield self._conn
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
+            self._conn.execute("COMMIT")
 
     def close(self) -> None:
         with self._lock:

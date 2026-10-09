@@ -174,16 +174,29 @@ def test_call_without_reference_uses_the_first_agent(client):
         ws.send_json({"type": "session.end"})
 
 
-def test_agent_turn_end_applies_when_the_client_omits_it(client):
-    """watch 0.1.0 omits turn_end for auto: the agent's mode applies. 3 s of silence does not close a manual turn."""
+def test_agent_turn_end_applies_when_the_client_names_the_agent(client):
+    """3 s of silence does not close a turn of a manual agent called by `agent`."""
     user = owner(client)
     run(client.app.state.agents.update(user.id, "default", {"turn_end": "manual"}))
     with client.websocket_connect("/v1/call", headers=auth(pair(client))) as ws:
-        ws.send_json(START)
+        ws.send_json({**START, "agent": "default"})
         assert ws.receive_json()["turn_end"] == "manual"
         ws.send_bytes(tone(500) + silence(3000))
         ws.send_json({"type": "mute", "muted": True})
         assert ws.receive_json() == {"type": "turn.user_end", "reason": "mute"}
+        ws.send_json({"type": "session.end"})
+
+
+@pytest.mark.parametrize("legacy", [{"profile": "default"}, {}])
+def test_legacy_clients_keep_auto_when_they_omit_turn_end(client, legacy):
+    """watch 0.1.0 omits turn_end when the user picks auto: a manual agent must not turn that into manual."""
+    user = owner(client)
+    run(client.app.state.agents.update(user.id, "default", {"turn_end": "manual"}))
+    with client.websocket_connect("/v1/call", headers=auth(pair(client))) as ws:
+        ws.send_json({**START, **legacy})
+        assert ws.receive_json()["turn_end"] == "auto"
+        ws.send_bytes(tone(500) + silence(900))
+        assert ws.receive_json() == {"type": "turn.user_end", "reason": "vad"}
         ws.send_json({"type": "session.end"})
 
 

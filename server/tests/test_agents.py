@@ -189,11 +189,55 @@ async def test_update_merges_and_keeps_redacted_secrets(svc):
     assert b.created_at == a.created_at
 
 
-async def test_update_to_another_type_does_not_reuse_the_secret(svc):
+async def test_placeholder_without_a_stored_secret_is_refused(svc):
     stt = {"type": "openai_stt", "base_url": "https://stt.example/v1", "model": "w", "api_key": "sk-secret"}
     await svc.create("u_a", {"slug": "own", "stt": stt})
-    b = await svc.update("u_a", "own", {"stt": {"type": "fake_stt", "api_key": REDACTED}})
-    assert b.spec.stt.options() == {"api_key": REDACTED}
+    with pytest.raises(AgentError, match="only keeps a secret"):
+        await svc.update("u_a", "own", {"stt": {"type": "fake_stt", "api_key": REDACTED}})  # another type: nothing to keep
+    with pytest.raises(AgentError, match="only keeps a secret"):
+        await svc.create("u_a", {"slug": "new", "stt": {**stt, "api_key": REDACTED}})
+    with pytest.raises(AgentError, match="only keeps a secret"):
+        await svc.update("u_a", "own", {"stt": {**stt, "api_key": REDACTED, "model": REDACTED}})  # not a secret key
+    agent = await svc.get("u_a", "own")
+    assert agent.spec.stt.options()["api_key"] == "sk-secret"
+
+
+async def test_nested_secrets_are_redacted_and_kept():
+    cfg = config()
+    svc = await make(cfg)
+    action = {
+        "type": "openai_chat", "base_url": "https://llm.example/v1", "model": "m",
+        "extra_body": {"metadata": {"session_token": "tok-nested"}, "max_tokens": 50},
+    }
+    a = await svc.create("u_a", {"slug": "own", "action": action})
+    shown = agent_detail(a)["action"]
+    assert shown["extra_body"] == {"metadata": {"session_token": REDACTED}, "max_tokens": 50}
+    assert "tok-nested" not in repr(agent_detail(a))
+    edited = {**shown, "extra_body": {**shown["extra_body"], "max_tokens": 80}}
+    b = await svc.update("u_a", "own", {"action": edited})
+    assert b.spec.action.options()["extra_body"] == {"metadata": {"session_token": "tok-nested"}, "max_tokens": 80}
+
+
+@pytest.mark.parametrize(
+    "key, secret",
+    [("api_key", True), ("apiKey", True), ("x-api-key", True), ("access_token", True), ("client_secret", True),
+     ("password", True), ("Authorization", True), ("max_tokens", False), ("model", False), ("tokenizer", False), ("keyword", False)],
+)
+def test_is_secret(key, secret):
+    from wristcall.agents import _is_secret
+
+    assert _is_secret(key) is secret
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    ["https://user:pass@stt.example/v1", "https://stt.example/v1?key=abc", "https://stt.example/v1#x", "ftp://stt.example", "stt.example"],
+)
+async def test_base_url_cannot_hold_secrets(svc, base_url):
+    with pytest.raises(AgentError) as e:
+        await svc.create("u_a", {"slug": "own", "stt": {"type": "openai_stt", "base_url": base_url, "model": "w"}})
+    assert e.value.code == "invalid" and "base_url" in e.value.message
+    assert "pass" not in e.value.message and "abc" not in e.value.message
 
 
 async def test_update_errors(svc):

@@ -7,7 +7,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 ### Protocol
 
 - `session.start` accepts an optional `agent` (slug or id); `profile` keeps working as
-  a slug. Without `turn_end`, the call uses the agent's own mode.
+  a slug. Without `turn_end`, a call that names its `agent` uses the agent's own mode;
+  0.2.x clients (only `profile`) keep `auto`.
 - `session.ready` adds `agent` and `turn_end`; `GET /v1/me` adds `user` and `agents`.
   The 0.2.x fields (`profile`, `profiles`) stay, so watch 0.1.0 keeps working.
 - New fatal error `agent_unavailable`. New management API (`/v1/agents`,
@@ -27,6 +28,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
   ignored afterwards. New `limits` section (agents and devices per user, custom
   endpoints on/off).
 - Every provider in the YAML is checked at startup. FTS5 is required from SQLite.
+- Secrets of custom endpoints are redacted at any depth, `base_url` cannot carry
+  credentials, and `vad`/`timeouts` values are bounded. `wristcall devices assign`
+  gives a watch to a user.
 
 ## [watch-0.1.0] - 2026-10-07
 

@@ -12,6 +12,14 @@ class Conflict(StorageError):
     """A unique key is already taken (user handle, agent slug per user)."""
 
 
+class LimitReached(StorageError):
+    """The user already has the maximum number of records of that kind."""
+
+
+class NotSupported(StorageError):
+    """An operator-only operation that this adapter does not offer (the Cloud API adapter of epic E9)."""
+
+
 @dataclass(frozen=True)
 class User:
     id: str

@@ -4,8 +4,9 @@ import re
 import secrets
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -13,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from .config import AppConfig, ProfileConfig, ProviderConfig, Timeouts, VadConfig
 from .protocol import TurnEnd
 from .providers import Kind, ProviderError, ProviderSet, build_provider, provider_kind
-from .storage import AgentRecord, Conflict, Storage
+from .storage import AgentRecord, Conflict, LimitReached, Storage
 
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 ICON = re.compile(r"^[a-z0-9]+(\.[a-z0-9]+)*$")
@@ -22,8 +23,17 @@ CallType = Literal["conversation", "one-shot", "monologue"]
 # one-shot and monologue are stored already, but only arrive with epic E2.
 SUPPORTED_CALL_TYPES = {"conversation"}
 REDACTED = "***"
-_SECRET_OPTION = re.compile(r"key|token|secret|password", re.IGNORECASE)
 _OPTION_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+# A key is secret when one of its words is one of these: api_key, access_token, x-api-key, client_secret...
+# Whole words, so that max_tokens is not hidden.
+_SECRET_WORDS = {"key", "apikey", "token", "secret", "password", "passwd", "authorization", "credential", "credentials"}
+
+
+def _is_secret(key: str) -> bool:
+    words = re.split(r"[^a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key).lower())
+    return any(w in _SECRET_WORDS for w in words)
+
+
 # Agent field → provider kind in the YAML registry ("action" is the responder).
 STAGES: dict[str, Kind] = {"stt": "stt", "action": "responder", "tts": "tts"}
 
@@ -42,12 +52,20 @@ class CustomEndpoint(BaseModel):
     type: str = Field(min_length=1)
 
     @model_validator(mode="after")
-    def _not_both(self) -> "CustomEndpoint":
-        extra = self.model_extra or {}
-        if "provider" in extra:
+    def _check(self) -> "CustomEndpoint":
+        options = self.model_extra or {}
+        if "provider" in options:
             raise ValueError("use either 'provider' or 'type', not both")
-        if "warmup" in extra:
+        if "warmup" in options:
             raise ValueError("warmup is an operator setting, not available on custom endpoints")
+        base_url = options.get("base_url")
+        if base_url is not None:
+            # The URL is shown back to the owner as is: secrets go in options that get redacted (api_key...).
+            parts = urlsplit(str(base_url))
+            if parts.scheme not in ("http", "https") or not parts.hostname:
+                raise ValueError("base_url must be an http(s) URL")
+            if parts.username or parts.password or parts.query or parts.fragment:
+                raise ValueError("base_url must not hold credentials, a query or a fragment; use api_key")
         return self
 
     def options(self) -> dict[str, Any]:
@@ -182,24 +200,42 @@ def build_agent_providers(config: AppConfig, spec: AgentSpec, http: httpx.AsyncC
     return ProviderSet(stt=built["stt"], responder=built["action"], tts=built["tts"])
 
 
+def _redact(value: Any) -> Any:
+    """Secret-looking keys at any depth (extra_body, extra_form...) become `***`."""
+    if isinstance(value, dict):
+        return {k: REDACTED if _is_secret(str(k)) and v not in (None, "") else _redact(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact(v) for v in value]
+    return value
+
+
 def redact_endpoint(endpoint: Endpoint) -> dict[str, Any]:
-    data = endpoint.model_dump()
-    if isinstance(endpoint, CustomEndpoint):
-        for key in endpoint.options():
-            if _SECRET_OPTION.search(key):
-                data[key] = REDACTED
-    return data
+    return _redact(endpoint.model_dump())
+
+
+def _restore(new: Any, old: Any) -> Any:
+    """Puts the stored value back wherever an update sent `***` for a secret key that holds one."""
+    if isinstance(new, dict) and isinstance(old, dict):
+        return {
+            k: old[k] if v == REDACTED and _is_secret(str(k)) and old.get(k) not in (None, "") else _restore(v, old.get(k))
+            for k, v in new.items()
+        }
+    return new
 
 
 def _keep_redacted(new: dict[str, Any], old: Endpoint) -> dict[str, Any]:
-    """`***` in an update means "keep the stored secret" (show → edit → apply round trips)."""
+    """`***` in an update means "keep the stored secret" (show → edit → apply round trips), same type only."""
     if not isinstance(old, CustomEndpoint) or new.get("type") != old.type:
         return new
-    kept = dict(new)
-    for key, value in new.items():
-        if value == REDACTED and key in old.options():
-            kept[key] = old.options()[key]
-    return kept
+    return _restore(new, old.model_dump())
+
+
+def _has_placeholder(value: Any) -> bool:
+    if isinstance(value, dict):
+        return any(_has_placeholder(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_has_placeholder(v) for v in value)
+    return value == REDACTED
 
 
 def agent_summary(agent: Agent) -> dict[str, Any]:
@@ -289,6 +325,8 @@ class AgentService:
         if call_type not in SUPPORTED_CALL_TYPES:
             raise AgentError("unsupported", f"call_type '{call_type}' is not supported yet (only conversation)")
         for field, kind in STAGES.items():
+            if _has_placeholder(getattr(spec, field).model_dump()):
+                raise AgentError("invalid", f"{field}: '{REDACTED}' only keeps a secret already stored for this endpoint")
             try:
                 build_endpoint(self._config, getattr(spec, field), kind, self._http)
             except ProviderError as e:
@@ -320,19 +358,20 @@ class AgentService:
         icon = inp.icon or DEFAULT_ICON
         call_type = inp.call_type or "conversation"
         self._check(inp.slug, icon, call_type, spec)
-        if await self._st.agents.count(user_id) >= self._config.limits.max_agents_per_user:
-            raise AgentError("limit", f"agent limit reached ({self._config.limits.max_agents_per_user})")
         now = self._now()
         agent = Agent(
             id=new_agent_id(), user_id=user_id, slug=inp.slug, display_name=inp.display_name or inp.slug,
             icon=icon, call_type=call_type, position=0, spec=spec, created_at=now, updated_at=now,
         )
+        limit = self._config.limits.max_agents_per_user
         try:
-            created = Agent.from_record(await self._st.agents.create(agent.to_record()))
+            created = Agent.from_record(await self._st.agents.create(agent.to_record(), max_count=limit))
         except Conflict:
             raise AgentError("conflict", f"an agent with slug '{inp.slug}' already exists") from None
+        except LimitReached:
+            raise AgentError("limit", f"agent limit reached ({limit})") from None
         if inp.position is not None:
-            return await self.update(user_id, created.id, {"position": inp.position})
+            return await self._move(user_id, created.id, inp.position)
         return created
 
     async def update(self, user_id: str, ref: str, data: dict[str, Any]) -> Agent:
@@ -372,18 +411,10 @@ class AgentService:
         return saved
 
     async def _move(self, user_id: str, agent_id: str, index: int) -> Agent:
-        """Puts the agent at that index of the user's list (past the end = last) and renumbers 0..n-1."""
-        records = await self._st.agents.list(user_id)
-        moving = next(r for r in records if r.id == agent_id)
-        others = [r for r in records if r.id != agent_id]
-        others.insert(min(index, len(others)), moving)
-        result = moving
-        for position, record in enumerate(others):
-            if record.position != position:
-                record = await self._st.agents.update(replace(record, position=position))
-            if record.id == agent_id:
-                result = record
-        return Agent.from_record(result)
+        moved = await self._st.agents.move(user_id, agent_id, index)
+        if moved is None:
+            raise AgentError("not_found", f"agent not found: {agent_id}")
+        return Agent.from_record(moved)
 
     async def delete(self, user_id: str, ref: str) -> None:
         agent = await self.get(user_id, ref)

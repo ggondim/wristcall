@@ -179,6 +179,21 @@ def devices_revoke(device_id: str, config: ConfigOpt = DEFAULT_CONFIG) -> None:
     typer.echo(f"Revoked: {device_id}")
 
 
+@devices_app.command("assign")
+def devices_assign(device_id: str, config: ConfigOpt = DEFAULT_CONFIG, user: UserOpt = None) -> None:
+    """Gives a device to a user (for example one paired by 0.2.x on a server with several users)."""
+
+    async def body(ctx: Ctx):
+        owner = await ctx.users.resolve(user)
+        return owner, await ctx.storage.devices.assign(device_id, owner.id)
+
+    owner, assigned = _run(config, body)
+    if not assigned:
+        typer.echo(f"no active device with id {device_id}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"Assigned {device_id} to {owner.handle}.")
+
+
 # ---------- users ----------
 
 

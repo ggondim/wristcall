@@ -55,21 +55,22 @@ class ProviderConfig(BaseModel):
 
 
 class VadConfig(BaseModel):
+    # Bounds: agents come from users through the API; max_turn_ms also caps the audio a turn keeps in memory.
     model_config = ConfigDict(extra="forbid")
     type: Literal["silero", "energy"] = "silero"
-    threshold: float = 0.5
-    energy_dbfs: float = -45.0
-    silence_ms: int = 800
-    min_speech_ms: int = 300
-    max_turn_ms: int = 60_000
-    pre_roll_ms: int = 300
+    threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    energy_dbfs: float = Field(default=-45.0, ge=-120.0, le=0.0)
+    silence_ms: int = Field(default=800, ge=100, le=10_000)
+    min_speech_ms: int = Field(default=300, ge=0, le=5_000)
+    max_turn_ms: int = Field(default=60_000, ge=1_000, le=300_000)
+    pre_roll_ms: int = Field(default=300, ge=0, le=2_000)
 
 
 class Timeouts(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    stt_s: float = 10.0
-    first_token_s: float = 15.0
-    tts_s: float = 15.0
+    stt_s: float = Field(default=10.0, gt=0, le=120)
+    first_token_s: float = Field(default=15.0, gt=0, le=120)
+    tts_s: float = Field(default=15.0, gt=0, le=120)
 
 
 class ProfileConfig(BaseModel):
