@@ -32,6 +32,7 @@ from .oneway import Background, OneWayCall
 from .pairing import DeviceLimit, Paired, PairingDenied, PairingGone, PairingService
 from .providers import ProviderError, check_providers
 from .ratelimit import RateLimiter
+from .redelivery import Redelivery
 from .session import CallSession
 from .storage import Storage, open_sqlite_storage
 from .vad import build_vad
@@ -143,7 +144,8 @@ def create_app(
     app.include_router(
         management_router(config, auth, agents, pairing_svc, account, limiter=limiter, client_ip=client_ip)
     )
-    app.include_router(calls_router(auth, agents, history))
+    redelivery = Redelivery(history, agents, config, http_client, policy=delivery_policy, background=after_calls)
+    app.include_router(calls_router(auth, agents, history, redelivery.start))
 
     async def device_from(authorization: str | None) -> Principal | None:
         principal = await auth.authenticate(authorization)
