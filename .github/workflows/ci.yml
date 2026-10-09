@@ -19,6 +19,11 @@ jobs:
       - run: pip install -e tools/refclient
       - run: pytest -q tests
         working-directory: tools/refclient
+      # The image's own SQLite (Debian) must have FTS5 and run the migrations: the host Python above is not the image.
+      - name: Docker image opens a database
+        run: |
+          docker build -t wristcall-ci server
+          docker run --rm --entrypoint python wristcall-ci -c "from wristcall.storage import open_sqlite_storage; print('schema', open_sqlite_storage(':memory:').db.version)"
 
   directory:
     runs-on: ubuntu-latest

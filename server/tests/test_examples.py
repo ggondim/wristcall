@@ -14,3 +14,16 @@ def test_root_example_config_is_valid():
     assert cfg.server.public_url == "https://wc.example.test"
     assert set(cfg.profiles) == {"default", "demo"}
     assert cfg.profiles["demo"].stt == "demo-stt"
+
+
+async def test_example_config_boots_into_two_agents():
+    from wristcall.bootstrap import bootstrap
+    from wristcall.storage import open_sqlite_storage
+
+    data = yaml.safe_load((ROOT / "wristcall.example.yaml").read_text(encoding="utf-8"))
+    cfg = parse_config(data, ENV)
+    assert cfg.limits.max_agents_per_user == 20
+    st = open_sqlite_storage(":memory:")
+    await bootstrap(st, cfg)
+    owner = await st.users.by_handle("owner")
+    assert [a.slug for a in await st.agents.list(owner.id)] == ["default", "demo"]

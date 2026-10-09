@@ -37,8 +37,8 @@ You need Docker, a domain pointing to the machine and ports 80 and 443 open.
    docker compose -f docker-compose.example.yml exec wristcall wristcall pair
    ```
 
-No API key? Call the `demo` profile: it echoes what was "heard" with a tone
-instead of a voice, so you can test the whole path.
+No API key? Put the `demo` agent first (`wristcall agents edit demo --position 0`): it
+echoes what was "heard" with a tone instead of a voice, so you can test the whole path.
 
 ## Test without the watch
 
@@ -54,13 +54,18 @@ Use headphones. Enter toggles mute.
 
 ## Configuration
 
-Everything lives in `wristcall.yaml` (see `wristcall.example.yaml`):
+The operator's settings live in `wristcall.yaml` (see `wristcall.example.yaml`); users,
+watches and agents live in the server's database (`data_dir/wristcall.db`).
 
-- `providers`: each one with a `type` and options. Types: `openai_stt`, `openai_chat`,
-  `openai_tts`, and the fake ones `fake_stt`, `echo_chat`, `tone_tts`.
-- `profiles`: a combination of STT, responder and TTS, with prompt, language and speech
-  detection settings. `default` is required; other profiles inherit from it and change only
-  what they declare.
+- `providers`: the STT, chat and TTS services this server offers, each one with a `type`
+  and options. Types: `openai_stt`, `openai_chat`, `openai_tts`, and the fake ones
+  `fake_stt`, `echo_chat`, `tone_tts`.
+- `limits`: `max_agents_per_user` (20), `max_devices_per_user` (10) and
+  `custom_endpoints` (`true`: agents may use their own STT/chat/TTS URLs; turn it off on a
+  server with users you do not trust, since the server would request any URL they give).
+- `profiles` (optional, the 0.2.x format): on the first start they become agents of a user
+  called `owner`, `default` first. After that the section is ignored; manage agents with
+  `wristcall agents`.
 - `server.directory_url`: directory that exchanges the 8 digit code for the server
   URL. `wristcall.example.yaml` already points to the project's public directory (`https://wristcall-pair.trigram.com.br`); without it, the watch
   types the URL once.
@@ -72,15 +77,48 @@ Everything lives in `wristcall.yaml` (see `wristcall.example.yaml`):
   always loaded (uses GPU memory). Example: `warmup: {on_call: true}`.
 - Behind a proxy: the server trusts `X-Forwarded-For` only from the IPs in `FORWARDED_ALLOW_IPS` (the example compose already sets it). Behind Cloudflare, use `server.client_ip_header: CF-Connecting-IP`.
 
+## Users and agents
+
+A server has users; each user has watches and agents. An agent is what the watch calls: a
+name, an icon (SF Symbol), an STT service (input), an action (the chat model that answers),
+a TTS service (output), a language, a prompt and how the turn ends (`auto` by silence, after
+`silence_ms`, or `manual` by mute). The watch calls the first agent of its user's list.
+
+```bash
+wristcall users edit owner --handle alice --name Alice     # the user created from `profiles`
+wristcall agents add coach --name Coach --icon figure.run --turn-end manual --prompt-file coach.txt
+wristcall agents list
+wristcall agents edit coach --position 0                   # the watch calls it now
+wristcall agents show coach > coach.json                   # edit, then: agents edit coach --from-json coach.json
+```
+
+`--stt`, `--action` and `--tts` take a provider name from `wristcall.yaml` (needed only when
+the server offers more than one of that kind) or a JSON object with your own service, for
+example `--action '{"type": "openai_chat", "base_url": "https://llm.example/v1", "model": "m", "api_key": "..."}'`.
+Keys come back as `***`; sending `***` back keeps the stored key.
+The same `coach.json` also works with `agents add <new-slug> --from-json coach.json`, which copies the agent.
+
+With more than one user, add `--user <handle>` to `pair`, `agents` and `users tokens`.
+
 ## CLI
 
 | Command | Does |
 |---|---|
 | `wristcall serve` | starts the server (default in the container) |
-| `wristcall pair` | generates an 8 digit code, valid for 10 minutes |
-| `wristcall devices list` | lists paired watches and pending requests |
-| `wristcall devices approve <id>` | approves a request |
+| `wristcall pair [--user]` | generates an 8 digit code for a user, valid for 10 minutes |
+| `wristcall devices list` | lists paired watches (and their user) and pending requests |
+| `wristcall devices approve <id> [--user]` | approves a request for a user |
 | `wristcall devices revoke <id>` | revokes a watch |
+| `wristcall users list\|add\|edit\|rm` | manages users |
+| `wristcall users tokens add\|list\|revoke` | API tokens for the management API |
+| `wristcall agents list\|show\|add\|edit\|rm` | manages a user's agents |
+
+## Management API
+
+With an API token (`wristcall users tokens add`), in `Authorization: Bearer wc_pat_...`:
+`GET/POST /v1/agents`, `GET/PATCH/DELETE /v1/agents/{slug or id}`, `GET /v1/providers`,
+`GET /v1/devices`, `DELETE /v1/devices/{id}`, `POST /v1/pairing-codes`. The JSON fields are
+the ones `wristcall agents show` prints. See [docs/protocol.md](docs/protocol.md#management-api).
 
 ## Documentation
 
