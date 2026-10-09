@@ -8,7 +8,7 @@ from .config import ConfigError, config_from_env
 
 
 def _port(raw: str) -> int:
-    if not raw.isdigit() or not 1 <= int(raw) <= 65535:
+    if not (raw.isascii() and raw.isdigit()) or not 1 <= int(raw) <= 65535:
         raise ConfigError("PORT must be a TCP port number")
     return int(raw)
 

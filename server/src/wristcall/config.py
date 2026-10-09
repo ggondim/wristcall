@@ -147,11 +147,14 @@ class CentralAccountConfig(BaseModel):
     @field_validator("issuer")
     @classmethod
     def _check_issuer(cls, value: str) -> str:
+        value = value.strip()
         url = urlsplit(value)
         if url.query or url.fragment or "?" in value or "#" in value:
             raise ValueError("issuer must not have a query or fragment")
         if not url.hostname:
             raise ValueError("issuer must have a host")
+        if url.username is not None or url.password is not None:
+            raise ValueError("issuer must not have credentials")
         if url.scheme != "https" and not (url.scheme == "http" and url.hostname in _LOCAL_HOSTS):
             raise ValueError("issuer must be an https URL (http only for localhost)")
         return value.rstrip("/")

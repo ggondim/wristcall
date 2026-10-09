@@ -208,11 +208,19 @@ def test_central_account_parses_and_normalizes_issuer():
         {"issuer": "https://auth.example.com?x=1", "clients": ["a"]},
         {"issuer": "https://auth.example.com#frag", "clients": ["a"]},
         {"issuer": "https:///path", "clients": ["a"]},
+        {"issuer": "https://user:pass@auth.example.com", "clients": ["a"]},
+        {"issuer": "https://user@auth.example.com", "clients": ["a"]},
+        {"issuer": "https://:pass@auth.example.com", "clients": ["a"]},
     ],
 )
 def test_bad_central_account_is_rejected(central):
     with pytest.raises(ConfigError):
         parse_config(_with_central(**central), ENV)
+
+
+def test_central_account_issuer_is_stripped():
+    cfg = parse_config(_with_central(issuer="  https://auth.example.com/ \n", clients=["a"]), ENV)
+    assert cfg.central_account.issuer == "https://auth.example.com"
 
 
 @pytest.mark.parametrize("issuer", ["http://localhost:8080", "http://127.0.0.1:8080"])

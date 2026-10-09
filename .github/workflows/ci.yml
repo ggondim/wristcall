@@ -43,6 +43,12 @@ jobs:
       - run: python -m pytest -q
         env:
           WRISTCALL_CLOUD_TEST_MONGO_URL: mongodb://localhost:27017
+      # The Cloud carries a copy of the server's OIDC verifier; only the docstring opener and the User-Agent may differ.
+      - name: OIDC verifier copies are in sync
+        shell: bash
+        run: |
+          diff <(grep -v -e '^"""' -e 'User-Agent' ../server/src/wristcall/oidc.py) \
+               <(grep -v -e '^"""' -e 'User-Agent' src/wristcall_cloud/oidc.py)
       - run: docker build -t wristcall-cloud-ci .
 
   directory:

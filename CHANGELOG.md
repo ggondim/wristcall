@@ -35,6 +35,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
   mode a leaked token becomes a device until revoked.
 - Every server accepts the same app client ids, so a central token handed to one server's operator can be replayed at
   another server's link and pair routes. Per server registration is planned (epic E6).
+- The same token can also be replayed at the Cloud API (`cloud/`), which accepts the same watch, iOS and PWA client ids:
+  a malicious self-hosted operator could read the victim's agenda and add or delete servers (for example a phishing
+  "Home" entry). Only `DELETE /v1/account` is restricted (iOS and PWA clients). Per-server token audiences (epic E6)
+  must ship before the Cloud API is deployed.
 
 ### Upgrade note
 

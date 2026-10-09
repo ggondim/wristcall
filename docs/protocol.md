@@ -70,7 +70,7 @@ behaves like 0.4.0 and every route below answers `404 {"error":"not_configured"}
 (`POST /v1/pair/account` spends from the per-IP budget before it answers that).
 
 Clients read `account` in `GET /v1/health`: `{"issuer","device_credential"}` or `null`.
-`device_credential` is `"approval"` or `"attestation"` (see [Configuration](../README.md#central-account)).
+`device_credential` is `"approval"` or `"attestation"` (see [Configuration](../README.md#central-account-optional)).
 The client logs in at `issuer`, with its own `client_id` (one of the server's `clients`), and gets an
 **access token**. On a watch, use the device authorization grant (RFC 8628).
 
@@ -91,15 +91,17 @@ or a pairing code), and the token only opens the door to pairing.
 | `POST /v1/account/link` | `{"token": "<central access token>"}` with `Authorization: Bearer <API token>`, or `{"token": "...", "code": "12345678"}` without `Authorization` | With an API token: `200 {"linked":true,"issuer"}` (a `code` sent along is ignored and not spent). With a code: `200 {"linked":true,"issuer","user":{"id","handle"},"api_token"}`. Errors below |
 | `DELETE /v1/account/link` | | `204`: the user's link removed. `404 {"error":"not_found"}`: not linked. `401`, `403 forbidden` (device token) |
 
-Errors of `POST /v1/account/link`, in the order they are checked:
+Errors of `POST /v1/account/link`, in the order they are checked. Like every error of this API, the body is
+`{"error": <code>, "message": <text>}`:
 
 | Status | `error` | When |
 |---|---|---|
 | `404` | `not_configured` | the server has no `central_account` |
 | `429` | `rate_limited` | more than 10 requests a minute from one IP (the budget is shared with `POST /v1/pair` and `POST /v1/pair/account`) |
-| `401` | `unauthorized` | `Authorization` sent but not a valid token; or neither an API token nor a `code` |
+| `401` | `unauthorized` | `Authorization` sent but not a valid token |
 | `403` | `forbidden` | `Authorization` is a device token |
 | `422` | `invalid` | body is not a JSON object, `token` missing or empty, or `code` not a string |
+| `401` | `unauthorized` | no `Authorization` and no `code` |
 | `401` | `invalid_account_token` | signature, issuer, audience, expiry, `client_id` or token type is wrong (the `message` says which) |
 | `503` | `account_unavailable` | the issuer or its keys cannot be reached and nothing is cached; try again later |
 | `401` | `invalid_code` | code wrong, expired or already used (a wrong code counts as a failed attempt, as in `POST /v1/pair`; five burn the code) |
@@ -438,7 +440,7 @@ A body that is not valid JSON or not a JSON object answers `422 {"error":"invali
 | `GET /v1/devices` | | `200 {"devices":[{"id","name","created_at"}]}` |
 | `DELETE /v1/devices/{id}` | | `204`. `404` |
 | `POST /v1/pairing-codes` | | `201 {"code","expires_at","server_url","via_directory"}` (+ `"warning"` when the directory was unreachable). `403 limit` (device limit). `502 directory` |
-| `POST /v1/account/link` | see [Linking a user](#linking-a-user) | `200`, `401`, `404`, `409`, `422`, `429`, `503` |
+| `POST /v1/account/link` | see [Linking a user](#linking-a-user) | `200`, `401`, `403` (device token), `404`, `409`, `422`, `429`, `503` |
 | `DELETE /v1/account/link` | | `204`. `404` |
 | `GET /v1/pairing-requests` | | `200 {"requests":[...]}` |
 | `POST /v1/pairing-requests/{id}/approve` | | `200 {"device_name"}`. `403 limit`. `404` |

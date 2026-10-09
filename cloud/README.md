@@ -28,6 +28,13 @@ against the issuer's published keys (signature, issuer, time claims); its audien
 to must be one of the configured client ids. The account is identified as `<issuer>#<subject>`. A missing or bad
 token is `401 unauthorized`; the issuer being unreachable with no cached keys is `503 account_unavailable`.
 
+**Security: the token is not bound to this API.** The Cloud accepts the same watch, iOS and PWA client ids that every
+wristcall server accepts. A central access token given to any server operator (when the user pairs or links there)
+can therefore be replayed here by that operator until it expires: a malicious self-hosted operator could read the
+user's agenda and add or delete servers (for example a phishing "Home" entry). Only `DELETE /v1/account` is
+restricted (iOS and PWA clients). Per-server token audiences (planned for epic E6) must ship before the Cloud API is
+deployed.
+
 `src/wristcall_cloud/oidc.py` is a copy of `server/src/wristcall/oidc.py` (only the user agent differs); keep
 both in sync.
 
