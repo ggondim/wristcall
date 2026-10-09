@@ -2,6 +2,38 @@
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each component follows [SemVer](https://semver.org/) on its own: the server is published by the `server-vX.Y.Z` tag (Docker image); the watch app is marked by the `watch-vX.Y.Z` tag and has no published binary (build it with Xcode, see [watch/README.md](watch/README.md)).
 
+## [0.4.0] - 2026-10-09
+
+### Protocol
+
+- Agents can be `one-shot` (say one thing and hang up) or `monologue` (talk until you
+  hang up): the server only records, then transcribes and posts the text to the agent's
+  webhook. Silence never ends these calls and mute only pauses the recording.
+- `session.ready` of a one-way call adds `call_id`; new server message `call.captured`
+  when the server stops recording at the time limit. Watch 0.1.0 and 0.3.x clients keep
+  working (they ignore both).
+- New `GET /v1/calls/{call_id}` (device or API token): `recording`, `processing`, then
+  `delivered`, `failed` (`stt_failed`, `delivery_failed`, `interrupted`) or `empty`,
+  with the text and the delivery attempts.
+- `GET /v1/providers` may list providers of kind `webhook`.
+
+### Server (`server/`)
+
+- Delivery: `POST` of a JSON `call.completed` body with the agent's headers and the call id
+  as `Idempotency-Key`; any `2xx` is delivered; three attempts (15 s each, retries after
+  3 s and 6 s) within about a minute; redirects are not followed. The text is kept in the
+  new `calls` table (database version 3) whether or not it was delivered.
+- New provider type `webhook` (`url`, `headers`), allowed in custom endpoints by default
+  (`limits.custom_endpoint_types`). New `limits.max_one_way_call_s` (1800).
+- A one-way agent's `action` is a webhook and its `tts` is optional; `call_type` can change
+  together with an `action` of the matching kind. Calls left processing by a stopped server
+  are marked `interrupted` on the next start.
+
+### Reference client (`tools/refclient`)
+
+- `call --agent <slug>`; with `--wav`, a one-way agent hangs up after the file and waits
+  for the delivery result.
+
 ## [0.3.0] - 2026-10-09
 
 ### Protocol
