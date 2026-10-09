@@ -21,7 +21,7 @@ class State(StrEnum):
 @dataclass(frozen=True)
 class TurnClosed:
     audio: bytes
-    reason: Literal["vad", "mute", "limit"]
+    reason: Literal["vad", "mute", "limit", "hangup"]
 
 
 class InvalidTransition(Exception):
@@ -65,7 +65,7 @@ class TurnMachine:
         self._turn_ms = 0
         self._vad.reset()
 
-    def _close(self, reason: Literal["vad", "mute", "limit"]) -> TurnClosed:
+    def _close(self, reason: Literal["vad", "mute", "limit", "hangup"]) -> TurnClosed:
         audio = bytes(self._buffer)
         self.state = State.TRANSCRIBING
         self._reset_turn()
@@ -115,6 +115,12 @@ class TurnMachine:
             return self._close("mute")
         self._reset_turn()
         return None
+
+    def flush(self) -> TurnClosed | None:
+        """Hang-up in a one-way call: the turn in progress, if speech started, however short (what was said is kept)."""
+        if self.state is not State.LISTENING or not self._in_speech:
+            return None
+        return self._close("hangup")
 
     def on_transcript(self, text: str) -> None:
         self._expect(State.TRANSCRIBING)

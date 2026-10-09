@@ -126,6 +126,8 @@ class LimitsConfig(BaseModel):
     custom_endpoint_types: list[str] = Field(
         default_factory=lambda: ["openai_stt", "openai_chat", "openai_tts", "webhook"]
     )
+    # Longest one-way call (one-shot or monologue): the server stops recording and delivers what it got.
+    max_one_way_call_s: int = Field(default=1800, ge=60, le=14_400)
 
 
 class AppConfig(BaseModel):

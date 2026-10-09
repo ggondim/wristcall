@@ -247,3 +247,12 @@ def test_manual_limit_with_only_noise_resets_silently():
     assert m.state is State.LISTENING and vad.resets == before + 1
     feed(m, SPEECH, 25)
     assert m.on_mute(True) == TurnClosed(audio=SIL * 15 + SPEECH * 25, reason="mute")
+
+
+def test_flush_returns_the_turn_in_progress_however_short():
+    m = TurnMachine(ByteVad(), silence_ms=100, min_speech_ms=300, frame_ms=20, pre_roll_ms=0, turn_end="manual")
+    assert m.flush() is None  # nothing said
+    m.on_audio(SPEECH)
+    closed = m.flush()
+    assert closed is not None and closed.reason == "hangup" and closed.audio == SPEECH
+    assert m.flush() is None  # already closed
