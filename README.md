@@ -79,6 +79,20 @@ watches and agents live in the server's database (`data_dir/wristcall.db`).
   always loaded (uses GPU memory). Example: `warmup: {on_call: true}`.
 - Behind a proxy: the server trusts `X-Forwarded-For` only from the IPs in `FORWARDED_ALLOW_IPS` (the example compose already sets it). Behind Cloudflare, use `server.client_ip_header: CF-Connecting-IP`.
 
+## Upgrading from 0.2.0
+
+1. Back up `data_dir` first: stop the server and copy it, or run `sqlite3 <db> ".backup <file>"`.
+2. Start 0.3.0. The database migrates on start; `profiles` become agents of the user `owner`
+   once (`default` first) and the existing watches are given to `owner`.
+3. Values in old profiles outside the new bounds (`vad`, `timeouts`, empty `fallback_message`...)
+   are adjusted on import; the log lists which fields.
+4. Keep `profiles` in the YAML while you might roll back (0.2.0 needs `profiles.default`).
+   Rolling back is the 0.2.0 image with the same YAML.
+5. On a server with several users, give old watches to a user with
+   `wristcall devices assign <id> --user <handle>`.
+6. Custom endpoints allow only the `openai_*` types by default and make the server call URLs
+   your users choose (SSRF): keep `limits.custom_endpoints` on only with trusted users.
+
 ## Users and agents
 
 A server has users; each user has watches and agents. An agent is what the watch calls: a
