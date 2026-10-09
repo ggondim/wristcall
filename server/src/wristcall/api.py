@@ -34,7 +34,7 @@ def _forbidden() -> JSONResponse:
 async def _json_object(request: Request) -> dict[str, Any] | JSONResponse:
     try:
         body = await request.json()
-    except ValueError:
+    except (ValueError, RecursionError):
         return _error("invalid", "body must be valid JSON", 422)
     if not isinstance(body, dict):
         return _error("invalid", "body must be a JSON object", 422)

@@ -225,3 +225,13 @@ def test_pairing_code_directory_conflicts_are_502():
         r = client.post("/v1/pairing-codes", headers=h(api_token(client)))
         assert r.status_code == 502 and r.json()["error"] == "directory"
         assert route.call_count == 3
+
+
+def test_deeply_nested_body_is_invalid(client):
+    t = api_token(client)
+    for method, path in [("post", "/v1/agents"), ("patch", "/v1/agents/default")]:
+        for content in [b"[" * 100000, b'{"a":' * 100000]:
+            headers = {**h(t), "Content-Type": "application/json"}
+            r = client.request(method.upper(), path, headers=headers, content=content)
+            assert r.status_code == 422, (method, content[:8])
+            assert r.json()["error"] == "invalid" and "detail" not in r.json()
