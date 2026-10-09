@@ -337,9 +337,9 @@ async def test_list_is_newest_first_and_filtered(storage):
     assert await ids(storage, until=20.0) == ["c_1"]
     assert await ids(storage, since=10.0, until=30.0, agent_id="ag_2") == ["c_2"]
     assert await ids(storage, limit=2) == ["c_3", "c_2"]
-    assert await ids(storage, before="c_2") == ["c_1"]
-    assert await ids(storage, before="c_9") == []  # bob's call is no anchor for alice
-    assert await ids(storage, before="c_missing") == []
+    assert await ids(storage, before=(20.0, "c_2")) == ["c_1"]
+    await storage.calls.delete("u_a", "c_2")
+    assert await ids(storage, before=(20.0, "c_2")) == ["c_1"]  # a position: the call may be gone
 
 
 async def test_list_searches_terms_in_any_entry(storage):
@@ -347,7 +347,8 @@ async def test_list_searches_terms_in_any_entry(storage):
     assert await ids(storage, terms=[["milk"]]) == ["c_2", "c_1"]
     assert await ids(storage, terms=[["milk"], ["bread"]]) == ["c_2"]
     assert await ids(storage, terms=[["noted"]]) == ["c_2"]  # the agent's answer too
-    assert await ids(storage, terms=[["milk"], ["noted"]]) == []  # every group in one entry
+    assert await ids(storage, terms=[["milk"], ["noted"]]) == ["c_2"]  # words from different utterances of a call
+    assert await ids(storage, terms=[["buy"], ["bread"]]) == []  # but all of them in the same call
     assert await ids(storage, terms=[["nothing", "bread"]]) == ["c_2"]  # alternatives
     assert await ids(storage, terms=[["milk"]], agent_id="ag_1") == ["c_1"]
     assert await ids(storage, terms=[]) == []
@@ -358,7 +359,7 @@ async def test_same_time_calls_page_by_id(storage):
     for cid in ("c_a", "c_b", "c_c"):
         await storage.calls.create(call(id=cid, created_at=5.0))
     assert await ids(storage, limit=2) == ["c_c", "c_b"]
-    assert await ids(storage, before="c_b") == ["c_a"]
+    assert await ids(storage, before=(5.0, "c_b")) == ["c_a"]
 
 
 async def test_deleting_calls_takes_entries_and_index_along(storage):
@@ -382,7 +383,8 @@ async def test_expiry_is_set_capped_and_purged(storage):
     assert await storage.calls.cap_expiry(50.0) == 4  # c_1, c_3 longer; c_2 and bob's c_9 kept forever
     assert [(await storage.calls.get("u_a", c)).expires_at for c in ("c_1", "c_2", "c_3")] == [60.0, 70.0, 80.0]
     await storage.calls.create(call(id="c_open", created_at=1.0, expires_at=2.0))  # still recording
-    assert await storage.calls.purge_expired(70.0) == 3  # c_1, c_2 and bob's c_9 (65)
+    assert await storage.calls.purge_expired(70.0, limit=2) == 2  # in batches
+    assert await storage.calls.purge_expired(70.0) == 1  # c_1, c_2 and bob's c_9 (65) in all
     assert await ids(storage) == ["c_3", "c_open"]
     assert await storage.calls.list("u_b") == []
     assert await ids(storage, terms=[["milk"]]) == []

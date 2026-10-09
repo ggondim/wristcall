@@ -118,7 +118,7 @@ MIGRATIONS: list[list[str]] = [
           at REAL NOT NULL,
           UNIQUE (call_id, seq)
         )""",
-        # remove_diacritics 2 so that the text moved below is cut like history_codec.words() cuts new text.
+        # Terms arrive already cut by history_codec.words(); the tokenizer only splits them on spaces.
         "CREATE VIRTUAL TABLE history_fts USING fts5(terms, tokenize = 'unicode61 remove_diacritics 2')",
         # Fires on cascades too (deleting a call or a user): the index never keeps words of deleted text.
         """CREATE TRIGGER call_entries_unindex AFTER DELETE ON call_entries BEGIN
@@ -130,7 +130,8 @@ MIGRATIONS: list[list[str]] = [
         """INSERT INTO call_entries (call_id, seq, role, text, error, at)
           SELECT id, 0, 'user', text, CASE WHEN error = 'stt_failed' THEN 'stt_failed' END, COALESCE(ended_at, created_at)
           FROM calls WHERE text IS NOT NULL AND text != ''""",
-        "INSERT INTO history_fts (rowid, terms) SELECT id, text FROM call_entries",
+        # wristcall_terms: history_codec.words() registered by Database, so moved text is cut like new text.
+        "INSERT INTO history_fts (rowid, terms) SELECT id, wristcall_terms(text) FROM call_entries",
         "UPDATE calls SET text = NULL",
         "CREATE INDEX calls_agent ON calls (user_id, agent_id, created_at)",
         "CREATE INDEX calls_expiry ON calls (expires_at) WHERE expires_at IS NOT NULL",

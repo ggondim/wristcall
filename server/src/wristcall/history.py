@@ -4,6 +4,7 @@ Text is sealed and indexed through the codec here, above the storage, so that ev
 epic E9 too) receives it already sealed and never holds the key.
 """
 
+import asyncio
 import logging
 import secrets
 import time
@@ -137,9 +138,15 @@ class History:
         if self.settings.max_retention_days is not None:
             await self.storage.calls.cap_expiry(retention_seconds(self.settings.max_retention_days))
 
-    async def purge(self) -> int:
-        """Operator. Deletes the expired calls; returns how many."""
-        return await self.storage.calls.purge_expired(self._now())
+    async def purge(self, batch: int = 500) -> int:
+        """Operator. Deletes the expired calls a batch at a time, letting calls run in between; returns how many."""
+        total, now = 0, self._now()
+        while True:
+            done = await self.storage.calls.purge_expired(now, batch)
+            total += done
+            if done < batch:
+                return total
+            await asyncio.sleep(0)
 
     async def details(
         self, user_id: str, *, agent_id: str | None = None, since: float | None = None, until: float | None = None,
@@ -155,7 +162,8 @@ class History:
                 yield await self.detail(record)
             if len(found) < page:
                 return
-            before = found[-1].id
+            # A position, not a call: deleting that call meanwhile (purge, the user) does not end the export early.
+            before = (found[-1].created_at, found[-1].id)
 
     async def _reseal(self, sealed: bool, convert: Callable[[EntryRecord], tuple[str, bool, list[str]]]) -> int:
         done = 0
@@ -177,7 +185,9 @@ class History:
             stored, sealed = self.codec.seal(e.text, aad(e.call_id, e.seq))
             return stored, sealed, self.codec.index_terms(e.text)
 
-        return await self._reseal(False, seal)
+        done = await self._reseal(False, seal)
+        await self.storage.calls.compact()
+        return done
 
     async def decrypt_all(self) -> int:
         """Operator. Opens every sealed entry with the configured key and forgets the key: afterwards the server runs
@@ -194,6 +204,7 @@ class History:
 
         done = await self._reseal(True, unseal)
         await self.storage.meta.delete(KEY_ID)
+        await self.storage.calls.compact()
         return done
 
     def _open(self, e: EntryRecord) -> Entry:

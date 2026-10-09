@@ -236,4 +236,30 @@ def test_version_4_database_moves_call_text_to_the_history(tmp_path):
     from wristcall.storage.sqlite import fts_query
     query = fts_query(HistoryCodec().query_terms("REUNIAO as"))
     assert [r[0] for r in db.query("SELECT rowid FROM history_fts WHERE history_fts MATCH ?", (query,))] == [1]
+    # Cut exactly like new text (history_codec.words), not by the FTS5 tokenizer: "nº" is "no", "1ª" is "1a".
+    assert db.query("SELECT terms FROM history_fts WHERE rowid = 1")[0][0] == "reuniao as 15h"
+    db.close()
+
+
+def test_step_5_cuts_moved_text_like_new_text(tmp_path):
+    path = database_path(tmp_path)
+    conn = sqlite3.connect(path, isolation_level=None)
+    for step in MIGRATIONS[:4]:
+        for statement in step:
+            conn.execute(statement)
+    conn.execute("PRAGMA user_version = 4")
+    conn.execute("INSERT INTO users (id, handle, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1.0)")
+    conn.execute(
+        "INSERT INTO calls (id, user_id, agent_id, call_type, status, text, created_at, updated_at) "
+        "VALUES ('c1', 'u1', 'ag1', 'one-shot', 'delivered', 'Pedido nº 42, 1ª reunião na Straße', 1.0, 1.0)"
+    )
+    conn.close()
+    from wristcall.history_codec import HistoryCodec, words
+    from wristcall.storage.sqlite import fts_query
+
+    db = Database(path)
+    assert db.query("SELECT terms FROM history_fts")[0][0] == " ".join(words("Pedido nº 42, 1ª reunião na Straße"))
+    for query in ("nº 42", "1ª", "strasse"):
+        match = fts_query(HistoryCodec().query_terms(query))
+        assert db.query("SELECT COUNT(*) FROM history_fts WHERE history_fts MATCH ?", (match,))[0][0] == 1, query
     db.close()

@@ -326,7 +326,8 @@ class _Calls:
         return sorted((e for e, _ in self.entry_rows.get(call_id, [])), key=lambda e: e.seq)
 
     def _matches(self, call_id, terms):
-        return any(all(set(group) & found for group in terms) for _, found in self.entry_rows.get(call_id, []))
+        rows = self.entry_rows.get(call_id, [])
+        return all(any(set(group) & found for _, found in rows) for group in terms)
 
     async def list(self, user_id, *, agent_id=None, since=None, until=None, terms=None, before=None, limit=50):
         if terms is not None and not terms:
@@ -335,10 +336,7 @@ class _Calls:
             (c for c in self.rows.values() if c.user_id == user_id), key=lambda c: (c.created_at, c.id), reverse=True,
         )
         if before is not None:
-            anchor = await self.get(user_id, before)
-            if anchor is None:
-                return []
-            calls = [c for c in calls if (c.created_at, c.id) < (anchor.created_at, anchor.id)]
+            calls = [c for c in calls if (c.created_at, c.id) < tuple(before)]
         return [
             c for c in calls
             if (agent_id is None or c.agent_id == agent_id)
@@ -387,11 +385,14 @@ class _Calls:
                 return True
         return False
 
-    async def purge_expired(self, now):
+    async def purge_expired(self, now, limit=500):
         return self._drop([
             c.id for c in self.rows.values()
             if c.expires_at is not None and c.expires_at <= now and c.status not in ("recording", "processing")
-        ])
+        ][:limit])
+
+    async def compact(self):
+        pass
 
 
 class _Meta:

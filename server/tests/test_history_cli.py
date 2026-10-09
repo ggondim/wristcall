@@ -160,3 +160,15 @@ def test_encrypt_needs_a_key(tmp_path):
     cfg = write_config(tmp_path)
     r = invoke(cfg, "history", "encrypt", "--yes")
     assert r.exit_code == 1 and "history.encryption_key" in r.output
+
+
+def test_encrypting_leaves_no_clear_text_in_the_file(tmp_path):
+    cfg = write_config(tmp_path)
+    ok(cfg, "users", "list")
+    seed(tmp_path, None, ("c_1", 1.0, "conversation", "ended", None, [("user", "zebrapassword segredo")]))
+    seed(tmp_path, None, ("c_2", 2.0, "conversation", "ended", None, [("user", "outrazebra apagada")]))
+    ok(cfg, "history", "rm", "c_2", "--yes")
+    locked = write_config(tmp_path, new_key())
+    ok(locked, "history", "encrypt", "--yes")
+    raw = b"".join(p.read_bytes() for p in (tmp_path / "data").iterdir() if p.is_file())
+    assert b"zebrapassword" not in raw and b"outrazebra" not in raw

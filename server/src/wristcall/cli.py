@@ -595,7 +595,7 @@ def history_list(
 
     async def body(ctx: Ctx):
         owner_id, where = await _history_filters(ctx, user, agent, since, until)
-        terms = ctx.history.codec.query_terms(search) if search is not None else None
+        terms = ctx.history.codec.query_terms(search) if search and search.strip() else None
         records = await ctx.storage.calls.list(owner_id, **where, terms=terms, limit=limit)
         return [await ctx.history.detail(r) for r in records]
 

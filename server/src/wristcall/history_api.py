@@ -44,6 +44,19 @@ async def resolve_agent_id(agents: AgentService, user_id: str, ref: str) -> str 
         return ref if AGENT_ID.fullmatch(ref) else None
 
 
+def cursor(record: CallRecord) -> str:
+    """`next_before`: where the next page starts (a position, valid even if that call is deleted meanwhile)."""
+    return f"{record.created_at!r}:{record.id}"
+
+
+def parse_cursor(value: str) -> tuple[float, str] | None:
+    at, _, call_id = value.partition(":")
+    try:
+        return float(at), call_id
+    except ValueError:
+        return None
+
+
 def _error(code: str, message: str, status: int) -> JSONResponse:
     return JSONResponse({"error": code, "message": message}, status_code=status)
 
@@ -107,12 +120,15 @@ def calls_router(
         where = await filters(who, agent, since, until)
         if isinstance(where, JSONResponse):
             return where
-        terms = history.codec.query_terms(q) if q is not None else None
-        page = await calls.list(who.user_id, **where, terms=terms, before=before, limit=limit)
+        position = parse_cursor(before) if before is not None else None
+        if before is not None and position is None:
+            return _error("invalid", "before: pass the next_before of the previous page", 422)
+        terms = history.codec.query_terms(q) if q and q.strip() else None
+        page = await calls.list(who.user_id, **where, terms=terms, before=position, limit=limit)
         return {
             "calls": [await history.detail(r) for r in page],
             # Ask again with before=next_before for the next page; null when this was the last one.
-            "next_before": page[-1].id if len(page) == limit else None,
+            "next_before": cursor(page[-1]) if len(page) == limit else None,
         }
 
     @router.delete("")

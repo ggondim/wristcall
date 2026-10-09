@@ -445,7 +445,7 @@ class _Calls:
 
     async def list(
         self, user_id: str, *, agent_id: str | None = None, since: float | None = None, until: float | None = None,
-        terms: list[list[str]] | None = None, before: str | None = None, limit: int = 50,
+        terms: list[list[str]] | None = None, before: tuple[float, str] | None = None, limit: int = 50,
     ) -> list[CallRecord]:
         if terms is not None and not terms:
             return []
@@ -460,14 +460,15 @@ class _Calls:
             where.append("c.created_at < ?")
             params.append(until)
         if before is not None:
-            where.append("(c.created_at, c.id) < (SELECT created_at, id FROM calls WHERE id = ? AND user_id = ?)")
-            params += [before, user_id]
-        if terms:
+            where.append("(c.created_at, c.id) < (?, ?)")
+            params += list(before)
+        for group in terms or []:
+            # One condition per word: in a conversation, words may come from different utterances.
             where.append(
                 "c.id IN (SELECT e.call_id FROM call_entries e "
                 "WHERE e.id IN (SELECT rowid FROM history_fts WHERE history_fts MATCH ?))"
             )
-            params.append(fts_query(terms))
+            params.append(fts_query([group]))
         rows = self._db.query(
             f"SELECT c.* FROM calls c WHERE {' AND '.join(where)} ORDER BY c.created_at DESC, c.id DESC LIMIT ?",
             (*params, limit),
@@ -494,11 +495,15 @@ class _Calls:
             (max_retention_s, max_retention_s),
         )
 
-    async def purge_expired(self, now: float) -> int:
+    async def purge_expired(self, now: float, limit: int = 500) -> int:
         return self._db.execute(
-            "DELETE FROM calls WHERE expires_at IS NOT NULL AND expires_at <= ? AND status NOT IN ('recording', 'processing')",
-            (now,),
+            "DELETE FROM calls WHERE id IN (SELECT id FROM calls WHERE expires_at IS NOT NULL AND expires_at <= ? "
+            "AND status NOT IN ('recording', 'processing') LIMIT ?)",
+            (now, limit),
         )
+
+    async def compact(self) -> None:
+        self._db.compact()
 
 
 

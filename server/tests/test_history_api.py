@@ -97,10 +97,11 @@ def test_search_ignores_accents_and_case_and_finds_answers(filled):
     assert ids(filled, t, q="LEITE") == ["c_1"]  # not the other user's
     assert ids(filled, t, q="acucar") == ["c_2"]  # the agent's answer
     assert ids(filled, t, q="pão café") == ["c_2"]
-    assert ids(filled, t, q="pão leite") == []  # all words in one utterance
+    assert ids(filled, t, q="pão açúcar") == ["c_2"]  # the user's words and the agent's, one call
+    assert ids(filled, t, q="pão leite") == []  # every word in the same call
     assert ids(filled, t, q="leit") == []  # whole words only
     assert ids(filled, t, q='" OR * NEAR(') == []  # FTS5 syntax is just text
-    assert ids(filled, t, q="") == []
+    assert ids(filled, t, q="") == ["c_3", "c_2", "c_1"]  # empty search: no filter
 
 
 def test_filters_by_agent_and_period(filled):
@@ -119,9 +120,12 @@ def test_filters_by_agent_and_period(filled):
 def test_pages_with_before(filled):
     t = api_token(filled)
     first = filled.get("/v1/calls", headers=h(t), params={"limit": 2}).json()
-    assert [c["id"] for c in first["calls"]] == ["c_3", "c_2"] and first["next_before"] == "c_2"
+    assert [c["id"] for c in first["calls"]] == ["c_3", "c_2"] and first["next_before"].endswith(":c_2")
+    filled.delete("/v1/calls/c_2", headers=h(t))  # the cursor survives its call
     assert ids(filled, t, limit=2, before=first["next_before"]) == ["c_1"]
     assert filled.get("/v1/calls", headers=h(t), params={"limit": 101}).status_code == 422
+    bad = filled.get("/v1/calls", headers=h(t), params={"before": "c_2"})
+    assert bad.status_code == 422 and "next_before" in bad.json()["message"]
 
 
 def test_history_needs_the_owner_api_token(filled):

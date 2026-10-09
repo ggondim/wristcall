@@ -222,11 +222,11 @@ class CallStore(Protocol):
 
     async def list(
         self, user_id: str, *, agent_id: str | None = None, since: float | None = None, until: float | None = None,
-        terms: list[list[str]] | None = None, before: str | None = None, limit: int = 50,
+        terms: list[list[str]] | None = None, before: tuple[float, str] | None = None, limit: int = 50,
     ) -> list[CallRecord]:
-        """The user's calls, newest first. since <= created_at < until. terms: groups of alternatives; a call matches
-        when one of its entries has a term of every group ([] matches nothing). before: a call id; only calls older
-        than it (nothing if it is not the user's)."""
+        """The user's calls, newest first (created_at, then id). since <= created_at < until. terms: groups of
+        alternatives; a call matches when each group has a term in one of its entries ([] matches nothing).
+        before: (created_at, id) of the last call of the previous page; it need not exist any more."""
         ...
 
     async def delete(self, user_id: str, call_id: str) -> bool: ...
@@ -243,8 +243,12 @@ class CallStore(Protocol):
         """Operator. Calls kept longer than created_at + max_retention_s (or forever) get that as expires_at."""
         ...
 
-    async def purge_expired(self, now: float) -> int:
-        """Operator. Deletes calls whose expires_at has passed, open ones excepted. Returns how many."""
+    async def purge_expired(self, now: float, limit: int = 500) -> int:
+        """Operator. Deletes up to `limit` calls whose expires_at has passed, open ones excepted. Returns how many."""
+        ...
+
+    async def compact(self) -> None:
+        """Operator. Leaves no trace of deleted or replaced text in the storage's files (after encrypt or decrypt)."""
         ...
 
 
