@@ -13,15 +13,16 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from .config import AppConfig, ProfileConfig, ProviderConfig, Timeouts, VadConfig
 from .protocol import TurnEnd
-from .providers import Kind, ProviderError, ProviderSet, build_provider, provider_kind
+from .providers import Kind, ProviderError, ProviderSet, SpeechToText, Webhook, build_provider, provider_kind
+from .providers.webhook import check_url
 from .storage import AgentRecord, Conflict, LimitReached, Storage
 
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 ICON = re.compile(r"^[a-z0-9]+(\.[a-z0-9]+)*$")
 DEFAULT_ICON = "waveform"
 CallType = Literal["conversation", "one-shot", "monologue"]
-# one-shot and monologue are stored already, but only arrive with epic E2.
-SUPPORTED_CALL_TYPES = {"conversation"}
+# One-way calls: the transcript goes to a webhook (the action); no answer, no voice.
+ONE_WAY = frozenset({"one-shot", "monologue"})
 REDACTED = "***"
 _OPTION_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 # A key is secret when its name contains one of these (api_key, x-api-key, accesstoken, client_secret, Set-Cookie...).
@@ -41,6 +42,12 @@ def _is_secret(key: str) -> bool:
 
 # Agent field → provider kind in the YAML registry ("action" is the responder).
 STAGES: dict[str, Kind] = {"stt": "stt", "action": "responder", "tts": "tts"}
+ONE_WAY_STAGES: dict[str, Kind] = {"stt": "stt", "action": "webhook"}
+
+
+def stage_kinds(call_type: str) -> dict[str, Kind]:
+    """The fields a call type needs and their provider kinds. A one-way agent's action is a webhook, and it has no tts."""
+    return ONE_WAY_STAGES if call_type in ONE_WAY else STAGES
 
 
 class ProviderRef(BaseModel):
@@ -63,6 +70,9 @@ class CustomEndpoint(BaseModel):
             raise ValueError("use either 'provider' or 'type', not both")
         if "warmup" in options:
             raise ValueError("warmup is an operator setting, not available on custom endpoints")
+        url = options.get("url")
+        if url is not None:
+            check_url(str(url))
         base_url = options.get("base_url")
         if base_url is not None:
             # The URL is shown back to the owner as is: secrets go in options that get redacted (api_key...).
@@ -87,7 +97,8 @@ class AgentSpec(BaseModel):
     language: str = Field(default="en", min_length=2, max_length=16)
     stt: Endpoint
     action: Endpoint
-    tts: Endpoint
+    # Absent only on one-way agents (they never speak).
+    tts: Endpoint | None = None
     system_prompt: str = Field(default="", max_length=20_000)
     fallback_message: str = Field(default="Sorry, I couldn't answer right now.", min_length=1, max_length=500)
     turn_end: TurnEnd = "auto"
@@ -201,36 +212,56 @@ def build_endpoint(config: AppConfig, endpoint: Endpoint, kind: Kind, http: http
 
 
 def build_agent_providers(config: AppConfig, spec: AgentSpec, http: httpx.AsyncClient) -> ProviderSet:
+    if spec.tts is None:
+        raise ProviderError("a conversation needs a tts")
     built: dict[str, Any] = {}
     for field, kind in STAGES.items():
         built[field] = build_endpoint(config, getattr(spec, field), kind, http)
     return ProviderSet(stt=built["stt"], responder=built["action"], tts=built["tts"])
 
 
-def _redact(value: Any) -> Any:
-    """Secret-looking keys at any depth (extra_body, extra_form...) become `***`."""
+@dataclass
+class OneWayProviders:
+    stt: SpeechToText
+    webhook: Webhook
+
+
+def build_one_way_providers(config: AppConfig, spec: AgentSpec, http: httpx.AsyncClient) -> OneWayProviders:
+    return OneWayProviders(
+        stt=build_endpoint(config, spec.stt, "stt", http),
+        webhook=build_endpoint(config, spec.action, "webhook", http),
+    )
+
+
+def _secret(key: Any, value: Any, parent: Any = None) -> bool:
+    """Secret-looking keys, and every value of `headers` (a webhook's auth header may have any name)."""
+    return value not in (None, "") and (_is_secret(str(key)) or parent == "headers")
+
+
+def _redact(value: Any, parent: Any = None) -> Any:
+    """Secret-looking keys at any depth (extra_body, extra_form...) and header values become `***`."""
     if isinstance(value, dict):
-        return {k: REDACTED if _is_secret(str(k)) and v not in (None, "") else _redact(v) for k, v in value.items()}
+        return {k: REDACTED if _secret(k, v, parent) else _redact(v, k) for k, v in value.items()}
     if isinstance(value, list):
         return [_redact(v) for v in value]
     return value
 
 
-def redact_endpoint(endpoint: Endpoint) -> dict[str, Any]:
-    return _redact(endpoint.model_dump())
+def redact_endpoint(endpoint: Endpoint | None) -> dict[str, Any] | None:
+    return None if endpoint is None else _redact(endpoint.model_dump())
 
 
-def _restore(new: Any, old: Any) -> Any:
+def _restore(new: Any, old: Any, parent: Any = None) -> Any:
     """Puts the stored value back wherever an update sent `***` for a secret key that holds one."""
     if isinstance(new, dict) and isinstance(old, dict):
         return {
-            k: old[k] if v == REDACTED and _is_secret(str(k)) and old.get(k) not in (None, "") else _restore(v, old.get(k))
+            k: old[k] if v == REDACTED and _secret(k, old.get(k), parent) else _restore(v, old.get(k), k)
             for k, v in new.items()
         }
     return new
 
 
-def _keep_redacted(new: dict[str, Any], old: Endpoint) -> dict[str, Any]:
+def _keep_redacted(new: dict[str, Any], old: Endpoint | None) -> dict[str, Any]:
     """`***` in an update means "keep the stored secret" (show → edit → apply round trips), same type only."""
     if not isinstance(old, CustomEndpoint) or new.get("type") != old.type:
         return new
@@ -358,9 +389,9 @@ class AgentService:
         records = await self._st.agents.list(user_id)
         return Agent.from_record(records[0]) if records else None
 
-    def default_endpoint(self, field: str) -> dict[str, Any]:
+    def default_endpoint(self, field: str, call_type: str = "conversation") -> dict[str, Any]:
         """The only provider of that kind in the YAML; otherwise the caller must choose."""
-        kind = STAGES[field]
+        kind = stage_kinds(call_type)[field]
         names = [n for n, p in self._config.providers.items() if provider_kind(p.type) == kind]
         if len(names) != 1:
             offered = ", ".join(names) or "none"
@@ -372,13 +403,18 @@ class AgentService:
             raise AgentError("invalid", "slug: use 1 to 32 lowercase letters, digits or hyphens, starting with a letter or digit")
         if not ICON.fullmatch(icon):
             raise AgentError("invalid", "icon: use an SF Symbol name such as 'waveform' or 'person.wave.2'")
-        if call_type not in SUPPORTED_CALL_TYPES:
-            raise AgentError("unsupported", f"call_type '{call_type}' is not supported yet (only conversation)")
-        for field, kind in STAGES.items():
-            if _has_placeholder(getattr(spec, field).model_dump()):
+        kinds = dict(stage_kinds(call_type))
+        if call_type in ONE_WAY and spec.tts is not None:
+            # Kept for a switch back to conversation; must stay valid while stored.
+            kinds["tts"] = "tts"
+        for field, kind in kinds.items():
+            endpoint = getattr(spec, field)
+            if endpoint is None:
+                raise AgentError("invalid", f"{field}: required for {call_type} agents")
+            if _has_placeholder(endpoint.model_dump()):
                 raise AgentError("invalid", f"{field}: '{REDACTED}' only keeps a secret already stored for this endpoint")
             try:
-                build_endpoint(self._config, getattr(spec, field), kind, self._http)
+                build_endpoint(self._config, endpoint, kind, self._http)
             except ProviderError as e:
                 raise AgentError("invalid", f"{field}: {e}") from None
 
@@ -401,12 +437,12 @@ class AgentService:
         if inp.slug is None:
             raise AgentError("invalid", "slug is required")
         given = inp.model_dump(exclude_none=True, exclude={"slug", "display_name", "icon", "call_type", "position"})
-        for field in STAGES:
+        call_type = inp.call_type or "conversation"
+        for field in stage_kinds(call_type):
             if field not in given:
-                given[field] = self.default_endpoint(field)
+                given[field] = self.default_endpoint(field, call_type)
         spec = self._spec(given)
         icon = inp.icon or DEFAULT_ICON
-        call_type = inp.call_type or "conversation"
         self._check(inp.slug, icon, call_type, spec)
         now = self._now()
         agent = Agent(
@@ -436,6 +472,8 @@ class AgentService:
             value = getattr(inp, field)
             if value is not None:
                 merged[field] = _keep_redacted(value, getattr(current.spec, field))
+            elif field == "tts" and "tts" in inp.model_fields_set:
+                merged["tts"] = None  # an explicit null drops the voice (one-way agents only; _check enforces it)
         for field in ("vad", "timeouts"):
             value = getattr(inp, field)
             if value is not None:

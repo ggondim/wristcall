@@ -1,4 +1,4 @@
-"""Contracts for the three stages (STT, responder, TTS) and construction from the config."""
+"""Contracts for the stages (STT, responder, TTS; webhook for one-way calls) and construction from the config."""
 
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -8,7 +8,7 @@ import httpx
 
 from ..config import AppConfig, ProviderConfig
 
-Kind = Literal["stt", "responder", "tts"]
+Kind = Literal["stt", "responder", "tts", "webhook"]
 
 
 class ProviderError(Exception):
@@ -27,6 +27,10 @@ class TextToSpeech(Protocol):
     sample_rate: int
 
     def synthesize(self, text: str) -> AsyncIterator[bytes]: ...
+
+
+class Webhook(Protocol):
+    async def send(self, body: dict[str, Any], *, idempotency_key: str, timeout_s: float) -> int: ...
 
 
 @dataclass
@@ -53,7 +57,7 @@ def auth_headers(api_key: str | None) -> dict[str, str]:
 
 
 def _load_builtin() -> None:
-    from . import fake, openai_chat, openai_stt, openai_tts  # noqa: F401  (importing registers the types)
+    from . import fake, openai_chat, openai_stt, openai_tts, webhook  # noqa: F401  (importing registers the types)
 
 
 def provider_kind(type_name: str) -> Kind | None:

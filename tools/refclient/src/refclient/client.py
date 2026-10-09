@@ -15,6 +15,8 @@ from websockets.exceptions import ConnectionClosed
 FRAME_BYTES = 640
 CLOSE_UNAUTHORIZED = 4401
 START = {"type": "session.start", "protocol": 1, "audio_in": {"codec": "pcm16", "sample_rate": 16000, "channels": 1}}
+# Calls that only record: the server transcribes after hang-up and posts the text to the agent's webhook.
+ONE_WAY = ("one-shot", "monologue")
 
 
 class PairError(Exception):
@@ -80,6 +82,8 @@ class CallResult:
     events: list[dict[str, Any]] = field(default_factory=list)
     audio: bytearray = field(default_factory=bytearray)
     sample_rate: int = 0
+    # One-way calls: ask GET /v1/calls/{call_id} (wait_for_call) how the delivery went.
+    call_id: str | None = None
 
 
 async def run_call(
@@ -88,14 +92,22 @@ async def run_call(
     source: AsyncIterator[bytes | dict[str, Any]],
     *,
     profile: str | None = None,
+    agent: str | None = None,
     stop_after_agent_turns: int | None = None,
     on_event: Callable[[dict[str, Any]], None] | None = None,
     on_audio: Callable[[bytes], None] | None = None,
     stop_on_error: bool = False,
 ) -> CallResult:
-    """Makes a call. With stop_on_error=True, a non fatal `error` also ends it (e.g. stt_failed in --wav mode)."""
+    """Makes a call. With stop_on_error=True, a non fatal `error` also ends it (e.g. stt_failed in --wav mode).
+
+    A one-way agent (one-shot, monologue) gets the whole source and then the hang-up.
+    """
     result = CallResult()
-    start = dict(START, profile=profile) if profile else START
+    start = dict(START)
+    if profile:
+        start["profile"] = profile
+    if agent:
+        start["agent"] = agent
     try:
         await _run(server, token, source, start, stop_after_agent_turns, stop_on_error, on_event, on_audio, result)
     except ConnectionClosed as e:
@@ -122,6 +134,8 @@ async def _run(
         if ready.get("type") != "session.ready":
             raise CallError(f"session start rejected: {ready}")
         result.sample_rate = ready["audio_out"]["sample_rate"]
+        result.call_id = ready.get("call_id")
+        one_way = (ready.get("agent") or {}).get("call_type") in ONE_WAY
         result.events.append(ready)
         if on_event:
             on_event(ready)
@@ -149,22 +163,25 @@ async def _run(
         sender.add_done_callback(sender_done)
         agent_turns = 0
         try:
-            async for message in ws:
-                if isinstance(message, bytes):
-                    result.audio.extend(message)
-                    if on_audio:
-                        on_audio(message)
-                    continue
-                event = json.loads(message)
-                result.events.append(event)
-                if on_event:
-                    on_event(event)
-                if event["type"] == "error" and (event.get("fatal") or stop_on_error):
-                    break
-                if event["type"] == "turn.agent_end":
-                    agent_turns += 1
-                    if stop_after_agent_turns and agent_turns >= stop_after_agent_turns:
+            if one_way:
+                await _record(ws, sender, result, on_event)
+            else:
+                async for message in ws:
+                    if isinstance(message, bytes):
+                        result.audio.extend(message)
+                        if on_audio:
+                            on_audio(message)
+                        continue
+                    event = json.loads(message)
+                    result.events.append(event)
+                    if on_event:
+                        on_event(event)
+                    if event["type"] == "error" and (event.get("fatal") or stop_on_error):
                         break
+                    if event["type"] == "turn.agent_end":
+                        agent_turns += 1
+                        if stop_after_agent_turns and agent_turns >= stop_after_agent_turns:
+                            break
         finally:
             sender.cancel()
             with suppress(asyncio.CancelledError, Exception):
@@ -173,3 +190,51 @@ async def _run(
                 await ws.send(json.dumps({"type": "session.end"}))
         if send_error:
             raise CallError(f"failed to send audio: {send_error[0]}") from send_error[0]
+
+
+async def _record(ws: Any, sender: asyncio.Task, result: CallResult, on_event: Callable[[dict[str, Any]], None] | None) -> None:
+    """One-way call: until the source ends (then the caller hangs up) or the server stops recording (call.captured)."""
+
+    async def collect() -> None:
+        async for message in ws:
+            if isinstance(message, str):
+                event = json.loads(message)
+                result.events.append(event)
+                if on_event:
+                    on_event(event)
+
+    receiver = asyncio.create_task(collect())
+    try:
+        await asyncio.wait({sender, receiver}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        receiver.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await receiver
+
+
+def call_status(server: str, token: str, call_id: str, *, http: httpx.Client | None = None) -> dict[str, Any]:
+    url = f"{server.rstrip('/')}/v1/calls/{call_id}"
+    headers = {"Authorization": f"Bearer {token}"}
+    if http is not None:
+        r = http.get(url, headers=headers)
+    else:
+        with httpx.Client(timeout=10.0) as own:
+            r = own.get(url, headers=headers)
+    if r.status_code != 200:
+        raise CallError(f"call status failed ({r.status_code}): {r.text[:200]}")
+    return r.json()
+
+
+def wait_for_call(
+    server: str, token: str, call_id: str, *, poll_interval_s: float = 1.0, timeout_s: float = 120.0
+) -> dict[str, Any]:
+    """Polls until the call is delivered, failed or empty (what the watch shows as ring, then check or error)."""
+    deadline = time.monotonic() + timeout_s
+    with httpx.Client(timeout=10.0) as http:
+        while True:
+            view = call_status(server, token, call_id, http=http)
+            if view["status"] not in ("recording", "processing"):
+                return view
+            if time.monotonic() > deadline:
+                raise CallError(f"call {call_id} still {view['status']} after {timeout_s:g} s")
+            time.sleep(poll_interval_s)

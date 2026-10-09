@@ -16,9 +16,10 @@ or any other) and a wristcall server. Version: **1**.
 
 | Route | Body | Responses |
 |---|---|---|
-| `GET /v1/health` | | `200 {"status":"ok","version":"0.3.0","protocol":1}` |
+| `GET /v1/health` | | `200 {"status":"ok","version":"0.4.0","protocol":1}` |
 | `POST /v1/pair` | `{"code": "12345678" \| null, "device_name": "Apple Watch"}` | `200 {"device_id","token"}`: paired (flow A). `202 {"request_id","poll_token","expires_at"}`: waiting for the owner's approval (flow B). `401 {"error":"invalid_code"}`. `429 {"error":"rate_limited"}` |
 | `POST /v1/pair/poll` | `{"poll_token": "..."}` | `202 {"request_id","expires_at"}`: pending. `200 {"device_id","token"}`: approved (delivered only once). `410 {"error":"gone"}`: expired or already delivered. `422`: body without `poll_token` or with more than 128 characters |
+| `GET /v1/calls/{call_id}` | | `200 call` (see [One-way calls](#one-way-calls-one-shot-monologue)): a call of this token's user, with a device or an API token. `404 {"error":"not_found"}`. `401` |
 | `GET /v1/me` | | `200 {"device_id","device_name","user":{"id","handle","display_name"},"agents":[agent],"profiles":[{"name","display_name"}]}`. `401` |
 | `DELETE /v1/me` | | `204`: token revoked. `401` |
 
@@ -154,6 +155,7 @@ Unknown fields are ignored (future compatibility).
 | `{"type":"turn.agent_start"}` | the response audio is about to start |
 | `{"type":"turn.agent_end"}` | all of the response audio has been sent |
 | `{"type":"error","code":"...","message":"...","fatal":false}` | failure; with `fatal:true` the server closes right after |
+| `{"type":"call.captured","call_id":"c_...","reason":"limit"}` | one-way calls only: the server stopped recording by itself and closes the call (1000). See [One-way calls](#one-way-calls-one-shot-monologue) |
 
 While the agent is responding, the client's audio is discarded. The server only
 starts listening again after the estimated playback time of the audio sent plus 200 ms.
@@ -181,6 +183,78 @@ starts listening again after the estimated playback time of the audio sent plus 
 | 4400 | fatal protocol error |
 | 4401 | missing, invalid or revoked token |
 
+## One-way calls (one-shot, monologue)
+
+Since server 0.4.0, an agent whose `call_type` is `one-shot` or `monologue` only
+listens: no answer, no voice. The server records until the user hangs up,
+transcribes, and posts the text to the agent's webhook (its `action`). Clients
+check `version` in `GET /v1/health` (0.4.0 or later) before offering these agents;
+older servers refuse to create them.
+
+| | `one-shot` | `monologue` |
+|---|---|---|
+| For | say one thing ("buy milk") and hang up | talk until you hang up (ideas, notes) |
+| Recording ends | at hang-up, or at the agent's turn limit (`vad.max_turn_ms`, 60 s by default) | at hang-up, or at `limits.max_one_way_call_s` (30 min by default) |
+
+In both, silence never ends the call, and mute pauses the recording (audio sent
+while muted is dropped) without ending anything. A dropped connection counts as
+hanging up: what was recorded is still transcribed and delivered.
+
+The call goes like this:
+
+1. `session.start` as usual (`turn_end` is ignored). `session.ready` adds `call_id`,
+   reports `"turn_end":"manual"`, and its `audio_out` is nominal: no audio comes back.
+2. The client streams audio. The server sends nothing back (no `turn.user_end`,
+   `transcript` or audio). If it reaches the limit first, it sends `call.captured`
+   and closes with 1000.
+3. The client hangs up (`session.end`, then close) and asks
+   `GET /v1/calls/{call_id}` every 1 to 2 s until the status is final. The
+   WebSocket is closed by then: this is plain HTTPS, with the device token.
+
+`GET /v1/calls/{call_id}` answers:
+
+```json
+{"id":"c_5d1f...","agent_id":"ag_3f9c0a1b2c3d","call_type":"one-shot","status":"delivered","error":null,"text":"buy milk","attempts":1,"last_http_status":204,"created_at":1760000000.0,"ended_at":1760000004.2,"finished_at":1760000005.1}
+```
+
+| `status` | Final | Meaning |
+|---|---|---|
+| `recording` | no | the call is open |
+| `processing` | no | hung up; transcribing, then delivering |
+| `delivered` | yes | the webhook answered `2xx` |
+| `failed` | yes | see `error` |
+| `empty` | yes | nothing was said (no speech, or a blank transcript); nothing is delivered |
+
+| `error` | Meaning |
+|---|---|
+| `stt_failed` | a piece of the recording could not be transcribed (two tries); `text` keeps what was; nothing is delivered |
+| `delivery_failed` | three attempts without a `2xx`; `text`, `attempts` and `last_http_status` (null after a timeout or connection error) tell what happened |
+| `interrupted` | the server stopped while processing; `text` is kept if it was ready |
+| `internal` | unexpected server error |
+
+Text is kept after delivery too (the history of a later version builds on it).
+
+### Delivery to the webhook
+
+After transcribing, the server sends `POST <url>` with the agent's `headers` and:
+
+```json
+{"event":"call.completed","version":1,"call_id":"c_5d1f...","call_type":"one-shot","agent":{"id":"ag_3f9c0a1b2c3d","slug":"note","display_name":"Note"},"language":"pt","text":"buy milk","started_at":"2026-10-09T05:40:00Z","ended_at":"2026-10-09T05:40:04Z"}
+```
+
+- Headers set by the server: `Content-Type: application/json`, `User-Agent: wristcall/<version>`
+  and `Idempotency-Key: <call_id>` (the same on every attempt: drop repeats).
+- Any `2xx` means delivered; the response body is ignored. Redirects are not followed.
+- Up to three attempts (one, then retries after 3 s and 6 s), 15 s each: about a
+  minute at most. Fields may be added within `version` 1; receivers ignore unknown ones.
+- Transcription comes first and is not part of that minute: each piece of the recording
+  gets up to two tries of the agent's `timeouts.stt_s` (10 s by default). With the
+  defaults, a one-shot reaches its final status within about 75 s of hanging up.
+
+A watch app older than 0.4.0 (for example watch 0.1.0) can call a one-way agent:
+it records, the call ends normally, and the delivery happens; it just never shows
+the result.
+
 ## Agents
 
 An agent is what a call talks to. Its summary, as devices see it:
@@ -191,7 +265,7 @@ An agent is what a call talks to. Its summary, as devices see it:
 | `slug` | short name, unique per user: 1 to 32 of `a-z`, `0-9`, `-`, starting with a letter or digit |
 | `display_name` | name on the watch (1 to 64 characters) |
 | `icon` | SF Symbol name (default `waveform`) |
-| `call_type` | `conversation`; `one-shot` and `monologue` are reserved for a later version and refused for now |
+| `call_type` | `conversation` (talk and listen), `one-shot` or `monologue` (only listens; see [One-way calls](#one-way-calls-one-shot-monologue)) |
 | `turn_end` | `auto` or `manual`: the mode used when `session.start` has no `turn_end` |
 
 The owner also sees (and sets) `position` (order on the watch; setting it moves
@@ -210,12 +284,28 @@ and `"***"` anywhere else is `invalid`. `vad` and `timeouts` values are bounded
 (for example `silence_ms` 100 to 10000, `max_turn_ms` up to 300000, timeouts up to
 120 s).
 
+A one-way agent's `action` is a webhook: a provider of kind `webhook` or
+`{"type":"webhook","url":"https://...","headers":{"Authorization":"Bearer ..."}}`
+(`url` without credentials, query or fragment; up to 16 `headers`). Every value of
+`headers` comes back as `"***"`, whatever the header name, and sending `"***"` back
+keeps the stored value. The server sets `Content-Type`, `Content-Length`, `Host`,
+`User-Agent`, `Idempotency-Key`, `Transfer-Encoding`, `Connection` and `Expect`
+itself, so `headers` cannot contain them. It has no `tts`
+(`null`): one kept from a conversation agent stays stored for switching back,
+and an update with `"tts": null` drops it. Changing `call_type` needs an `action`
+of the matching kind in the same update; switching to `conversation` also needs a
+`tts`, unless one is still stored.
+
 Custom endpoints make the server send requests to URLs that users choose, including
 addresses inside the server's own network (SSRF). They are on by default for a
 self-hosted server whose users are trusted; on a server with users you do not
 trust, set `limits.custom_endpoints: false` so agents can only use the providers
 the operator offers. A custom endpoint may only use the provider types listed in
-`limits.custom_endpoint_types` (default `openai_stt`, `openai_chat`, `openai_tts`).
+`limits.custom_endpoint_types` (default `openai_stt`, `openai_chat`, `openai_tts`,
+`webhook`). A webhook is the easiest probe of all: any user can make the server POST
+to an internal address and read the status code back in `GET /v1/calls/{id}`; on a
+server shared with people you do not trust, remove `webhook` from that list (or turn
+custom endpoints off).
 
 ## Management API
 
@@ -233,7 +323,7 @@ A body that is not valid JSON or not a JSON object answers `422 {"error":"invali
 | `GET /v1/agents/{ref}` | | `200 agent`. `404 not_found`. `ref` is a `slug` or an `id` |
 | `PATCH /v1/agents/{ref}` | fields to change; `vad` and `timeouts` merge key by key | `200 agent`. `404`, `409`, `422` |
 | `DELETE /v1/agents/{ref}` | | `204`. `404` |
-| `GET /v1/providers` | | `200 {"providers":[{"name","kind":"stt"\|"action"\|"tts"}],"custom_endpoints":true}` |
+| `GET /v1/providers` | | `200 {"providers":[{"name","kind":"stt"\|"action"\|"tts"\|"webhook"}],"custom_endpoints":true}` (`webhook`: the action of one-way agents) |
 | `GET /v1/devices` | | `200 {"devices":[{"id","name","created_at"}]}` |
 | `DELETE /v1/devices/{id}` | | `204`. `404` |
 | `POST /v1/pairing-codes` | | `201 {"code","expires_at","server_url","via_directory"}` (+ `"warning"` when the directory was unreachable). `403 limit` (device limit). `502 directory` |

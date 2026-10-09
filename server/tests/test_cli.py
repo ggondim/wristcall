@@ -200,7 +200,7 @@ def test_agents_errors_exit_1_with_a_message(tmp_path):
     cfg = write_config(tmp_path)
     for args, fragment in [
         (("agents", "add", "default"), "already exists"),
-        (("agents", "add", "x", "--call-type", "one-shot"), "not supported yet"),
+        (("agents", "add", "x", "--call-type", "one-shot"), "action: choose a provider"),
         (("agents", "add", "x", "--stt", "nope"), "nope"),
         (("agents", "add", "x", "--stt", "{not json"), "invalid JSON"),
         (("agents", "add", "x", "--turn-end", "sometimes"), "turn_end"),
@@ -287,3 +287,14 @@ def test_devices_assign(tmp_path):
     assert ok(cfg, "devices", "assign", "d0", "--user", "owner").strip() == "Assigned d0 to owner (was bob)."
     assert "d0  Old  owner" in ok(cfg, "devices", "list")
     assert invoke(cfg, "devices", "assign", "missing", "--user", "bob").exit_code == 1
+
+
+def test_agents_add_one_shot_with_a_webhook(tmp_path):
+    cfg = write_config(tmp_path)
+    hook = '{"type": "webhook", "url": "https://hooks.example/in", "headers": {"Authorization": "Bearer s3cret"}}'
+    assert "Added agent note" in ok(cfg, "agents", "add", "note", "--call-type", "one-shot", "--action", hook)
+    shown = json.loads(ok(cfg, "agents", "show", "note"))
+    assert (shown["call_type"], shown["tts"]) == ("one-shot", None)
+    assert shown["action"]["headers"] == {"Authorization": "***"}
+    line = next(x for x in ok(cfg, "agents", "list").splitlines() if " note " in x)
+    assert "one-shot" in line and "action=custom" in line and "tts=-" in line

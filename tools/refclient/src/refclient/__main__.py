@@ -8,7 +8,7 @@ import sys
 import wave
 from pathlib import Path
 
-from .client import CallError, PairError, pair, run_call, wav_source
+from .client import CallError, PairError, pair, run_call, wait_for_call, wav_source
 
 CONFIG = Path(os.environ.get("WRISTCALL_REFCLIENT_CONFIG", Path.home() / ".config" / "wristcall" / "refclient.json"))
 
@@ -22,6 +22,10 @@ def _print_event(event: dict) -> None:
         print(f"error {event['code']}: {event['message']}", file=sys.stderr, flush=True)
     elif kind == "session.ready":
         print(f"connected to profile {event['profile']['display_name']}. Enter toggles mute; Ctrl+C hangs up.", flush=True)
+        if event.get("call_id"):
+            print(f"one-way call {event['call_id']} ({event['agent']['call_type']}): nothing comes back", flush=True)
+    elif kind == "call.captured":
+        print("the server stopped recording (time limit)", flush=True)
 
 
 def cmd_pair(args: argparse.Namespace) -> int:
@@ -64,7 +68,7 @@ async def _call_wav(server: str, token: str, args: argparse.Namespace) -> int:
     try:
         result = await asyncio.wait_for(
             run_call(
-                server, token, wav_source(pcm, realtime=not args.fast), profile=args.profile,
+                server, token, wav_source(pcm, realtime=not args.fast), profile=args.profile, agent=args.agent,
                 stop_after_agent_turns=1, stop_on_error=True, on_event=_print_event,
             ),
             timeout=args.timeout,
@@ -75,6 +79,10 @@ async def _call_wav(server: str, token: str, args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    if result.call_id:
+        view = await asyncio.to_thread(wait_for_call, server, token, result.call_id, timeout_s=args.timeout)
+        print(f"{view['status']}" + (f" ({view['error']})" if view["error"] else "") + f": {view['text'] or ''}")
+        return 0 if view["status"] == "delivered" else 1
     if args.out:
         with wave.open(args.out, "wb") as w:
             w.setnchannels(1)
@@ -101,7 +109,7 @@ async def _call_mic(server: str, token: str, args: argparse.Namespace) -> int:
             speaker.play(data)
 
     try:
-        await run_call(server, token, mic_source(), profile=args.profile, on_event=on_event, on_audio=on_audio)
+        await run_call(server, token, mic_source(), profile=args.profile, agent=args.agent, on_event=on_event, on_audio=on_audio)
     finally:
         if speaker:
             speaker.close()
@@ -120,7 +128,11 @@ def main() -> None:
     c.add_argument("--server")
     c.add_argument("--token")
     c.add_argument("--profile")
-    c.add_argument("--wav", help="instead of the microphone, send this WAV (16 kHz mono) and exit after the response or the first error")
+    c.add_argument("--agent", help="agent slug or id (server 0.3.0+); wins over --profile")
+    c.add_argument("--wav", help=(
+        "instead of the microphone, send this WAV (16 kHz mono) and exit after the response or the first error; "
+        "a one-shot or monologue agent then hangs up and waits for the delivery"
+    ))
     c.add_argument("--out", help="with --wav: save the response audio to this WAV")
     c.add_argument("--fast", action="store_true", help="with --wav: send without waiting for real time")
     c.add_argument(

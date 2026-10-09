@@ -123,7 +123,8 @@ def management_router(
         who = await owner(authorization)
         if isinstance(who, JSONResponse):
             return who
-        kinds = {"stt": "stt", "responder": "action", "tts": "tts"}
+        # "webhook" is the action of one-shot and monologue agents.
+        kinds = {"stt": "stt", "responder": "action", "tts": "tts", "webhook": "webhook"}
         return {
             "providers": [
                 {"name": name, "kind": kinds[kind]}

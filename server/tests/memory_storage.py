@@ -6,7 +6,7 @@ epic E9 relies on. Not shipped: it lives in tests/.
 
 from dataclasses import replace
 
-from wristcall.storage import AgentRecord, ApiToken, Conflict, Device, LimitReached, PairingRequest, User
+from wristcall.storage import AgentRecord, ApiToken, CallRecord, Conflict, Device, LimitReached, PairingRequest, User
 
 TOKEN_TOUCH_S = 60
 
@@ -251,6 +251,33 @@ class _Agents:
         return len(self._mine(user_id))
 
 
+class _Calls:
+    def __init__(self) -> None:
+        self.rows: dict[str, CallRecord] = {}
+
+    async def create(self, record):
+        self.rows[record.id] = record
+        return record
+
+    async def get(self, user_id, call_id):
+        c = self.rows.get(call_id)
+        return c if c and c.user_id == user_id else None
+
+    async def save(self, record):
+        current = self.rows[record.id]
+        self.rows[record.id] = replace(
+            record, user_id=current.user_id, agent_id=current.agent_id, device_id=current.device_id,
+            call_type=current.call_type, created_at=current.created_at,
+        )
+        return self.rows[record.id]
+
+    async def interrupt_unfinished(self, now):
+        stale = [c for c in self.rows.values() if c.status in ("recording", "processing")]
+        for c in stale:
+            self.rows[c.id] = replace(c, status="failed", error="interrupted", finished_at=now, updated_at=now)
+        return len(stale)
+
+
 class _Meta:
     def __init__(self) -> None:
         self.rows: dict[str, str] = {}
@@ -269,12 +296,14 @@ class MemoryStorage:
         self.devices = _Devices()
         self.pairing = _Pairing()
         self.agents = _Agents()
+        self.calls = _Calls()
         self.meta = _Meta()
 
     def cascade(self, user_id: str) -> None:
         self.tokens.rows = {k: v for k, v in self.tokens.rows.items() if v[0].user_id != user_id}
         self.devices.rows = {k: v for k, v in self.devices.rows.items() if v[0].user_id != user_id}
         self.agents.rows = {k: v for k, v in self.agents.rows.items() if v.user_id != user_id}
+        self.calls.rows = {k: v for k, v in self.calls.rows.items() if v.user_id != user_id}
         self.pairing.codes = {k: v for k, v in self.pairing.codes.items() if v["user_id"] != user_id}
         self.pairing.requests = {k: v for k, v in self.pairing.requests.items() if v["user_id"] != user_id}
 

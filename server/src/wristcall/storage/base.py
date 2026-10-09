@@ -14,7 +14,7 @@ Two groups of methods:
 
 from typing import Protocol
 
-from .models import AgentRecord, ApiToken, Device, PairingRequest, User
+from .models import AgentRecord, ApiToken, CallRecord, Device, PairingRequest, User
 
 
 class UserStore(Protocol):
@@ -159,6 +159,23 @@ class AgentStore(Protocol):
     async def count(self, user_id: str) -> int: ...
 
 
+class CallStore(Protocol):
+    async def create(self, record: CallRecord) -> CallRecord: ...
+
+    async def get(self, user_id: str, call_id: str) -> CallRecord | None:
+        """Only the user's own calls."""
+        ...
+
+    async def save(self, record: CallRecord) -> CallRecord:
+        """Replaces every field but id, user_id, agent_id, device_id, call_type and created_at. KeyError if gone."""
+        ...
+
+    async def interrupt_unfinished(self, now: float) -> int:
+        """Operator. At startup: calls left recording or processing by a stopped server become failed
+        (error "interrupted"), keeping their text. Returns how many."""
+        ...
+
+
 class MetaStore(Protocol):
     async def get(self, key: str) -> str | None: ...
 
@@ -171,6 +188,7 @@ class Storage(Protocol):
     devices: DeviceStore
     pairing: PairingStore
     agents: AgentStore
+    calls: CallStore
     meta: MetaStore
 
     async def close(self) -> None: ...

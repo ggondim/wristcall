@@ -58,13 +58,15 @@ The operator's settings live in `wristcall.yaml` (see `wristcall.example.yaml`);
 watches and agents live in the server's database (`data_dir/wristcall.db`).
 
 - `providers`: the STT, chat and TTS services this server offers, each one with a `type`
-  and options. Types: `openai_stt`, `openai_chat`, `openai_tts`, and the fake ones
-  `fake_stt`, `echo_chat`, `tone_tts`.
+  and options. Types: `openai_stt`, `openai_chat`, `openai_tts`, `webhook` (where one-shot
+  and monologue agents deliver their text), and the fake ones `fake_stt`, `echo_chat`, `tone_tts`.
 - `limits`: `max_agents_per_user` (20), `max_devices_per_user` (10) and
   `custom_endpoints` (`true`: agents may use their own STT/chat/TTS URLs; turn it off on a
   server with users you do not trust, since the server would request any URL they give) and
   `custom_endpoint_types` (the provider types a custom endpoint may use; default `openai_stt`,
-  `openai_chat`, `openai_tts`).
+  `openai_chat`, `openai_tts`, `webhook`) and `max_one_way_call_s` (1800: the longest
+  one-shot or monologue call). With users you do not trust, also drop `webhook` from the
+  list: it lets them make the server POST to internal addresses and see the status code.
 - `profiles` (optional, the 0.2.x format): on the first start they become agents of a user
   called `owner`, `default` first. After that the section is ignored; manage agents with
   `wristcall agents`.
@@ -78,6 +80,21 @@ watches and agents live in the server's database (`data_dir/wristcall.db`).
   `on_start: true` warms up when the server starts; `every_s: 240` keeps the model
   always loaded (uses GPU memory). Example: `warmup: {on_call: true}`.
 - Behind a proxy: the server trusts `X-Forwarded-For` only from the IPs in `FORWARDED_ALLOW_IPS` (the example compose already sets it). Behind Cloudflare, use `server.client_ip_header: CF-Connecting-IP`.
+
+## Upgrading from 0.3.0
+
+1. Back up `data_dir` first (as below). The database migrates to version 3 on start (a new
+   `calls` table); nothing else changes and the YAML stays as it is. Replace the old server
+   before starting the new one (Docker Swarm's default `stop-first`): on start, the server
+   marks one-way calls still processing as interrupted, and only one server may use the database.
+2. The default `limits.custom_endpoint_types` now includes `webhook`. If your YAML lists the
+   types, add `webhook` to let users point one-shot and monologue agents at their own URL.
+3. Rolling back to 0.3.0: delete the one-shot and monologue agents first
+   (`wristcall agents rm <slug>`; 0.3.0 cannot read an agent without `tts`), stop the
+   server, set the schema back with
+   `python -c "import sqlite3; sqlite3.connect('<db>').execute('PRAGMA user_version = 2')"`
+   (0.3.0 refuses a newer schema) and start the 0.3.0 image. The `calls` table stays and is
+   adopted by the next upgrade.
 
 ## Upgrading from 0.2.0
 
@@ -99,6 +116,18 @@ A server has users; each user has watches and agents. An agent is what the watch
 name, an icon (SF Symbol), an STT service (input), an action (the chat model that answers),
 a TTS service (output), a language, a prompt and how the turn ends (`auto` by silence, after
 `silence_ms`, or `manual` by mute). The watch calls the first agent of its user's list.
+
+Besides `conversation`, an agent can only listen: `one-shot` (say one thing and hang up) or
+`monologue` (talk until you hang up). After the call the server transcribes it and posts the
+text to the agent's webhook (its action); any `2xx` within about a minute counts as delivered,
+after up to three attempts. The client asks `GET /v1/calls/{id}` for the result
+([protocol](docs/protocol.md#one-way-calls-one-shot-monologue)).
+
+```bash
+wristcall agents add note --name Note --icon note.text --call-type one-shot \
+  --action '{"type": "webhook", "url": "https://n8n.example/webhook/notes", "headers": {"Authorization": "Bearer ..."}}'
+wristcall-refclient call --agent note --wav note.wav       # hangs up after the WAV and prints the delivery
+```
 
 ```bash
 wristcall users edit owner --handle alice --name Alice     # the user created from `profiles`

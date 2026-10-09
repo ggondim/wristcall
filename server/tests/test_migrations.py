@@ -42,9 +42,9 @@ def legacy_db(path) -> None:
 
 def test_fresh_database_is_at_latest_version(tmp_path):
     db = Database(database_path(tmp_path))
-    assert db.version == LATEST == 2
-    assert db.query("PRAGMA user_version")[0][0] == 2
-    assert {"devices", "pairing_codes", "pairing_requests", "users", "api_tokens", "agents", "meta"} <= tables(db)
+    assert db.version == LATEST == 3
+    assert db.query("PRAGMA user_version")[0][0] == 3
+    assert {"devices", "pairing_codes", "pairing_requests", "users", "api_tokens", "agents", "meta", "calls"} <= tables(db)
     assert "user_id" in columns(db, "devices") and "user_id" in columns(db, "pairing_codes")
     assert db.query("PRAGMA foreign_keys")[0][0] == 1
 
@@ -156,3 +156,20 @@ def test_fts5_is_available_here():
     # CI runs this on the same Python as the Docker image; the image itself is checked by the CI smoke step.
     conn = sqlite3.connect(":memory:")
     database_module._require_fts5(conn)
+
+
+def test_rollback_to_0_3_0_and_upgrade_again_adopts_the_calls_table(tmp_path):
+    # Rollback to 0.3.0 (which refuses a newer schema): the operator sets user_version back to 2 and keeps
+    # the calls table. The next upgrade must adopt it with its rows.
+    path = database_path(tmp_path)
+    db = Database(path)
+    db.execute("INSERT INTO users (id, handle, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1.0)")
+    db.execute(
+        "INSERT INTO calls (id, user_id, agent_id, call_type, status, created_at, updated_at) "
+        "VALUES ('c1', 'u1', 'ag1', 'one-shot', 'delivered', 1.0, 1.0)"
+    )
+    db.execute("PRAGMA user_version = 2")
+    db.close()
+    again = Database(path)
+    assert again.version == 3
+    assert [r["id"] for r in again.query("SELECT id FROM calls")] == ["c1"]
