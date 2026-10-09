@@ -26,6 +26,7 @@ from .bootstrap import bootstrap, log_report
 from .config import AppConfig
 from .delivery import DeliveryPolicy
 from .history import History, check_key
+from .history_api import calls_router
 from .history_codec import HistoryCodec
 from .oneway import Background, OneWayCall
 from .pairing import DeviceLimit, Paired, PairingDenied, PairingGone, PairingService
@@ -142,6 +143,7 @@ def create_app(
     app.include_router(
         management_router(config, auth, agents, pairing_svc, account, limiter=limiter, client_ip=client_ip)
     )
+    app.include_router(calls_router(auth, agents, history))
 
     async def device_from(authorization: str | None) -> Principal | None:
         principal = await auth.authenticate(authorization)
@@ -238,17 +240,6 @@ def create_app(
             # 0.2.0 shape, read by watch 0.1.0 (it calls the first one).
             "profiles": [{"name": a.slug, "display_name": a.display_name} for a in listed],
         }
-
-    @app.get("/v1/calls/{call_id}")
-    async def call_status(call_id: str, authorization: str | None = Header(default=None)) -> Any:
-        # Device or API token: a user sees only their own calls.
-        principal = await auth.authenticate(authorization)
-        if principal is None:
-            return JSONResponse({"error": "unauthorized", "message": "missing or invalid token"}, status_code=401)
-        record = await store.calls.get(principal.user_id, call_id)
-        if record is None:
-            return JSONResponse({"error": "not_found", "message": "call not found"}, status_code=404)
-        return await history.detail(record)
 
     @app.delete("/v1/me")
     async def unpair(authorization: str | None = Header(default=None)) -> Any:
