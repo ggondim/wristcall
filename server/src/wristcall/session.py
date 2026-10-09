@@ -27,6 +27,14 @@ class CallSettings(Protocol):
     timeouts: Timeouts
 
 
+# Records an utterance in the call's history: (role "user" | "agent", text or None, error or None). Never raises.
+Recorder = Callable[[str, str | None, str | None], Awaitable[None]]
+
+
+async def _no_record(role: str, text: str | None, error: str | None) -> None:
+    pass
+
+
 class Transport(Protocol):
     async def send_json(self, msg: dict[str, Any]) -> None: ...
 
@@ -56,8 +64,10 @@ class CallSession:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] = time.monotonic,
         turn_end: protocol.TurnEnd = "auto",
+        record: Recorder = _no_record,
     ) -> None:
         self.profile = profile
+        self._record = record
         self.providers = providers
         self.transport = transport
         self.machine = TurnMachine(
@@ -141,10 +151,12 @@ class CallSession:
             # Error first, then back to listening: frames accepted while sending would be wiped by on_agent_done.
             await self.transport.send_json(protocol.error(protocol.ErrorCode.STT_FAILED, "I could not understand the audio.", False))
             self.machine.on_transcript("")
+            await self._record("user", None, "stt_failed")
             return
         self.machine.on_transcript(text)
         if not text.strip():
             return
+        await self._record("user", text, None)
         await self.transport.send_json(protocol.transcript("user", text))
         self.history.append({"role": "user", "content": text})
         messages = ([{"role": "system", "content": self.profile.system_prompt}] if self.profile.system_prompt else []) + self.history
@@ -152,6 +164,8 @@ class CallSession:
         speaker = _Speaker(self)
         try:
             full_text = await self._respond(messages, speaker)
+            error = "responder_failed" if self._responder_failed else "tts_failed" if speaker.tts_failed else None
+            await self._record("agent", full_text or None, error)
             if full_text:
                 self.history.append({"role": "assistant", "content": full_text})
                 await self.transport.send_json(protocol.transcript("assistant", full_text))
@@ -165,6 +179,7 @@ class CallSession:
 
     async def _respond(self, messages: list[dict[str, str]], speaker: "_Speaker") -> str:
         """Generates and speaks the response; returns the text to record (empty if nothing was said)."""
+        self._responder_failed = False
         spoken: list[str] = []
         splitter = SentenceSplitter()
         responder_error: Exception | None = None
@@ -181,6 +196,7 @@ class CallSession:
             for sentence in splitter.flush():
                 await speaker.say(sentence)
         full_text = "".join(spoken).strip()
+        self._responder_failed = responder_error is not None or not full_text
         if not full_text:
             # Failed before the first text or ended without text (empty stream or only whitespace):
             # the user must not be left in silence.
@@ -206,7 +222,7 @@ class _Speaker:
         self._rate = rate
         self._frames = FrameAssembler(frame_bytes(rate))
         self._started = False
-        self._tts_failed = False
+        self.tts_failed = False
         # Moment (on the server clock) when the watch should finish playing what has already been sent.
         self._play_end = 0.0
         self.sentences_said: list[str] = []
@@ -222,7 +238,7 @@ class _Speaker:
         self._play_end = max(self._play_end, now) + duration_ms(frame, self._rate) / 1000
 
     async def say(self, sentence: str) -> None:
-        if self._tts_failed:
+        if self.tts_failed:
             return
         try:
             async with asyncio.timeout(self._s.profile.timeouts.tts_s):
@@ -231,7 +247,7 @@ class _Speaker:
                         await self._send(frame)
         except (ProviderError, TimeoutError) as e:
             log.warning("TTS failed: %s", e)
-            self._tts_failed = True
+            self.tts_failed = True
             await self._s.transport.send_json(protocol.error(protocol.ErrorCode.TTS_FAILED, "Failed to generate the voice.", False))
             return
         self.sentences_said.append(sentence)

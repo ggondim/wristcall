@@ -4,7 +4,7 @@ import pytest
 
 from memory_storage import MemoryStorage
 from wristcall.agents import Agent, AgentSpec, ProviderRef
-from wristcall.history import History
+from wristcall.history import KEY_ID, History, check_key
 from wristcall.history_codec import HistoryCodec, HistoryKeyError
 
 KEY = bytes(range(32))
@@ -77,3 +77,15 @@ async def test_a_call_deleted_meanwhile_is_left_alone(st):
     done = await call_log.save(status="delivered", finished=True)
     assert done.status == "delivered"
     assert await st.calls.get("u_a", call_log.record.id) is None
+
+
+async def test_the_first_key_is_remembered_and_others_refused(st):
+    await check_key(st, HistoryCodec())  # no key, nothing sealed: fine, nothing recorded
+    assert await st.meta.get(KEY_ID) is None
+    await check_key(st, HistoryCodec(KEY))
+    assert await st.meta.get(KEY_ID) == HistoryCodec(KEY).key_id
+    await check_key(st, HistoryCodec(KEY))  # same key again
+    with pytest.raises(HistoryKeyError, match="not the key"):
+        await check_key(st, HistoryCodec(bytes(32)))
+    with pytest.raises(HistoryKeyError, match="set history.encryption_key"):
+        await check_key(st, HistoryCodec())

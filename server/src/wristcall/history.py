@@ -12,10 +12,31 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from .agents import Agent
-from .history_codec import HistoryCodec
+from .history_codec import HistoryCodec, HistoryKeyError
 from .storage import CallRecord, EntryRecord, Storage
 
 log = logging.getLogger("wristcall.history")
+
+
+KEY_ID = "history_key_id"  # meta: names the key that sealed the history (never the key itself)
+
+
+async def check_key(storage: Storage, codec: HistoryCodec) -> None:
+    """Refuses a key other than the one that sealed the history, or no key once it is sealed (decision H4).
+
+    The first start with a key records which key it is. Raises HistoryKeyError.
+    """
+    stored = await storage.meta.get(KEY_ID)
+    if stored is None:
+        if codec.key_id is not None:
+            await storage.meta.set(KEY_ID, codec.key_id)
+        return
+    if codec.key_id is None:
+        raise HistoryKeyError(
+            "the call history is encrypted: set history.encryption_key (or run `wristcall history decrypt` with it first)"
+        )
+    if codec.key_id != stored:
+        raise HistoryKeyError("history.encryption_key is not the key that encrypted the call history")
 
 
 def new_call_id() -> str:
@@ -49,6 +70,11 @@ class CallLog:
         self._codec = codec
         self._now = now
         self._seq = 0
+
+    @property
+    def count(self) -> int:
+        """Utterances recorded so far (tried, even if the write failed)."""
+        return self._seq
 
     async def add(self, role: str, text: str | None, error: str | None = None) -> None:
         """Appends an utterance. Never raises (decision H9): a call goes on even if its history cannot be written."""

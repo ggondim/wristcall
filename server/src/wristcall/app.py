@@ -25,7 +25,7 @@ from .auth import Authenticator, Principal
 from .bootstrap import bootstrap, log_report
 from .config import AppConfig
 from .delivery import DeliveryPolicy
-from .history import History
+from .history import History, check_key
 from .history_codec import HistoryCodec
 from .oneway import Background, OneWayCall
 from .pairing import DeviceLimit, Paired, PairingDenied, PairingGone, PairingService
@@ -94,6 +94,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        await check_key(store, history.codec)
         log_report(await bootstrap(store, config))
         # Only the server does this (the CLI may run next to a live server): its own calls died with it.
         if interrupted := await store.calls.interrupt_unfinished(time.time()):
@@ -372,31 +373,40 @@ def create_app(
         # because watch 0.1.0 omits turn_end when the user picks auto.
         turn_end = start.turn_end or (agent.spec.turn_end if start.agent else "auto")
         transport = _WsTransport(ws)
-        session = CallSession(agent.spec, provider_set, build_vad(agent.spec.vad), transport, turn_end=turn_end)
-        session_id = secrets.token_hex(8)
-        await transport.send_json(
-            protocol.session_ready(
-                session_id, agent_summary(agent), turn_end, protocol.AudioFormat(sample_rate=provider_set.tts.sample_rate)
-            )
+        vad = build_vad(agent.spec.vad)
+        call_log = await history.start(agent, principal.device.id)
+        record = call_log.record
+        session = CallSession(
+            agent.spec, provider_set, vad, transport, turn_end=turn_end, record=call_log.add,
         )
-        log.info(
-            "call %s started: device=%s agent=%s (%s) turn_end=%s",
-            session_id, principal.device.id, agent.id, agent.slug, turn_end,
-        )
-        warming = asyncio.create_task(warm_all(call_targets)) if call_targets else None
+        warming: asyncio.Task[None] | None = None
 
         async def on_audio(data: bytes) -> bool:
             await session.on_audio(data)
             return False
 
+        # From here on the record exists: whatever happens, it gets closed.
         try:
+            await transport.send_json(
+                protocol.session_ready(
+                    secrets.token_hex(8), agent_summary(agent), turn_end,
+                    protocol.AudioFormat(sample_rate=provider_set.tts.sample_rate), call_id=record.id,
+                )
+            )
+            log.info(
+                "call %s started: device=%s agent=%s (%s) turn_end=%s",
+                record.id, principal.device.id, agent.id, agent.slug, turn_end,
+            )
+            warming = asyncio.create_task(warm_all(call_targets)) if call_targets else None
             await pump(ws, transport, on_audio, session.on_mute)
         finally:
             if warming is not None and not warming.done():
                 warming.cancel()
             await session.close()
+            ended = time.time()
+            await call_log.save(status="ended" if call_log.count else "empty", ended_at=ended, finished=True)
             with suppress(Exception):
                 await ws.close(code=protocol.CLOSE_NORMAL)
-            log.info("call %s ended", session_id)
+            log.info("call %s ended", record.id)
 
     return app

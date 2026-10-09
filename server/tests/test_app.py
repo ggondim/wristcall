@@ -488,12 +488,44 @@ def test_client_gone_before_session_ready_still_finishes_the_call(oneway, monkey
     assert wait_done(oneway, row["id"], auth(token))["status"] == "empty"
 
 
-def test_conversation_ready_has_no_call_id(client):
+def test_conversation_is_recorded_in_the_history(client):
     token = pair(client)
     with client.websocket_connect("/v1/call", headers=auth(token)) as ws:
         ws.send_json(START)
-        assert "call_id" not in ws.receive_json()
+        call_id = ws.receive_json()["call_id"]
+        ws.send_bytes(tone(500) + silence(900))
+        read_until_agent_end(ws)
         ws.send_json({"type": "session.end"})
+    view = client.get(f"/v1/calls/{call_id}", headers=auth(token)).json()
+    assert (view["call_type"], view["status"], view["error"]) == ("conversation", "ended", None)
+    assert view["agent"]["slug"] == "default" and view["ended_at"] >= view["created_at"]
+    [user, agent] = view["entries"]
+    assert (user["role"], agent["role"], agent["error"]) == ("user", "agent", None)
+    assert agent["text"] == f"You said: {user['text']}" and view["text"] == user["text"]
+
+
+def test_conversation_without_speech_is_empty(client):
+    token = pair(client)
+    with client.websocket_connect("/v1/call", headers=auth(token)) as ws:
+        ws.send_json(START)
+        call_id = ws.receive_json()["call_id"]
+        ws.send_json({"type": "session.end"})
+    view = client.get(f"/v1/calls/{call_id}", headers=auth(token)).json()
+    assert (view["status"], view["entries"], view["text"]) == ("empty", [], None)
+
+
+def test_server_refuses_to_start_with_another_history_key():
+    from wristcall.history_codec import HistoryKeyError, new_key
+
+    store = open_sqlite_storage(":memory:")
+    cfg = fake_config()
+    cfg.history.encryption_key = new_key()
+    with TestClient(create_app(cfg, storage=store)):
+        pass
+    cfg.history.encryption_key = new_key()
+    with pytest.raises(HistoryKeyError, match="not the key"):
+        with TestClient(create_app(cfg, storage=store)):
+            pass
 
 
 def test_unfinished_calls_are_interrupted_at_startup():
