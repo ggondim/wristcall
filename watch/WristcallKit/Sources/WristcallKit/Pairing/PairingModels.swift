@@ -49,18 +49,57 @@ public enum PollResult: Sendable, Equatable {
 public struct DeviceInfo: Sendable, Equatable, Decodable {
     public var deviceId: String
     public var deviceName: String
+    /// The account behind the device; `nil` from servers before 0.5.0.
+    public var user: UserInfo?
+    /// What the user can call, in the watch's order. A 0.2.x server sends only `profiles`:
+    /// each one becomes a conversation agent (`Agent(profile:)`).
+    public var agents: [Agent]
+    /// The 0.2.x list (`slug` and `display_name` of each agent), kept for code that predates agents.
     public var profiles: [Profile]
 
+    /// For a 0.2.x server: the agents are derived from `profiles`.
     public init(deviceId: String, deviceName: String, profiles: [Profile]) {
         self.deviceId = deviceId
         self.deviceName = deviceName
+        self.user = nil
+        self.agents = profiles.map(Agent.init(profile:))
         self.profiles = profiles
+    }
+
+    /// The profiles are derived from the agents' `slug` and `displayName`, as the server does.
+    public init(deviceId: String, deviceName: String, user: UserInfo?, agents: [Agent]) {
+        self.deviceId = deviceId
+        self.deviceName = deviceName
+        self.user = user
+        self.agents = agents
+        self.profiles = agents.map { Profile(name: $0.slug, displayName: $0.displayName) }
     }
 
     private enum CodingKeys: String, CodingKey {
         case deviceId = "device_id"
         case deviceName = "device_name"
+        case user
+        case agents
         case profiles
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let deviceId = try container.decode(String.self, forKey: .deviceId)
+        let deviceName = try container.decode(String.self, forKey: .deviceName)
+        let agents = try container.decodeIfPresent([Agent].self, forKey: .agents)
+        let profiles = try container.decodeIfPresent([Profile].self, forKey: .profiles)
+        if let agents {
+            self.init(deviceId: deviceId, deviceName: deviceName, user: try container.decodeIfPresent(UserInfo.self, forKey: .user), agents: agents)
+            if let profiles {
+                self.profiles = profiles
+            }
+        } else if let profiles {
+            self.init(deviceId: deviceId, deviceName: deviceName, profiles: profiles)
+            user = try container.decodeIfPresent(UserInfo.self, forKey: .user)
+        } else {
+            throw DecodingError.keyNotFound(CodingKeys.profiles, .init(codingPath: decoder.codingPath, debugDescription: "neither agents nor profiles"))
+        }
     }
 }
 

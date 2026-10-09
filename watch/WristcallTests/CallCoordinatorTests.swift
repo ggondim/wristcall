@@ -131,7 +131,7 @@ struct CallCoordinatorTests {
         #expect(start.contains(#""profile":"default""#))
     }
 
-    @Test func autoCallSendsNoTurnEndInSessionStart() async throws {
+    @Test func autoCallSendsTurnEndAutoInSessionStart() async throws {
         let (_, model) = try await makeCoordinator()
         model.startCall()
         await waitUntil { callKit.starts.count == 1 }
@@ -141,7 +141,7 @@ struct CallCoordinatorTests {
         try await transport.waitUntilSent { $0.count == 1 }
         let start = try #require(transport.sentTexts.first)
         #expect(start.contains(#""type":"session.start""#))
-        #expect(!start.contains("turn_end"))
+        #expect(start.contains(#""turn_end":"auto""#))
     }
 
     @Test func manualCallSendsTurnEndManualInSessionStart() async throws {

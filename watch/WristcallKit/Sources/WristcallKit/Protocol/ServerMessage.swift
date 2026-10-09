@@ -11,6 +11,8 @@ public enum ServerMessage: Sendable, Equatable {
     case agentTurnStarted
     case agentTurnEnded
     case error(ServerError)
+    /// One-way calls only: the server stopped recording by itself, and closes the call (1000) next.
+    case callCaptured(CallCaptured)
     case unknown(type: String)
 
     public static func decode(_ text: String) throws -> ServerMessage {
@@ -41,6 +43,8 @@ public enum ServerMessage: Sendable, Equatable {
                 return .agentTurnEnded
             case "error":
                 return .error(try decoder.decode(ServerError.self, from: data))
+            case "call.captured":
+                return .callCaptured(try decoder.decode(CallCaptured.self, from: data))
             default:
                 return .unknown(type: type)
             }
@@ -64,17 +68,64 @@ public struct SessionReady: Decodable, Sendable, Equatable {
     public var profile: Profile
     /// Format of the server's audio frames (PCM16 mono at `sampleRate`).
     public var audioOut: AudioFormat
+    /// The agent being called; `nil` from servers before 0.3.0.
+    public var agent: Agent?
+    /// One-way calls only: the id to ask `GET /v1/calls/{id}` about after hanging up.
+    public var callID: String?
+    /// The mode in force for this call; `nil` from servers before 0.3.0 or for a value this client does not know.
+    public var turnEnd: TurnEnd?
 
-    public init(sessionID: String, profile: Profile, audioOut: AudioFormat) {
+    public init(
+        sessionID: String,
+        profile: Profile,
+        audioOut: AudioFormat,
+        agent: Agent? = nil,
+        callID: String? = nil,
+        turnEnd: TurnEnd? = nil
+    ) {
         self.sessionID = sessionID
         self.profile = profile
         self.audioOut = audioOut
+        self.agent = agent
+        self.callID = callID
+        self.turnEnd = turnEnd
     }
 
     private enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
         case profile
         case audioOut = "audio_out"
+        case agent
+        case callID = "call_id"
+        case turnEnd = "turn_end"
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try container.decode(String.self, forKey: .sessionID)
+        profile = try container.decode(Profile.self, forKey: .profile)
+        audioOut = try container.decode(AudioFormat.self, forKey: .audioOut)
+        // The call is already open: a summary or mode this client cannot read must not fail it.
+        agent = try? container.decodeIfPresent(Agent.self, forKey: .agent)
+        callID = try? container.decodeIfPresent(String.self, forKey: .callID)
+        turnEnd = (try? container.decodeIfPresent(String.self, forKey: .turnEnd)).flatMap(TurnEnd.init(rawValue:))
+    }
+}
+
+/// `call.captured`: a one-way call hit a limit and the server stopped recording.
+public struct CallCaptured: Decodable, Sendable, Equatable {
+    public var callID: String
+    /// Free text from the server (`"limit"` today); not an enumeration.
+    public var reason: String
+
+    public init(callID: String, reason: String) {
+        self.callID = callID
+        self.reason = reason
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case callID = "call_id"
+        case reason
     }
 }
 
@@ -205,6 +256,8 @@ public enum ServerErrorCode: OpenWireValue, Sendable, Equatable {
     case unsupportedAudio
     /// The profile does not exist on the server (fatal).
     case unknownProfile
+    /// The agent cannot take the call right now (for example a type this server cannot run).
+    case agentUnavailable
     /// Transcription failed or timed out.
     case sttFailed
     /// The agent did not answer or stopped midway.
@@ -222,6 +275,7 @@ public enum ServerErrorCode: OpenWireValue, Sendable, Equatable {
         case "unsupported_protocol": self = .unsupportedProtocol
         case "unsupported_audio": self = .unsupportedAudio
         case "unknown_profile": self = .unknownProfile
+        case "agent_unavailable": self = .agentUnavailable
         case "stt_failed": self = .sttFailed
         case "responder_failed": self = .responderFailed
         case "tts_failed": self = .ttsFailed
@@ -237,6 +291,7 @@ public enum ServerErrorCode: OpenWireValue, Sendable, Equatable {
         case .unsupportedProtocol: "unsupported_protocol"
         case .unsupportedAudio: "unsupported_audio"
         case .unknownProfile: "unknown_profile"
+        case .agentUnavailable: "agent_unavailable"
         case .sttFailed: "stt_failed"
         case .responderFailed: "responder_failed"
         case .ttsFailed: "tts_failed"

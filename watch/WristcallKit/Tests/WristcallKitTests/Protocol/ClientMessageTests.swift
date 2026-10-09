@@ -27,20 +27,35 @@ struct ClientMessageTests {
         #expect(text == #"{"audio_in":{"channels":1,"codec":"pcm16","sample_rate":16000},"protocol":1,"type":"session.start"}"#)
     }
 
-    @Test func autoTurnEndIsOmittedSoTheBytesMatchOlderClients() throws {
-        let explicit = try ClientMessage.sessionStart(profile: "demo", turnEnd: .auto).jsonText()
-        #expect(explicit == #"{"audio_in":{"channels":1,"codec":"pcm16","sample_rate":16000},"profile":"demo","protocol":1,"type":"session.start"}"#)
-        #expect(try ClientMessage.sessionStart(profile: "demo").jsonText() == explicit)
+    @Test func nilTurnEndIsOmittedSoTheAgentsOwnApplies() throws {
+        let text = try ClientMessage.sessionStart(agent: nil, profile: "demo", turnEnd: nil).jsonText()
+        #expect(text == #"{"audio_in":{"channels":1,"codec":"pcm16","sample_rate":16000},"profile":"demo","protocol":1,"type":"session.start"}"#)
+        #expect(try ClientMessage.sessionStart(profile: "demo").jsonText() == text)
+    }
+
+    @Test func autoTurnEndIsSentOnTheWire() throws {
+        let text = try ClientMessage.sessionStart(agent: nil, profile: "demo", turnEnd: .auto).jsonText()
+        #expect(text == #"{"audio_in":{"channels":1,"codec":"pcm16","sample_rate":16000},"profile":"demo","protocol":1,"turn_end":"auto","type":"session.start"}"#)
     }
 
     @Test func manualTurnEndIsSentOnTheWire() throws {
-        let text = try ClientMessage.sessionStart(profile: "demo", turnEnd: .manual).jsonText()
+        let text = try ClientMessage.sessionStart(agent: nil, profile: "demo", turnEnd: .manual).jsonText()
         #expect(text == #"{"audio_in":{"channels":1,"codec":"pcm16","sample_rate":16000},"profile":"demo","protocol":1,"turn_end":"manual","type":"session.start"}"#)
     }
 
     @Test func manualTurnEndWithoutProfile() throws {
-        let text = try ClientMessage.sessionStart(profile: nil, turnEnd: .manual).jsonText()
+        let text = try ClientMessage.sessionStart(agent: nil, profile: nil, turnEnd: .manual).jsonText()
         #expect(text == #"{"audio_in":{"channels":1,"codec":"pcm16","sample_rate":16000},"protocol":1,"turn_end":"manual","type":"session.start"}"#)
+    }
+
+    @Test func agentAndProfileAreBothSent() throws {
+        let text = try ClientMessage.sessionStart(agent: "ag_3f9c0a1b2c3d", profile: "note", turnEnd: nil).jsonText()
+        #expect(text == #"{"agent":"ag_3f9c0a1b2c3d","audio_in":{"channels":1,"codec":"pcm16","sample_rate":16000},"profile":"note","protocol":1,"type":"session.start"}"#)
+    }
+
+    @Test func agentAloneWithTurnEnd() throws {
+        let text = try ClientMessage.sessionStart(agent: "note", profile: nil, turnEnd: .auto).jsonText()
+        #expect(text == #"{"agent":"note","audio_in":{"channels":1,"codec":"pcm16","sample_rate":16000},"protocol":1,"turn_end":"auto","type":"session.start"}"#)
     }
 
     @Test func turnEndWireValues() {

@@ -48,14 +48,52 @@ struct CallSessionTests {
         #expect(transport.sentTexts == [#"{"audio_in":{"channels":1,"codec":"pcm16","sample_rate":16000},"protocol":1,"type":"session.start"}"#])
     }
 
-    @Test func autoStartSendsNoTurnEnd() async throws {
+    @Test func startWithoutTurnEndSendsNone() async throws {
+        let session = CallSession(transport: transport)
+        _ = try await open(session)
+        #expect(!transport.sentTexts[0].contains("turn_end"))
+    }
+
+    @Test func autoStartSendsTurnEndAuto() async throws {
         let session = CallSession(transport: transport)
         async let ready = session.start(profile: "demo", turnEnd: .auto)
         try await transport.waitUntilSent { $0.count == 1 }
         transport.serverSends(Self.ready)
         _ = try await ready
-        #expect(!transport.sentTexts[0].contains("turn_end"))
-        #expect(transport.sent == [try startText("demo")])
+        #expect(transport.sentTexts[0].contains(#""turn_end":"auto""#))
+        #expect(transport.sent == [.text(try ClientMessage.sessionStart(agent: nil, profile: "demo", turnEnd: .auto).jsonText())])
+    }
+
+    @Test func startSendsTheAgentAndTheProfile() async throws {
+        let session = CallSession(transport: transport)
+        async let ready = session.start(agent: "ag_1", profile: "note", turnEnd: .manual)
+        try await transport.waitUntilSent { $0.count == 1 }
+        transport.serverSends(Self.ready)
+        _ = try await ready
+        #expect(transport.sent == [.text(try ClientMessage.sessionStart(agent: "ag_1", profile: "note", turnEnd: .manual).jsonText())])
+        #expect(transport.sentTexts[0].contains(#""agent":"ag_1""#))
+    }
+
+    @Test func readyKeepsTheAgentAndTheCallID() async throws {
+        let session = CallSession(transport: transport)
+        async let opened = session.start(agent: "note")
+        try await transport.waitUntilSent { $0.count == 1 }
+        transport.serverSends(#"{"type":"session.ready","session_id":"s1","call_id":"c_9","profile":{"name":"note","display_name":"Note"},"agent":{"id":"ag_1","slug":"note","display_name":"Note","call_type":"monologue","turn_end":"manual"},"turn_end":"manual","audio_out":{"codec":"pcm16","sample_rate":24000,"channels":1}}"#)
+        let ready = try await opened
+        #expect(ready.callID == "c_9")
+        #expect(ready.agent?.callType == .monologue)
+        #expect(ready.turnEnd == .manual)
+    }
+
+    @Test func capturedIsAnEventAndTheCloseStillEndsNormally() async throws {
+        let session = CallSession(transport: transport)
+        _ = try await open(session)
+        transport.serverSends(#"{"type":"call.captured","call_id":"c_9","reason":"limit"}"#)
+        transport.serverCloses(code: 1000)
+        #expect(await collect(session.events) == [
+            .captured(callID: "c_9", reason: "limit"),
+            .ended(.normal),
+        ])
     }
 
     @Test func manualStartSendsTurnEndManual() async throws {

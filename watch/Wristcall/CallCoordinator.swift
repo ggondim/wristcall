@@ -189,6 +189,9 @@ final class CallCoordinator: CallHandling {
             Self.log.notice("agent turn ended: \(call.agentFrames) audio frames")
             audio.agentTurnEnded()
             model?.callActivityDidChange(.listening)
+        case .captured(let callID, let reason):
+            // One-way calls arrive with the new call screens; for now only the close that follows matters.
+            Self.log.notice("call \(callID, privacy: .private) captured: \(reason, privacy: .public)")
         case .transcript:
             // Informational; not shown in the MVP (and never logged: it is the user's speech).
             break

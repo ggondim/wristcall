@@ -25,6 +25,8 @@ struct PairingIntegrationTests {
         #expect(info.deviceId == device.deviceId)
         #expect(info.deviceName == "Integration Watch")
         #expect(info.profiles.map(\.name).sorted() == ["default", "demo"])
+        #expect(info.agents.map(\.slug).sorted() == ["default", "demo"])
+        #expect(info.agents.allSatisfy { $0.callType == .conversation && !$0.id.isEmpty })
 
         // The code is single use.
         await #expect(throws: PairingError.invalidCode) {

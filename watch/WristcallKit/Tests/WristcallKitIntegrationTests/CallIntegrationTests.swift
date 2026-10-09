@@ -52,6 +52,8 @@ struct CallIntegrationTests {
             case .agentTurnEnded:
                 sender.cancel()
                 await session.end()
+            case .captured:
+                Issue.record("unexpected call.captured on a conversation call")
             case .error(let code, let message, _):
                 Issue.record("server error \(code.wireValue): \(message)")
             case .ended(let reason):
