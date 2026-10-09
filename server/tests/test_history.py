@@ -1,4 +1,5 @@
 import logging
+from dataclasses import replace
 
 import pytest
 
@@ -89,3 +90,43 @@ async def test_the_first_key_is_remembered_and_others_refused(st):
         await check_key(st, HistoryCodec(bytes(32)))
     with pytest.raises(HistoryKeyError, match="set history.encryption_key"):
         await check_key(st, HistoryCodec())
+
+
+def settings(**kw):
+    from wristcall.config import HistoryConfig
+
+    return HistoryConfig(**kw)
+
+
+async def test_a_call_expires_by_its_agent_retention(st):
+    a = agent()
+    history = History(st, HistoryCodec(), settings(default_retention_days=90, max_retention_days=365), now=lambda: 1000.0)
+    assert (await history.start(a, None)).record.expires_at == 1000.0 + 90 * 86_400
+    week = replace(a, spec=a.spec.model_copy(update={"retention_days": 7}))
+    assert (await history.start(week, None)).record.expires_at == 1000.0 + 7 * 86_400
+    forever = replace(a, spec=a.spec.model_copy(update={"retention_days": "forever"}))
+    assert (await history.start(forever, None)).record.expires_at == 1000.0 + 365 * 86_400
+    assert (await History(st, HistoryCodec()).start(forever, None)).record.expires_at is None
+
+
+async def test_startup_applies_the_operator_settings_to_past_calls(st):
+    await st.agents.create(agent().to_record())
+    old = History(st, HistoryCodec(), now=lambda: 1000.0)  # kept forever back then
+    mine = (await old.start(agent(), None)).record
+    orphan = (await old.start(replace(agent(), id="ag_deleted"), None)).record
+    now = History(st, HistoryCodec(), settings(default_retention_days=30, max_retention_days=60), now=lambda: 2000.0)
+    await now.apply_retention()
+    assert (await st.calls.get("u_a", mine.id)).expires_at == 1000.0 + 30 * 86_400
+    assert (await st.calls.get("u_a", orphan.id)).expires_at == 1000.0 + 60 * 86_400  # only the ceiling
+
+
+async def test_purge_deletes_expired_closed_calls(st):
+    history = History(st, HistoryCodec(), settings(default_retention_days=1), now=lambda: 0.0)
+    done = await history.start(agent(), None)
+    await done.add("user", "velho")
+    await done.save(status="ended", finished=True)
+    still_open = await history.start(agent(), None)
+    later = History(st, HistoryCodec(), settings(default_retention_days=1), now=lambda: 86_400.0)
+    assert await later.purge() == 1
+    assert await st.calls.get("u_a", done.record.id) is None
+    assert await st.calls.get("u_a", still_open.record.id) is not None

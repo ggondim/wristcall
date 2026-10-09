@@ -273,3 +273,20 @@ def test_bad_history_key_is_rejected_without_echoing_it():
     with pytest.raises(ConfigError, match="32 random bytes") as exc:
         parse_config(data, {**ENV, "HKEY": "c2hvcnQta2V5"})
     assert "c2hvcnQta2V5" not in str(exc.value)
+
+
+@pytest.mark.parametrize("default, ceiling, agent_days, expected", [
+    (None, None, None, None),  # self-host default: kept until deleted
+    (None, None, 30, 30),
+    (None, None, "forever", None),
+    (90, None, None, 90),  # the operator's default
+    (90, None, "forever", None),
+    (90, 365, "forever", 365),  # the ceiling wins over forever
+    (90, 365, 1000, 365),
+    (90, 365, 7, 7),
+    (90, 365, None, 90),
+])
+def test_effective_retention(default, ceiling, agent_days, expected):
+    data = base()
+    data["history"] = {"default_retention_days": default, "max_retention_days": ceiling}
+    assert parse_config(data, ENV).history.effective_days(agent_days) == expected

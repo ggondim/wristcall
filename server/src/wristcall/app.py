@@ -54,6 +54,17 @@ class PollBody(BaseModel):
     poll_token: str = Field(min_length=1, max_length=128)
 
 
+async def purge_forever(history: History, every_s: float) -> None:
+    """Deletes expired calls now and then every `every_s`. Only the server purges, never the CLI."""
+    while True:
+        try:
+            if purged := await history.purge():
+                log.info("history: %d expired call(s) deleted", purged)
+        except Exception:
+            log.exception("history: purge failed")
+        await asyncio.sleep(every_s)
+
+
 class _WsTransport:
     def __init__(self, ws: WebSocket) -> None:
         self._ws = ws
@@ -87,7 +98,7 @@ def create_app(
     auth = Authenticator(store)
     limiter = RateLimiter(limit=10, window_s=60)
     account = AccountService(store, config.central_account, http_client) if config.central_account else None
-    history = History(store, HistoryCodec(config.history.key()))
+    history = History(store, HistoryCodec(config.history.key()), config.history)
     targets = warmup_targets(config, http_client)
     call_targets = [t for t in targets if t.config.on_call]
     after_calls = Background()
@@ -96,11 +107,16 @@ def create_app(
     async def lifespan(_app: FastAPI):
         await check_key(store, history.codec)
         log_report(await bootstrap(store, config))
+        await history.apply_retention()
+        purging = asyncio.create_task(purge_forever(history, config.history.purge_every_s))
         # Only the server does this (the CLI may run next to a live server): its own calls died with it.
         if interrupted := await store.calls.interrupt_unfinished(time.time()):
             log.warning("%d one-way call(s) left unfinished by the last run marked as interrupted", interrupted)
         background = asyncio.create_task(run_background(targets)) if targets else None
         yield
+        purging.cancel()
+        with suppress(asyncio.CancelledError):
+            await purging
         await after_calls.close()
         if background is not None:
             background.cancel()

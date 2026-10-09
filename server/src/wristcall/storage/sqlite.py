@@ -463,6 +463,24 @@ class _Calls:
             return self._db.execute("DELETE FROM calls WHERE user_id = ?", (user_id,))
         return self._db.execute("DELETE FROM calls WHERE user_id = ? AND agent_id = ?", (user_id, agent_id))
 
+    async def set_expiry(self, user_id: str, agent_id: str, retention_s: float | None) -> int:
+        return self._db.execute(
+            "UPDATE calls SET expires_at = created_at + ? WHERE user_id = ? AND agent_id = ?",
+            (retention_s, user_id, agent_id),
+        )
+
+    async def cap_expiry(self, max_retention_s: float) -> int:
+        return self._db.execute(
+            "UPDATE calls SET expires_at = created_at + ? WHERE expires_at IS NULL OR expires_at > created_at + ?",
+            (max_retention_s, max_retention_s),
+        )
+
+    async def purge_expired(self, now: float) -> int:
+        return self._db.execute(
+            "DELETE FROM calls WHERE expires_at IS NOT NULL AND expires_at <= ? AND status NOT IN ('recording', 'processing')",
+            (now,),
+        )
+
 
 class _Meta:
     def __init__(self, db: Database) -> None:

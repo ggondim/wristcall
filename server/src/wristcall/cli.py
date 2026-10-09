@@ -17,7 +17,7 @@ import uvicorn
 
 from .agents import Agent, AgentError, AgentService, agent_detail
 from .bootstrap import bootstrap
-from .config import AppConfig, ConfigError, load_config
+from .config import AppConfig, ConfigError, HistoryConfig, load_config
 from .directory_client import DirectoryClient, DirectoryError
 from .pairing import DeviceLimit, NotFound, PairingService, format_code, issue_code
 from .providers import ProviderError
@@ -363,6 +363,7 @@ def _agent_input(
     prompt: str | None,
     prompt_file: Path | None,
     fallback: str | None,
+    retention: str | None = None,
 ) -> dict[str, Any]:
     data: dict[str, Any] = {}
     if from_json is not None:
@@ -374,7 +375,7 @@ def _agent_input(
         if not isinstance(loaded, dict):
             raise AgentError("invalid", f"{from_json} must hold a JSON object")
         data.update(loaded)
-        for key in ("id", "created_at", "updated_at"):  # `agents show` output fed back
+        for key in ("id", "created_at", "updated_at", "effective_retention_days"):  # `agents show` output fed back
             data.pop(key, None)
     flags: dict[str, Any] = {
         "display_name": name, "icon": icon, "language": language, "turn_end": turn_end, "call_type": call_type,
@@ -390,7 +391,17 @@ def _agent_input(
         data["system_prompt"] = _read_text(prompt_file)
     if silence_ms is not None:
         data["vad"] = {**(data.get("vad") or {}), "silence_ms": silence_ms}
+    if retention is not None:
+        data["retention_days"] = _retention(retention)
     return data
+
+
+def _retention(value: str) -> int | str | None:
+    if value in ("forever", "default"):
+        return None if value == "default" else value
+    if value.isdigit():
+        return int(value)
+    raise AgentError("invalid", "--retention: a number of days, forever or default")
 
 
 NameOpt = Annotated[str | None, typer.Option("--name", help="Display name on the watch.")]
@@ -412,11 +423,15 @@ TtsOpt = Annotated[str | None, typer.Option("--tts", help="Provider name, or a J
 PromptOpt = Annotated[str | None, typer.Option("--prompt", help="System prompt.")]
 PromptFileOpt = Annotated[Path | None, typer.Option("--prompt-file", help="Read the system prompt from a file.")]
 FallbackOpt = Annotated[str | None, typer.Option("--fallback", help="Spoken when the agent fails.")]
+RetentionOpt = Annotated[
+    str | None,
+    typer.Option("--retention", help="Days its calls stay in the history, forever, or default (the operator's)."),
+]
 JsonOpt = Annotated[Path | None, typer.Option("--from-json", help="JSON file with the fields (- for stdin); flags win.")]
 
 
-def _print_agent(agent: Agent) -> None:
-    typer.echo(json.dumps(agent_detail(agent), indent=2, ensure_ascii=False))
+def _print_agent(agent: Agent, history: HistoryConfig | None = None) -> None:
+    typer.echo(json.dumps(agent_detail(agent, history), indent=2, ensure_ascii=False))
 
 
 @agents_app.command("list")
@@ -442,9 +457,9 @@ def agents_show(ref: str, config: ConfigOpt = DEFAULT_CONFIG, user: UserOpt = No
     """Shows an agent as JSON (secrets as ***); `--from-json` accepts the same shape."""
 
     async def body(ctx: Ctx):
-        return await ctx.agents.get((await ctx.users.resolve(user)).id, ref)
+        return await ctx.agents.get((await ctx.users.resolve(user)).id, ref), ctx.cfg.history
 
-    _print_agent(_run(config, body))
+    _print_agent(*_run(config, body))
 
 
 @agents_app.command("add")
@@ -465,12 +480,16 @@ def agents_add(
     prompt: PromptOpt = None,
     prompt_file: PromptFileOpt = None,
     fallback: FallbackOpt = None,
+    retention: RetentionOpt = None,
     from_json: JsonOpt = None,
 ) -> None:
     """Adds an agent. Without --stt/--action/--tts, uses the server's only provider of each kind."""
 
     async def body(ctx: Ctx):
-        data = _agent_input(from_json, name, icon, language, turn_end, silence_ms, call_type, position, stt, action, tts, prompt, prompt_file, fallback)
+        data = _agent_input(
+            from_json, name, icon, language, turn_end, silence_ms, call_type, position, stt, action, tts, prompt,
+            prompt_file, fallback, retention,
+        )
         data["slug"] = slug
         return await ctx.agents.create((await ctx.users.resolve(user)).id, data)
 
@@ -497,12 +516,16 @@ def agents_edit(
     prompt: PromptOpt = None,
     prompt_file: PromptFileOpt = None,
     fallback: FallbackOpt = None,
+    retention: RetentionOpt = None,
     from_json: JsonOpt = None,
 ) -> None:
     """Changes only the given fields of an agent."""
 
     async def body(ctx: Ctx):
-        data = _agent_input(from_json, name, icon, language, turn_end, silence_ms, call_type, position, stt, action, tts, prompt, prompt_file, fallback)
+        data = _agent_input(
+            from_json, name, icon, language, turn_end, silence_ms, call_type, position, stt, action, tts, prompt,
+            prompt_file, fallback, retention,
+        )
         if slug is not None:
             data["slug"] = slug
         return await ctx.agents.update((await ctx.users.resolve(user)).id, ref, data)

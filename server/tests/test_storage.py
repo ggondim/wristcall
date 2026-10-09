@@ -318,10 +318,10 @@ async def history(storage) -> None:
         ("c_2", "ag_2", 20.0, [("user", "milk and bread"), ("agent", "noted")]),
         ("c_3", "ag_1", 30.0, []),
     ):
-        await storage.calls.create(call(id=cid, agent_id=agent_id, created_at=at, updated_at=at))
+        await storage.calls.create(call(id=cid, agent_id=agent_id, status="ended", created_at=at, updated_at=at))
         for seq, (role, text) in enumerate(texts):
             await storage.calls.add_entry("u_a", entry(cid, seq, role, text), text.split())
-    await storage.calls.create(call(id="c_9", user_id="u_b", created_at=15.0))
+    await storage.calls.create(call(id="c_9", user_id="u_b", status="ended", created_at=15.0))
     await storage.calls.add_entry("u_b", entry("c_9"), ["milk"])
 
 
@@ -373,6 +373,21 @@ async def test_deleting_calls_takes_entries_and_index_along(storage):
     assert await storage.calls.get("u_b", "c_9") is not None
     assert await storage.calls.delete_all("u_b") == 1
     assert await storage.calls.list("u_b") == []
+
+
+async def test_expiry_is_set_capped_and_purged(storage):
+    await history(storage)  # alice: c_1 (ag_1, t=10), c_2 (ag_2, t=20), c_3 (ag_1, t=30)
+    assert await storage.calls.set_expiry("u_a", "ag_1", 100.0) == 2
+    assert [(await storage.calls.get("u_a", c)).expires_at for c in ("c_1", "c_2", "c_3")] == [110.0, None, 130.0]
+    assert await storage.calls.cap_expiry(50.0) == 4  # c_1, c_3 longer; c_2 and bob's c_9 kept forever
+    assert [(await storage.calls.get("u_a", c)).expires_at for c in ("c_1", "c_2", "c_3")] == [60.0, 70.0, 80.0]
+    await storage.calls.create(call(id="c_open", created_at=1.0, expires_at=2.0))  # still recording
+    assert await storage.calls.purge_expired(70.0) == 3  # c_1, c_2 and bob's c_9 (65)
+    assert await ids(storage) == ["c_3", "c_open"]
+    assert await storage.calls.list("u_b") == []
+    assert await ids(storage, terms=[["milk"]]) == []
+    assert await storage.calls.set_expiry("u_a", "ag_1", None) == 2  # c_3 and c_open
+    assert (await storage.calls.get("u_a", "c_3")).expires_at is None
 
 
 async def test_deleting_a_user_deletes_their_calls(storage):

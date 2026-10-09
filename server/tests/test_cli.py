@@ -346,3 +346,16 @@ def test_cli_deny(tmp_path):
     assert pending.request_id not in ok(cfg, "devices", "list")
     r = invoke(cfg, "devices", "deny", pending.request_id)
     assert r.exit_code == 1 and "no pending request" in r.output
+
+
+def test_agents_retention(tmp_path):
+    cfg = write_config(tmp_path)
+    ok(cfg, "agents", "add", "note", "--retention", "30")
+    shown = json.loads(ok(cfg, "agents", "show", "note"))
+    assert (shown["retention_days"], shown["effective_retention_days"]) == (30, 30)
+    ok(cfg, "agents", "edit", "note", "--retention", "forever")
+    assert json.loads(ok(cfg, "agents", "show", "note"))["effective_retention_days"] is None
+    ok(cfg, "agents", "edit", "note", "--retention", "default")
+    assert json.loads(ok(cfg, "agents", "show", "note"))["retention_days"] is None
+    bad = invoke(cfg, "agents", "edit", "note", "--retention", "soon")
+    assert bad.exit_code != 0 and "--retention" in bad.output

@@ -528,6 +528,22 @@ def test_server_refuses_to_start_with_another_history_key():
             pass
 
 
+def test_expired_calls_are_purged_at_startup():
+    from wristcall.storage import CallRecord
+
+    store = open_sqlite_storage(":memory:")
+    cfg = fake_config()
+    with TestClient(create_app(cfg, storage=store)) as c:
+        user = owner(c)
+    run(store.calls.create(CallRecord(
+        id="c_old", user_id=user.id, agent_id="ag_gone", device_id=None, call_type="one-shot",
+        status="delivered", created_at=1.0, updated_at=1.0, expires_at=2.0,
+    )))
+    with TestClient(create_app(cfg, storage=store)):
+        pass
+    assert run(store.calls.get(user.id, "c_old")) is None
+
+
 def test_unfinished_calls_are_interrupted_at_startup():
     store = open_sqlite_storage(":memory:")
     cfg = fake_config()

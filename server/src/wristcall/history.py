@@ -11,7 +11,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
-from .agents import Agent
+from .agents import Agent, retention_seconds
+from .config import HistoryConfig
 from .history_codec import HistoryCodec, HistoryKeyError
 from .storage import CallRecord, EntryRecord, Storage
 
@@ -102,20 +103,43 @@ class CallLog:
 
 
 class History:
-    def __init__(self, storage: Storage, codec: HistoryCodec, *, now: Callable[[], float] = time.time) -> None:
+    def __init__(
+        self, storage: Storage, codec: HistoryCodec, settings: HistoryConfig | None = None, *,
+        now: Callable[[], float] = time.time,
+    ) -> None:
         self.storage = storage
         self.codec = codec
+        self.settings = settings or HistoryConfig()
         self._now = now
 
+    def retention_s(self, agent: Agent) -> float | None:
+        return retention_seconds(self.settings.effective_days(agent.spec.retention_days))
+
     async def start(self, agent: Agent, device_id: str | None) -> CallLog:
-        """Creates the call's record, open (recording)."""
+        """Creates the call's record, open (recording), with the agent's retention in force now."""
         now = self._now()
+        retention = self.retention_s(agent)
         record = await self.storage.calls.create(CallRecord(
             id=new_call_id(), user_id=agent.user_id, agent_id=agent.id, device_id=device_id,
             call_type=agent.call_type, status="recording", created_at=now, updated_at=now,
             agent_slug=agent.slug, agent_name=agent.display_name,
+            expires_at=None if retention is None else now + retention,
         ))
         return CallLog(self.storage, self.codec, record, now=self._now)
+
+    async def apply_retention(self) -> None:
+        """Operator, at startup: the operator's default and ceiling apply to calls made before they changed.
+        A deleted agent's calls keep their expiry, within the ceiling (decision H7)."""
+        for user in await self.storage.users.list():
+            for record in await self.storage.agents.list(user.id):
+                agent = Agent.from_record(record)
+                await self.storage.calls.set_expiry(user.id, agent.id, self.retention_s(agent))
+        if self.settings.max_retention_days is not None:
+            await self.storage.calls.cap_expiry(retention_seconds(self.settings.max_retention_days))
+
+    async def purge(self) -> int:
+        """Operator. Deletes the expired calls; returns how many."""
+        return await self.storage.calls.purge_expired(self._now())
 
     async def entries(self, record: CallRecord) -> list[Entry]:
         """Raises HistoryKeyError if a sealed text cannot be opened."""

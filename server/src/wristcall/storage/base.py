@@ -227,6 +227,18 @@ class CallStore(Protocol):
         """Every call of the user, or of one of their agents (also a deleted agent's). Returns how many."""
         ...
 
+    async def set_expiry(self, user_id: str, agent_id: str, retention_s: float | None) -> int:
+        """expires_at = created_at + retention_s (None: never) on every call of the agent. Returns how many."""
+        ...
+
+    async def cap_expiry(self, max_retention_s: float) -> int:
+        """Operator. Calls kept longer than created_at + max_retention_s (or forever) get that as expires_at."""
+        ...
+
+    async def purge_expired(self, now: float) -> int:
+        """Operator. Deletes calls whose expires_at has passed, open ones excepted. Returns how many."""
+        ...
+
 
 class MetaStore(Protocol):
     async def get(self, key: str) -> str | None: ...

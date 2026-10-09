@@ -168,6 +168,13 @@ class HistoryConfig(BaseModel):
     def key(self) -> bytes | None:
         return parse_key(self.encryption_key) if self.encryption_key else None
 
+    def effective_days(self, agent_days: "int | Literal['forever'] | None") -> int | None:
+        """The agent's choice (None = the operator's default), within the ceiling. None: kept until deleted."""
+        days = self.default_retention_days if agent_days is None else None if agent_days == "forever" else agent_days
+        if self.max_retention_days is None:
+            return days
+        return self.max_retention_days if days is None else min(days, self.max_retention_days)
+
 
 _LOCAL_HOSTS = ("localhost", "127.0.0.1")
 

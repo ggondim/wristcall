@@ -361,6 +361,26 @@ class _Calls:
             c.id for c in self.rows.values() if c.user_id == user_id and (agent_id is None or c.agent_id == agent_id)
         ])
 
+    async def set_expiry(self, user_id, agent_id, retention_s):
+        mine = [c for c in self.rows.values() if c.user_id == user_id and c.agent_id == agent_id]
+        for c in mine:
+            self.rows[c.id] = replace(c, expires_at=None if retention_s is None else c.created_at + retention_s)
+        return len(mine)
+
+    async def cap_expiry(self, max_retention_s):
+        longer = [
+            c for c in self.rows.values() if c.expires_at is None or c.expires_at > c.created_at + max_retention_s
+        ]
+        for c in longer:
+            self.rows[c.id] = replace(c, expires_at=c.created_at + max_retention_s)
+        return len(longer)
+
+    async def purge_expired(self, now):
+        return self._drop([
+            c.id for c in self.rows.values()
+            if c.expires_at is not None and c.expires_at <= now and c.status not in ("recording", "processing")
+        ])
+
 
 class _Meta:
     def __init__(self) -> None:

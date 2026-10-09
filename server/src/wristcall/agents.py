@@ -5,13 +5,13 @@ import secrets
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, model_validator
 
-from .config import AppConfig, ProfileConfig, ProviderConfig, Timeouts, VadConfig
+from .config import AppConfig, HistoryConfig, ProfileConfig, ProviderConfig, Timeouts, VadConfig
 from .protocol import TurnEnd
 from .providers import Kind, ProviderError, ProviderSet, SpeechToText, Webhook, build_provider, provider_kind
 from .providers.webhook import check_url
@@ -21,6 +21,8 @@ SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 ICON = re.compile(r"^[a-z0-9]+(\.[a-z0-9]+)*$")
 DEFAULT_ICON = "waveform"
 CallType = Literal["conversation", "one-shot", "monologue"]
+# Days the agent's calls stay in the history; "forever"; None = the operator's default. The ceiling applies to all.
+RetentionDays = Annotated[StrictInt, Field(ge=1, le=36_500)] | Literal["forever"] | None
 # One-way calls: the transcript goes to a webhook (the action); no answer, no voice.
 ONE_WAY = frozenset({"one-shot", "monologue"})
 REDACTED = "***"
@@ -104,6 +106,7 @@ class AgentSpec(BaseModel):
     turn_end: TurnEnd = "auto"
     vad: VadConfig = Field(default_factory=VadConfig)
     timeouts: Timeouts = Field(default_factory=Timeouts)
+    retention_days: RetentionDays = None
 
 
 class AgentInput(BaseModel):
@@ -124,6 +127,7 @@ class AgentInput(BaseModel):
     turn_end: TurnEnd | None = None
     vad: dict[str, Any] | None = None
     timeouts: dict[str, Any] | None = None
+    retention_days: RetentionDays = None  # on update, an explicit null goes back to the operator's default
 
 
 @dataclass(frozen=True)
@@ -288,9 +292,11 @@ def agent_summary(agent: Agent) -> dict[str, Any]:
     }
 
 
-def agent_detail(agent: Agent) -> dict[str, Any]:
-    """What the owner sees through the API or the CLI; secrets redacted."""
+def agent_detail(agent: Agent, history: HistoryConfig | None = None) -> dict[str, Any]:
+    """What the owner sees through the API or the CLI; secrets redacted. With the operator's history settings, also
+    the retention in force (null: kept until deleted)."""
     spec = agent.spec
+    extra = {} if history is None else {"effective_retention_days": history.effective_days(spec.retention_days)}
     return {
         **agent_summary(agent),
         "position": agent.position,
@@ -302,6 +308,8 @@ def agent_detail(agent: Agent) -> dict[str, Any]:
         "fallback_message": spec.fallback_message,
         "vad": spec.vad.model_dump(),
         "timeouts": spec.timeouts.model_dump(),
+        "retention_days": spec.retention_days,
+        **extra,
         "created_at": agent.created_at,
         "updated_at": agent.updated_at,
     }
@@ -361,6 +369,10 @@ def legacy_spec(profile: ProfileConfig) -> tuple[AgentSpec, list[str]]:
 
 def spec_from_profile(profile: ProfileConfig) -> AgentSpec:
     return legacy_spec(profile)[0]
+
+
+def retention_seconds(days: int | None) -> float | None:
+    return None if days is None else days * 86_400.0
 
 
 def new_agent_id() -> str:
@@ -474,6 +486,8 @@ class AgentService:
                 merged[field] = _keep_redacted(value, getattr(current.spec, field))
             elif field == "tts" and "tts" in inp.model_fields_set:
                 merged["tts"] = None  # an explicit null drops the voice (one-way agents only; _check enforces it)
+        if "retention_days" in inp.model_fields_set:
+            merged["retention_days"] = inp.retention_days
         for field in ("vad", "timeouts"):
             value = getattr(inp, field)
             if value is not None:
@@ -494,6 +508,10 @@ class AgentService:
             raise AgentError("conflict", f"an agent with slug '{slug}' already exists") from None
         except KeyError:
             raise AgentError("not_found", f"agent not found: {ref}") from None
+        if saved.spec.retention_days != current.spec.retention_days:
+            await self._st.calls.set_expiry(
+                user_id, saved.id, retention_seconds(self._config.history.effective_days(saved.spec.retention_days)),
+            )
         if inp.position is not None:
             return await self._move(user_id, saved.id, inp.position)
         return saved
