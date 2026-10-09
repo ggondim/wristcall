@@ -56,6 +56,7 @@ async def test_no_answer_is_a_webhook_error(exc, reason):
         {"url": "https://h.example/x#f"},
         {"url": "mailto:a@b.example"},
         {"url": "https://h.example", "headers": {"Content-Type": "text/plain"}},
+        {"url": "https://h.example", "headers": {"Transfer-Encoding": "chunked"}},
         {"url": "https://h.example", "headers": {"bad name": "x"}},
         {"url": "https://h.example", "headers": {f"X-{i}": "v" for i in range(17)}},
         {"url": "https://h.example", "headers": ["X-A"]},

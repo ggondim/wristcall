@@ -286,11 +286,15 @@ and `"***"` anywhere else is `invalid`. `vad` and `timeouts` values are bounded
 
 A one-way agent's `action` is a webhook: a provider of kind `webhook` or
 `{"type":"webhook","url":"https://...","headers":{"Authorization":"Bearer ..."}}`
-(`url` without credentials, query or fragment; up to 16 `headers`, which cannot
-replace `Content-Type`, `User-Agent` or `Idempotency-Key`). It has no `tts`
+(`url` without credentials, query or fragment; up to 16 `headers`). Every value of
+`headers` comes back as `"***"`, whatever the header name, and sending `"***"` back
+keeps the stored value. The server sets `Content-Type`, `Content-Length`, `Host`,
+`User-Agent`, `Idempotency-Key`, `Transfer-Encoding`, `Connection` and `Expect`
+itself, so `headers` cannot contain them. It has no `tts`
 (`null`): one kept from a conversation agent stays stored for switching back,
 and an update with `"tts": null` drops it. Changing `call_type` needs an `action`
-of the matching kind in the same update.
+of the matching kind in the same update; switching to `conversation` also needs a
+`tts`, unless one is still stored.
 
 Custom endpoints make the server send requests to URLs that users choose, including
 addresses inside the server's own network (SSRF). They are on by default for a

@@ -220,13 +220,15 @@ def create_app(
 
     async def one_way_call(ws: WebSocket, device_id: str, agent: Agent, providers: OneWayProviders) -> None:
         """Records until hang-up (or the limit); transcription and delivery go on after the WebSocket closes."""
+        # Before the record exists: a VAD that fails to load must not leave a call stuck in "recording".
+        vad = build_vad(agent.spec.vad)
         now = time.time()
         record = await store.calls.create(CallRecord(
             id=new_call_id(), user_id=agent.user_id, agent_id=agent.id, device_id=device_id,
             call_type=agent.call_type, status="recording", created_at=now, updated_at=now,
         ))
         call = OneWayCall(
-            agent, providers, build_vad(agent.spec.vad), record, store,
+            agent, providers, vad, record, store,
             max_call_ms=config.limits.max_one_way_call_s * 1000, policy=delivery_policy,
         )
         transport = _WsTransport(ws)

@@ -12,7 +12,9 @@ from . import ProviderError, register
 
 _HEADER_NAME = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$")
 # Set by the server on every request; the agent's headers cannot replace them.
-_RESERVED = {"content-type", "content-length", "host", "user-agent", "idempotency-key"}
+_RESERVED = {
+    "content-type", "content-length", "host", "user-agent", "idempotency-key", "transfer-encoding", "connection", "expect",
+}
 MAX_HEADERS = 16
 
 

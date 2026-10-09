@@ -95,13 +95,19 @@ def _confirm(yes: bool, question: str) -> None:
         raise typer.Exit(1)
 
 
+def configure_logging() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # httpx logs every request line with its full URL, and webhook URLs hold secrets in the path.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
 @app.command()
 def serve(config: ConfigOpt = DEFAULT_CONFIG, host: str = "0.0.0.0", port: int = 8080) -> None:
     """Starts the HTTP/WebSocket server."""
     from .app import create_app
 
     cfg = _load(config)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    configure_logging()
     try:
         application = create_app(cfg)
     except ProviderError as e:

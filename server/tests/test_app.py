@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 
 import pytest
 from fastapi.testclient import TestClient
@@ -426,6 +427,29 @@ def test_silent_one_way_call_is_empty(oneway):
         ws.send_json({"type": "session.end"})
     assert wait_done(oneway, call_id, auth(token))["status"] == "empty"
     assert not oneway.hook.called
+
+
+def test_logging_setup_keeps_webhook_urls_out_of_the_log(oneway, monkeypatch, caplog):
+    from wristcall.cli import configure_logging
+
+    httpx_logger = logging.getLogger("httpx")
+    monkeypatch.setattr(httpx_logger, "level", httpx_logger.level)
+    root = logging.getLogger()
+    monkeypatch.setattr(root, "handlers", list(root.handlers))
+    monkeypatch.setattr(root, "level", root.level)
+    configure_logging()
+    # httpx logs "HTTP Request: POST <url>" at INFO; webhook URLs hold secrets in the path.
+    assert httpx_logger.getEffectiveLevel() >= logging.WARNING
+    caplog.set_level(logging.INFO)
+    token = pair(oneway)
+    with oneway.websocket_connect("/v1/call", headers=auth(token)) as ws:
+        ws.send_json({**START, "agent": "note"})
+        call_id = ws.receive_json()["call_id"]
+        ws.send_bytes(tone(500))
+        ws.send_json({"type": "session.end"})
+    assert wait_done(oneway, call_id, auth(token))["status"] == "delivered"
+    for secret in (HOOK_URL, "s3cret", "comprar leite"):
+        assert secret not in caplog.text
 
 
 def test_call_status_is_private_to_the_user(oneway):

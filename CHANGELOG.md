@@ -10,7 +10,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
   hang up): the server only records, then transcribes and posts the text to the agent's
   webhook. Silence never ends these calls and mute only pauses the recording.
 - `session.ready` of a one-way call adds `call_id`; new server message `call.captured`
-  when the server stops recording at the time limit. Watch 0.1.0 and 0.3.x clients keep
+  when the server stops recording at the time limit. Watch 0.1.0 and clients of server 0.3.x keep
   working (they ignore both).
 - New `GET /v1/calls/{call_id}` (device or API token): `recording`, `processing`, then
   `delivered`, `failed` (`stt_failed`, `delivery_failed`, `interrupted`) or `empty`,
