@@ -3,19 +3,36 @@ import Synchronization
 
 /// What the watch keeps after pairing: where the server is and how to authenticate.
 public struct Credentials: Codable, Sendable, Equatable {
+    /// Local id of this server on this watch (not the device id): it names the server in `AgentRef`s
+    /// and widget configuration, and survives the server being re-paired under another URL.
+    public var id: String
     public var serverURL: URL
     public var deviceId: String
-    /// Bearer token. Lives only in the Keychain (`KeychainCredentialStore`); never log it.
+    /// Bearer token. Lives only in the Keychain (`KeychainServerStore`); never log it.
     public var token: String
 
-    public init(serverURL: URL, deviceId: String, token: String) {
+    public init(serverURL: URL, deviceId: String, token: String, id: String = UUID().uuidString) {
+        self.id = id
         self.serverURL = serverURL
         self.deviceId = deviceId
         self.token = token
     }
 
-    public init(serverURL: URL, device: PairedDevice) {
-        self.init(serverURL: serverURL, deviceId: device.deviceId, token: device.token)
+    public init(serverURL: URL, device: PairedDevice, id: String = UUID().uuidString) {
+        self.init(serverURL: serverURL, deviceId: device.deviceId, token: device.token, id: id)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, serverURL, deviceId, token
+    }
+
+    /// An item written by 0.1.0 has no `id`: it gets one, and keeps it once the list is saved.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        serverURL = try container.decode(URL.self, forKey: .serverURL)
+        deviceId = try container.decode(String.self, forKey: .deviceId)
+        token = try container.decode(String.self, forKey: .token)
     }
 }
 

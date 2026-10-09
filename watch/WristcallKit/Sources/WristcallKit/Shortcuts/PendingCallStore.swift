@@ -1,5 +1,15 @@
 import Foundation
 
+/// What a shortcut asked for: `agent` is the text of an `AgentRef`, unvalidated (the app checks
+/// it against the agents it knows); `nil` means the first agent.
+public struct PendingCall: Sendable, Equatable {
+    public var agent: String?
+
+    public init(agent: String? = nil) {
+        self.agent = agent
+    }
+}
+
 /// A "call the agent now" request left by a shortcut (the App Intent, the complication, the
 /// control) for the app to act on once it can call. At most one request is pending, and it
 /// expires, so a request the app never picked up does not start a call later by surprise.
@@ -7,6 +17,7 @@ public struct PendingCallStore: @unchecked Sendable {
     /// Posted on `notificationCenter` by `request()`, in the process that made the request.
     public static let didRequest = Notification.Name("io.github.ggondim.wristcall.callRequested")
     public static let defaultsKey = "pendingCallRequestedAt"
+    public static let agentDefaultsKey = "pendingCallAgent"
     /// A request older than this is dropped.
     public static let maxAge: TimeInterval = 30
     /// Tolerance for a clock that moved back between the request and the check.
@@ -27,8 +38,9 @@ public struct PendingCallStore: @unchecked Sendable {
         self.now = now
     }
 
-    /// Records a request (replacing an older one) and posts `didRequest`.
-    public func request() {
+    /// Records a request (replacing an older one, and its agent) and posts `didRequest`.
+    public func request(agent: String? = nil) {
+        defaults.set(agent, forKey: Self.agentDefaultsKey)
         defaults.set(now().timeIntervalSince1970, forKey: Self.defaultsKey)
         notificationCenter.post(name: Self.didRequest, object: nil)
     }
@@ -39,11 +51,13 @@ public struct PendingCallStore: @unchecked Sendable {
         return isFresh(requestedAt)
     }
 
-    /// `true` exactly once per fresh request; always clears what was stored.
-    public func consume() -> Bool {
-        guard let requestedAt else { return false }
+    /// The request exactly once, while fresh; `nil` otherwise. Always clears what was stored.
+    public func consume() -> PendingCall? {
+        guard let requestedAt else { return nil }
+        let agent = defaults.string(forKey: Self.agentDefaultsKey)
         defaults.removeObject(forKey: Self.defaultsKey)
-        return isFresh(requestedAt)
+        defaults.removeObject(forKey: Self.agentDefaultsKey)
+        return isFresh(requestedAt) ? PendingCall(agent: agent) : nil
     }
 
     private var requestedAt: TimeInterval? {

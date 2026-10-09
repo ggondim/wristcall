@@ -16,6 +16,11 @@ struct AppModelTests {
     ])
     let pending = PairingRequest(requestId: "4821", pollToken: "poll-secret", expiresAt: .now.addingTimeInterval(600))
 
+    /// What pairing should have stored: the server and device above, under the local id the model gave it.
+    func expectedCredentials() throws -> Credentials {
+        Credentials(serverURL: server, device: device, id: try #require(try store.load()).id)
+    }
+
     func makeModel(
         reachability: (any NetworkReachability)? = nil,
         sleep: @escaping PairingClient.Sleep = { _ in }
@@ -119,7 +124,7 @@ struct AppModelTests {
 
         #expect(model.phase == .ready(info))
         #expect(model.message == nil)
-        #expect(try store.load() == Credentials(serverURL: server, device: device))
+        #expect(try store.load() == expectedCredentials())
         #expect(pairing.calls == [
             "resolve 12345678 https://wristcall-pair.trigram.com.br",
             "pair https://agent.example.com code=12345678 name=Apple Watch",
@@ -213,7 +218,7 @@ struct AppModelTests {
         #expect(sleeps.all == [.seconds(2), .seconds(2)])
         #expect(phases.all == [.pairing(requestId: "4821"), .pairing(requestId: "4821")])
         #expect(model.phase == .ready(info))
-        #expect(try store.load() == Credentials(serverURL: server, device: device))
+        #expect(try store.load() == expectedCredentials())
         #expect(pairing.pollTokens == ["poll-secret", "poll-secret"])
         #expect(pairing.calls == [
             "pair https://agent.example.com code=nil name=Apple Watch",
@@ -332,7 +337,7 @@ struct AppModelTests {
 
         let agent = Profile(name: "default", displayName: "Agent")
         #expect(model.phase == .inCall(agent))
-        #expect(handler.started == [CallRequest(credentials: Credentials(serverURL: server, device: device), profile: agent)])
+        #expect(handler.started == [CallRequest(credentials: try expectedCredentials(), profile: agent)])
         model.endCall()
         #expect(handler.endRequests == 1)
         #expect(model.phase == .inCall(agent))
@@ -361,7 +366,7 @@ struct AppModelTests {
 
         let agent = Profile(name: "default", displayName: "Agent")
         #expect(model.phase == .inCall(agent))
-        #expect(handler.started == [CallRequest(credentials: Credentials(serverURL: server, device: device), profile: agent, turnEnd: .manual)])
+        #expect(handler.started == [CallRequest(credentials: try expectedCredentials(), profile: agent, turnEnd: .manual)])
     }
 
     /// Without a network path no CallKit call starts (its "Call Failed" alert crashes the

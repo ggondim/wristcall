@@ -21,15 +21,15 @@ struct PendingCallStoreTests {
 
     @Test func nothingIsPendingAtFirst() {
         #expect(!store.isPending)
-        #expect(!store.consume())
+        #expect(store.consume() == nil)
     }
 
     @Test func aRequestIsConsumedOnce() {
         store.request()
         #expect(store.isPending)
         #expect(store.isPending)  // checking does not consume
-        #expect(store.consume())
-        #expect(!store.consume())
+        #expect(store.consume() == PendingCall())
+        #expect(store.consume() == nil)
         #expect(!store.isPending)
     }
 
@@ -37,7 +37,7 @@ struct PendingCallStoreTests {
         store.request()
         clock.advance(PendingCallStore.maxAge + 1)
         #expect(!store.isPending)
-        #expect(!store.consume())
+        #expect(store.consume() == nil)
         clock.advance(-(PendingCallStore.maxAge + 1))
         #expect(!store.isPending)  // cleared, even though it would be fresh again
     }
@@ -45,13 +45,13 @@ struct PendingCallStoreTests {
     @Test func aRequestAtTheLimitIsStillFresh() {
         store.request()
         clock.advance(PendingCallStore.maxAge)
-        #expect(store.consume())
+        #expect(store.consume() == PendingCall())
     }
 
     @Test func aRequestFromTheFutureIsDropped() {
         store.request()
         clock.advance(-60)
-        #expect(!store.consume())
+        #expect(store.consume() == nil)
     }
 
     @Test func requestPostsTheNotification() {
@@ -69,7 +69,33 @@ struct PendingCallStoreTests {
     @Test func theRequestIsVisibleThroughAnotherStoreOnTheSameDefaults() {
         store.request()
         let other = PendingCallStore(defaults: defaults, notificationCenter: center, now: { [clock] in clock.now })
-        #expect(other.consume())
+        #expect(other.consume() == PendingCall())
         #expect(!store.isPending)
+    }
+
+    @Test func theRequestCarriesTheAgent() {
+        store.request(agent: "srv-1/ag_one")
+        #expect(store.consume() == PendingCall(agent: "srv-1/ag_one"))
+        #expect(store.consume() == nil)
+    }
+
+    @Test func aRequestWithoutAgentDoesNotKeepTheOldAgent() {
+        store.request(agent: "srv-1/ag_one")
+        store.request()
+        #expect(store.consume() == PendingCall(agent: nil))
+    }
+
+    @Test func theAgentIsKeptUnvalidated() {
+        store.request(agent: "not an agent ref")
+        #expect(store.consume()?.agent == "not an agent ref")
+    }
+
+    @Test func aStaleRequestWithAgentIsDroppedAndTheAgentCleared() {
+        store.request(agent: "srv-1/ag_one")
+        clock.advance(PendingCallStore.maxAge + 1)
+        #expect(store.consume() == nil)
+        #expect(defaults.string(forKey: PendingCallStore.agentDefaultsKey) == nil)
+        store.request()
+        #expect(store.consume() == PendingCall(agent: nil))
     }
 }

@@ -32,7 +32,7 @@ final class ShortcutCalls {
         while model.phase == .launching, ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(50))
         }
-        guard store.consume() else { return }
+        guard store.consume() != nil else { return }
         if model.canCall {
             Self.log.notice("call requested by a shortcut")
             model.startCall()
