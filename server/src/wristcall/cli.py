@@ -367,10 +367,16 @@ IconOpt = Annotated[str | None, typer.Option("--icon", help="SF Symbol name, e.g
 LanguageOpt = Annotated[str | None, typer.Option("--language", help="Language code for STT, e.g. pt, en.")]
 TurnEndOpt = Annotated[str | None, typer.Option("--turn-end", help="auto (silence ends the turn) or manual (mute ends it).")]
 SilenceOpt = Annotated[int | None, typer.Option("--silence-ms", help="Silence that ends a turn in auto mode.")]
-CallTypeOpt = Annotated[str | None, typer.Option("--call-type", help="conversation (one-shot and monologue: later).")]
+CallTypeOpt = Annotated[
+    str | None,
+    typer.Option("--call-type", help="conversation, one-shot (say one thing, hang up) or monologue (talk until you hang up)."),
+]
 PositionOpt = Annotated[int | None, typer.Option("--position", help="Order on the watch; 0 comes first.")]
 SttOpt = Annotated[str | None, typer.Option("--stt", help="Provider name, or a JSON object with your own URL.")]
-ActionOpt = Annotated[str | None, typer.Option("--action", help="Provider name, or a JSON object with your own URL.")]
+ActionOpt = Annotated[
+    str | None,
+    typer.Option("--action", help="Provider name, or a JSON object with your own URL (a webhook for one-shot and monologue)."),
+]
 TtsOpt = Annotated[str | None, typer.Option("--tts", help="Provider name, or a JSON object with your own URL.")]
 PromptOpt = Annotated[str | None, typer.Option("--prompt", help="System prompt.")]
 PromptFileOpt = Annotated[Path | None, typer.Option("--prompt-file", help="Read the system prompt from a file.")]
@@ -395,7 +401,7 @@ def agents_list(config: ConfigOpt = DEFAULT_CONFIG, user: UserOpt = None) -> Non
     for a in agents:
         s = a.spec
         stages = " ".join(
-            f"{f}={e.provider if hasattr(e, 'provider') else 'custom'}" for f, e in (("stt", s.stt), ("action", s.action), ("tts", s.tts))
+            f"{f}={'-' if e is None else e.provider if hasattr(e, 'provider') else 'custom'}" for f, e in (("stt", s.stt), ("action", s.action), ("tts", s.tts))
         )
         typer.echo(f"{a.position}  {a.slug}  {a.display_name}  {a.icon}  {a.call_type}  turn_end={s.turn_end}  {stages}  {a.id}")
 

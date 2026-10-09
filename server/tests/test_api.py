@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from conftest import fake_config
 from wristcall.app import create_app
-from wristcall.config import parse_config
+from wristcall.config import parse_config, ProviderConfig
 from wristcall.storage import open_sqlite_storage
 from wristcall.users import UserService
 
@@ -66,7 +66,7 @@ def test_agents_crud(client):
     [
         ({"slug": "Bad"}, 422, "invalid"),
         ({"slug": "default"}, 409, "conflict"),
-        ({"slug": "x", "call_type": "one-shot"}, 422, "unsupported"),
+        ({"slug": "x", "call_type": "one-shot"}, 422, "invalid"),
         ({"slug": "x", "unknown": 1}, 422, "invalid"),
     ],
 )
@@ -140,6 +140,14 @@ def test_users_are_isolated(client):
     assert client.get("/v1/devices", headers=h(bob)).json() == {"devices": []}
     assert client.delete(f"/v1/devices/{devices[0]['id']}", headers=h(bob)).status_code == 404
     assert client.get("/v1/me", headers=h(alice_device)).status_code == 200
+
+
+def test_providers_name_webhooks():
+    cfg = fake_config()
+    cfg.providers["inbox"] = ProviderConfig(type="webhook", url="https://n8n.example/webhook/abc")
+    with make_client(cfg) as c:
+        body = c.get("/v1/providers", headers=h(api_token(c))).json()
+    assert {"name": "inbox", "kind": "webhook"} in body["providers"]
 
 
 def test_providers(client):

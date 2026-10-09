@@ -29,7 +29,9 @@ def config(**over):
             "tts": {"type": "tone_tts", "sample_rate": 16000},
         },
         # The fake types too, so that tests can build custom endpoints without a network.
-        "limits": {"custom_endpoint_types": ["openai_stt", "openai_chat", "openai_tts", "fake_stt", "echo_chat", "tone_tts"]},
+        "limits": {"custom_endpoint_types": [
+            "openai_stt", "openai_chat", "openai_tts", "webhook", "fake_stt", "echo_chat", "tone_tts",
+        ]},
         **over,
     }
     return parse_config(data, {})
@@ -115,7 +117,7 @@ async def test_get_by_slug_or_id_and_ownership(svc):
         ({"slug": "-x"}, "invalid", "slug"),
         ({"slug": "x" * 33}, "invalid", "slug"),
         ({"slug": "ok", "icon": "Not An Icon"}, "invalid", "icon"),
-        ({"slug": "ok", "call_type": "one-shot"}, "unsupported", "one-shot"),
+        ({"slug": "ok", "call_type": "one-shot"}, "invalid", "action: choose a provider"),
         ({"slug": "ok", "call_type": "podcast"}, "invalid", "call_type"),
         ({"slug": "ok", "turn_end": "sometimes"}, "invalid", "turn_end"),
         ({"slug": "ok", "colour": "red"}, "invalid", "colour"),
@@ -259,7 +261,7 @@ async def test_update_errors(svc):
     assert e.value.code == "not_found"
     with pytest.raises(AgentError) as e:
         await svc.update("u_a", "one", {"call_type": "monologue"})
-    assert e.value.code == "unsupported"
+    assert e.value.code == "invalid" and "not webhook" in e.value.message
 
 
 async def test_delete(svc):
@@ -369,3 +371,93 @@ async def test_custom_endpoint_types_are_an_operator_setting():
     assert (await svc.create("u_a", {"slug": "tone", "tts": {"type": "tone_tts"}})).spec.tts.type == "tone_tts"
     with pytest.raises(AgentError, match="not allowed"):
         await svc.create("u_a", {"slug": "own", "stt": {"type": "openai_stt", "base_url": "https://s.example/v1", "model": "w"}})
+
+
+HOOK = {"type": "webhook", "url": "https://hooks.example/notes", "headers": {"Authorization": "Bearer s3cret"}}
+
+
+async def test_one_way_agents_take_a_webhook_and_no_voice(svc):
+    a = await svc.create("u_a", {"slug": "note", "call_type": "one-shot", "action": HOOK})
+    assert (a.call_type, a.spec.tts) == ("one-shot", None)
+    assert a.spec.stt == ProviderRef(provider="stt")
+    shown = agent_detail(a)
+    assert shown["tts"] is None
+    assert shown["action"] == {"type": "webhook", "url": "https://hooks.example/notes", "headers": {"Authorization": REDACTED}}
+    m = await svc.create("u_a", {"slug": "ideas", "call_type": "monologue", "action": HOOK})
+    assert m.call_type == "monologue"
+
+
+async def test_one_way_agent_uses_the_servers_only_webhook_by_default():
+    cfg = config(providers={
+        "stt": {"type": "fake_stt"}, "llm": {"type": "echo_chat"}, "tts": {"type": "tone_tts"},
+        "inbox": {"type": "webhook", "url": "https://n8n.example/webhook/abc"},
+    })
+    svc = await make(cfg)
+    a = await svc.create("u_a", {"slug": "note", "call_type": "one-shot"})
+    assert a.spec.action == ProviderRef(provider="inbox")
+
+
+@pytest.mark.parametrize(
+    "action, fragment",
+    [
+        ({"provider": "llm"}, "is responder, not webhook"),
+        ({"type": "webhook", "url": "ftp://x.example"}, "url must be an http(s) URL"),
+        ({"type": "webhook", "url": "https://x.example/hook?token=1"}, "put secrets in headers"),
+        ({"type": "webhook", "url": "https://user:pw@x.example/hook"}, "put secrets in headers"),
+        ({"type": "webhook"}, "missing option 'url'"),
+        ({"type": "webhook", "url": "https://x.example", "headers": {"Idempotency-Key": "1"}}, "invalid options"),
+        ({"type": "webhook", "url": "https://x.example", "headers": {"X-A": "a\nb"}}, "invalid options"),
+    ],
+)
+async def test_one_way_agent_rejects_bad_webhooks(svc, action, fragment):
+    with pytest.raises(AgentError) as e:
+        await svc.create("u_a", {"slug": "note", "call_type": "one-shot", "action": action})
+    assert e.value.code == "invalid" and fragment in e.value.message
+    assert "s3cret" not in e.value.message
+
+
+async def test_webhook_custom_endpoints_follow_the_operator_limits():
+    svc = await make(config(limits={"custom_endpoints": False}))
+    with pytest.raises(AgentError) as e:
+        await svc.create("u_a", {"slug": "note", "call_type": "one-shot", "action": HOOK})
+    assert "custom endpoints are off" in e.value.message
+
+
+async def test_switching_call_type_keeps_or_drops_the_voice(svc):
+    a = await svc.create("u_a", {"slug": "helper"})
+    one = await svc.update("u_a", "helper", {"call_type": "one-shot", "action": HOOK})
+    # The voice stays stored, so switching back needs only the responder.
+    assert one.spec.tts == ProviderRef(provider="tts")
+    back = await svc.update("u_a", "helper", {"call_type": "conversation", "action": {"provider": "llm"}})
+    assert back.spec.tts == a.spec.tts
+    await svc.update("u_a", "helper", {"call_type": "one-shot", "action": HOOK})
+    silent = await svc.update("u_a", "helper", {"tts": None})
+    assert silent.spec.tts is None
+    with pytest.raises(AgentError) as e:
+        await svc.update("u_a", "helper", {"call_type": "conversation", "action": {"provider": "llm"}})
+    assert e.value.message == "tts: required for conversation agents"
+
+
+async def test_every_webhook_header_value_is_redacted_and_round_trips(svc):
+    hook = {**HOOK, "headers": {"X-Signature": "sig", "X-N8N-Header": "n8n", "Authorization": "Bearer s3cret"}}
+    await svc.create("u_a", {"slug": "note", "call_type": "one-shot", "action": hook})
+    shown = agent_detail(await svc.get("u_a", "note"))
+    assert shown["action"]["headers"] == {"X-Signature": REDACTED, "X-N8N-Header": REDACTED, "Authorization": REDACTED}
+    shown["action"]["headers"]["X-New"] = "plain"
+    again = await svc.update("u_a", "note", {"action": shown["action"]})
+    assert again.spec.action.options()["headers"] == {**hook["headers"], "X-New": "plain"}
+
+
+async def test_redacted_webhook_header_round_trips(svc):
+    await svc.create("u_a", {"slug": "note", "call_type": "one-shot", "action": HOOK})
+    shown = agent_detail(await svc.get("u_a", "note"))
+    again = await svc.update("u_a", "note", {"action": shown["action"]})
+    assert again.spec.action.options()["headers"] == {"Authorization": "Bearer s3cret"}
+
+
+async def test_conversation_providers_need_a_voice():
+    cfg = config()
+    spec = AgentSpec(stt=ProviderRef(provider="stt"), action=ProviderRef(provider="llm"))
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(ProviderError, match="needs a tts"):
+            build_agent_providers(cfg, spec, http)

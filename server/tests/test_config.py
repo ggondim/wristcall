@@ -80,7 +80,7 @@ def test_profiles_are_optional_and_limits_have_defaults():
     cfg = parse_config(data, ENV)
     assert cfg.profiles == {}
     assert (cfg.limits.max_agents_per_user, cfg.limits.max_devices_per_user, cfg.limits.custom_endpoints) == (20, 10, True)
-    assert cfg.limits.custom_endpoint_types == ["openai_stt", "openai_chat", "openai_tts"]
+    assert cfg.limits.custom_endpoint_types == ["openai_stt", "openai_chat", "openai_tts", "webhook"]
     for empty in ({}, None):
         data["profiles"] = empty  # the operator emptied the section after the import
         assert parse_config(data, ENV).profiles == {}
