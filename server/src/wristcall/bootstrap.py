@@ -1,5 +1,8 @@
 """Runs before the server or a CLI command touches the data: imports the 0.2.0 profiles once and
-gives owner-less devices to the only user. Safe to run concurrently and on every start."""
+gives owner-less devices to the only user. Safe to run concurrently and on every start.
+
+Warnings about the import (adjusted values, skipped profiles) are logged here, once, by whoever runs it
+(the server or a CLI command)."""
 
 import logging
 import re
@@ -8,7 +11,9 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from .agents import DEFAULT_ICON, SLUG, Agent, spec_from_profile
+from pydantic import ValidationError
+
+from .agents import DEFAULT_ICON, SLUG, Agent, legacy_spec
 from .config import AppConfig
 from .storage import Conflict, Storage, User
 from .users import new_user_id
@@ -24,6 +29,8 @@ class BootstrapReport:
     owner_created: str | None = None
     imported: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
+    reasons: dict[str, str] = field(default_factory=dict)  # skipped slug → why, never with values
+    adjusted: dict[str, list[str]] = field(default_factory=dict)  # imported slug → fields moved into bounds
     profiles_ignored: bool = False
     adopted: int = 0
 
@@ -54,16 +61,32 @@ async def import_profiles(storage: Storage, config: AppConfig, now: float, repor
     for name in names:
         profile = config.profiles[name]
         slug = profile_slug(name)
-        agent = Agent(
-            id=f"ag_{secrets.token_hex(6)}", user_id=owner.id, slug=slug, display_name=profile.display_name[:64] or slug,
-            icon=DEFAULT_ICON, call_type="conversation", position=0, spec=spec_from_profile(profile),
-            created_at=now, updated_at=now,
-        )
         try:
+            spec, adjusted = legacy_spec(profile)
+            agent = Agent(
+                id=f"ag_{secrets.token_hex(6)}", user_id=owner.id, slug=slug, display_name=profile.display_name[:64] or slug,
+                icon=DEFAULT_ICON, call_type="conversation", position=0, spec=spec, created_at=now, updated_at=now,
+            )
             await storage.agents.create(agent.to_record())
-            report.imported.append(slug)
         except Conflict:
             report.skipped.append(slug)
+            report.reasons[slug] = "an agent with that slug exists"
+            continue
+        except ValidationError as e:
+            # Field names only: the values may hold secrets.
+            report.skipped.append(slug)
+            report.reasons[slug] = "invalid " + ", ".join(sorted({".".join(map(str, x["loc"])) for x in e.errors()}))
+            continue
+        except ValueError:
+            report.skipped.append(slug)
+            report.reasons[slug] = "invalid profile"
+            continue
+        report.imported.append(slug)
+        if adjusted:
+            report.adjusted[slug] = adjusted
+            log.warning("adjusted %s (outside the agent bounds): %s", slug, ", ".join(adjusted))
+    for slug in report.skipped:
+        log.warning("profile not imported: %s (%s)", slug, report.reasons[slug])
     await storage.meta.set(IMPORT_MARK, str(now))
 
 
@@ -85,8 +108,6 @@ def log_report(report: BootstrapReport) -> None:
         log.info("created user '%s' for the imported profiles", report.owner_created)
     if report.imported:
         log.info("imported profiles as agents: %s", ", ".join(report.imported))
-    if report.skipped:
-        log.warning("profiles not imported (an agent with that slug exists): %s", ", ".join(report.skipped))
     if report.profiles_ignored:
         log.warning("`profiles` in the config is ignored: it was imported already; manage agents with `wristcall agents`")
     if report.adopted:

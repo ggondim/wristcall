@@ -31,6 +31,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 - Secrets of custom endpoints are redacted at any depth, `base_url` cannot carry
   credentials, and `vad`/`timeouts` values are bounded. `wristcall devices assign`
   gives a watch to a user.
+- Agent `vad`/`timeouts` values are bounded (for example `silence_ms` 100 to 10000,
+  timeouts up to 120 s); imported 0.2.0 profiles keep loading, and values outside
+  the bounds are adjusted on import with a warning in the log.
 
 ## [watch-0.1.0] - 2026-10-07
 

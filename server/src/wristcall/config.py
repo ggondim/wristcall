@@ -73,6 +73,26 @@ class Timeouts(BaseModel):
     tts_s: float = Field(default=15.0, gt=0, le=120)
 
 
+class LegacyVadConfig(BaseModel):
+    """VadConfig of the 0.2.0 profiles: same fields, no bounds (values are adjusted on import, see bootstrap.py)."""
+
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["silero", "energy"] = "silero"
+    threshold: float = 0.5
+    energy_dbfs: float = -45.0
+    silence_ms: int = 800
+    min_speech_ms: int = 300
+    max_turn_ms: int = 60_000
+    pre_roll_ms: int = 300
+
+
+class LegacyTimeouts(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    stt_s: float = 10.0
+    first_token_s: float = 15.0
+    tts_s: float = 15.0
+
+
 class ProfileConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     display_name: str
@@ -82,8 +102,8 @@ class ProfileConfig(BaseModel):
     tts: str
     system_prompt: str = ""
     fallback_message: str = "Sorry, I couldn't answer right now."
-    vad: VadConfig = Field(default_factory=VadConfig)
-    timeouts: Timeouts = Field(default_factory=Timeouts)
+    vad: LegacyVadConfig = Field(default_factory=LegacyVadConfig)
+    timeouts: LegacyTimeouts = Field(default_factory=LegacyTimeouts)
 
 
 class ServerConfig(BaseModel):

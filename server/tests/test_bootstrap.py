@@ -1,8 +1,10 @@
 import asyncio
+import logging
 import threading
 
 import pytest
 
+from wristcall.agents import AgentSpec
 from wristcall.bootstrap import IMPORT_MARK, bootstrap, profile_slug
 from wristcall.config import parse_config
 from wristcall.pairing import hash_secret
@@ -147,3 +149,60 @@ async def _check_single_import(store) -> None:
 )
 def test_profile_slug(name, slug):
     assert profile_slug(name) == slug
+
+
+LEGACY_OUT_OF_RANGE = {
+    "default": {
+        **PROD_PROFILES["default"],
+        "fallback_message": "",
+        "language": "p",
+        "system_prompt": "x" * 20_001,
+        "vad": {"silence_ms": 50},
+        "timeouts": {"stt_s": 30, "first_token_s": 180, "tts_s": 30},
+    },
+    "coach": {"display_name": "Coach"},
+}
+
+
+async def test_out_of_range_legacy_profile_is_adjusted_on_import(st, caplog):
+    caplog.set_level(logging.WARNING, logger="wristcall.bootstrap")
+    report = await bootstrap(st, config(LEGACY_OUT_OF_RANGE), now=lambda: 7.0)
+    assert report.imported == ["default", "coach"] and report.skipped == []
+    (owner,) = await st.users.list()
+    first = (await st.agents.list(owner.id))[0]
+    spec = first.spec
+    assert first.slug == "default"
+    assert (spec["timeouts"]["first_token_s"], spec["vad"]["silence_ms"]) == (120, 100)
+    assert spec["fallback_message"] == "Sorry, I couldn't answer right now." and spec["language"] == "en"
+    assert len(spec["system_prompt"]) == 20_000 and spec["timeouts"]["stt_s"] == 30
+    assert await st.meta.get(IMPORT_MARK) == "7.0"
+    assert set(report.adjusted["default"]) == {
+        "language", "system_prompt", "fallback_message", "vad.silence_ms", "timeouts.first_token_s"
+    }
+    text = " ".join(caplog.messages)
+    assert "default" in text and "vad.silence_ms" in text and "timeouts.first_token_s" in text
+    assert "180" not in text and "50" not in text and "xxxx" not in text
+
+
+async def test_production_values_are_not_adjusted(st):
+    report = await bootstrap(st, config(PROD_PROFILES))
+    assert report.adjusted == {}
+
+
+async def test_a_profile_that_still_fails_is_skipped_without_values(st, monkeypatch, caplog):
+    import wristcall.bootstrap as bs
+
+    real = bs.legacy_spec
+
+    def failing(profile):
+        if profile.display_name == "Coach":
+            AgentSpec.model_validate({"language": "sk-LEAK"})  # raises a ValidationError
+        return real(profile)
+
+    monkeypatch.setattr(bs, "legacy_spec", failing)
+    caplog.set_level(logging.WARNING, logger="wristcall.bootstrap")
+    report = await bootstrap(st, config(LEGACY_OUT_OF_RANGE), now=lambda: 8.0)
+    assert report.imported == ["default"] and report.skipped == ["coach"]
+    assert "sk-LEAK" not in report.reasons["coach"] and "input_value" not in report.reasons["coach"]
+    assert await st.meta.get(IMPORT_MARK) == "8.0"
+    assert "coach" in " ".join(caplog.messages) and "sk-LEAK" not in caplog.text

@@ -269,17 +269,60 @@ def agent_detail(agent: Agent) -> dict[str, Any]:
     }
 
 
-def spec_from_profile(profile: ProfileConfig) -> AgentSpec:
-    return AgentSpec(
-        language=profile.language,
+def _clamp(model: type[BaseModel], values: dict[str, Any], prefix: str, adjusted: list[str]) -> dict[str, Any]:
+    """Moves each number into the model's bounds; past an exclusive bound (gt) it falls back to the default."""
+    out = dict(values)
+    for name, info in model.model_fields.items():
+        value = out.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        new = value
+        for bound in info.metadata:  # pydantic keeps Field(ge=..., le=..., gt=...) here
+            if getattr(bound, "ge", None) is not None and new < bound.ge:
+                new = bound.ge
+            elif getattr(bound, "le", None) is not None and new > bound.le:
+                new = bound.le
+            elif getattr(bound, "gt", None) is not None and new <= bound.gt:
+                new = info.default
+        if new != value:
+            out[name] = new
+            adjusted.append(f"{prefix}.{name}")
+    return out
+
+
+def legacy_spec(profile: ProfileConfig) -> tuple[AgentSpec, list[str]]:
+    """Agent spec of a 0.2.0 profile, which had no bounds: values outside the agent's bounds are adjusted.
+
+    Also returns the names of the adjusted fields (never their values: they go to the log).
+    """
+    adjusted: list[str] = []
+    language = profile.language
+    if not 2 <= len(language) <= 16:
+        language = "en"
+        adjusted.append("language")
+    system_prompt = profile.system_prompt
+    if len(system_prompt) > 20_000:
+        system_prompt = system_prompt[:20_000]
+        adjusted.append("system_prompt")
+    fallback = profile.fallback_message
+    if not fallback or len(fallback) > 500:
+        fallback = fallback[:500] or AgentSpec.model_fields["fallback_message"].default
+        adjusted.append("fallback_message")
+    spec = AgentSpec(
+        language=language,
         stt=ProviderRef(provider=profile.stt),
         action=ProviderRef(provider=profile.responder),
         tts=ProviderRef(provider=profile.tts),
-        system_prompt=profile.system_prompt,
-        fallback_message=profile.fallback_message,
-        vad=profile.vad,
-        timeouts=profile.timeouts,
+        system_prompt=system_prompt,
+        fallback_message=fallback,
+        vad=VadConfig(**_clamp(VadConfig, profile.vad.model_dump(), "vad", adjusted)),
+        timeouts=Timeouts(**_clamp(Timeouts, profile.timeouts.model_dump(), "timeouts", adjusted)),
     )
+    return spec, adjusted
+
+
+def spec_from_profile(profile: ProfileConfig) -> AgentSpec:
+    return legacy_spec(profile)[0]
 
 
 def new_agent_id() -> str:

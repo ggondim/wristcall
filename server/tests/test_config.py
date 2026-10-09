@@ -1,6 +1,7 @@
 import pytest
+from pydantic import ValidationError
 
-from wristcall.config import ConfigError, load_config, parse_config
+from wristcall.config import ConfigError, Timeouts, VadConfig, load_config, parse_config
 
 
 def base(**profiles_extra):
@@ -154,10 +155,19 @@ def test_non_mapping_nested_section_is_config_error():
     ],
 )
 def test_turn_and_timeout_values_are_bounded(section, values):
+    model = {"vad": VadConfig, "timeouts": Timeouts}[section]
+    with pytest.raises(ValidationError, match=list(values)[0]):
+        model(**values)
+
+
+def test_legacy_profiles_load_without_the_new_bounds():
+    # Valid 0.2.0 YAML: the values are adjusted when the profile is imported as an agent (bootstrap.py).
     data = base()
-    data["profiles"]["default"][section] = values
-    with pytest.raises(ConfigError, match=list(values)[0]):
-        parse_config(data, ENV)
+    data["profiles"]["default"]["vad"] = {"silence_ms": 50, "max_turn_ms": 10_000_000}
+    data["profiles"]["default"]["timeouts"] = {"first_token_s": 180}
+    p = parse_config(data, ENV).profiles["default"]
+    assert (p.vad.silence_ms, p.vad.max_turn_ms, p.timeouts.first_token_s) == (50, 10_000_000, 180)
+    assert (p.vad.min_speech_ms, p.timeouts.stt_s) == (300, 10.0)
 
 
 def test_production_values_are_within_bounds():
