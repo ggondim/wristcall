@@ -1,4 +1,7 @@
-"""Server configuration: YAML with ${ENV} references and profiles that inherit from `default`."""
+"""Operator configuration: YAML with ${ENV} references. Server, providers on offer and limits.
+
+`profiles` (inheriting from `default`) is the 0.2.0 format: imported once as agents (see bootstrap.py).
+"""
 
 import os
 import re
@@ -91,16 +94,24 @@ class ServerConfig(BaseModel):
     client_ip_header: str | None = None
 
 
+class LimitsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_agents_per_user: int = Field(default=20, ge=1)
+    max_devices_per_user: int = Field(default=10, ge=1)
+    # Agents may point at the user's own STT/action/TTS URLs. Turn off on a server with untrusted users:
+    # the server would make requests to any URL they give, including the internal network.
+    custom_endpoints: bool = True
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     server: ServerConfig
     providers: dict[str, ProviderConfig]
-    profiles: dict[str, ProfileConfig]
+    limits: LimitsConfig = Field(default_factory=LimitsConfig)
+    profiles: dict[str, ProfileConfig] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _check_references(self) -> "AppConfig":
-        if "default" not in self.profiles:
-            raise ValueError("profiles.default is required")
         for pname, p in self.profiles.items():
             for stage in ("stt", "responder", "tts"):
                 ref = getattr(p, stage)
@@ -144,9 +155,12 @@ def _merge_profiles(raw: dict[str, Any]) -> dict[str, Any]:
 def parse_config(data: dict[str, Any], env: Mapping[str, str] | None = None) -> AppConfig:
     env = os.environ if env is None else env
     data = _interpolate(data, env)
-    if not isinstance(data.get("profiles"), dict):
-        raise ConfigError("profiles section is missing")
-    data = {**data, "profiles": _merge_profiles(data["profiles"])}
+    if data.get("profiles"):  # absent, null or {}: no legacy profiles
+        if not isinstance(data["profiles"], dict):
+            raise ConfigError("profiles must be a mapping")
+        data = {**data, "profiles": _merge_profiles(data["profiles"])}
+    else:
+        data = {key: value for key, value in data.items() if key != "profiles"}
     try:
         return AppConfig.model_validate(data)
     except ValidationError as e:

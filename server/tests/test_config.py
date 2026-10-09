@@ -31,8 +31,7 @@ ENV = {"KEY": "secret"}
 
 def test_minimal_config_with_defaults():
     cfg = parse_config(base(), ENV)
-    name, p = cfg.profile(None)
-    assert name == "default"
+    p = cfg.profiles["default"]
     assert p.language == "en"
     assert p.vad.silence_ms == 700 and p.vad.min_speech_ms == 300
     assert p.timeouts.stt_s == 10.0
@@ -47,7 +46,7 @@ def test_missing_env_var_is_error():
 
 def test_profile_inherits_and_overrides_only_declared_fields():
     cfg = parse_config(base(coach={"responder": "llm2", "system_prompt": "coach", "vad": {"min_speech_ms": 500}}), ENV)
-    _, p = cfg.profile("coach")
+    p = cfg.profiles["coach"]
     assert p.responder == "llm2" and p.stt == "stt1" and p.tts == "tts1"
     assert p.display_name == "Agent"
     assert p.vad.silence_ms == 700 and p.vad.min_speech_ms == 500
@@ -74,10 +73,25 @@ def test_typo_in_profile_is_rejected():
         parse_config(data, ENV)
 
 
-def test_unknown_profile_lookup():
-    cfg = parse_config(base(), ENV)
-    with pytest.raises(KeyError):
-        cfg.profile("does_not_exist")
+def test_profiles_are_optional_and_limits_have_defaults():
+    data = base()
+    del data["profiles"]
+    cfg = parse_config(data, ENV)
+    assert cfg.profiles == {}
+    assert (cfg.limits.max_agents_per_user, cfg.limits.max_devices_per_user, cfg.limits.custom_endpoints) == (20, 10, True)
+    for empty in ({}, None):
+        data["profiles"] = empty  # the operator emptied the section after the import
+        assert parse_config(data, ENV).profiles == {}
+
+
+def test_limits_are_validated():
+    data = base()
+    data["limits"] = {"max_agents_per_user": 0}
+    with pytest.raises(ConfigError, match="max_agents_per_user"):
+        parse_config(data, ENV)
+    data["limits"] = {"max_agent_per_user": 5}
+    with pytest.raises(ConfigError, match="max_agent_per_user"):
+        parse_config(data, ENV)
 
 
 def test_load_config_from_file(tmp_path):
