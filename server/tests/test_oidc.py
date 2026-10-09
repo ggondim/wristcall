@@ -231,3 +231,45 @@ async def test_requests_carry_a_server_user_agent(issuer):
 def test_verifier_needs_an_audience():
     with pytest.raises(ValueError):
         OidcVerifier(ISSUER, [], httpx.AsyncClient())
+
+
+async def test_issuer_outage_does_not_amplify_requests(router):
+    clock = Clock()
+    discovery = router.get(f"{ISSUER}/.well-known/openid-configuration").mock(side_effect=httpx.ConnectError("down"))
+    token = FakeIssuer(respx.mock(assert_all_called=False)).token()
+    v = verifier(clock)
+    for _ in range(50):
+        with pytest.raises(OidcUnavailable):
+            await v.verify(token)
+    assert discovery.call_count == 1
+    clock.t += 61
+    with pytest.raises(OidcUnavailable):
+        await v.verify(token)
+    assert discovery.call_count == 2
+
+
+async def test_issuer_back_after_outage(issuer):
+    clock = Clock()
+    v = verifier(clock)
+    issuer.discovery.side_effect = httpx.ConnectError("down")
+    with pytest.raises(OidcUnavailable):
+        await v.verify(issuer.token())
+    issuer.discovery.side_effect = lambda request: httpx.Response(200, json={"issuer": ISSUER, "jwks_uri": f"{ISSUER}/oauth/v2/keys"})
+    clock.t += 61
+    assert await v.verify(issuer.token())
+
+
+@pytest.mark.parametrize("claim", [{"nonce": "n"}, {"at_hash": "h"}])
+async def test_id_tokens_are_rejected(issuer, claim):
+    with pytest.raises(OidcError):
+        await verifier().verify(issuer.token(**claim))
+
+
+async def test_clients_restrict_who_the_token_was_issued_to(issuer):
+    v = OidcVerifier(ISSUER, ["project-id", AUDIENCE], httpx.AsyncClient(), clients=[AUDIENCE])
+    assert await v.verify(issuer.token(aud=["project-id"], client_id=AUDIENCE))
+    with pytest.raises(OidcError):
+        await v.verify(issuer.token(aud=["project-id"], client_id="other-app"))
+    with pytest.raises(OidcError):
+        await v.verify(issuer.token(aud=["project-id"], client_id=None))
+    assert await v.verify(issuer.token(aud=["project-id"], client_id=None, azp=AUDIENCE))

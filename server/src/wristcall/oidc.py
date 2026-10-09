@@ -53,11 +53,14 @@ class OidcVerifier:
         jwks_ttl_s: float = 3600,
         refetch_min_s: float = 60,
         leeway_s: float = 60,
+        clients: Sequence[str] | None = None,
     ) -> None:
         if not audiences:
             raise ValueError("at least one audience is required")
         self.issuer = normalize_issuer(issuer)
         self._audiences = list(audiences)
+        # With clients set, the token must also have been issued to one of them (client_id or azp claim).
+        self._clients = set(clients) if clients is not None else None
         self._http = http
         self._now = now
         self._ttl = jwks_ttl_s
@@ -65,6 +68,7 @@ class OidcVerifier:
         self._leeway = leeway_s
         self._keys: dict[str, jwt.PyJWK] = {}
         self._fetched_at: float | None = None
+        self._attempted_at: float | None = None
         self._lock = asyncio.Lock()
 
     async def verify(self, token: str) -> Identity:
@@ -106,7 +110,12 @@ class OidcVerifier:
         subject = claims.get("sub")
         if not isinstance(subject, str) or not subject or len(subject) > 255:
             raise OidcError("invalid subject")
+        # ID tokens are signed by the same keys; only access tokens are credentials for this server.
+        if "nonce" in claims or "at_hash" in claims:
+            raise OidcError("ID tokens are not accepted; send an access token")
         client_id = claims.get("client_id", claims.get("azp"))
+        if self._clients is not None and client_id not in self._clients:
+            raise OidcError("token was issued to another client")
         return Identity(
             issuer=self.issuer,
             subject=subject,
@@ -124,8 +133,10 @@ class OidcVerifier:
             # Another request may have refreshed the keys while this one waited.
             if self._fresh() and kid in self._keys:
                 return self._keys[kid]
-            due = self._fetched_at is None or not self._fresh() or self._now() - self._fetched_at >= self._refetch_min
-            if due:
+            # One attempt per refetch_min_s, successful or not: neither forged key ids nor an issuer outage
+            # turn into a stream of requests (or a queue of 10 s timeouts) against the issuer.
+            if self._attempted_at is None or self._now() - self._attempted_at >= self._refetch_min:
+                self._attempted_at = self._now()
                 try:
                     await self._refresh()
                 except OidcUnavailable:
@@ -133,6 +144,8 @@ class OidcVerifier:
                     if kid in self._keys:
                         return self._keys[kid]
                     raise
+            elif not self._keys:
+                raise OidcUnavailable("issuer unavailable; retrying later")
         return self._keys.get(kid)
 
     async def _refresh(self) -> None:
