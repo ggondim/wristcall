@@ -37,7 +37,7 @@ class BootstrapReport:
 
 def profile_slug(name: str) -> str:
     slug = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-")[:32].strip("-")
-    return slug if SLUG.match(slug) else "agent"
+    return slug if SLUG.fullmatch(slug) else "agent"
 
 
 async def _owner(storage: Storage, now: float, report: BootstrapReport) -> User:

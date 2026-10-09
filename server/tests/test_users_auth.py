@@ -28,10 +28,13 @@ async def test_create_and_resolve(st):
         await users.resolve("carol")
 
 
-@pytest.mark.parametrize("handle", ["Alice", "a b", "-a", "", "a" * 33, "ação"])
+@pytest.mark.parametrize("handle", ["Alice", "a b", "-a", "", "a" * 33, "ação", "alice\n"])
 async def test_invalid_handles(st, handle):
     with pytest.raises(UserError, match="handle"):
         await UserService(st).create(handle)
+    await UserService(st).create("valid")
+    with pytest.raises(UserError, match="handle"):
+        await UserService(st).rename("valid", handle)
 
 
 async def test_duplicate_handle(st):

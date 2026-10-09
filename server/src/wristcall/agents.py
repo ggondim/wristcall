@@ -188,7 +188,7 @@ def build_endpoint(config: AppConfig, endpoint: Endpoint, kind: Kind, http: http
         cause = e.__cause__ if isinstance(e, ProviderError) else e
         missing = cause.args[0] if isinstance(cause, KeyError) and cause.args else None
         # Only name an option-like key the user did not send and that appears nowhere in the values.
-        if isinstance(missing, str) and _OPTION_NAME.match(missing) and missing not in repr(endpoint.options()):
+        if isinstance(missing, str) and _OPTION_NAME.fullmatch(missing) and missing not in repr(endpoint.options()):
             raise ProviderError(f"missing option '{missing}' for type '{endpoint.type}'") from None
         raise ProviderError(f"invalid options for type '{endpoint.type}'") from None
 
@@ -361,9 +361,9 @@ class AgentService:
         return {"provider": names[0]}
 
     def _check(self, slug: str, icon: str, call_type: str, spec: AgentSpec) -> None:
-        if not SLUG.match(slug):
+        if not SLUG.fullmatch(slug):
             raise AgentError("invalid", "slug: use 1 to 32 lowercase letters, digits or hyphens, starting with a letter or digit")
-        if not ICON.match(icon):
+        if not ICON.fullmatch(icon):
             raise AgentError("invalid", "icon: use an SF Symbol name such as 'waveform' or 'person.wave.2'")
         if call_type not in SUPPORTED_CALL_TYPES:
             raise AgentError("unsupported", f"call_type '{call_type}' is not supported yet (only conversation)")

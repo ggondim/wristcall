@@ -26,7 +26,7 @@ class UserService:
 
     @staticmethod
     def _check_handle(handle: str) -> None:
-        if not SLUG.match(handle):
+        if not SLUG.fullmatch(handle):
             raise UserError("handle: use 1 to 32 lowercase letters, digits or hyphens, starting with a letter or digit")
 
     async def create(self, handle: str, display_name: str | None = None) -> User:

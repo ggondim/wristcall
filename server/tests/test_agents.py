@@ -330,3 +330,15 @@ async def test_build_agent_providers_wraps_custom_endpoint_failures():
             build_agent_providers(cfg, spec, http)
     assert str(e.value) == "invalid options for type 'openai_stt'"
     assert e.value.__cause__ is None
+
+
+@pytest.mark.parametrize("field, value", [("slug", "coach\n"), ("icon", "waveform\n")])
+async def test_slug_and_icon_reject_a_trailing_newline(svc, field, value):
+    data = {"slug": "coach", field: value}
+    with pytest.raises(AgentError) as e:
+        await svc.create("u_a", data)
+    assert e.value.code == "invalid" and field in e.value.message
+    await svc.create("u_a", {"slug": "coach"})
+    with pytest.raises(AgentError) as e:
+        await svc.update("u_a", "coach", {field: value})
+    assert e.value.code == "invalid" and field in e.value.message
