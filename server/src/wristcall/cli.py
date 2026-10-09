@@ -208,7 +208,7 @@ def devices_assign(device_id: str, config: ConfigOpt = DEFAULT_CONFIG, user: Use
 
 @users_app.command("list")
 def users_list(config: ConfigOpt = DEFAULT_CONFIG) -> None:
-    """Lists users with their number of agents and devices."""
+    """Lists users with their number of agents and devices and whether they are linked to the central account."""
 
     async def body(ctx: Ctx):
         return [
@@ -220,7 +220,10 @@ def users_list(config: ConfigOpt = DEFAULT_CONFIG) -> None:
     if not rows:
         typer.echo("No users. Create one with: wristcall users add <handle>")
     for u, agents, devices in rows:
-        typer.echo(f"{u.handle}  {u.display_name}  {agents} agent(s)  {devices} device(s)  since {_when(u.created_at)}")
+        linked = "yes" if u.central_subject else "-"
+        typer.echo(
+            f"{u.handle}  {u.display_name}  {agents} agent(s)  {devices} device(s)  since {_when(u.created_at)}  linked {linked}"
+        )
 
 
 @users_app.command("add")
@@ -244,6 +247,21 @@ def users_edit(
     """Renames a user (for example the `owner` created by the profile import)."""
     u = _run(config, lambda ctx: ctx.users.rename(handle, new_handle, name))
     typer.echo(f"User {u.handle}: {u.display_name}")
+
+
+@users_app.command("unlink")
+def users_unlink(handle: str, config: ConfigOpt = DEFAULT_CONFIG) -> None:
+    """Removes the user's link to the central account (the link itself is made in the app)."""
+
+    async def body(ctx: Ctx):
+        user = await ctx.users.resolve(handle)
+        return user, await ctx.storage.users.unlink_central(user.id)
+
+    u, unlinked = _run(config, body)
+    if not unlinked:
+        typer.echo(f"error: {u.handle} is not linked to a central account", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"Unlinked {u.handle} from the central account.")
 
 
 @users_app.command("rm")

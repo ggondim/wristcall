@@ -1,22 +1,32 @@
 """Management API (REST, JSON): agents, devices, pairing codes and the providers on offer.
 
 Authentication: a user's API token (`wc_pat_...`, from `wristcall users tokens add`). A paired device may only
-list its user's agents (GET /v1/agents and GET /v1/agents/{ref}, summary view).
+list its user's agents (GET /v1/agents and GET /v1/agents/{ref}, summary view). The central account's token is
+never a credential here: /v1/account/link takes it in the body, next to a local proof.
 """
 
+import logging
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Header, Request, Response
 from fastapi.responses import JSONResponse
 
+from .account import AccountError, AccountService
 from .agents import AgentError, AgentService, agent_detail, agent_summary
 from .auth import Authenticator, Principal
 from .config import AppConfig
 from .directory_client import DirectoryClient, DirectoryError
 from .pairing import DeviceLimit, PairingService, issue_code
 from .providers import provider_kind
+from .ratelimit import RateLimiter
+
+log = logging.getLogger("wristcall.api")
 
 _STATUS = {"invalid": 422, "unsupported": 422, "not_found": 404, "conflict": 409, "limit": 403}
+_ACCOUNT_STATUS = {
+    "invalid_account_token": 401, "account_unavailable": 503, "conflict": 409, "not_found": 404, "invalid_code": 401,
+}
 
 
 def _error(code: str, message: str, status: int) -> JSONResponse:
@@ -45,9 +55,25 @@ def _agent_error(e: AgentError) -> JSONResponse:
     return _error(e.code, e.message, _STATUS.get(e.code, 422))
 
 
+def _not_configured() -> JSONResponse:
+    return _error("not_configured", "this server is not linked to a central account", 404)
+
+
+def _account_error(e: AccountError) -> JSONResponse:
+    return _error(e.code, e.message, _ACCOUNT_STATUS.get(e.code, 401))
+
+
 def management_router(
-    config: AppConfig, auth: Authenticator, agents: AgentService, pairing: PairingService
+    config: AppConfig,
+    auth: Authenticator,
+    agents: AgentService,
+    pairing: PairingService,
+    account: AccountService | None = None,
+    *,
+    limiter: RateLimiter | None = None,
+    client_ip: Callable[[Request], str] | None = None,
 ) -> APIRouter:
+    """`limiter` and `client_ip` are /v1/pair's: linking with a code spends the same per-IP budget."""
     router = APIRouter(prefix="/v1")
     directory = DirectoryClient(config.server.directory_url) if config.server.directory_url else None
 
@@ -172,5 +198,56 @@ def management_router(
         if issued.warning:
             body["warning"] = issued.warning
         return JSONResponse(body, status_code=201)
+
+    @router.post("/account/link")
+    async def link_account(request: Request, authorization: str | None = Header(default=None)) -> Any:
+        # Proof of the central account in the body (`token`), proof of the local user in the Authorization
+        # header (API token) or in the body (`code`). The body is never echoed: it holds both secrets.
+        if account is None:
+            return _not_configured()
+        if limiter is not None and not limiter.allow(client_ip(request) if client_ip else "unknown"):
+            return _error("rate_limited", "too many attempts; try again in a minute", 429)
+        who = await owner(authorization) if authorization is not None else None
+        if isinstance(who, JSONResponse):
+            return who
+        body = await _json_object(request)
+        if isinstance(body, JSONResponse):
+            return body
+        token, code = body.get("token"), body.get("code")
+        if not isinstance(token, str) or not token:
+            return _error("invalid", "token: the central account access token is required", 422)
+        if code is not None and not isinstance(code, str):
+            return _error("invalid", "code: must be a string", 422)
+        try:
+            if who is not None:
+                # The API token already proves the user; a code sent along is left unspent.
+                await account.link(who.user_id, token)
+                log.info("user %s linked to the central account (API token)", who.user_id)
+                return {"linked": True, "issuer": account.config.issuer}
+            if code is None:
+                return _error("unauthorized", "send a user API token or a pairing code of this server", 401)
+            user_id, _key = await account.link_with_code(code, token)
+            user, api_token = await account.issue_app_token(user_id)
+        except AccountError as e:
+            return _account_error(e)
+        log.info("user %s linked to the central account (pairing code)", user_id)
+        return {
+            "linked": True,
+            "issuer": account.config.issuer,
+            "user": {"id": user.id, "handle": user.handle},
+            "api_token": api_token,
+        }
+
+    @router.delete("/account/link")
+    async def unlink_account(authorization: str | None = Header(default=None)) -> Any:
+        if account is None:
+            return _not_configured()
+        who = await owner(authorization)
+        if isinstance(who, JSONResponse):
+            return who
+        if not await account.unlink(who.user_id):
+            return _error("not_found", "this user is not linked to a central account", 404)
+        log.info("user %s unlinked from the central account", who.user_id)
+        return Response(status_code=204)
 
     return router

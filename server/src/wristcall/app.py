@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import __version__, protocol
+from .account import AccountService
 from .agents import (
     ONE_WAY, Agent, AgentError, AgentService, OneWayProviders, agent_summary, build_agent_providers,
     build_one_way_providers,
@@ -77,6 +78,7 @@ def create_app(
     agents = AgentService(store, config, http_client)
     auth = Authenticator(store)
     limiter = RateLimiter(limit=10, window_s=60)
+    account = AccountService(store, config.central_account, http_client) if config.central_account else None
     targets = warmup_targets(config, http_client)
     call_targets = [t for t in targets if t.config.on_call]
     after_calls = Background()
@@ -102,7 +104,7 @@ def create_app(
     app.state.pairing = pairing_svc
     app.state.agents = agents
     app.state.auth = auth
-    app.include_router(management_router(config, auth, agents, pairing_svc))
+    app.state.account = account
 
     def client_ip(request: Request) -> str:
         header = config.server.client_ip_header
@@ -110,13 +112,23 @@ def create_app(
             return value.split(",")[0].strip()
         return request.client.host if request.client else "unknown"
 
+    app.include_router(
+        management_router(config, auth, agents, pairing_svc, account, limiter=limiter, client_ip=client_ip)
+    )
+
     async def device_from(authorization: str | None) -> Principal | None:
         principal = await auth.authenticate(authorization)
         return principal if principal is not None and principal.kind == "device" else None
 
     @app.get("/v1/health")
     async def health() -> dict[str, Any]:
-        return {"status": "ok", "version": __version__, "protocol": protocol.PROTOCOL_VERSION}
+        central = config.central_account
+        return {
+            "status": "ok",
+            "version": __version__,
+            "protocol": protocol.PROTOCOL_VERSION,
+            "account": {"issuer": central.issuer, "device_credential": central.device_credential} if central else None,
+        }
 
     @app.post("/v1/pair")
     async def pair(body: PairBody, request: Request) -> Any:

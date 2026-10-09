@@ -149,6 +149,25 @@ def test_users_and_tokens(tmp_path):
     assert "bob" not in ok(cfg, "users", "list")
 
 
+def test_users_unlink(tmp_path):
+    cfg = write_config(tmp_path)
+    ok(cfg, "users", "list")
+    st = open_sqlite_storage(tmp_path / "data")
+    owner = run(st.users.by_handle("owner"))
+    assert run(st.users.link_central(owner.id, "https://issuer.test#central-user-1"))
+    assert "linked yes" in ok(cfg, "users", "list")
+    assert "Unlinked owner" in ok(cfg, "users", "unlink", "owner")
+    assert "linked -" in ok(cfg, "users", "list")
+    assert run(st.users.by_central("https://issuer.test#central-user-1")) is None
+
+
+def test_users_unlink_not_linked_fails(tmp_path):
+    cfg = write_config(tmp_path)
+    r = invoke(cfg, "users", "unlink", "owner")
+    assert r.exit_code == 1 and "not linked" in r.output
+    assert invoke(cfg, "users", "unlink", "nobody").exit_code == 1
+
+
 def test_agents_add_list_show_edit_rm(tmp_path):
     cfg = write_config(tmp_path)
     out = ok(cfg, "agents", "list")

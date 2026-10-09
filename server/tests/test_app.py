@@ -43,7 +43,7 @@ def auth(token: str) -> dict:
 
 
 def test_health(client):
-    assert client.get("/v1/health").json() == {"status": "ok", "version": __version__, "protocol": 1}
+    assert client.get("/v1/health").json() == {"status": "ok", "version": __version__, "protocol": 1, "account": None}
 
 
 def test_startup_imports_the_default_profile(client):
