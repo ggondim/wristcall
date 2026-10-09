@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 import httpx
-from fastapi import FastAPI, Header, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -50,8 +50,12 @@ def _error(code: str, message: str, status: int) -> JSONResponse:
     return JSONResponse({"error": code, "message": message}, status_code=status)
 
 
-def _too_large() -> ApiError:
-    return ApiError("too_large", f"request body is limited to {MAX_BODY} bytes", 413)
+class BodyTooLarge(HTTPException):
+    """An HTTPException on purpose: FastAPI re-raises those while reading a model body, but turns anything else
+    into 400."""
+
+    def __init__(self) -> None:
+        super().__init__(status_code=413, detail=f"request body is limited to {MAX_BODY} bytes")
 
 
 class BodyLimit:
@@ -78,7 +82,7 @@ class BodyLimit:
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
                 if received > self.limit:
-                    raise _too_large()
+                    raise BodyTooLarge()
             return message
 
         async def tracking_send(message: Message) -> None:
@@ -89,15 +93,14 @@ class BodyLimit:
 
         try:
             await self.app(scope, limited_receive, tracking_send)
-        except ApiError as e:
-            if e.code != "too_large" or started:
+        except BodyTooLarge:
+            if started:
                 raise
             await self._reject(scope, receive, send)
 
     @staticmethod
     async def _reject(scope: Scope, receive: Receive, send: Send) -> None:
-        e = _too_large()
-        await _error(e.code, e.message, e.status)(scope, receive, send)
+        await _error("too_large", BodyTooLarge().detail, 413)(scope, receive, send)
 
 
 async def current_account(request: Request, authorization: str | None = Header(default=None)) -> Caller:
@@ -187,7 +190,7 @@ def create_app(
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(_request: Request, e: StarletteHTTPException) -> JSONResponse:
-        codes = {404: "not_found", 405: "method_not_allowed"}
+        codes = {404: "not_found", 405: "method_not_allowed", 413: "too_large"}
         message = e.detail if isinstance(e.detail, str) else "request failed"
         return JSONResponse(
             {"error": codes.get(e.status_code, "http_error"), "message": message},

@@ -2,6 +2,7 @@ from typing import Any
 
 import pytest
 from fastapi import Depends, Request
+from pydantic import BaseModel
 from pymongo import MongoClient
 
 from conftest import ISSUER, mongo_url, serve
@@ -118,9 +119,10 @@ def test_missing_token_is_401(probe):
     r = probe.get("/_probe")
     assert r.status_code == 401
     assert r.json()["error"] == "unauthorized"
-    r = probe.get("/_probe", headers={"Authorization": "Basic abc"})
-    assert r.status_code == 401
-    assert r.json()["error"] == "unauthorized"
+    for header in ("Basic abc", "Bearer ", "Bearer"):
+        r = probe.get("/_probe", headers={"Authorization": header})
+        assert r.status_code == 401
+        assert r.json()["error"] == "unauthorized"
 
 
 def test_bad_token_is_401(probe, fake_verifier):
@@ -163,6 +165,27 @@ def test_big_body_is_413(probe, fake_verifier):
     assert r.status_code == 413
     assert r.json()["error"] == "too_large"
     assert probe.post("/_probe", headers=auth, json={"blob": "x" * 1024}).status_code == 200
+
+
+def test_big_chunked_body_is_413_on_model_routes(app, client):
+    # FastAPI turns any non-HTTPException raised while reading a model body into 400; the limit must survive that.
+    class Blob(BaseModel):
+        blob: str
+
+    @app.post("/_probe_model")
+    async def model(body: Blob) -> dict[str, int]:
+        return {"size": len(body.blob)}
+
+    def chunks():
+        yield b'{"blob": "'
+        for _ in range(70):
+            yield b"x" * 1024
+        yield b'"}'
+
+    r = client.post("/_probe_model", headers={"Content-Type": "application/json"}, content=chunks())
+    assert r.status_code == 413
+    assert r.json() == {"error": "too_large", "message": "request body is limited to 65536 bytes"}
+    assert client.post("/_probe_model", json={"blob": "xyz"}).json() == {"size": 3}
 
 
 def test_invalid_json_is_422(probe, fake_verifier):

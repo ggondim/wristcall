@@ -29,3 +29,9 @@ packages = ["src/wristcall_cloud"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+filterwarnings = [
+  # Starlette deprecates httpx inside TestClient; FastAPI's TestClient still wraps it.
+  "ignore:Using `httpx` with `starlette.testclient`",
+  # test_oidc.py (an exact copy of the server's) signs with a short HMAC key on purpose: the token must be rejected.
+  "ignore::jwt.warnings.InsecureKeyLengthWarning",
+]
