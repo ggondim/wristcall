@@ -10,6 +10,8 @@ from pathlib import Path
 from ..history_codec import words
 from .migrations import migrate
 
+HISTORY_STEP = 5  # schema version that moves call text into the history (epic E3)
+
 
 class DatabaseError(Exception):
     pass
@@ -43,9 +45,14 @@ def _terms(text: str | None) -> str:
     return " ".join(dict.fromkeys(words(text or "")))
 
 
-def _secure_delete(conn: sqlite3.Connection) -> None:
-    # Deleted or re-encrypted history text must not stay readable in free pages or in old index segments.
-    conn.execute("PRAGMA secure_delete=ON")
+def _compact(conn: sqlite3.Connection) -> None:
+    conn.execute("INSERT INTO history_fts (history_fts) VALUES ('optimize')")
+    conn.execute("VACUUM")
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
+def _secure_delete_index(conn: sqlite3.Connection) -> None:
+    # Deleted or re-encrypted history text must not stay readable in old index segments (needs the table).
     try:
         conn.execute("INSERT INTO history_fts (history_fts, rank) VALUES ('secure-delete', 1)")
     except sqlite3.OperationalError:
@@ -67,8 +74,13 @@ class Database:
             self._conn.execute("PRAGMA foreign_keys=ON")
             _require_fts5(self._conn)
             self._conn.create_function("wristcall_terms", 1, _terms, deterministic=True)
+            # Before migrating: step 5 moves 0.4.0 call text and must not leave it in free pages.
+            self._conn.execute("PRAGMA secure_delete=ON")
+            before = self._conn.execute("PRAGMA user_version").fetchone()[0]
             self.version = migrate(self._conn)
-            _secure_delete(self._conn)
+            _secure_delete_index(self._conn)
+            if before < HISTORY_STEP <= self.version:
+                _compact(self._conn)
 
     def query(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
         with self._lock:
@@ -93,9 +105,7 @@ class Database:
     def compact(self) -> None:
         """Rewrites the file: nothing deleted or replaced is left in it (after turning encryption on or off)."""
         with self._lock:
-            self._conn.execute("INSERT INTO history_fts (history_fts) VALUES ('optimize')")
-            self._conn.execute("VACUUM")
-            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            _compact(self._conn)
 
     def close(self) -> None:
         with self._lock:

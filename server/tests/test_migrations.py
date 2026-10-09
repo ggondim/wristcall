@@ -263,3 +263,28 @@ def test_step_5_cuts_moved_text_like_new_text(tmp_path):
         match = fts_query(HistoryCodec().query_terms(query))
         assert db.query("SELECT COUNT(*) FROM history_fts WHERE history_fts MATCH ?", (match,))[0][0] == 1, query
     db.close()
+
+
+def test_step_5_leaves_no_old_call_text_in_the_files(tmp_path):
+    # Long text (overflow pages) moved out of calls.text must not stay readable in free pages after the migration
+    # and a delete: the migration runs with secure_delete on and compacts the file.
+    path = database_path(tmp_path)
+    conn = sqlite3.connect(path, isolation_level=None)
+    conn.execute("PRAGMA journal_mode=WAL")
+    for step in MIGRATIONS[:4]:
+        for statement in step:
+            conn.execute(statement)
+    conn.execute("PRAGMA user_version = 4")
+    conn.execute("INSERT INTO users (id, handle, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1.0)")
+    conn.execute(
+        "INSERT INTO calls (id, user_id, agent_id, call_type, status, text, created_at, updated_at) "
+        "VALUES ('c1', 'u1', 'ag1', 'one-shot', 'delivered', ?, 1.0, 1.0)",
+        ("zebrasecret in the old text " * 400,),
+    )
+    conn.close()
+    db = Database(path)
+    db.execute("DELETE FROM calls")
+    db.query("PRAGMA wal_checkpoint(TRUNCATE)")
+    raw = b"".join(p.read_bytes() for p in tmp_path.iterdir() if p.is_file())
+    assert b"zebrasecret" not in raw
+    db.close()

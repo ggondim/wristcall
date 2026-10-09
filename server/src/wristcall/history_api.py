@@ -5,6 +5,7 @@ went. Everything else takes the user's API token only (the iPhone app and the PW
 whole history.
 """
 
+import math
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -50,11 +51,14 @@ def cursor(record: CallRecord) -> str:
 
 
 def parse_cursor(value: str) -> tuple[float, str] | None:
-    at, _, call_id = value.partition(":")
+    at, sep, call_id = value.partition(":")
     try:
-        return float(at), call_id
+        position = float(at)
     except ValueError:
         return None
+    if not sep or not call_id or not math.isfinite(position):
+        return None
+    return position, call_id
 
 
 def _error(code: str, message: str, status: int) -> JSONResponse:

@@ -126,6 +126,8 @@ def test_pages_with_before(filled):
     assert filled.get("/v1/calls", headers=h(t), params={"limit": 101}).status_code == 422
     bad = filled.get("/v1/calls", headers=h(t), params={"before": "c_2"})
     assert bad.status_code == 422 and "next_before" in bad.json()["message"]
+    for value in ("1.5", "nan:c_1", "inf:c_1", "-inf:c_1", "1.5:"):
+        assert filled.get("/v1/calls", headers=h(t), params={"before": value}).status_code == 422, value
 
 
 def test_history_needs_the_owner_api_token(filled):
