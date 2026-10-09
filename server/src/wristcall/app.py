@@ -113,7 +113,7 @@ def create_app(
         purging = asyncio.create_task(purge_forever(history, config.history.purge_every_s))
         # Only the server does this (the CLI may run next to a live server): its own calls died with it.
         if interrupted := await store.calls.interrupt_unfinished(time.time()):
-            log.warning("%d one-way call(s) left unfinished by the last run marked as interrupted", interrupted)
+            log.warning("%d call(s) left unfinished by the last run marked as interrupted", interrupted)
         background = asyncio.create_task(run_background(targets)) if targets else None
         yield
         purging.cancel()

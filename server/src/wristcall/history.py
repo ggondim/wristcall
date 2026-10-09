@@ -199,7 +199,13 @@ class History:
 
         def unseal(e: EntryRecord) -> tuple[str, bool, list[str]]:
             assert e.text is not None
-            text = self.codec.open(e.text, True, aad(e.call_id, e.seq))
+            try:
+                text = self.codec.open(e.text, True, aad(e.call_id, e.seq))
+            except HistoryKeyError as err:
+                raise HistoryKeyError(
+                    f"call {e.call_id}, utterance {e.seq} cannot be decrypted (another key, or damaged); "
+                    f"delete that call with `wristcall history rm {e.call_id}` and run this again"
+                ) from err
             return text, False, plain.index_terms(text)
 
         done = await self._reseal(True, unseal)

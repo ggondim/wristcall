@@ -115,10 +115,14 @@ history:
   history.** To turn it on, stop the server, add the key, run `wristcall history encrypt` (it encrypts calls
   made before) and start again; to turn it off, stop the server, run `wristcall history decrypt` (with the key still
   set), remove the key and start again.
+- Lost key: the server does not start. To start over without the encrypted history, with the server stopped:
+  `sqlite3 <data_dir>/wristcall.db "DELETE FROM call_entries WHERE sealed = 1; DELETE FROM meta WHERE key = 'history_key_id';"`
 - Search finds calls with all the given whole words, ignoring case and accents, in the user's speech and in the
   agent's answers.
 - Deleted and re-encrypted text is overwritten in the database file (`secure_delete`); `encrypt` and `decrypt` also
   compact the file, so no clear text is left behind.
+- Search words never reach the server's access log (the query of `/v1/calls` requests is dropped from it), but a proxy
+  in front (Traefik, nginx) records them if its own access log is on.
 
 ```bash
 wristcall history list --search "milk"                  # newest first

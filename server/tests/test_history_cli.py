@@ -172,3 +172,21 @@ def test_encrypting_leaves_no_clear_text_in_the_file(tmp_path):
     ok(locked, "history", "encrypt", "--yes")
     raw = b"".join(p.read_bytes() for p in (tmp_path / "data").iterdir() if p.is_file())
     assert b"zebrapassword" not in raw and b"outrazebra" not in raw
+
+
+def test_decrypt_names_the_entry_that_does_not_open(tmp_path):
+    key = new_key()
+    locked = write_config(tmp_path, key)
+    ok(locked, "users", "list")
+    seed(tmp_path, key, ("c_1", 1.0, "conversation", "ended", None, [("user", "cofre azul"), ("agent", "ok")]))
+    ok(locked, "history", "list")  # the server records the key
+    st = open_sqlite_storage(tmp_path / "data")
+    try:  # a damaged seal: one character in the middle of the second utterance changed
+        [(text,)] = [tuple(r) for r in st.db.query("SELECT text FROM call_entries WHERE seq = 1")]
+        i = len(text) // 2
+        st.db.execute("UPDATE call_entries SET text = ? WHERE seq = 1", (text[:i] + ("A" if text[i] != "A" else "B") + text[i + 1:],))
+    finally:
+        asyncio.run(st.close())
+    r = invoke(locked, "history", "decrypt", "--yes")
+    assert r.exit_code == 1 and "Traceback" not in r.output, r.output
+    assert "call c_1, utterance 1" in r.output and "wristcall history rm c_1" in r.output, r.output

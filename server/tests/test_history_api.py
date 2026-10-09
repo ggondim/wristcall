@@ -42,18 +42,26 @@ def api_token(client, handle="owner") -> str:
     return run(UserService(client.app.state.storage).issue_token(user(client, handle).id, "test"))[1]
 
 
-def device_token(client) -> str:
+def paired(client) -> dict:
+    """Pairs a watch with the owner: {"device_id", "token"}."""
     code = run(client.app.state.pairing.create_code(user(client).id)).code
-    return client.post("/v1/pair", json={"code": code, "device_name": "Watch"}).json()["token"]
+    return client.post("/v1/pair", json={"code": code, "device_name": "Watch"}).json()
 
 
-def add_call(client, call_id, at, texts, *, handle="owner", agent=None, call_type="conversation", status="ended", **over):
+def device_token(client) -> str:
+    return paired(client)["token"]
+
+
+def add_call(
+    client, call_id, at, texts, *, handle="owner", agent=None, call_type="conversation", status="ended",
+    device_id=None, **over,
+):
     """A finished call written through the history (so sealed and indexed like a real one)."""
     owner = user(client, handle)
     agent_id = agent or run(client.app.state.agents.list(owner.id))[0].id
     history = client.app.state.history
     record = run(history.storage.calls.create(CallRecord(
-        id=call_id, user_id=owner.id, agent_id=agent_id, device_id=None, call_type=call_type, status=status,
+        id=call_id, user_id=owner.id, agent_id=agent_id, device_id=device_id, call_type=call_type, status=status,
         created_at=at, updated_at=at, ended_at=at + 5, finished_at=at + 6, agent_slug="default", agent_name="Test",
         **over,
     )))
@@ -139,9 +147,30 @@ def test_history_needs_the_owner_api_token(filled):
         r = filled.request(method.upper(), path, headers=h(device))
         assert r.status_code == 403 and r.json()["error"] == "forbidden", path
         assert filled.request(method.upper(), path).status_code == 401
-    # Reading one call stays open to the device (it asks how its call went).
-    assert filled.get("/v1/calls/c_1", headers=h(device)).json()["entries"][0]["text"] == "Comprar leite amanhã"
+    # Reading one call stays open to the device for its own calls only (see the next test).
+    assert filled.get("/v1/calls/c_1", headers=h(device)).status_code == 404
     assert filled.get("/v1/calls/c_9", headers=h(device)).status_code == 404
+
+
+def test_a_device_reads_only_the_calls_made_from_it(filled):
+    watch, other = paired(filled), paired(filled)
+    add_call(filled, "c_w", T0, [("user", "do relógio")], device_id=watch["device_id"])
+    add_call(filled, "c_o", T0, [("user", "do outro")], device_id=other["device_id"])
+    mine = filled.get("/v1/calls/c_w", headers=h(watch["token"]))
+    assert mine.status_code == 200 and mine.json()["entries"][0]["text"] == "do relógio"
+    for call_id in ("c_o", "c_1"):  # another device's call, a call with no device
+        r = filled.get(f"/v1/calls/{call_id}", headers=h(watch["token"]))
+        assert r.status_code == 404 and r.json() == {"error": "not_found", "message": "call not found"}, call_id
+    t = api_token(filled)  # the owner's API token reads them all
+    assert all(filled.get(f"/v1/calls/{c}", headers=h(t)).status_code == 200 for c in ("c_w", "c_o", "c_1"))
+
+
+def test_since_and_until_must_be_finite(filled):
+    t = api_token(filled)
+    for value in ("nan", "inf", "-inf", "1e999"):
+        for name in ("since", "until"):
+            r = filled.get("/v1/calls", headers=h(t), params={name: value})
+            assert r.status_code == 422 and r.json()["error"] == "invalid", (name, value)
 
 
 def test_delete_one_by_agent_or_all(filled):

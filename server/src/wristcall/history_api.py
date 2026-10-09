@@ -1,8 +1,8 @@
 """History API (design decisions 13 and 16): list and search, read, delete, export and redeliver calls.
 
 Reading one call (`GET /v1/calls/{id}`) takes a device or a user API token, as in 0.4.0: the watch asks how its call
-went. Everything else takes the user's API token only (the iPhone app and the PWA): a lost watch does not hand out the
-whole history.
+went, and a device token reads only the calls made from that device. Everything else takes the user's API token only
+(the iPhone app and the PWA): a lost watch does not hand out the whole history.
 """
 
 import math
@@ -183,7 +183,8 @@ def calls_router(
         if who is None:
             return _error("unauthorized", "missing or invalid token", 401)
         record = await calls.get(who.user_id, call_id)
-        if record is None:
+        # A device token reads only the calls made from that device; another one looks just like a missing call.
+        if record is None or (who.device is not None and record.device_id != who.device.id):
             return _error("not_found", "call not found", 404)
         return await history.detail(record)
 

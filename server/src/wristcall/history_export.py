@@ -1,6 +1,7 @@
 """History export (design decision 16.6): Markdown to read, JSON to keep or import. Times in UTC."""
 
 import json
+import math
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -19,9 +20,13 @@ def parse_time(value: str) -> float:
     """Unix seconds, or ISO 8601 (a date, or a date and time; without an offset it is UTC)."""
     value = value.strip()
     try:
-        return float(value)
+        seconds = float(value)
     except ValueError:
         pass
+    else:
+        if not math.isfinite(seconds):
+            raise TimeError(f"not a finite time: {value!r}")
+        return seconds
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:

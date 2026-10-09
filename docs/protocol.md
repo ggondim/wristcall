@@ -19,7 +19,7 @@ or any other) and a wristcall server. Version: **1**.
 | `GET /v1/health` | | `200 {"status":"ok","version":"0.5.0","protocol":1,"account":null}`. `account` is `{"issuer","device_credential"}` when the server accepts a [central account](#central-account-optional), `null` otherwise (older servers omit it) |
 | `POST /v1/pair` | `{"code": "12345678" \| null, "device_name": "Apple Watch"}` | `200 {"device_id","token"}`: paired (flow A). `202 {"request_id","poll_token","expires_at"}`: waiting for the owner's approval (flow B). `401 {"error":"invalid_code"}`. `429 {"error":"rate_limited"}` |
 | `POST /v1/pair/poll` | `{"poll_token": "..."}` | `202 {"request_id","expires_at"}`: pending. `200 {"device_id","token"}`: approved (delivered only once). `403 {"error":"limit"}`: approved, but the user is at the device limit, so the device cannot be collected yet (the request stays valid; try again after a device is revoked). `410 {"error":"gone"}`: expired, denied or already delivered. `422`: body without `poll_token` or with more than 128 characters |
-| `GET /v1/calls/{call_id}` | | `200 call` (see [One-way calls](#one-way-calls-one-shot-monologue)): a call of this token's user, with a device or an API token. `404 {"error":"not_found"}`. `401` |
+| `GET /v1/calls/{call_id}` | | `200 call` (see [One-way calls](#one-way-calls-one-shot-monologue)): a call of this token's user, with a device or an API token; a device token reads only the calls made from that device. `404 {"error":"not_found"}` (also for a call made from another device). `401` |
 | `GET /v1/me` | | `200 {"device_id","device_name","user":{"id","handle","display_name"},"agents":[agent],"profiles":[{"name","display_name"}]}`. `401` |
 | `DELETE /v1/me` | | `204`: token revoked. `401` |
 
@@ -322,7 +322,8 @@ The call goes like this:
    and closes with 1000.
 3. The client hangs up (`session.end`, then close) and asks
    `GET /v1/calls/{call_id}` every 1 to 2 s until the status is final. The
-   WebSocket is closed by then: this is plain HTTPS, with the device token.
+   WebSocket is closed by then: this is plain HTTPS, with the device token (a device token reads only the calls made
+   from that device).
 
 `GET /v1/calls/{call_id}` answers (the fields after `finished_at` since server 0.5.0, see [History](#history)):
 
@@ -393,7 +394,7 @@ With the user's API token (a device token answers `403 forbidden`, except for `G
 | Route | Responses |
 |---|---|
 | `GET /v1/calls` | `200 {"calls":[call],"next_before":string\|null}`, newest first, each call as `GET /v1/calls/{id}`. Query: `agent` (slug or id, also a deleted agent's id), `q` (search), `since` and `until` (Unix seconds or ISO 8601; without an offset, UTC; `until` excluded), `limit` (1 to 100, default 50), `before` (the `next_before` of the previous page: an opaque position, still valid if that call was deleted meanwhile; a full page can return a `next_before` that leads to an empty page). `404 not_found` (agent). `422 {"error":"invalid"}` for a bad `since`, `until` or `before`; a `limit` outside 1 to 100 or a `q` over 500 characters gets the standard validation `422` (`{"detail":[...]}`) |
-| `GET /v1/calls/{id}` | `200 call` (device or API token). `404` |
+| `GET /v1/calls/{id}` | `200 call` (device or API token; a device token reads only the calls made from that device). `404` (also for another device's call) |
 | `DELETE /v1/calls/{id}` | `204`. `404` |
 | `DELETE /v1/calls?agent=<ref>` or `?all=true` | `200 {"deleted":n}`. `422` with neither or both |
 | `GET /v1/calls/export?format=md\|json` | `200`, a file (`Content-Disposition: attachment`): Markdown to read, or JSON `{"version":1,"exported_at","calls":[call]}`. Same `agent`, `since`, `until`; every matching call, newest first, times in UTC |

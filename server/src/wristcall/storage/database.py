@@ -56,7 +56,7 @@ def _secure_delete_index(conn: sqlite3.Connection) -> None:
     try:
         conn.execute("INSERT INTO history_fts (history_fts, rank) VALUES ('secure-delete', 1)")
     except sqlite3.OperationalError:
-        pass  # SQLite before 3.44: deleted terms leave the index when FTS5 merges segments (or at compact())
+        pass  # SQLite before 3.42 (FTS5 secure-delete): deleted terms leave the index when FTS5 merges segments (or at compact())
 
 
 class Database:

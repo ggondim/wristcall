@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import re
 
 import httpx
@@ -359,3 +360,49 @@ def test_agents_retention(tmp_path):
     assert json.loads(ok(cfg, "agents", "show", "note"))["retention_days"] is None
     bad = invoke(cfg, "agents", "edit", "note", "--retention", "soon")
     assert bad.exit_code != 0 and "--retention" in bad.output
+    for value in ("²", "١٢"):  # str.isdigit() takes these, int() does not
+        bad = invoke(cfg, "agents", "edit", "note", "--retention", value)
+        assert bad.exit_code == 1 and "--retention" in bad.output, value
+        assert not isinstance(bad.exception, ValueError), (value, bad.exception)
+
+
+def access_record(path: str) -> logging.LogRecord:
+    """A uvicorn.access record: args are (client_addr, method, full_path, http_version, status_code)."""
+    return logging.LogRecord(
+        "uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1:5000", "GET", path, "1.1", 200), None,
+    )
+
+
+def test_access_log_drops_the_query_of_history_requests():
+    keep = cli.HistoryQueryFilter()
+    for path, logged in [
+        ("/v1/calls?q=leite%20amanh%C3%A3&since=2026-10-09", "/v1/calls"),
+        ("/v1/calls/export?format=md&agent=note", "/v1/calls/export"),
+        ("/v1/calls/c_1", "/v1/calls/c_1"),
+        ("/v1/calls", "/v1/calls"),
+        ("/v1/agents?x=1", "/v1/agents?x=1"),  # other routes as they were
+        ("/v1/callsign?x=1", "/v1/callsign?x=1"),
+    ]:
+        record = access_record(path)
+        assert keep.filter(record) is True
+        assert record.args[2] == logged and logged in record.getMessage(), path
+    odd = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, "plain", None, None)
+    assert keep.filter(odd) is True and odd.getMessage() == "plain"
+
+
+def test_configure_logging_installs_the_filter_and_uvicorn_keeps_it():
+    import logging.config
+
+    from uvicorn.config import LOGGING_CONFIG
+
+    access = logging.getLogger("uvicorn.access")
+    before = list(access.filters)
+    try:
+        cli.configure_logging()
+        cli.configure_logging()  # twice: still one filter
+        assert sum(isinstance(f, cli.HistoryQueryFilter) for f in access.filters) == 1
+        logging.config.dictConfig(LOGGING_CONFIG)  # what uvicorn.run does
+        assert any(isinstance(f, cli.HistoryQueryFilter) for f in access.filters)
+    finally:
+        access.filters[:] = before

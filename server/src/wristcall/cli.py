@@ -105,10 +105,26 @@ def _confirm(yes: bool, question: str) -> None:
         raise typer.Exit(1)
 
 
+class HistoryQueryFilter(logging.Filter):
+    """Drops the query string of /v1/calls requests from uvicorn's access log: it holds the searched words."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) == 5 and isinstance(args[2], str):
+            path = args[2]
+            if path == "/v1/calls" or path.startswith(("/v1/calls?", "/v1/calls/")):
+                record.args = (args[0], args[1], path.split("?", 1)[0], *args[3:])
+        return True
+
+
 def configure_logging() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     # httpx logs every request line with its full URL, and webhook URLs hold secrets in the path.
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    # uvicorn's dictConfig (in uvicorn.run) replaces this logger's handlers but keeps its filters.
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, HistoryQueryFilter) for f in access.filters):
+        access.addFilter(HistoryQueryFilter())
 
 
 @app.command()
@@ -409,7 +425,7 @@ def _agent_input(
 def _retention(value: str) -> int | str | None:
     if value in ("forever", "default"):
         return None if value == "default" else value
-    if value.isdigit():
+    if value.isascii() and value.isdigit():  # "²".isdigit() is True, but int("²") fails
         return int(value)
     raise AgentError("invalid", "--retention: a number of days, forever or default")
 
