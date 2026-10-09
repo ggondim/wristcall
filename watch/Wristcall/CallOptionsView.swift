@@ -13,6 +13,7 @@ struct CallOptionsView: View {
             Section {
                 ForEach(TurnEnd.allCases, id: \.self) { turnEnd in
                     Button {
+                        // Explicit, even `auto`: the user picked it (decision W5).
                         model.startCall(turnEnd: turnEnd)
                     } label: {
                         VStack(alignment: .leading, spacing: 2) {
@@ -32,7 +33,7 @@ struct CallOptionsView: View {
                 }
             }
         }
-        .navigationTitle(model.profile?.displayName ?? "wristcall")
+        .navigationTitle(model.agents.first?.agent.displayName ?? "wristcall")
     }
 }
 

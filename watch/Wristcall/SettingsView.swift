@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Settings: pairing directory, paired server, unpair, version.
+/// Settings: pairing directory, the first paired server and its removal, version. The server list
+/// replaces the server section in task 6.
 struct SettingsView: View {
     let model: AppModel
     @State private var directoryText = ""
@@ -23,12 +24,12 @@ struct SettingsView: View {
                     directoryText = model.directoryURL.absoluteString
                 }
             }
-            if let server = model.serverURL {
+            if let server = model.servers.first {
                 Section("Server") {
-                    Text(server.absoluteString)
+                    Text(server.credentials.serverURL.absoluteString)
                         .font(.footnote)
                     Button("Unpair", role: .destructive) { isConfirmingUnpair = true }
-                        .disabled(model.isUnpairing)
+                        .disabled(model.removingServerIDs.contains(server.id))
                 }
             }
             if let message = model.message {
@@ -44,7 +45,8 @@ struct SettingsView: View {
         .onAppear { directoryText = model.directoryURL.absoluteString }
         .confirmationDialog("Unpair this watch?", isPresented: $isConfirmingUnpair) {
             Button("Unpair", role: .destructive) {
-                Task { await model.unpair() }
+                guard let id = model.servers.first?.id else { return }
+                Task { await model.removeServer(id: id) }
             }
         }
     }

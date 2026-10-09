@@ -11,9 +11,12 @@ final class StubPairingService: PairingService {
         var pair: [Result<PairResult, PairingError>] = []
         var poll: [Result<PollResult, PairingError>] = []
         var me: [Result<DeviceInfo, PairingError>] = []
+        var meByServer: [URL: [Result<DeviceInfo, PairingError>]] = [:]
+        var meGates: [URL: Gate] = [:]
         var unpair: Result<Void, PairingError> = .success(())
         var calls: [String] = []
         var pollTokens: [String] = []
+        var unpairTokens: [String] = []
     }
 
     private let state = Mutex(State())
@@ -22,6 +25,8 @@ final class StubPairingService: PairingService {
     var calls: [String] { state.withLock { $0.calls } }
     /// The poll tokens the model sent, to check it passes the server's secret back unchanged.
     var pollTokens: [String] { state.withLock { $0.pollTokens } }
+    /// The device tokens `DELETE /v1/me` revoked, to tell an old token from a new one.
+    var unpairTokens: [String] { state.withLock { $0.unpairTokens } }
 
     var resolveResults: [Result<URL, PairingError>] {
         get { state.withLock { $0.resolve } }
@@ -41,6 +46,19 @@ final class StubPairingService: PairingService {
     var meResults: [Result<DeviceInfo, PairingError>] {
         get { state.withLock { $0.me } }
         set { state.withLock { $0.me = newValue } }
+    }
+
+    /// Answers for one server, taken before `meResults`: the model asks several servers at once,
+    /// so a single queue would hand out answers in whatever order the requests arrive.
+    func setMeResults(_ results: [Result<DeviceInfo, PairingError>], for server: URL) {
+        state.withLock { $0.meByServer[server] = results }
+    }
+
+    /// Holds every `/v1/me` answer for `server` until the returned gate opens.
+    func holdMe(for server: URL) -> Gate {
+        let gate = Gate()
+        state.withLock { $0.meGates[server] = gate }
+        return gate
     }
 
     var unpairResult: Result<Void, PairingError> {
@@ -71,15 +89,21 @@ final class StubPairingService: PairingService {
     }
 
     func me(server: URL, token: String) async throws -> DeviceInfo {
-        try state.withLock { state in
+        let (result, gate) = state.withLock { state in
             state.calls.append("me \(server.absoluteString)")
-            return Self.next(&state.me)
-        }.get()
+            let result = state.meByServer[server] != nil
+                ? Self.next(&state.meByServer[server, default: []])
+                : Self.next(&state.me)
+            return (result, state.meGates[server])
+        }
+        await gate?.wait()
+        return try result.get()
     }
 
     func unpair(server: URL, token: String) async throws {
         try state.withLock { state in
             state.calls.append("unpair \(server.absoluteString)")
+            state.unpairTokens.append(token)
             return state.unpair
         }.get()
     }
@@ -89,8 +113,8 @@ final class StubPairingService: PairingService {
     }
 }
 
-/// A `CredentialStore` whose `load()` always throws `error`; records whether `delete()` was called.
-final class ThrowingCredentialStore: CredentialStore {
+/// A `ServerStore` whose `load()` always throws `error`; records whether `deleteAll()` was called.
+final class ThrowingServerStore: ServerStore {
     private let error: CredentialStoreError
     private let deletes = Mutex(0)
 
@@ -100,9 +124,34 @@ final class ThrowingCredentialStore: CredentialStore {
 
     var deleteCount: Int { deletes.withLock { $0 } }
 
-    func load() throws -> Credentials? { throw error }
-    func save(_ credentials: Credentials) throws { throw error }
-    func delete() throws { deletes.withLock { $0 += 1 } }
+    func load() throws -> [Credentials] { throw error }
+    func save(_ servers: [Credentials]) throws { throw error }
+    func deleteAll() throws { deletes.withLock { $0 += 1 } }
+}
+
+/// Keeps a stubbed answer waiting until the test opens it, to reorder answers or to act while a
+/// request is in flight.
+final class Gate: Sendable {
+    private let state = Mutex<(isOpen: Bool, waiters: [CheckedContinuation<Void, Never>])>((false, []))
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let isOpen = state.withLock { state in
+                if !state.isOpen { state.waiters.append(continuation) }
+                return state.isOpen
+            }
+            if isOpen { continuation.resume() }
+        }
+    }
+
+    func open() {
+        let waiters = state.withLock { state in
+            state.isOpen = true
+            defer { state.waiters = [] }
+            return state.waiters
+        }
+        waiters.forEach { $0.resume() }
+    }
 }
 
 /// Stands in for the CallCoordinator of task 10.

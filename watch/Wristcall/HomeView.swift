@@ -1,14 +1,15 @@
 import SwiftUI
 import WristcallKit
 
-/// Home: profile name, status, the "Call" button (auto turn end) and "…" (call options).
+/// Home: the first agent's name, status, the "Call" button (the agent's turn end) and "…" (call
+/// options). The agent grid replaces it in task 6.
 struct HomeView: View {
     let model: AppModel
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 8) {
-                Text(model.profile?.displayName ?? "wristcall")
+                Text(model.agents.first?.agent.displayName ?? "wristcall")
                     .font(.title3)
                     .lineLimit(1)
                 Text(status)
@@ -36,7 +37,7 @@ struct HomeView: View {
                     .accessibilityLabel("Call options")
                 }
                 .disabled(!model.canCall)
-                if model.phase == .unavailable {
+                if model.phase == .unavailable || model.servers.contains(where: \.isUnavailable) {
                     Button("Retry") {
                         Task { await model.retry() }
                     }
@@ -57,7 +58,8 @@ struct HomeView: View {
 
     private var status: String {
         if let message = model.message { return message }
-        return model.canCall ? "Ready" : AppModel.Message.unreachable
+        if model.canCall { return "Ready" }
+        return model.isLoadingServers ? "Loading…" : AppModel.Message.unreachable
     }
 }
 
@@ -65,11 +67,11 @@ struct HomeView: View {
 /// Mute lives in the system call UI.
 struct InCallView: View {
     let model: AppModel
-    let profile: Profile?
+    let target: AgentTarget
 
     var body: some View {
         VStack(spacing: 8) {
-            Text(profile?.displayName ?? "wristcall")
+            Text(target.agent.displayName)
                 .font(.title3)
             Text(model.callActivity.label)
                 .font(.footnote)

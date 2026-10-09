@@ -9,7 +9,7 @@ import WristcallKit
 /// does not matter.
 @MainActor
 final class ShortcutCalls {
-    /// How long a request waits for launch (Keychain, `GET /v1/me`) to finish.
+    /// How long a request waits for launch (Keychain) and the servers (`GET /v1/me`) to finish.
     static let defaultLaunchWait: Duration = .seconds(10)
     private static let log = Logger(subsystem: "io.github.ggondim.wristcall", category: "shortcuts")
 
@@ -29,16 +29,22 @@ final class ShortcutCalls {
         isChecking = true
         defer { isChecking = false }
         let deadline = ContinuousClock.now + launchWait
-        while model.phase == .launching, ContinuousClock.now < deadline {
+        // The agent asked for may be on a server that has not answered yet.
+        while model.phase == .launching || model.isLoadingServers, ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(50))
         }
-        guard store.consume() != nil else { return }
-        if model.canCall {
-            Self.log.notice("call requested by a shortcut")
-            model.startCall()
-        } else {
-            // Not paired, server unreachable or already in a call: the screen already says so.
+        guard let request = store.consume() else { return }
+        guard model.phase == .home else {
+            // Not paired, Keychain locked or already in a call: the screen already says so.
             Self.log.notice("call requested by a shortcut, but the app cannot call now")
+            return
+        }
+        // An agent that is gone (or a server that is down) leaves a message on Home instead.
+        model.startCall(agent: request.agent)
+        if case .inCall = model.phase {
+            Self.log.notice("call requested by a shortcut")
+        } else {
+            Self.log.notice("call requested by a shortcut, but that agent cannot be called now")
         }
     }
 }

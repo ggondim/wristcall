@@ -23,8 +23,6 @@ final class CallCoordinator: CallHandling {
 
     /// How long CallKit gets to activate the audio session after the start request.
     static let defaultActivationTimeout: Duration = .seconds(10)
-    /// Caller name when the server has no profile (never expected; `/v1/me` always lists one).
-    static let fallbackDisplayName = "wristcall"
     private static let log = Logger(subsystem: "io.github.ggondim.wristcall", category: "call")
 
     weak var model: AppModel?
@@ -84,7 +82,7 @@ final class CallCoordinator: CallHandling {
             Self.log.error("audio session category: \(error.localizedDescription, privacy: .public)")
         }
         let id = call.id
-        let name = request.profile?.displayName ?? Self.fallbackDisplayName
+        let name = request.target.agent.displayName
         call.tasks.append(Task { [weak self] in
             do {
                 try await self?.callControl.startCall(id: id, displayName: name)
@@ -139,7 +137,9 @@ final class CallCoordinator: CallHandling {
             session.setMuted(true)
         }
         let id = call.id
-        let profile = call.request.profile?.name
+        // Decision W5: the id for servers 0.3.0+, the slug as `profile` for 0.2.x; `turnEnd` is nil
+        // unless the user picked a mode, so the agent's own mode applies.
+        let agent = call.request.target.agent
         let turnEnd = call.request.turnEnd
         call.tasks.append(Task { [weak self] in
             for await event in session.events {
@@ -148,7 +148,7 @@ final class CallCoordinator: CallHandling {
         })
         call.tasks.append(Task { [weak self] in
             // Failures arrive as `.ended` on the event stream.
-            guard let ready = try? await session.start(profile: profile, turnEnd: turnEnd) else { return }
+            guard let ready = try? await session.start(agent: agent.id, profile: agent.slug, turnEnd: turnEnd) else { return }
             self?.sessionReady(ready, callID: id)
         })
     }

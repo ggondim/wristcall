@@ -5,18 +5,22 @@ import WristcallKit
 
 @MainActor
 struct ShortcutCallsTests {
-    let store = InMemoryCredentialStore()
+    let store = InMemoryServerStore()
     let pairing = StubPairingService()
     let handler = StubCallHandler()
     let defaults = UserDefaults(suiteName: "ShortcutCallsTests.\(UUID().uuidString)")!
     let center = NotificationCenter()
-    let info = DeviceInfo(deviceId: "dev-1", deviceName: "Apple Watch", profiles: [Profile(name: "default", displayName: "Agent")])
+    let info = DeviceInfo(deviceId: "dev-1", deviceName: "Apple Watch", user: nil, agents: [
+        Agent(id: "ag_1", slug: "default", displayName: "Agent"),
+        Agent(id: "ag_2", slug: "notes", displayName: "Notes", callType: .oneShot),
+    ])
+    let server = URL(string: "https://agent.example.com")!
 
     var pending: PendingCallStore { PendingCallStore(defaults: defaults, notificationCenter: center) }
 
     func makeModel(paired: Bool) throws -> AppModel {
         if paired {
-            try store.save(Credentials(serverURL: URL(string: "https://agent.example.com")!, deviceId: "dev-1", token: "t"))
+            try store.save([Credentials(serverURL: server, deviceId: "dev-1", token: "t", id: "srv-1")])
             pairing.meResults = [.success(info)]
         }
         let model = AppModel(pairing: pairing, store: store, defaults: defaults, sleep: { _ in })
@@ -32,11 +36,35 @@ struct ShortcutCallsTests {
         await ShortcutCalls(store: pending, model: model).check()
 
         #expect(handler.started.count == 1)
-        #expect(model.phase == .inCall(Profile(name: "default", displayName: "Agent")))
+        #expect(model.phase == .inCall(model.agents[0]))
         #expect(!pending.isPending)
     }
 
-    @Test func requestDuringLaunchWaitsForTheProfiles() async throws {
+    @Test func pendingRequestWithAnAgentCallsThatAgent() async throws {
+        let model = try makeModel(paired: true)
+        await model.launch()
+        pending.request(agent: "srv-1/ag_2")
+
+        await ShortcutCalls(store: pending, model: model).check()
+
+        #expect(handler.started.map(\.target.agent.slug) == ["notes"])
+        #expect(!pending.isPending)
+    }
+
+    @Test func pendingRequestForAnAgentThatIsGoneDoesNotCall() async throws {
+        let model = try makeModel(paired: true)
+        await model.launch()
+        pending.request(agent: "srv-1/ag_404")
+
+        await ShortcutCalls(store: pending, model: model).check()
+
+        #expect(handler.started.isEmpty)
+        #expect(model.phase == .home)
+        #expect(model.message == AppModel.Message.agentNotFound)
+        #expect(!pending.isPending)
+    }
+
+    @Test func requestDuringLaunchWaitsForTheAgents() async throws {
         let model = try makeModel(paired: true)
         #expect(model.phase == .launching)
         pending.request()
@@ -58,7 +86,7 @@ struct ShortcutCallsTests {
         await ShortcutCalls(store: pending, model: model).check()
 
         #expect(handler.started.isEmpty)
-        #expect(model.phase == .ready(info))
+        #expect(model.phase == .home)
     }
 
     @Test func unpairedWatchDropsTheRequest() async throws {
@@ -71,6 +99,25 @@ struct ShortcutCallsTests {
         #expect(handler.started.isEmpty)
         #expect(model.phase == .unpaired)
         #expect(!pending.isPending)
+    }
+
+    /// Launch reads the Keychain and goes Home at once; the agents arrive with each `/v1/me`.
+    @Test func requestWaitsForTheServersStillLoading() async throws {
+        let model = try makeModel(paired: true)
+        let slow = pairing.holdMe(for: server)
+        let launch = Task { await model.launch() }
+        await waitUntil { model.phase == .home }
+        #expect(model.isLoadingServers)
+        pending.request(agent: "srv-1/ag_2")
+
+        let check = Task { await ShortcutCalls(store: pending, model: model).check() }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(handler.started.isEmpty)
+        slow.open()
+        await launch.value
+        await check.value
+
+        #expect(handler.started.map(\.target.agent.slug) == ["notes"])
     }
 
     @Test func launchThatNeverEndsGivesUpAndDropsTheRequest() async throws {

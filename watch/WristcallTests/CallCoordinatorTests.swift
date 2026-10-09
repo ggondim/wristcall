@@ -48,11 +48,16 @@ struct CallCoordinatorTests {
     nonisolated static let ready = #"{"type":"session.ready","session_id":"s1","profile":{"name":"default","display_name":"Agent"},"audio_out":{"codec":"pcm16","sample_rate":24000,"channels":1}}"#
     nonisolated static let frame = Data(repeating: 7, count: ProtocolConstants.frameBytes)
 
-    let store = InMemoryCredentialStore()
+    let store = InMemoryServerStore()
     let pairing = StubPairingService()
     let defaults = UserDefaults(suiteName: "CallCoordinatorTests.\(UUID().uuidString)")!
-    let credentials = Credentials(serverURL: URL(string: "https://agent.example.com")!, deviceId: "dev-1", token: "device-token")
-    let info = DeviceInfo(deviceId: "dev-1", deviceName: "Apple Watch", profiles: [Profile(name: "default", displayName: "Agent")])
+    let credentials = Credentials(
+        serverURL: URL(string: "https://agent.example.com")!, deviceId: "dev-1", token: "device-token", id: "srv-1")
+    let agent = Agent(id: "ag_1", slug: "default", displayName: "Agent")
+    let info = DeviceInfo(
+        deviceId: "dev-1", deviceName: "Apple Watch", user: nil,
+        agents: [Agent(id: "ag_1", slug: "default", displayName: "Agent")])
+    var target: AgentTarget { AgentTarget(serverID: "srv-1", serverHost: "agent.example.com", agent: agent) }
     let callKit = FakeCallControl()
     let audio = FakeCallAudio()
     let transport = FakeTransport()
@@ -63,11 +68,11 @@ struct CallCoordinatorTests {
         activationTimeout: Duration = .seconds(10),
         transport: FakeTransport? = nil
     ) async throws -> (CallCoordinator, AppModel) {
-        try store.save(credentials)
+        try store.save([credentials])
         pairing.meResults = [.success(info)]
         let model = AppModel(pairing: pairing, store: store, defaults: defaults, sleep: { _ in })
         await model.launch()
-        try #require(model.phase == .ready(info))
+        try #require(model.phase == .home)
         let transport = transport ?? self.transport
         let made = transportsMade
         let coordinator = CallCoordinator(callControl: callKit, audio: audio, activationTimeout: activationTimeout) { credentials in
@@ -101,7 +106,7 @@ struct CallCoordinatorTests {
 
     // MARK: - Opening
 
-    @Test func callStartsCallKitWithTheProfileName() async throws {
+    @Test func callStartsCallKitWithTheAgentName() async throws {
         let (coordinator, model) = try await makeCoordinator()
 
         model.startCall()
@@ -110,7 +115,7 @@ struct CallCoordinatorTests {
         #expect(callKit.starts.first?.displayName == "Agent")
         #expect(callKit.starts.first?.id == coordinator.currentCallID)
         #expect(audio.prepared == 1)
-        #expect(model.phase == .inCall(Profile(name: "default", displayName: "Agent")))
+        #expect(model.phase == .inCall(target))
         #expect(model.callActivity == .connecting)
     }
 
@@ -131,9 +136,25 @@ struct CallCoordinatorTests {
         #expect(start.contains(#""profile":"default""#))
     }
 
+    /// Decision W5: the agent's id for servers 0.3.0+, its slug as `profile` for 0.2.x, and no
+    /// `turn_end` on a plain tap (the agent's own mode applies).
+    @Test func plainCallSendsTheAgentAndItsSlugWithoutTurnEnd() async throws {
+        let (_, model) = try await makeCoordinator()
+        model.startCall(target)
+        await waitUntil { callKit.starts.count == 1 }
+
+        callKit.activateAudio()
+
+        try await transport.waitUntilSent { $0.count == 1 }
+        let start = try #require(transport.sentTexts.first)
+        #expect(start.contains(#""agent":"ag_1""#))
+        #expect(start.contains(#""profile":"default""#))
+        #expect(!start.contains("turn_end"))
+    }
+
     @Test func autoCallSendsTurnEndAutoInSessionStart() async throws {
         let (_, model) = try await makeCoordinator()
-        model.startCall()
+        model.startCall(target, turnEnd: .auto)
         await waitUntil { callKit.starts.count == 1 }
 
         callKit.activateAudio()
@@ -264,7 +285,7 @@ struct CallCoordinatorTests {
 
         // Audio stops and the screen goes Home right away, without waiting for the network.
         #expect(!audio.isRunning)
-        #expect(model.phase == .ready(info))
+        #expect(model.phase == .home)
         #expect(model.message == nil)
         let sent = try await transport.waitUntilSent { $0.last == .close(1000) }
         #expect(sent.suffix(2) == [.text(#"{"type":"session.end"}"#), .close(1000)])
@@ -282,7 +303,7 @@ struct CallCoordinatorTests {
 
         model.endCall()
 
-        await waitUntil { model.phase == .ready(info) }
+        await waitUntil { model.phase == .home }
         #expect(callKit.endRequests == [id])
         #expect(!audio.isRunning)
         try await transport.waitUntilSent { $0.suffix(2) == [.text(#"{"type":"session.end"}"#), .close(1000)] }
@@ -294,7 +315,7 @@ struct CallCoordinatorTests {
 
         transport.serverCloses(code: nil)
 
-        await waitUntil { model.phase == .ready(info) }
+        await waitUntil { model.phase == .home }
         #expect(try callKit.ends == endReportedForTheStartedCall(.failed))
         #expect(model.message == "Connection lost")
         #expect(!audio.isRunning)
@@ -310,7 +331,7 @@ struct CallCoordinatorTests {
 
         callKit.activateAudio()
 
-        await waitUntil { model.phase == .ready(info) }
+        await waitUntil { model.phase == .home }
         #expect(try callKit.ends == endReportedForTheStartedCall(.failed))
         #expect(callKit.ends.allSatisfy { $0.cause.callKitReason != .failed })
         #expect(model.message == "Connection lost")
@@ -324,7 +345,7 @@ struct CallCoordinatorTests {
         transport.serverSends(#"{"type":"error","code":"internal","message":"boom","fatal":true}"#)
         transport.serverCloses(code: 4400)
 
-        await waitUntil { model.phase == .ready(info) }
+        await waitUntil { model.phase == .home }
         #expect(try callKit.ends == endReportedForTheStartedCall(.failed))
         #expect(model.message == "Call failed (internal).")
     }
@@ -334,12 +355,12 @@ struct CallCoordinatorTests {
 
         transport.serverCloses(code: 1000)
 
-        await waitUntil { model.phase == .ready(info) }
+        await waitUntil { model.phase == .home }
         #expect(try callKit.ends == endReportedForTheStartedCall(.remoteEnded))
         #expect(model.message == nil)
     }
 
-    @Test func revokedTokenClearsCredentialsAndGoesToPairing() async throws {
+    @Test func revokedTokenRemovesTheServerAndGoesToPairing() async throws {
         let (_, model) = try await makeCoordinator()
         model.startCall()
         await waitUntil { callKit.starts.count == 1 }
@@ -350,8 +371,8 @@ struct CallCoordinatorTests {
 
         await waitUntil { model.phase == .unpaired }
         #expect(model.phase == .unpaired)
-        #expect(model.message == AppModel.Message.revoked)
-        #expect(try store.load() == nil)
+        #expect(model.message == "agent.example.com: this watch was removed on the server.")
+        #expect(try store.load().isEmpty)
         #expect(try callKit.ends == endReportedForTheStartedCall(.failed))
         #expect(audio.playbackRates.isEmpty)
     }
@@ -362,7 +383,7 @@ struct CallCoordinatorTests {
 
         model.startCall()
 
-        await waitUntil { model.phase == .ready(info) }
+        await waitUntil { model.phase == .home }
         #expect(model.message == AppModel.Message.callNotStarted)
         #expect(callKit.ends.isEmpty)
         #expect(coordinator.currentCallID == nil)
@@ -374,7 +395,7 @@ struct CallCoordinatorTests {
 
         model.startCall()
 
-        await waitUntil { model.phase == .ready(info) }
+        await waitUntil { model.phase == .home }
         #expect(try callKit.ends == endReportedForTheStartedCall(.unanswered))
         #expect(model.message == AppModel.Message.callNotStarted)
         #expect(coordinator.currentCallID == nil)
@@ -388,7 +409,7 @@ struct CallCoordinatorTests {
         callKit.holdsStart = true
         let (coordinator, model) = try await makeCoordinator(activationTimeout: .milliseconds(50))
         model.startCall()
-        await waitUntil { model.phase == .ready(info) }
+        await waitUntil { model.phase == .home }
         let start = try #require(callKit.starts.first)
         try #require(callKit.ends == [FakeCallControl.End(id: start.id, cause: .unanswered)])
 
@@ -397,7 +418,7 @@ struct CallCoordinatorTests {
         await waitUntil { callKit.ends.count == 2 }
         #expect(callKit.ends.last == FakeCallControl.End(id: start.id, cause: .failed))
         #expect(coordinator.currentCallID == nil)
-        #expect(model.phase == .ready(info))
+        #expect(model.phase == .home)
     }
 
     @Test func startAcceptedAfterTheUserEndedIsReportedEnded() async throws {
@@ -408,7 +429,7 @@ struct CallCoordinatorTests {
         try #require(callKit.isStartPending)
 
         model.endCall()
-        await waitUntil { model.phase == .ready(info) }
+        await waitUntil { model.phase == .home }
         try #require(coordinator.currentCallID == nil)
         try #require(callKit.ends.isEmpty)
         callKit.completeStart()
@@ -424,8 +445,8 @@ struct CallCoordinatorTests {
 
         model.endCall()
 
-        await waitUntil { model.phase == .ready(info) }
-        #expect(model.phase == .ready(info))
+        await waitUntil { model.phase == .home }
+        #expect(model.phase == .home)
         #expect(model.message == nil)
         #expect(try callKit.ends == endReportedForTheStartedCall(.failed))
         #expect(!audio.isRunning)
@@ -443,7 +464,7 @@ struct CallCoordinatorTests {
 
         transport.serverSends(Self.ready)
 
-        await waitUntil { model.phase == .ready(info) }
+        await waitUntil { model.phase == .home }
         #expect(try callKit.ends == endReportedForTheStartedCall(.failed))
         #expect(model.message == AppModel.Message.microphoneUnavailable)
         try await transport.waitUntilSent { $0.last == .close(1000) }
@@ -454,7 +475,7 @@ struct CallCoordinatorTests {
 
         callKit.reset()
 
-        #expect(model.phase == .ready(info))
+        #expect(model.phase == .home)
         #expect(!audio.isRunning)
         #expect(coordinator.currentCallID == nil)
         try await transport.waitUntilSent { $0.last == .close(1000) }
