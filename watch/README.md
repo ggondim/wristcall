@@ -1,6 +1,6 @@
 # wristcall watch app
 
-Watch-only Apple Watch app that pairs with a wristcall server and calls your agent by voice
+Watch-only Apple Watch app that pairs with one or more wristcall servers and calls your agents by voice
 (protocol in [docs/protocol.md](../docs/protocol.md)).
 
 - `WristcallKit/`: Swift package with everything that does not need the watch hardware
@@ -75,7 +75,51 @@ xcrun simctl launch <UDID> io.github.ggondim.wristcall \
   -pairServer http://127.0.0.1:8765 -pairCode 12345678 -noCallKit -syntheticMic
 ```
 
-`-autoCall` starts a call once the app is ready and `-endCallAfter <seconds>` ends it.
+`-autoCall` starts a call once the app is ready and `-endCallAfter <seconds>` ends it. More Debug
+launch arguments:
+
+- `-autoCallAgent <slug>`: the agent `-autoCall` calls (default: the first one). If no listed agent has that
+  slug it calls nothing, never another agent.
+- `-autoCallDelay <seconds>`: waits on the agent grid before `-autoCall` calls.
+- `-showOptions <slug>`: opens that agent's call options, as a long press on it does.
+- `-addServer`: opens the pairing screen over the servers already paired. `-pairServer` (above) also adds a
+  server when the watch is already paired, unless that server is listed.
+- `-openURL <url>`: does what a tapped complication does, for example
+  `-openURL 'wristcall://call?agent=<server id>/<agent id>'`. `xcrun simctl openurl` fails on watch simulators
+  (LaunchServices error 115), so use this one.
+
+## Servers, agents and calls
+
+- **Several servers.** Settings > Servers lists the paired servers. "Add server" opens the pairing screen again
+  (cancel to go back) and pairing the same server and user again replaces the old entry and revokes its token.
+  Removing a server forgets its token on the watch and tries to revoke it on the server (if the server is out of reach, revoke the watch there). A watch paired with 0.1.0 keeps
+  its server when it updates.
+- **Agent grid.** Home shows the agents of every server, two per row, in each server's order. Tap an agent to
+  call it; long press opens its call options (end of turn, auto or manual, for conversations). A server that is
+  loading or out of reach shows as a row of its own with "Retry", and the agents of the other servers stay
+  callable. A server that rejects the token (revoked) is removed on its own.
+- **Call types.** A conversation agent works as before (CallKit call screen, mute from the system). A one-shot or
+  monologue agent uses the same call but the screen says "Recording" ("Paused" while muted) and "Send" ends it.
+  The server then transcribes and delivers the text, and the watch shows a progress ring while it works, then a
+  check ("Delivered") or a cross with the reason, plus the text.
+- **Results are polled while the app is open.** The watch asks the server about the call (`GET /v1/calls/{id}`)
+  every 1.5 s for up to 3 minutes, asks again when the app comes back to the foreground, and offers "Check again"
+  after that. The result is kept only in memory: if the app is closed first you do not see it (the server still
+  delivers). Push notifications come later.
+- **Servers older than 0.4.0.** With servers 0.2.x each profile appears as one conversation agent. Servers 0.3.0
+  and later list real agents and turn modes, and 0.4.0 and later also record one-way agents.
+
+## Complications, controls and shortcuts
+
+The "Call <agent>" complication, control and shortcut (watchOS 26) call the agent you picked when setting them up.
+The 0.1.0 complication, control and "Call agent" shortcut stay as they were and call the first agent. An agent that
+no longer exists (server removed, agent deleted) never turns into a call to another one.
+
+They read the list of agents from an App Group (`group.<BUNDLE_ID_PREFIX>.wristcall`, names and icons only, never
+a token) shared by the app and the widgets extension. On the first build for your watch, Xcode's automatic
+signing must register this group for the app and for the widgets extension in your team: open the project, select
+each target > Signing & Capabilities and check that "App Groups" shows the group without errors, then build again.
+Without it the new items see no agents and only the old complication and control work.
 
 ## Install on your watch with a free Apple ID
 

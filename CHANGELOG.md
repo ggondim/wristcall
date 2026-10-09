@@ -2,6 +2,19 @@
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each component follows [SemVer](https://semver.org/) on its own: the server is published by the `server-vX.Y.Z` tag (Docker image); the watch app is marked by the `watch-vX.Y.Z` tag and has no published binary (build it with Xcode, see [watch/README.md](watch/README.md)).
 
+## [watch-0.2.0] - 2026-10-09
+
+Needs server 0.3.0 or later for agents and turn modes and 0.4.0 or later for one-way agents. With 0.2.x servers it works as one conversation agent per profile.
+
+### Watch app
+
+- Several servers: pair more than one (Settings > Servers > Add server), remove them one by one. A watch paired with 0.1.0 keeps its server (the Keychain item is migrated). A server that is down does not stop the others, and a revoked one is removed on its own.
+- Agent grid: Home shows the agents of every server with their icons; tap to call, long press for the call options.
+- One-way agents (one-shot, monologue): "Recording" screen with "Send", then a progress ring, a check or the failure reason, and the transcribed text. The watch polls `GET /v1/calls/{id}` while the app is open, for up to 3 minutes ("Check again" after that); push comes later.
+- "Call <agent>" complication, control and shortcut for a chosen agent; the 0.1.0 ones still call the first agent. They read the agent list from an App Group, which Xcode must register on the first build for your watch (see [watch/README.md](watch/README.md)).
+- Debug launch arguments `-autoCallAgent`, `-showOptions`, `-addServer` and `-openURL` for the simulator.
+- `WristcallKit`: agents and call types, `call_id` and `call.captured`, the call status client and poller, and the list of servers.
+
 ## [0.5.0] - 2026-10-09
 
 ### Added

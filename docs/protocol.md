@@ -371,6 +371,9 @@ A watch app older than 0.4.0 (for example watch 0.1.0) can call a one-way agent:
 it records, the call ends normally, and the delivery happens; it just never shows
 the result.
 
+Watch 0.2.0 and later sends both `agent` and `profile` in `session.start`, keeps the `call_id` of a one-way
+call and, after it ends, polls `GET /v1/calls/{call_id}` every 1.5 s for up to 3 minutes while the app is open.
+
 ## History
 
 Since server 0.5.0 every call is recorded, delivered or not, conversations included (one per WebSocket session).
