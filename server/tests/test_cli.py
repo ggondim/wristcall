@@ -93,6 +93,16 @@ def test_pair_with_directory_down_falls_back_to_url(tmp_path):
     assert "https://wc.example.test" in r.output
 
 
+def test_pair_needs_a_user_choice_with_several_users(tmp_path):
+    cfg = write_config(tmp_path)
+    ok(cfg, "users", "add", "bob")
+    r = invoke(cfg, "pair")
+    assert r.exit_code == 1 and "--user" in r.output
+    out = ok(cfg, "pair", "--user", "bob")
+    device = run(svc_for(tmp_path).pair(code_in(out), "Watch"))
+    assert run(svc_for(tmp_path).authenticate(device.token)).user_id != run(open_sqlite_storage(tmp_path / "data").users.by_handle("owner")).id
+
+
 def test_pair_without_any_user_explains(tmp_path):
     r = invoke(write_config(tmp_path, profiles=False), "pair")
     assert r.exit_code == 1 and "wristcall users add" in r.output
@@ -112,6 +122,103 @@ def test_devices_list_approve_revoke(tmp_path):
     assert run(svc.authenticate(paired.token)) is None
     assert invoke(cfg, "devices", "revoke", "doesnotexist").exit_code == 1
     assert invoke(cfg, "devices", "approve", "9999").exit_code == 1
+
+
+def test_users_and_tokens(tmp_path):
+    cfg = write_config(tmp_path)
+    assert "owner" in ok(cfg, "users", "list")
+    ok(cfg, "users", "edit", "owner", "--handle", "gustavo", "--name", "Gustavo")
+    ok(cfg, "users", "add", "bob", "--name", "Bob")
+    out = ok(cfg, "users", "list")
+    assert "gustavo  Gustavo  1 agent(s)" in out and "bob  Bob  0 agent(s)" in out
+    assert invoke(cfg, "users", "add", "bob").exit_code == 1
+    assert invoke(cfg, "users", "add", "Bad Handle").exit_code == 1
+
+    out = ok(cfg, "users", "tokens", "add", "--user", "bob", "--name", "laptop")
+    token = out.strip().splitlines()[-1]
+    assert token.startswith("wc_pat_")
+    listed = ok(cfg, "users", "tokens", "list", "--user", "bob")
+    assert "laptop" in listed and token not in listed and "never" in listed
+    token_id = listed.split()[0]
+    ok(cfg, "users", "tokens", "revoke", token_id)
+    assert "No API tokens" in ok(cfg, "users", "tokens", "list", "--user", "bob")
+    assert invoke(cfg, "users", "tokens", "revoke", token_id).exit_code == 1
+
+    assert invoke(cfg, "users", "rm", "bob", input="n\n").exit_code == 1
+    ok(cfg, "users", "rm", "bob", "--yes")
+    assert "bob" not in ok(cfg, "users", "list")
+
+
+def test_agents_add_list_show_edit_rm(tmp_path):
+    cfg = write_config(tmp_path)
+    out = ok(cfg, "agents", "list")
+    assert "default  Test  waveform  conversation  turn_end=auto  stt=stt action=llm tts=tts" in out
+
+    ok(cfg, "agents", "add", "coach", "--name", "Coach", "--icon", "figure.run", "--turn-end", "manual",
+       "--silence-ms", "1500", "--language", "pt", "--prompt", "Be a coach.")
+    lines = ok(cfg, "agents", "list").splitlines()
+    assert lines[1].startswith("1  coach  Coach  figure.run  conversation  turn_end=manual")
+
+    shown = json.loads(ok(cfg, "agents", "show", "coach"))
+    assert shown["vad"]["silence_ms"] == 1500 and shown["language"] == "pt" and shown["system_prompt"] == "Be a coach."
+
+    ok(cfg, "agents", "edit", "coach", "--slug", "trainer", "--position", "0")
+    assert [line.split()[1] for line in ok(cfg, "agents", "list").splitlines()] == ["trainer", "default"]
+    ok(cfg, "agents", "edit", "trainer", "--position", "5")  # past the end: last
+    assert [line.split()[:2] for line in ok(cfg, "agents", "list").splitlines()] == [["0", "default"], ["1", "trainer"]]
+
+    assert invoke(cfg, "agents", "rm", "trainer", input="n\n").exit_code == 1
+    ok(cfg, "agents", "rm", "trainer", "--yes")
+    assert "trainer" not in ok(cfg, "agents", "list")
+
+
+def test_agents_show_round_trips_through_from_json(tmp_path):
+    cfg = write_config(tmp_path)
+    stt = '{"type": "openai_stt", "base_url": "https://stt.example/v1", "model": "w", "api_key": "sk-secret"}'
+    ok(cfg, "agents", "add", "own", "--stt", stt)
+    shown = ok(cfg, "agents", "show", "own")
+    assert "sk-secret" not in shown and '"api_key": "***"' in shown
+    edited = json.loads(shown)
+    edited["display_name"] = "Mine"
+    path = tmp_path / "own.json"
+    path.write_text(json.dumps(edited), encoding="utf-8")
+    ok(cfg, "agents", "edit", "own", "--from-json", str(path))
+    st = open_sqlite_storage(tmp_path / "data")
+    owner = run(st.users.by_handle("owner"))
+    record = run(st.agents.get(owner.id, "own"))
+    assert record.display_name == "Mine" and record.spec["stt"]["api_key"] == "sk-secret"
+
+
+def test_agents_from_json_on_stdin(tmp_path):
+    cfg = write_config(tmp_path)
+    ok(cfg, "agents", "add", "piped", "--from-json", "-", "--name", "Flag wins", input='{"display_name": "From JSON", "icon": "star"}')
+    shown = json.loads(ok(cfg, "agents", "show", "piped"))
+    assert (shown["display_name"], shown["icon"]) == ("Flag wins", "star")
+
+
+def test_agents_errors_exit_1_with_a_message(tmp_path):
+    cfg = write_config(tmp_path)
+    for args, fragment in [
+        (("agents", "add", "default"), "already exists"),
+        (("agents", "add", "x", "--call-type", "one-shot"), "not supported yet"),
+        (("agents", "add", "x", "--stt", "nope"), "nope"),
+        (("agents", "add", "x", "--stt", "{not json"), "invalid JSON"),
+        (("agents", "add", "x", "--turn-end", "sometimes"), "turn_end"),
+        (("agents", "show", "missing"), "not found"),
+        (("agents", "edit", "missing", "--name", "x"), "not found"),
+        (("agents", "list", "--user", "nobody"), "user not found"),
+    ]:
+        r = invoke(cfg, *args)
+        assert r.exit_code == 1 and fragment in r.output, (args, r.output)
+
+
+def test_agents_add_with_several_providers_asks_to_choose(tmp_path):
+    providers = {"stt": {"type": "fake_stt"}, "stt2": {"type": "fake_stt"}, "llm": {"type": "echo_chat"}, "tts": {"type": "tone_tts"}}
+    cfg = write_config(tmp_path, profiles=False, providers=providers)
+    ok(cfg, "users", "add", "alice")
+    r = invoke(cfg, "agents", "add", "x")
+    assert r.exit_code == 1 and "this server offers: stt, stt2" in r.output
+    ok(cfg, "agents", "add", "x", "--stt", "stt2")
 
 
 def test_serve_keeps_websocket_alive_with_pings(tmp_path, monkeypatch):
