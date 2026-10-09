@@ -289,6 +289,16 @@ def _endpoint(value: str) -> dict[str, Any]:
     return {"provider": value}
 
 
+def _read_text(path: Path) -> str:
+    """Reads a UTF-8 file (or stdin for `-`), turning I/O and decoding failures into AgentError."""
+    try:
+        return sys.stdin.read() if str(path) == "-" else path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise AgentError("invalid", f"{path} is not UTF-8 text") from None
+    except OSError as e:
+        raise AgentError("invalid", f"cannot read {path}: {e.strerror or e}") from None
+
+
 def _agent_input(
     from_json: Path | None,
     name: str | None,
@@ -307,7 +317,7 @@ def _agent_input(
 ) -> dict[str, Any]:
     data: dict[str, Any] = {}
     if from_json is not None:
-        raw = sys.stdin.read() if str(from_json) == "-" else from_json.read_text(encoding="utf-8")
+        raw = _read_text(from_json)
         try:
             loaded = json.loads(raw)
         except json.JSONDecodeError as e:
@@ -315,6 +325,8 @@ def _agent_input(
         if not isinstance(loaded, dict):
             raise AgentError("invalid", f"{from_json} must hold a JSON object")
         data.update(loaded)
+        for key in ("id", "created_at", "updated_at"):  # `agents show` output fed back
+            data.pop(key, None)
     flags: dict[str, Any] = {
         "display_name": name, "icon": icon, "language": language, "turn_end": turn_end, "call_type": call_type,
         "position": position, "fallback_message": fallback,
@@ -326,7 +338,7 @@ def _agent_input(
     if prompt is not None:
         data["system_prompt"] = prompt
     if prompt_file is not None:
-        data["system_prompt"] = prompt_file.read_text(encoding="utf-8")
+        data["system_prompt"] = _read_text(prompt_file)
     if silence_ms is not None:
         data["vad"] = {**(data.get("vad") or {}), "silence_ms": silence_ms}
     return data
@@ -436,8 +448,6 @@ def agents_edit(
 
     async def body(ctx: Ctx):
         data = _agent_input(from_json, name, icon, language, turn_end, silence_ms, call_type, position, stt, action, tts, prompt, prompt_file, fallback)
-        for key in ("id", "created_at", "updated_at"):  # `agents show` output fed back
-            data.pop(key, None)
         if slug is not None:
             data["slug"] = slug
         return await ctx.agents.update((await ctx.users.resolve(user)).id, ref, data)

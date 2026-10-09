@@ -248,3 +248,29 @@ def test_serve_with_unknown_provider_type_exits_2(tmp_path, monkeypatch):
     assert r.exit_code == 2, r.output
     assert "config error" in r.output and "openai_sttt" in r.output
     assert called == []
+
+
+def test_agents_add_accepts_show_output(tmp_path):
+    cfg = write_config(tmp_path)
+    path = tmp_path / "default.json"
+    path.write_text(ok(cfg, "agents", "show", "default"), encoding="utf-8")
+    ok(cfg, "agents", "add", "copy", "--from-json", str(path))
+    original = json.loads(ok(cfg, "agents", "show", "default"))
+    copy = json.loads(ok(cfg, "agents", "show", "copy"))
+    assert copy["slug"] == "copy" and copy["id"] != original["id"]
+    assert (copy["display_name"], copy["turn_end"]) == (original["display_name"], original["turn_end"])
+
+
+def test_agents_unreadable_files_exit_1_without_traceback(tmp_path):
+    cfg = write_config(tmp_path)
+    bad = tmp_path / "bad.json"
+    bad.write_bytes(b"\xff\xfe")
+    for args, fragment in [
+        (("agents", "add", "x", "--from-json", str(tmp_path / "missing.json")), "cannot read"),
+        (("agents", "add", "x", "--prompt-file", str(tmp_path / "missing.txt")), "cannot read"),
+        (("agents", "edit", "default", "--from-json", str(tmp_path)), "cannot read"),
+        (("agents", "add", "x", "--from-json", str(bad)), "not UTF-8"),
+        (("agents", "add", "x", "--prompt-file", str(bad)), "not UTF-8"),
+    ]:
+        r = invoke(cfg, *args)
+        assert r.exit_code == 1 and fragment in r.output and "Traceback" not in r.output, (args, r.output)
