@@ -1,18 +1,23 @@
+import httpx
 import pytest
+import respx
 
+from wristcall.directory_client import DirectoryClient, DirectoryError
 from wristcall.pairing import (
+    DeviceLimit,
+    NotFound,
     Paired,
     PairingDenied,
     PairingGone,
     PairingService,
     Pending,
-    NotFound,
     format_code,
     hash_secret,
+    issue_code,
     normalize_code,
 )
 from wristcall.ratelimit import RateLimiter
-from wristcall.store import Database
+from wristcall.storage import open_sqlite_storage
 
 
 class Clock:
@@ -26,9 +31,13 @@ class Clock:
         self.t += s
 
 
-def service(approval="code", db=None):
+async def service(approval="code", storage=None, **kw):
+    st = storage or open_sqlite_storage(":memory:")
+    if await st.users.get("u_a") is None:
+        await st.users.create("u_a", "alice", "Alice", 1.0)
+        await st.users.create("u_b", "bob", "Bob", 1.0)
     clock = Clock()
-    return PairingService(db or Database(":memory:"), approval, now=clock), clock
+    return PairingService(st, approval, now=clock, **kw), clock
 
 
 def other_code(code: str) -> str:
@@ -42,110 +51,138 @@ def test_code_helpers():
     assert len(hash_secret("x")) == 64
 
 
-def test_flow_a_pairs_and_authenticates():
-    s, _ = service()
-    c = s.create_code()
+async def test_flow_a_pairs_to_the_code_owner_and_authenticates():
+    s, _ = await service()
+    c = await s.create_code("u_b")
     assert len(c.code) == 8 and c.code.isdigit()
-    r = s.pair(format_code(c.code), "Apple Watch")
+    r = await s.pair(format_code(c.code), "Apple Watch")
     assert isinstance(r, Paired)
-    dev = s.authenticate(r.token)
-    assert dev is not None and dev.name == "Apple Watch" and dev.id == r.device_id
-    assert s.authenticate("wrong-token") is None
-    stored = s._db.query("SELECT token_hash FROM devices")[0]["token_hash"]
+    dev = await s.authenticate(r.token)
+    assert dev is not None and dev.name == "Apple Watch" and dev.id == r.device_id and dev.user_id == "u_b"
+    assert await s.authenticate("wrong-token") is None
+    stored = s._st.db.query("SELECT token_hash FROM devices")[0]["token_hash"]
     assert stored == hash_secret(r.token) and stored != r.token
 
 
-def test_code_is_single_use():
-    s, _ = service()
-    c = s.create_code()
-    s.pair(c.code, "one")
+async def test_code_is_single_use():
+    s, _ = await service()
+    c = await s.create_code("u_a")
+    await s.pair(c.code, "one")
     with pytest.raises(PairingDenied):
-        s.pair(c.code, "two")
+        await s.pair(c.code, "two")
 
 
-def test_discarded_code_cannot_be_used():
-    s, _ = service()
-    c = s.create_code()
-    s.discard_code(c.code)
+async def test_discarded_code_cannot_be_used():
+    s, _ = await service()
+    c = await s.create_code("u_a")
+    await s.discard_code(c.code)
     with pytest.raises(PairingDenied):
-        s.pair(c.code, "x")
+        await s.pair(c.code, "x")
 
 
-def test_code_expires():
-    s, clock = service()
-    c = s.create_code()
+async def test_code_expires():
+    s, clock = await service()
+    c = await s.create_code("u_a")
     clock.advance(601)
     with pytest.raises(PairingDenied):
-        s.pair(c.code, "late")
+        await s.pair(c.code, "late")
 
 
-def test_five_wrong_attempts_kill_the_active_code():
-    s, _ = service()
-    c = s.create_code()
+async def test_five_wrong_attempts_kill_the_active_code():
+    s, _ = await service()
+    c = await s.create_code("u_a")
     for _ in range(5):
         with pytest.raises(PairingDenied):
-            s.pair(other_code(c.code), "attacker")
+            await s.pair(other_code(c.code), "attacker")
     with pytest.raises(PairingDenied):
-        s.pair(c.code, "owner")
+        await s.pair(c.code, "owner")
 
 
-def test_code_mode_rejects_unknown_code_without_creating_requests():
-    s, _ = service("code")
+async def test_code_mode_rejects_unknown_code_without_creating_requests():
+    s, _ = await service("code")
     with pytest.raises(PairingDenied):
-        s.pair("12345678", "x")
+        await s.pair("12345678", "x")
     with pytest.raises(PairingDenied):
-        s.pair(None, "x")
-    assert s.list_pending() == []
+        await s.pair(None, "x")
+    assert await s.list_pending() == []
 
 
-def test_flow_b_pending_approval_and_single_delivery():
-    s, _ = service("manual")
-    p = s.pair("99999999", "My Apple Watch")
+async def test_flow_b_pending_approval_and_single_delivery():
+    s, _ = await service("manual")
+    p = await s.pair("99999999", "My Apple Watch")
     assert isinstance(p, Pending)
     assert len(p.request_id) == 4 and p.request_id.isdigit()
-    assert isinstance(s.poll(p.poll_token), Pending)
-    assert [r.request_id for r in s.list_pending()] == [p.request_id]
-    assert s.approve(p.request_id) == "My Apple Watch"
-    r = s.poll(p.poll_token)
-    assert isinstance(r, Paired) and s.authenticate(r.token).name == "My Apple Watch"
+    assert isinstance(await s.poll(p.poll_token), Pending)
+    assert [r.request_id for r in await s.list_pending()] == [p.request_id]
+    assert await s.approve(p.request_id, "u_b") == "My Apple Watch"
+    r = await s.poll(p.poll_token)
+    assert isinstance(r, Paired)
+    dev = await s.authenticate(r.token)
+    assert dev.name == "My Apple Watch" and dev.user_id == "u_b"
     with pytest.raises(PairingGone):
-        s.poll(p.poll_token)
+        await s.poll(p.poll_token)
 
 
-def test_short_request_id_cannot_be_used_to_poll():
-    s, _ = service("manual")
-    p = s.pair(None, "Watch")
-    s.approve(p.request_id)
+async def test_short_request_id_cannot_be_used_to_poll():
+    s, _ = await service("manual")
+    p = await s.pair(None, "Watch")
+    await s.approve(p.request_id, "u_a")
     with pytest.raises(PairingGone):
-        s.poll(p.request_id)
-    assert isinstance(s.poll(p.poll_token), Paired)
+        await s.poll(p.request_id)
+    assert isinstance(await s.poll(p.poll_token), Paired)
 
 
-def test_pending_request_expires():
-    s, clock = service("manual")
-    p = s.pair(None, "Watch")
+async def test_pending_request_expires():
+    s, clock = await service("manual")
+    p = await s.pair(None, "Watch")
     clock.advance(601)
     with pytest.raises(PairingGone):
-        s.poll(p.poll_token)
+        await s.poll(p.poll_token)
     with pytest.raises(NotFound):
-        s.approve(p.request_id)
+        await s.approve(p.request_id, "u_a")
 
 
-def test_revoke():
-    s, _ = service()
-    r = s.pair(s.create_code().code, "Watch")
-    assert [d.id for d in s.list_devices()] == [r.device_id]
-    assert s.revoke(r.device_id) is True
-    assert s.authenticate(r.token) is None
-    assert s.revoke(r.device_id) is False
-    assert s.list_devices() == []
+async def test_revoke_and_ownership():
+    s, _ = await service()
+    r = await s.pair((await s.create_code("u_a")).code, "Watch")
+    assert [d.id for d in await s.list_devices()] == [r.device_id]
+    assert [d.id for d in await s.list_devices("u_b")] == []
+    assert await s.revoke(r.device_id, user_id="u_b") is False
+    assert await s.revoke(r.device_id) is True
+    assert await s.authenticate(r.token) is None
+    assert await s.revoke(r.device_id) is False
+    assert await s.list_devices() == []
 
 
-def test_same_database_file_shared_by_cli_and_server(tmp_path):
-    cli, _ = service(db=Database(tmp_path / "wristcall.db"))
-    server, _ = service(db=Database(tmp_path / "wristcall.db"))
-    c = cli.create_code()
-    assert isinstance(server.pair(c.code, "Watch"), Paired)
+async def test_same_database_file_shared_by_cli_and_server(tmp_path):
+    cli, _ = await service(storage=open_sqlite_storage(tmp_path))
+    server, _ = await service(storage=open_sqlite_storage(tmp_path))
+    c = await cli.create_code("u_a")
+    assert isinstance(await server.pair(c.code, "Watch"), Paired)
+
+
+async def test_device_without_owner_is_not_authenticated():
+    s, _ = await service()
+    s._st.db.execute("INSERT INTO devices (id, name, token_hash, created_at) VALUES ('d0', 'Old', ?, 1.0)", (hash_secret("old"),))
+    assert await s.authenticate("old") is None
+
+
+async def test_device_limit_per_user():
+    s, _ = await service(max_devices_per_user=1)
+    await s.pair((await s.create_code("u_a")).code, "Watch 1")
+    with pytest.raises(DeviceLimit):
+        await s.create_code("u_a")
+    assert isinstance(await s.pair((await s.create_code("u_b")).code, "Bob's"), Paired)
+
+
+async def test_device_limit_on_manual_approval():
+    s, _ = await service("manual", max_devices_per_user=1)
+    p1 = await s.pair(None, "Watch 1")
+    p2 = await s.pair(None, "Watch 2")
+    await s.approve(p1.request_id, "u_a")
+    await s.poll(p1.poll_token)
+    with pytest.raises(DeviceLimit):
+        await s.approve(p2.request_id, "u_a")
 
 
 def test_rate_limiter():
@@ -164,33 +201,71 @@ def test_normalize_code_accepts_only_ascii_digits():
     assert normalize_code("12ab34-5678") is None
 
 
-def test_device_name_control_characters_are_stripped():
-    s, _ = service("manual")
-    s.pair(None, "Watch\x1b[2J")
-    assert [r.device_name for r in s.list_pending()] == ["Watch[2J"]
+async def test_device_name_control_characters_are_stripped():
+    s, _ = await service("manual")
+    await s.pair(None, "Watch\x1b[2J")
+    assert [r.device_name for r in await s.list_pending()] == ["Watch[2J"]
 
 
-def test_approve_after_delivery_is_not_found():
-    s, _ = service("manual")
-    p = s.pair(None, "Watch")
-    s.approve(p.request_id)
-    assert isinstance(s.poll(p.poll_token), Paired)
+async def test_approve_after_delivery_is_not_found():
+    s, _ = await service("manual")
+    p = await s.pair(None, "Watch")
+    await s.approve(p.request_id, "u_a")
+    assert isinstance(await s.poll(p.poll_token), Paired)
     with pytest.raises(NotFound):
-        s.approve(p.request_id)
+        await s.approve(p.request_id, "u_a")
     with pytest.raises(PairingGone):
-        s.poll(p.poll_token)
-    assert len(s.list_devices()) == 1
+        await s.poll(p.poll_token)
+    assert len(await s.list_devices()) == 1
 
 
-def test_approve_refuses_colliding_short_ids():
-    s, clock = service("manual")
+async def test_approve_refuses_colliding_short_ids():
+    s, clock = await service("manual")
     for poll_hash in ("hash-a", "hash-b"):
-        s._db.execute(
+        s._st.db.execute(
             "INSERT INTO pairing_requests (poll_hash, short_id, device_name, created_at, expires_at, status) "
             "VALUES (?, '1234', 'Watch', ?, ?, 'pending')",
             (poll_hash, clock(), clock() + 600),
         )
     with pytest.raises(NotFound):
-        s.approve("1234")
-    statuses = [r["status"] for r in s._db.query("SELECT status FROM pairing_requests")]
+        await s.approve("1234", "u_a")
+    statuses = [r["status"] for r in s._st.db.query("SELECT status FROM pairing_requests")]
     assert statuses == ["pending", "pending"]
+
+
+async def test_issue_code_without_directory():
+    s, _ = await service()
+    issued = await issue_code(s, "u_a", "https://wc.test", None)
+    assert issued.via_directory is False and issued.warning is None
+    assert isinstance(await s.pair(issued.code.code, "Watch"), Paired)
+
+
+@respx.mock
+async def test_issue_code_registers_and_retries_on_conflict():
+    route = respx.post("https://dir.test/v1/codes").mock(
+        side_effect=[httpx.Response(409, json={"error": "conflict"}), httpx.Response(201, json={})]
+    )
+    s, _ = await service()
+    issued = await issue_code(s, "u_a", "https://wc.test", DirectoryClient("https://dir.test"))
+    assert issued.via_directory is True and route.call_count == 2
+    first = route.calls[0].request.content
+    assert issued.code.code.encode() not in first  # the conflicting code was replaced
+    assert isinstance(await s.pair(issued.code.code, "Watch"), Paired)
+
+
+@respx.mock
+async def test_issue_code_gives_up_after_three_conflicts():
+    respx.post("https://dir.test/v1/codes").mock(return_value=httpx.Response(409, json={"error": "conflict"}))
+    s, _ = await service()
+    with pytest.raises(DirectoryError, match="3 codes"):
+        await issue_code(s, "u_a", "https://wc.test", DirectoryClient("https://dir.test"))
+    assert s._st.db.query("SELECT COUNT(*) FROM pairing_codes")[0][0] == 0
+
+
+@respx.mock
+async def test_issue_code_with_unreachable_directory_still_returns_a_code():
+    respx.post("https://dir.test/v1/codes").mock(side_effect=httpx.ConnectError("down"))
+    s, _ = await service()
+    issued = await issue_code(s, "u_a", "https://wc.test", DirectoryClient("https://dir.test"))
+    assert issued.via_directory is False and "directory" in issued.warning
+    assert isinstance(await s.pair(issued.code.code, "Watch"), Paired)

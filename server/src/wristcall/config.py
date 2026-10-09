@@ -119,12 +119,6 @@ class AppConfig(BaseModel):
                     raise ValueError(f"profile {pname}: provider '{ref}' ({stage}) does not exist in providers")
         return self
 
-    def profile(self, name: str | None) -> tuple[str, ProfileConfig]:
-        key = name or "default"
-        if key not in self.profiles:
-            raise KeyError(key)
-        return key, self.profiles[key]
-
 
 def _merge_profiles(raw: dict[str, Any]) -> dict[str, Any]:
     if "default" not in raw:

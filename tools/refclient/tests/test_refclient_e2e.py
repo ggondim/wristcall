@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import socket
 import threading
 import time
@@ -11,9 +12,7 @@ import uvicorn
 from refclient.client import CallError, call_url, pair, run_call, wav_source
 from wristcall.app import create_app
 from wristcall.config import parse_config
-from wristcall.pairing import PairingService
 from wristcall.providers import ProviderError, register
-from wristcall.store import open_database
 
 FIXTURE = Path(__file__).resolve().parents[3] / "server" / "tests" / "fixtures" / "speech_pt_16k.wav"
 
@@ -35,6 +34,35 @@ class FailingStt:
         raise ProviderError("STT is down (test)")
 
 
+def _sync(coro):
+    # Works from sync tests and from inside a running event loop (async tests): a fresh loop on another thread.
+    with concurrent.futures.ThreadPoolExecutor(1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+class SyncPairing:
+    """The server's pairing service, driven from the test thread, acting for the `owner` user."""
+
+    def __init__(self, app) -> None:
+        self._pairing = app.state.pairing
+        self._storage = app.state.storage
+
+    def _owner(self) -> str:
+        return _sync(self._storage.users.by_handle("owner")).id
+
+    def create_code(self):
+        return _sync(self._pairing.create_code(self._owner()))
+
+    def list_pending(self):
+        return _sync(self._pairing.list_pending())
+
+    def approve(self, request_id: str) -> str:
+        return _sync(self._pairing.approve(request_id, self._owner()))
+
+    def authenticate(self, token: str):
+        return _sync(self._pairing.authenticate(token))
+
+
 def start_server(tmp_path, approval="code", stt=None):
     cfg = parse_config(
         {
@@ -48,9 +76,9 @@ def start_server(tmp_path, approval="code", stt=None):
         },
         {},
     )
-    svc = PairingService(open_database(tmp_path), approval)
+    app = create_app(cfg)
     port = free_port()
-    server = uvicorn.Server(uvicorn.Config(create_app(cfg, pairing=svc), host="127.0.0.1", port=port, log_level="warning"))
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     deadline = time.monotonic() + 10
@@ -58,7 +86,7 @@ def start_server(tmp_path, approval="code", stt=None):
         if time.monotonic() > deadline:
             pytest.fail("server did not start")
         time.sleep(0.05)
-    return f"http://127.0.0.1:{port}", svc, server, thread
+    return f"http://127.0.0.1:{port}", SyncPairing(app), server, thread
 
 
 @pytest.fixture

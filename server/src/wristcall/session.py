@@ -8,13 +8,23 @@ from typing import Any, Protocol
 
 from . import protocol
 from .audio import FRAME_BYTES_IN, SAMPLE_RATE_IN, FrameAssembler, duration_ms, frame_bytes, pcm16_to_wav
-from .config import ProfileConfig
+from .config import Timeouts, VadConfig
 from .providers import ProviderError, ProviderSet
 from .sentences import SentenceSplitter
 from .turn import State, TurnClosed, TurnMachine
 from .vad import Vad
 
 log = logging.getLogger("wristcall.session")
+
+
+class CallSettings(Protocol):
+    """What a call reads from its agent (agents.AgentSpec; config.ProfileConfig has the same fields)."""
+
+    language: str
+    system_prompt: str
+    fallback_message: str
+    vad: VadConfig
+    timeouts: Timeouts
 
 
 class Transport(Protocol):
@@ -37,7 +47,7 @@ async def _with_first_timeout(agen: AsyncIterator[str], first_timeout_s: float) 
 class CallSession:
     def __init__(
         self,
-        profile: ProfileConfig,
+        profile: CallSettings,
         providers: ProviderSet,
         vad: Vad,
         transport: Transport,

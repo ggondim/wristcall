@@ -13,12 +13,15 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import __version__, protocol
+from .agents import AgentError, AgentService, agent_summary, build_agent_providers
+from .auth import Authenticator, Principal
+from .bootstrap import bootstrap, log_report
 from .config import AppConfig
-from .pairing import Device, Paired, PairingDenied, PairingGone, PairingService
-from .providers import ProviderSet, build_provider_set
+from .pairing import Paired, PairingDenied, PairingGone, PairingService
+from .providers import ProviderError, check_providers
 from .ratelimit import RateLimiter
 from .session import CallSession
-from .store import open_database
+from .storage import Storage, open_sqlite_storage
 from .vad import build_vad
 from .warmup import run_background, warm_all, warmup_targets
 
@@ -51,22 +54,26 @@ class _WsTransport:
 def create_app(
     config: AppConfig,
     *,
-    pairing: PairingService | None = None,
+    storage: Storage | None = None,
     http: httpx.AsyncClient | None = None,
     start_timeout_s: float = 10.0,
 ) -> FastAPI:
     own_http = http is None
     http_client = http or httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0))
-    pairing_svc = pairing or PairingService(open_database(config.server.data_dir), config.server.pairing_approval)
-    providers: dict[str, ProviderSet] = {
-        name: build_provider_set(config, profile, http_client) for name, profile in config.profiles.items()
-    }
+    check_providers(config, http_client)
+    store = storage or open_sqlite_storage(config.server.data_dir)
+    pairing_svc = PairingService(
+        store, config.server.pairing_approval, max_devices_per_user=config.limits.max_devices_per_user
+    )
+    agents = AgentService(store, config, http_client)
+    auth = Authenticator(store)
     limiter = RateLimiter(limit=10, window_s=60)
     targets = warmup_targets(config, http_client)
     call_targets = [t for t in targets if t.config.on_call]
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        log_report(await bootstrap(store, config))
         background = asyncio.create_task(run_background(targets)) if targets else None
         yield
         if background is not None:
@@ -77,6 +84,10 @@ def create_app(
             await http_client.aclose()
 
     app = FastAPI(title="wristcall", version=__version__, lifespan=lifespan)
+    app.state.storage = store
+    app.state.pairing = pairing_svc
+    app.state.agents = agents
+    app.state.auth = auth
 
     def client_ip(request: Request) -> str:
         header = config.server.client_ip_header
@@ -84,10 +95,9 @@ def create_app(
             return value.split(",")[0].strip()
         return request.client.host if request.client else "unknown"
 
-    def device_from(authorization: str | None) -> Device | None:
-        if not authorization or not authorization.lower().startswith("bearer "):
-            return None
-        return pairing_svc.authenticate(authorization[7:].strip())
+    async def device_from(authorization: str | None) -> Principal | None:
+        principal = await auth.authenticate(authorization)
+        return principal if principal is not None and principal.kind == "device" else None
 
     @app.get("/v1/health")
     async def health() -> dict[str, Any]:
@@ -98,7 +108,7 @@ def create_app(
         if not limiter.allow(client_ip(request)):
             return JSONResponse({"error": "rate_limited"}, status_code=429)
         try:
-            result = pairing_svc.pair(body.code, body.device_name)
+            result = await pairing_svc.pair(body.code, body.device_name)
         except PairingDenied as e:
             return JSONResponse({"error": "invalid_code", "message": str(e)}, status_code=401)
         if isinstance(result, Paired):
@@ -113,7 +123,7 @@ def create_app(
     async def poll(body: PollBody) -> Any:
         # The poll_token is a secret: it goes in the body, not in the path, so it does not show up in the access log.
         try:
-            result = pairing_svc.poll(body.poll_token)
+            result = await pairing_svc.poll(body.poll_token)
         except PairingGone as e:
             return JSONResponse({"error": "gone", "message": str(e)}, status_code=410)
         if isinstance(result, Paired):
@@ -123,22 +133,27 @@ def create_app(
 
     @app.get("/v1/me")
     async def me(authorization: str | None = Header(default=None)) -> Any:
-        device = device_from(authorization)
-        if device is None:
+        principal = await device_from(authorization)
+        if principal is None or principal.device is None:
             return JSONResponse({"error": "unauthorized"}, status_code=401)
+        user = await store.users.get(principal.user_id)
+        listed = await agents.list(principal.user_id)
         return {
-            "device_id": device.id,
-            "device_name": device.name,
-            "profiles": [{"name": n, "display_name": p.display_name} for n, p in config.profiles.items()],
+            "device_id": principal.device.id,
+            "device_name": principal.device.name,
+            "user": {"id": user.id, "handle": user.handle, "display_name": user.display_name} if user else None,
+            "agents": [agent_summary(a) for a in listed],
+            # 0.2.0 shape, read by watch 0.1.0 (it calls the first one).
+            "profiles": [{"name": a.slug, "display_name": a.display_name} for a in listed],
         }
 
     @app.delete("/v1/me")
     async def unpair(authorization: str | None = Header(default=None)) -> Any:
-        device = device_from(authorization)
-        if device is None:
+        principal = await device_from(authorization)
+        if principal is None or principal.device is None:
             return JSONResponse({"error": "unauthorized"}, status_code=401)
-        pairing_svc.revoke(device.id)
-        log.info("device unpaired: %s", device.id)
+        await pairing_svc.revoke(principal.device.id)
+        log.info("device unpaired: %s", principal.device.id)
         return Response(status_code=204)
 
     async def fatal(ws: WebSocket, err: protocol.ProtocolError) -> None:
@@ -149,8 +164,8 @@ def create_app(
     @app.websocket("/v1/call")
     async def call(ws: WebSocket) -> None:
         await ws.accept()
-        device = device_from(ws.headers.get("authorization"))
-        if device is None:
+        principal = await device_from(ws.headers.get("authorization"))
+        if principal is None or principal.device is None:
             await ws.close(code=protocol.CLOSE_UNAUTHORIZED)
             return
         try:
@@ -168,24 +183,40 @@ def create_app(
             if not isinstance(start, protocol.SessionStart):
                 raise protocol.ProtocolError(protocol.ErrorCode.NOT_STARTED, "the first message must be session.start")
             protocol.check_session_start(start)
+            ref = start.agent or start.profile
+            if ref is None:
+                agent = await agents.default(principal.user_id)
+                if agent is None:
+                    raise protocol.ProtocolError(protocol.ErrorCode.UNKNOWN_PROFILE, "this account has no agents yet")
+            else:
+                try:
+                    agent = await agents.get(principal.user_id, ref)
+                except AgentError:
+                    raise protocol.ProtocolError(protocol.ErrorCode.UNKNOWN_PROFILE, f"unknown agent: {ref}") from None
             try:
-                profile_name, profile = config.profile(start.profile)
-            except KeyError:
-                raise protocol.ProtocolError(protocol.ErrorCode.UNKNOWN_PROFILE, f"unknown profile: {start.profile}") from None
+                provider_set = build_agent_providers(config, agent.spec, http_client)
+            except ProviderError as e:
+                log.warning("agent %s unavailable: %s", agent.id, e)
+                raise protocol.ProtocolError(
+                    protocol.ErrorCode.AGENT_UNAVAILABLE, "this agent is not available; check its providers"
+                ) from None
         except protocol.ProtocolError as e:
             await fatal(ws, e)
             return
 
-        provider_set = providers[profile_name]
+        turn_end = start.turn_end or agent.spec.turn_end
         transport = _WsTransport(ws)
-        session = CallSession(profile, provider_set, build_vad(profile.vad), transport, turn_end=start.turn_end)
+        session = CallSession(agent.spec, provider_set, build_vad(agent.spec.vad), transport, turn_end=turn_end)
         session_id = secrets.token_hex(8)
         await transport.send_json(
             protocol.session_ready(
-                session_id, profile_name, profile.display_name, protocol.AudioFormat(sample_rate=provider_set.tts.sample_rate)
+                session_id, agent_summary(agent), turn_end, protocol.AudioFormat(sample_rate=provider_set.tts.sample_rate)
             )
         )
-        log.info("call %s started: device=%s profile=%s turn_end=%s", session_id, device.id, profile_name, start.turn_end)
+        log.info(
+            "call %s started: device=%s agent=%s (%s) turn_end=%s",
+            session_id, principal.device.id, agent.id, agent.slug, turn_end,
+        )
         warming = asyncio.create_task(warm_all(call_targets)) if call_targets else None
         try:
             while True:

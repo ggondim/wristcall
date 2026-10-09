@@ -2,7 +2,7 @@
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, field_validator
 
 PROTOCOL_VERSION = 1
 INPUT_SAMPLE_RATE = 16_000
@@ -20,6 +20,7 @@ class ErrorCode:
     UNSUPPORTED_PROTOCOL = "unsupported_protocol"
     UNSUPPORTED_AUDIO = "unsupported_audio"
     UNKNOWN_PROFILE = "unknown_profile"
+    AGENT_UNAVAILABLE = "agent_unavailable"
     NOT_STARTED = "not_started"
     STT_FAILED = "stt_failed"
     RESPONDER_FAILED = "responder_failed"
@@ -43,9 +44,19 @@ class AudioFormat(BaseModel):
 class SessionStart(BaseModel):
     type: Literal["session.start"]
     protocol: int
-    profile: str | None = None
+    # Which agent to call: `agent` (slug or id) wins over `profile` (slug, the 0.2.0 name). Neither: the first agent.
+    agent: str | None = Field(default=None, max_length=64)
+    profile: str | None = Field(default=None, max_length=64)
     audio_in: AudioFormat
-    turn_end: TurnEnd = "auto"
+    # Absent: the agent's own turn_end.
+    turn_end: TurnEnd | None = None
+
+    @field_validator("turn_end", mode="before")
+    @classmethod
+    def _no_explicit_null(cls, value: object) -> object:
+        if value is None:
+            raise ValueError("turn_end must be 'auto' or 'manual'")
+        return value
 
 
 class Mute(BaseModel):
@@ -77,11 +88,17 @@ def check_session_start(msg: SessionStart) -> None:
         raise ProtocolError(ErrorCode.UNSUPPORTED_AUDIO, f"input audio must be pcm16 {INPUT_SAMPLE_RATE} Hz mono")
 
 
-def session_ready(session_id: str, profile_name: str, display_name: str, audio_out: AudioFormat) -> dict[str, Any]:
+def session_ready(session_id: str, agent: dict[str, Any], turn_end: TurnEnd, audio_out: AudioFormat) -> dict[str, Any]:
+    """`agent` is the agent summary (id, slug, display_name, icon, call_type, turn_end).
+
+    `profile` repeats slug and display_name in the 0.2.0 shape, which watch 0.1.0 requires.
+    """
     return {
         "type": "session.ready",
         "session_id": session_id,
-        "profile": {"name": profile_name, "display_name": display_name},
+        "profile": {"name": agent["slug"], "display_name": agent["display_name"]},
+        "agent": agent,
+        "turn_end": turn_end,
         "audio_out": audio_out.model_dump(),
     }
 

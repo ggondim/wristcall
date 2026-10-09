@@ -19,7 +19,17 @@ def test_parse_session_start_without_profile():
 
 def test_parse_session_start_with_profile_and_unknown_fields():
     msg = p.parse_client_message(start(profile="coach", client="watch/1.0"))
-    assert msg.profile == "coach"
+    assert msg.profile == "coach" and msg.agent is None
+
+
+def test_parse_session_start_with_agent():
+    msg = p.parse_client_message(start(agent="ag_0123456789ab", profile="default"))
+    assert (msg.agent, msg.profile) == ("ag_0123456789ab", "default")
+
+
+def test_agent_reference_is_bounded():
+    with pytest.raises(p.ProtocolError):
+        p.parse_client_message(start(agent="x" * 65))
 
 
 def test_parse_mute_and_end():
@@ -71,10 +81,13 @@ def test_protocol_checked_before_audio():
 
 def test_server_message_shapes():
     out = p.AudioFormat(sample_rate=24000)
-    assert p.session_ready("s1", "default", "Agent", out) == {
+    agent = {"id": "ag_1", "slug": "default", "display_name": "Agent", "icon": "waveform", "call_type": "conversation", "turn_end": "auto"}
+    assert p.session_ready("s1", agent, "manual", out) == {
         "type": "session.ready",
         "session_id": "s1",
         "profile": {"name": "default", "display_name": "Agent"},
+        "agent": agent,
+        "turn_end": "manual",
         "audio_out": {"codec": "pcm16", "sample_rate": 24000, "channels": 1},
     }
     assert p.turn_user_end("limit") == {"type": "turn.user_end", "reason": "limit"}
@@ -84,8 +97,8 @@ def test_server_message_shapes():
     assert p.error("stt_failed", "x", False) == {"type": "error", "code": "stt_failed", "message": "x", "fatal": False}
 
 
-def test_turn_end_defaults_to_auto():
-    assert p.parse_client_message(start()).turn_end == "auto"
+def test_turn_end_absent_means_the_agent_decides():
+    assert p.parse_client_message(start()).turn_end is None
 
 
 @pytest.mark.parametrize("mode", ["auto", "manual"])

@@ -2,8 +2,9 @@ import httpx
 import pytest
 
 from conftest import fake_config
-from wristcall.config import ProviderConfig
-from wristcall.providers import ProviderError, auth_headers, build_provider, build_provider_set
+from wristcall.agents import build_agent_providers, spec_from_profile
+from wristcall.config import ProviderConfig, parse_config
+from wristcall.providers import ProviderError, auth_headers, build_provider, check_providers
 from wristcall.providers.fake import EchoChat, FakeStt, ToneTts
 
 
@@ -11,17 +12,17 @@ async def collect(agen):
     return [x async for x in agen]
 
 
-async def test_build_provider_set_from_config():
+async def test_build_providers_from_config():
     cfg = fake_config()
     async with httpx.AsyncClient() as http:
-        ps = build_provider_set(cfg, cfg.profiles["default"], http)
+        ps = build_agent_providers(cfg, spec_from_profile(cfg.profiles["default"]), http)
     assert isinstance(ps.stt, FakeStt) and isinstance(ps.responder, EchoChat) and isinstance(ps.tts, ToneTts)
 
 
 async def test_fake_providers_behaviour():
     cfg = fake_config()
     async with httpx.AsyncClient() as http:
-        ps = build_provider_set(cfg, cfg.profiles["default"], http)
+        ps = build_agent_providers(cfg, spec_from_profile(cfg.profiles["default"]), http)
     assert await ps.stt.transcribe(b"RIFF", "en") == "hi"
     msgs = [{"role": "system", "content": "x"}, {"role": "user", "content": "all good"}]
     assert "".join(await collect(ps.responder.respond(msgs))) == "You said: all good"
@@ -50,3 +51,15 @@ def test_auth_headers():
     assert auth_headers(None) == {}
     assert auth_headers("") == {}
     assert auth_headers("k") == {"Authorization": "Bearer k"}
+
+
+async def test_check_providers_fails_on_any_broken_provider():
+    def cfg(providers):
+        return parse_config({"server": {"public_url": "https://wc.test"}, "providers": providers}, {})
+
+    async with httpx.AsyncClient() as http:
+        check_providers(cfg({"stt": {"type": "fake_stt"}}), http)
+        with pytest.raises(ProviderError, match="unknown type 'nope'"):
+            check_providers(cfg({"x": {"type": "nope"}}), http)
+        with pytest.raises(ProviderError, match="unused"):
+            check_providers(cfg({"unused": {"type": "openai_stt"}}), http)  # missing base_url, even if no agent uses it
