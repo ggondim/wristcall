@@ -165,23 +165,23 @@ async def _run(
         try:
             if one_way:
                 await _record(ws, sender, result, on_event)
-                return
-            async for message in ws:
-                if isinstance(message, bytes):
-                    result.audio.extend(message)
-                    if on_audio:
-                        on_audio(message)
-                    continue
-                event = json.loads(message)
-                result.events.append(event)
-                if on_event:
-                    on_event(event)
-                if event["type"] == "error" and (event.get("fatal") or stop_on_error):
-                    break
-                if event["type"] == "turn.agent_end":
-                    agent_turns += 1
-                    if stop_after_agent_turns and agent_turns >= stop_after_agent_turns:
+            else:
+                async for message in ws:
+                    if isinstance(message, bytes):
+                        result.audio.extend(message)
+                        if on_audio:
+                            on_audio(message)
+                        continue
+                    event = json.loads(message)
+                    result.events.append(event)
+                    if on_event:
+                        on_event(event)
+                    if event["type"] == "error" and (event.get("fatal") or stop_on_error):
                         break
+                    if event["type"] == "turn.agent_end":
+                        agent_turns += 1
+                        if stop_after_agent_turns and agent_turns >= stop_after_agent_turns:
+                            break
         finally:
             sender.cancel()
             with suppress(asyncio.CancelledError, Exception):
@@ -213,8 +213,13 @@ async def _record(ws: Any, sender: asyncio.Task, result: CallResult, on_event: C
 
 
 def call_status(server: str, token: str, call_id: str, *, http: httpx.Client | None = None) -> dict[str, Any]:
-    client = http or httpx.Client(timeout=10.0)
-    r = client.get(f"{server.rstrip('/')}/v1/calls/{call_id}", headers={"Authorization": f"Bearer {token}"})
+    url = f"{server.rstrip('/')}/v1/calls/{call_id}"
+    headers = {"Authorization": f"Bearer {token}"}
+    if http is not None:
+        r = http.get(url, headers=headers)
+    else:
+        with httpx.Client(timeout=10.0) as own:
+            r = own.get(url, headers=headers)
     if r.status_code != 200:
         raise CallError(f"call status failed ({r.status_code}): {r.text[:200]}")
     return r.json()

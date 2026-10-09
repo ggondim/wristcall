@@ -224,3 +224,30 @@ async def test_one_shot_call_hangs_up_and_waits_for_the_delivery(tmp_path):
         server.should_exit = True
         thread.join(5)
         inbox.shutdown()
+
+
+async def test_one_way_sender_failure_becomes_call_error(tmp_path):
+    inbox = InboxServer(("127.0.0.1", 0), Inbox)
+    threading.Thread(target=inbox.serve_forever, daemon=True).start()
+    Inbox.received = []
+    base, svc, server, thread = start_server(tmp_path)
+    try:
+        _sync(svc.agents.create(svc._owner(), {
+            "slug": "note", "call_type": "one-shot",
+            "action": {"type": "webhook", "url": f"http://127.0.0.1:{inbox.server_port}/hook"},
+            "vad": {"type": "energy"},
+        }))
+        creds = pair(base, svc.create_code().code, "refclient-test")
+
+        async def broken_source():
+            for _ in range(3):
+                yield b"\x00" * 640
+                await asyncio.sleep(0.02)
+            raise RuntimeError("microphone broke")
+
+        with pytest.raises(CallError, match="failed to send audio"):
+            await asyncio.wait_for(run_call(base, creds["token"], broken_source(), agent="note"), timeout=10)
+    finally:
+        server.should_exit = True
+        thread.join(5)
+        inbox.shutdown()
