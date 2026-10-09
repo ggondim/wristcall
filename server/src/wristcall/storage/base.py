@@ -14,7 +14,7 @@ Two groups of methods:
 
 from typing import Protocol
 
-from .models import AgentRecord, ApiToken, CallRecord, Device, PairingRequest, User
+from .models import AgentRecord, ApiToken, CallRecord, Device, EntryRecord, PairingRequest, User
 
 
 class UserStore(Protocol):
@@ -186,6 +186,9 @@ class AgentStore(Protocol):
 
 
 class CallStore(Protocol):
+    """Calls and their entries (the history). Texts arrive sealed or not and terms arrive computed (history_codec.py):
+    the storage keeps what it gets and never sees the key."""
+
     async def create(self, record: CallRecord) -> CallRecord: ...
 
     async def get(self, user_id: str, call_id: str) -> CallRecord | None:
@@ -193,12 +196,35 @@ class CallStore(Protocol):
         ...
 
     async def save(self, record: CallRecord) -> CallRecord:
-        """Replaces every field but id, user_id, agent_id, device_id, call_type and created_at. KeyError if gone."""
+        """Replaces status, error, attempts, last_http_status, ended_at, finished_at and updated_at. KeyError if gone."""
         ...
 
     async def interrupt_unfinished(self, now: float) -> int:
-        """Operator. At startup: calls left recording or processing by a stopped server become failed
-        (error "interrupted"), keeping their text. Returns how many."""
+        """Operator. At startup: calls left open by a stopped server are closed with error "interrupted"
+        (one-way recording or processing → failed; conversation recording → ended). Returns how many."""
+        ...
+
+    async def add_entry(self, user_id: str, entry: EntryRecord, terms: list[str]) -> bool:
+        """Appends an utterance and indexes its terms. False if the user has no such call (gone meanwhile)."""
+        ...
+
+    async def entries(self, user_id: str, call_id: str) -> list[EntryRecord]:
+        """By seq; empty if the call is not the user's."""
+        ...
+
+    async def list(
+        self, user_id: str, *, agent_id: str | None = None, since: float | None = None, until: float | None = None,
+        terms: list[list[str]] | None = None, before: str | None = None, limit: int = 50,
+    ) -> list[CallRecord]:
+        """The user's calls, newest first. since <= created_at < until. terms: groups of alternatives; a call matches
+        when one of its entries has a term of every group ([] matches nothing). before: a call id; only calls older
+        than it (nothing if it is not the user's)."""
+        ...
+
+    async def delete(self, user_id: str, call_id: str) -> bool: ...
+
+    async def delete_all(self, user_id: str, agent_id: str | None = None) -> int:
+        """Every call of the user, or of one of their agents (also a deleted agent's). Returns how many."""
         ...
 
 

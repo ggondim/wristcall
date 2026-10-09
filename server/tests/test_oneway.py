@@ -7,6 +7,8 @@ from wristcall.agents import Agent, AgentSpec, OneWayProviders, ProviderRef
 from wristcall.audio import FRAME_BYTES_IN
 from wristcall.config import VadConfig
 from wristcall.delivery import DeliveryPolicy
+from wristcall.history import CallLog
+from wristcall.history_codec import HistoryCodec
 from wristcall.oneway import Background, OneWayCall, new_call_id
 from wristcall.providers import ProviderError
 from wristcall.providers.webhook import WebhookError
@@ -80,7 +82,8 @@ async def make(call_type="one-shot", stt=None, hook=None, max_call_ms=60_000, **
     ))
     clock = iter(range(200, 10_000))
     call = OneWayCall(
-        agent(call_type, **vad), OneWayProviders(stt=stt or Stt("olá"), webhook=hook or Hook()), ByteVad(), record, st,
+        agent(call_type, **vad), OneWayProviders(stt=stt or Stt("olá"), webhook=hook or Hook()), ByteVad(),
+        CallLog(st, HistoryCodec(), record),
         max_call_ms=max_call_ms, policy=DeliveryPolicy(1.0, (0.0, 0.0)), now=lambda: float(next(clock)), sleep=no_sleep,
     )
     return call, st
@@ -102,7 +105,7 @@ async def test_one_shot_keeps_pauses_and_delivers_at_hang_up():
     call.on_audio(frames((SPEECH, 5), (SIL, 20), (SPEECH, 5)))
     assert not call.captured
     done = await call.finish()
-    assert (done.status, done.text, done.attempts, done.last_http_status, done.error) == (
+    assert (done.status, call.text, done.attempts, done.last_http_status, done.error) == (
         "delivered", "comprar leite", 1, 204, None
     )
     assert done.ended_at == 200.0 and done.finished_at is not None
@@ -112,13 +115,16 @@ async def test_one_shot_keeps_pauses_and_delivers_at_hang_up():
     assert body["agent"] == {"id": "ag_1", "slug": "note", "display_name": "Note"}
     assert hook.keys == [call.record.id]
     assert await st.calls.get("u_a", call.record.id) == done
+    [entry] = await st.calls.entries("u_a", call.record.id)
+    assert (entry.seq, entry.role, entry.text, entry.sealed, entry.error) == (0, "user", "comprar leite", False, None)
 
 
 async def test_one_shot_short_word_is_kept_at_hang_up():
     stt = Stt("sim")
     call, _ = await make(stt=stt)
     call.on_audio(SPEECH)  # 20 ms, below min_speech_ms
-    assert (await call.finish()).text == "sim"
+    await call.finish()
+    assert call.text == "sim"
 
 
 async def test_one_shot_ends_by_itself_at_the_turn_limit():
@@ -128,7 +134,7 @@ async def test_one_shot_ends_by_itself_at_the_turn_limit():
     assert call.captured
     call.on_audio(frames((SPEECH, 10)))  # after the limit: ignored
     done = await call.finish()
-    assert done.text == "long" and stt.lengths == [44 + 50 * FRAME_BYTES_IN]
+    assert call.text == "long" and stt.lengths == [44 + 50 * FRAME_BYTES_IN]
 
 
 async def test_monologue_is_cut_at_pauses_and_joined_in_order():
@@ -138,7 +144,7 @@ async def test_monologue_is_cut_at_pauses_and_joined_in_order():
     assert not call.captured
     call.on_audio(frames((SPEECH, 4)))
     done = await call.finish()
-    assert done.text == "primeira ideia. segunda terceira"
+    assert call.text == "primeira ideia. segunda terceira"
     assert len(stt.lengths) == 4
 
 
@@ -147,7 +153,8 @@ async def test_monologue_stops_at_the_call_limit():
     call, _ = await make("monologue", stt=stt, max_call_ms=400)
     call.on_audio(frames((SPEECH, 5), (SIL, 6), (SPEECH, 20)))
     assert call.captured
-    assert (await call.finish()).text == "a b"
+    await call.finish()
+    assert call.text == "a b"
 
 
 async def test_nothing_is_recorded_while_muted_and_mute_ends_nothing():
@@ -165,10 +172,11 @@ async def test_nothing_is_recorded_while_muted_and_mute_ends_nothing():
 
 async def test_hang_up_without_speech_is_empty_and_not_delivered():
     hook = Hook()
-    call, _ = await make(hook=hook)
+    call, st = await make(hook=hook)
     call.on_audio(frames((SIL, 30)))
     done = await call.finish()
-    assert (done.status, done.text) == ("empty", None) and hook.bodies == []
+    assert (done.status, call.text) == ("empty", None) and hook.bodies == []
+    assert await st.calls.entries("u_a", call.record.id) == []
 
 
 async def test_blank_transcript_is_empty():
@@ -181,16 +189,19 @@ async def test_stt_is_tried_twice():
     stt = Stt(ProviderError("down"), "ok")
     call, _ = await make(stt=stt)
     call.on_audio(SPEECH)
-    assert (await call.finish()).text == "ok"
+    await call.finish()
+    assert call.text == "ok"
 
 
 async def test_stt_failure_keeps_what_was_heard_and_does_not_deliver():
     stt, hook = Stt("começo", ProviderError("x"), TimeoutError()), Hook()
-    call, _ = await make("monologue", stt=stt, hook=hook)
+    call, st = await make("monologue", stt=stt, hook=hook)
     call.on_audio(frames((SPEECH, 5), (SIL, 6), (SPEECH, 5)))
     done = await call.finish()
-    assert (done.status, done.error, done.text) == ("failed", "stt_failed", "começo")
+    assert (done.status, done.error, call.text) == ("failed", "stt_failed", "começo")
     assert hook.bodies == []
+    [entry] = await st.calls.entries("u_a", call.record.id)
+    assert (entry.text, entry.error) == ("começo", "stt_failed")
 
 
 async def test_delivery_failure_keeps_the_text_and_the_attempts():
@@ -198,7 +209,7 @@ async def test_delivery_failure_keeps_the_text_and_the_attempts():
     call, _ = await make(hook=hook)
     call.on_audio(SPEECH)
     done = await call.finish()
-    assert (done.status, done.error, done.text, done.attempts, done.last_http_status) == (
+    assert (done.status, done.error, call.text, done.attempts, done.last_http_status) == (
         "failed", "delivery_failed", "olá", 3, 404
     )
 
@@ -216,7 +227,8 @@ async def test_cancelled_processing_is_interrupted_with_its_text():
     with pytest.raises(asyncio.CancelledError):
         await task
     saved = await st.calls.get("u_a", call.record.id)
-    assert (saved.status, saved.error, saved.text) == ("failed", "interrupted", "olá")
+    assert (saved.status, saved.error) == ("failed", "interrupted")
+    assert [e.text for e in await st.calls.entries("u_a", call.record.id)] == ["olá"]
 
 
 async def test_background_lets_work_finish_within_the_grace_then_cancels():

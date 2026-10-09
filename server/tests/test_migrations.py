@@ -197,3 +197,43 @@ def test_version_3_database_gains_central_columns(tmp_path):
     assert db.query("SELECT handle, central_subject FROM users")[0]["handle"] == "owner"
     assert db.query("SELECT central_subject FROM users")[0]["central_subject"] is None
     db.close()
+
+
+def test_version_4_database_moves_call_text_to_the_history(tmp_path):
+    # A database of the E5 main (version 4) with E2 calls: their text becomes a searchable user entry.
+    path = database_path(tmp_path)
+    conn = sqlite3.connect(path, isolation_level=None)
+    for step in MIGRATIONS[:4]:
+        for statement in step:
+            conn.execute(statement)
+    conn.execute("PRAGMA user_version = 4")
+    conn.execute("INSERT INTO users (id, handle, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1.0)")
+    conn.execute(
+        "INSERT INTO agents (id, user_id, slug, display_name, icon, call_type, position, spec, created_at, updated_at) "
+        "VALUES ('ag1', 'u1', 'note', 'Note', 'waveform', 'one-shot', 0, '{}', 1.0, 1.0)"
+    )
+    for cid, status, error, text in (
+        ("c1", "delivered", None, "Reunião às 15h"),
+        ("c2", "failed", "stt_failed", "começo"),
+        ("c3", "empty", None, None),
+    ):
+        conn.execute(
+            "INSERT INTO calls (id, user_id, agent_id, call_type, status, error, text, created_at, ended_at, updated_at) "
+            "VALUES (?, 'u1', ?, 'one-shot', ?, ?, ?, 1.0, 2.0, 2.0)",
+            (cid, "ag_deleted" if cid == "c3" else "ag1", status, error, text),
+        )
+    conn.close()
+    db = Database(path)
+    assert db.version == LATEST
+    assert {"call_entries", "history_fts"} <= tables(db)
+    assert db.query("SELECT COUNT(*) FROM calls WHERE text IS NOT NULL")[0][0] == 0
+    entries = [tuple(r) for r in db.query("SELECT call_id, seq, role, text, sealed, error, at FROM call_entries ORDER BY call_id")]
+    assert entries == [("c1", 0, "user", "Reunião às 15h", 0, None, 2.0), ("c2", 0, "user", "começo", 0, "stt_failed", 2.0)]
+    agents = [tuple(r) for r in db.query("SELECT id, agent_slug, agent_name, expires_at FROM calls ORDER BY id")]
+    assert agents == [("c1", "note", "Note", None), ("c2", "note", "Note", None), ("c3", "", "", None)]
+    # Moved text is found with the words history_codec computes for new text.
+    from wristcall.history_codec import HistoryCodec
+    from wristcall.storage.sqlite import fts_query
+    query = fts_query(HistoryCodec().query_terms("REUNIAO as"))
+    assert [r[0] for r in db.query("SELECT rowid FROM history_fts WHERE history_fts MATCH ?", (query,))] == [1]
+    db.close()

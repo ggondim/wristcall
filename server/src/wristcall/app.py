@@ -25,12 +25,14 @@ from .auth import Authenticator, Principal
 from .bootstrap import bootstrap, log_report
 from .config import AppConfig
 from .delivery import DeliveryPolicy
-from .oneway import Background, OneWayCall, call_view, new_call_id
+from .history import History
+from .history_codec import HistoryCodec
+from .oneway import Background, OneWayCall
 from .pairing import DeviceLimit, Paired, PairingDenied, PairingGone, PairingService
 from .providers import ProviderError, check_providers
 from .ratelimit import RateLimiter
 from .session import CallSession
-from .storage import CallRecord, Storage, open_sqlite_storage
+from .storage import Storage, open_sqlite_storage
 from .vad import build_vad
 from .warmup import run_background, warm_all, warmup_targets
 
@@ -85,6 +87,7 @@ def create_app(
     auth = Authenticator(store)
     limiter = RateLimiter(limit=10, window_s=60)
     account = AccountService(store, config.central_account, http_client) if config.central_account else None
+    history = History(store, HistoryCodec(config.history.key()))
     targets = warmup_targets(config, http_client)
     call_targets = [t for t in targets if t.config.on_call]
     after_calls = Background()
@@ -111,6 +114,7 @@ def create_app(
     app.state.agents = agents
     app.state.auth = auth
     app.state.account = account
+    app.state.history = history
 
     def client_ip(request: Request) -> str:
         header = config.server.client_ip_header
@@ -227,7 +231,7 @@ def create_app(
         record = await store.calls.get(principal.user_id, call_id)
         if record is None:
             return JSONResponse({"error": "not_found", "message": "call not found"}, status_code=404)
-        return call_view(record)
+        return await history.detail(record)
 
     @app.delete("/v1/me")
     async def unpair(authorization: str | None = Header(default=None)) -> Any:
@@ -278,13 +282,10 @@ def create_app(
         """Records until hang-up (or the limit); transcription and delivery go on after the WebSocket closes."""
         # Before the record exists: a VAD that fails to load must not leave a call stuck in "recording".
         vad = build_vad(agent.spec.vad)
-        now = time.time()
-        record = await store.calls.create(CallRecord(
-            id=new_call_id(), user_id=agent.user_id, agent_id=agent.id, device_id=device_id,
-            call_type=agent.call_type, status="recording", created_at=now, updated_at=now,
-        ))
+        call_log = await history.start(agent, device_id)
+        record = call_log.record
         call = OneWayCall(
-            agent, providers, vad, record, store,
+            agent, providers, vad, call_log,
             max_call_ms=config.limits.max_one_way_call_s * 1000, policy=delivery_policy,
         )
         transport = _WsTransport(ws)

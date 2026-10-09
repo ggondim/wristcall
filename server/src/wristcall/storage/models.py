@@ -78,9 +78,10 @@ class AgentRecord:
 
 @dataclass(frozen=True)
 class CallRecord:
-    """One call to a one-shot or monologue agent: its transcript and the delivery to the action URL.
+    """One call, of any type: the history of its agent (design decision 16). Its text lives in EntryRecord rows.
 
-    status: recording (the call is open) → processing (transcribing, delivering) → delivered | failed | empty.
+    status of a one-way call: recording (the call is open) → processing (transcribing, delivering) → delivered | failed
+    | empty. Of a conversation: recording → ended | empty.
     """
 
     id: str
@@ -92,8 +93,29 @@ class CallRecord:
     created_at: float
     updated_at: float
     error: str | None = None
-    text: str | None = None
     attempts: int = 0
     last_http_status: int | None = None
     ended_at: float | None = None
     finished_at: float | None = None
+    # The agent as it was when called: it may be renamed or deleted later, and its history stays.
+    agent_slug: str = ""
+    agent_name: str = ""
+    # The retention deletes the call after this moment; None keeps it until the user deletes it.
+    expires_at: float | None = None
+
+
+@dataclass(frozen=True)
+class EntryRecord:
+    """One utterance of a call as stored: `text` is sealed when `sealed` (see history_codec.py).
+
+    role: "user" (what the user said) or "agent" (the conversation agent's answer). error: why the text is missing or
+    partial (stt_failed, responder_failed, tts_failed).
+    """
+
+    call_id: str
+    seq: int
+    role: str
+    text: str | None
+    sealed: bool
+    error: str | None
+    at: float

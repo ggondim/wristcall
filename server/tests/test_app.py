@@ -376,6 +376,9 @@ def test_one_shot_call_records_until_hang_up_and_delivers(oneway):
         "status": "delivered", "text": "comprar leite", "attempts": 1, "last_http_status": 204, "error": None,
         "call_type": "one-shot",
     }
+    assert view["agent"] == {"id": view["agent_id"], "slug": "note", "display_name": "note"}
+    assert [(e["role"], e["text"], e["error"]) for e in view["entries"]] == [("user", "comprar leite", None)]
+    assert view["expires_at"] is None
     sent = oneway.hook.calls.last.request
     assert sent.headers["authorization"] == "Bearer s3cret" and sent.headers["idempotency-key"] == call_id
     body = json.loads(sent.content)
@@ -499,15 +502,17 @@ def test_unfinished_calls_are_interrupted_at_startup():
     with TestClient(create_app(cfg, storage=store)) as c:
         user = owner(c)
         agent = run(c.app.state.agents.list(user.id))[0]
-    from wristcall.storage import CallRecord
+    from wristcall.storage import CallRecord, EntryRecord
     run(store.calls.create(CallRecord(
         id="c_old", user_id=user.id, agent_id=agent.id, device_id=None, call_type="one-shot",
-        status="processing", created_at=1.0, updated_at=1.0, text="half",
+        status="processing", created_at=1.0, updated_at=1.0,
     )))
+    run(store.calls.add_entry(user.id, EntryRecord("c_old", 0, "user", "half", False, None, 1.0), ["half"]))
     with TestClient(create_app(cfg, storage=store)):
         pass
     old = run(store.calls.get(user.id, "c_old"))
-    assert (old.status, old.error, old.text) == ("failed", "interrupted", "half")
+    assert (old.status, old.error) == ("failed", "interrupted")
+    assert [e.text for e in run(store.calls.entries(user.id, "c_old"))] == ["half"]
 
 
 def test_watch_0_1_0_calling_a_one_way_first_agent_records_and_ends_normally(oneway):

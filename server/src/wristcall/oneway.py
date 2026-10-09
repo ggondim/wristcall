@@ -2,22 +2,22 @@
 
 While the call is open, speech is cut into segments (a monologue at pauses or at the turn limit; a one-shot is
 a single segment) and each is transcribed in the background. At hang-up the last segment is kept, however
-short, the texts are joined in order and delivered (delivery.py). The call record tells the client how it went.
+short, the texts are joined in order and delivered (delivery.py). The call's history record (history.CallLog) tells
+the client how it went and keeps the transcript.
 """
 
 import asyncio
 import logging
-import secrets
 import time
 from collections.abc import Awaitable, Callable, Coroutine
-from dataclasses import replace
 from typing import Any
 
 from .agents import Agent, OneWayProviders
 from .audio import FRAME_BYTES_IN, FRAME_MS, SAMPLE_RATE_IN, FrameAssembler, pcm16_to_wav
 from .delivery import DeliveryPolicy, deliver, payload
+from .history import CallLog, new_call_id
 from .providers import ProviderError
-from .storage import CallRecord, Storage
+from .storage import CallRecord
 from .turn import TurnMachine
 from .vad import Vad
 
@@ -25,9 +25,7 @@ log = logging.getLogger("wristcall.oneway")
 
 STT_TRIES = 2
 
-
-def new_call_id() -> str:
-    return f"c_{secrets.token_hex(8)}"
+__all__ = ["Background", "OneWayCall", "new_call_id"]
 
 
 class OneWayCall:
@@ -36,8 +34,7 @@ class OneWayCall:
         agent: Agent,
         providers: OneWayProviders,
         vad: Vad,
-        record: CallRecord,
-        storage: Storage,
+        call_log: CallLog,
         *,
         max_call_ms: int,
         policy: DeliveryPolicy = DeliveryPolicy(),
@@ -45,9 +42,8 @@ class OneWayCall:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self.agent = agent
-        self.record = record
+        self._log = call_log
         self._providers = providers
-        self._storage = storage
         self._policy = policy
         self._now = now
         self._sleep = sleep
@@ -69,6 +65,11 @@ class OneWayCall:
         self._captured = False
         self._stt_lock = asyncio.Lock()
         self._segments: list[asyncio.Task[str | None]] = []
+        self.text: str | None = None  # the transcript, once known (also kept in the history)
+
+    @property
+    def record(self) -> CallRecord:
+        return self._log.record
 
     @property
     def captured(self) -> bool:
@@ -127,16 +128,20 @@ class OneWayCall:
         if not self._captured:
             self._stop()
         ended = self._now()
-        await self._save(status="processing", ended_at=ended)
+        await self._log.save(status="processing", ended_at=ended)
         try:
             texts = await asyncio.gather(*self._segments)
             text = " ".join(t.strip() for t in texts if t and t.strip())
             if any(t is None for t in texts):
-                return await self._save(status="failed", error="stt_failed", text=text or None, finished=True)
+                if text:
+                    self.text = text
+                    await self._log.add("user", text, "stt_failed")
+                return await self._log.save(status="failed", error="stt_failed", finished=True)
             if not text:
-                return await self._save(status="empty", finished=True)
-            # Saved before delivering: a server stopped mid-delivery keeps the text.
-            await self._save(text=text)
+                return await self._log.save(status="empty", finished=True)
+            # Recorded before delivering: a server stopped mid-delivery keeps the text.
+            self.text = text
+            await self._log.add("user", text)
             body = payload(
                 call_id=self.record.id,
                 call_type=self.agent.call_type,
@@ -149,7 +154,7 @@ class OneWayCall:
             result = await deliver(
                 self._providers.webhook, body, idempotency_key=self.record.id, policy=self._policy, sleep=self._sleep
             )
-            return await self._save(
+            return await self._log.save(
                 status="delivered" if result.delivered else "failed",
                 error=None if result.delivered else "delivery_failed",
                 attempts=result.attempts,
@@ -159,21 +164,11 @@ class OneWayCall:
         except asyncio.CancelledError:
             for task in self._segments:
                 task.cancel()
-            await self._save(status="failed", error="interrupted", finished=True)
+            await self._log.save(status="failed", error="interrupted", finished=True)
             raise
         except Exception:
             log.exception("call %s: unexpected failure after hang-up", self.record.id)
-            return await self._save(status="failed", error="internal", finished=True)
-
-    async def _save(self, *, finished: bool = False, **fields: Any) -> CallRecord:
-        now = self._now()
-        self.record = replace(self.record, **fields, updated_at=now, **({"finished_at": now} if finished else {}))
-        try:
-            return await self._storage.calls.save(self.record)
-        except KeyError:
-            # The user was deleted meanwhile (their calls go with them): nothing left to update.
-            log.info("call %s: gone while processing", self.record.id)
-            return self.record
+            return await self._log.save(status="failed", error="internal", finished=True)
 
 
 class Background:
@@ -196,20 +191,3 @@ class Background:
         for task in list(self._tasks):
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
-
-
-def call_view(r: CallRecord) -> dict[str, Any]:
-    """`GET /v1/calls/{id}`: what the client shows after hanging up (ring → check or error)."""
-    return {
-        "id": r.id,
-        "agent_id": r.agent_id,
-        "call_type": r.call_type,
-        "status": r.status,
-        "error": r.error,
-        "text": r.text,
-        "attempts": r.attempts,
-        "last_http_status": r.last_http_status,
-        "created_at": r.created_at,
-        "ended_at": r.ended_at,
-        "finished_at": r.finished_at,
-    }
