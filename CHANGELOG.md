@@ -9,9 +9,11 @@ Needs server 0.3.0 or later for agents and turn modes and 0.4.0 or later for one
 ### Watch app
 
 - Several servers: pair more than one (Settings > Servers > Add server), remove them one by one. A watch paired with 0.1.0 keeps its server (the Keychain item is migrated). A server that is down does not stop the others, and a revoked one is removed on its own.
-- Agent grid: Home shows the agents of every server with their icons; tap to call, long press for the call options.
+- Agent grid: Home shows the agents of every server with their icons; tap to call, long press or the "…" in the toolbar for the call options. Messages show above the grid.
 - One-way agents (one-shot, monologue): "Recording" screen with "Send", then a progress ring, a check or the failure reason, and the transcribed text. The watch polls `GET /v1/calls/{id}` while the app is open, for up to 3 minutes ("Check again" after that); push comes later.
-- "Call <agent>" complication, control and shortcut for a chosen agent; the 0.1.0 ones still call the first agent. They read the agent list from an App Group, which Xcode must register on the first build for your watch (see [watch/README.md](watch/README.md)).
+- "Call <agent>" complication, control and shortcut for a chosen agent; with no agent chosen yet the new complication and control only open the app, and one whose agent was deleted says "Agent not found." The 0.1.0 ones still call the first agent, which is now the first agent of the first server: with that server down the watch says so and calls nobody. Redialing from the system's call history calls the agent with that name only when the name is unique.
+- The new items read the agent list from an App Group, which is required to install: Xcode must register it on the first build for your watch, or signing fails (fallback without the new items in [watch/README.md](watch/README.md)).
+- "Send" on a one-way call before it connects says "Nothing was sent."; a malformed agent in `GET /v1/me` is skipped instead of making the whole server unreachable.
 - Debug launch arguments `-autoCallAgent`, `-showOptions`, `-addServer` and `-openURL` for the simulator.
 - `WristcallKit`: agents and call types, `call_id` and `call.captured`, the call status client and poller, and the list of servers.
 

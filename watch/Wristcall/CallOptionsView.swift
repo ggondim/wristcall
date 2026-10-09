@@ -1,11 +1,12 @@
 import SwiftUI
 import WristcallKit
 
-/// The options of one agent, behind a long press on the grid: how the call ends the user's turn
-/// (a conversation agent), or just "Call" (a one-way agent has no turn to end). One section per kind
-/// of option, so later ones (other profiles, contacts) are new sections. Starting a call switches
-/// `RootView` to the call screen, which drops this navigation stack; the call ends on Home. A call
-/// that does not start (no connection) leaves this screen up, with the model's message below.
+/// The options of one agent, behind a long press on the grid or the "…" on Home: how the call ends
+/// the user's turn (a conversation agent), or just "Call" (a one-way agent has no turn to end). One
+/// section per kind of option, so later ones (other profiles, contacts) are new sections. Starting a
+/// call switches `RootView` to the call screen, which drops this navigation stack; the call ends on
+/// Home. A call that does not start (no connection) leaves this screen up, with the model's message
+/// below.
 struct CallOptionsView: View {
     let model: AppModel
     let target: AgentTarget

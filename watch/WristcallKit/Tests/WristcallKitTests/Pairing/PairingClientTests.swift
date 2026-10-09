@@ -221,6 +221,30 @@ struct PairingClientTests {
         #expect(info.profiles == [Profile(name: "note", displayName: "Note")])
     }
 
+    /// One agent a newer server sends without a required field does not take the whole server down.
+    @Test func meDropsAMalformedAgentAndKeepsTheOthers() async throws {
+        let server = StubHost(replies: [(200, """
+            {"device_id":"dev-1","device_name":"Apple Watch",
+             "agents":[{"id":"ag_1","slug":"default","display_name":"Agent"},
+                       {"id":"ag_2","slug":"broken","display_name":null},
+                       {"slug":"no-id","display_name":"No id"},
+                       {"id":"ag_3","slug":"note","display_name":"Note","call_type":"one-shot"}]}
+            """)])
+        let info = try await client().me(server: server.url, token: "secret-token")
+        #expect(info.agents == [
+            Agent(id: "ag_1", slug: "default", displayName: "Agent"),
+            Agent(id: "ag_3", slug: "note", displayName: "Note", callType: .oneShot),
+        ])
+        #expect(info.profiles == [Profile(name: "default", displayName: "Agent"), Profile(name: "note", displayName: "Note")])
+    }
+
+    @Test func meWithAgentsThatIsNotAListIsMalformed() async throws {
+        let server = StubHost(replies: [(200, #"{"device_id":"dev-1","device_name":"Apple Watch","agents":{}}"#)])
+        await #expect(throws: PairingError.malformedResponse) {
+            try await client().me(server: server.url, token: "secret-token")
+        }
+    }
+
     @Test func meWithNeitherAgentsNorProfilesIsMalformed() async throws {
         let server = StubHost(replies: [(200, #"{"device_id":"dev-1","device_name":"Apple Watch"}"#)])
         await #expect(throws: PairingError.malformedResponse) {

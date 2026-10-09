@@ -16,6 +16,13 @@ struct ShortcutLinkTests {
         #expect(!ShortcutLink.isCall(URL(string: "wristcall:call")!))
     }
 
+    /// What a complication with no agent chosen opens (decision W20): the app, never a call.
+    @Test func theOpenLinkIsNotACall() {
+        #expect(ShortcutLink.open.absoluteString == "wristcall://open")
+        #expect(ShortcutLink.open.scheme == ShortcutLink.scheme)
+        #expect(!ShortcutLink.isCall(ShortcutLink.open))
+    }
+
     @Test func theLinkWithoutAgentIsTheOldOne() {
         #expect(ShortcutLink.call(agent: nil) == ShortcutLink.call)
         #expect(ShortcutLink.agent(in: ShortcutLink.call) == nil)

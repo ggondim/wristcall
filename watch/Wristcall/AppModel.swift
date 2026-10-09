@@ -95,6 +95,7 @@ final class AppModel {
         static let noConnection = "No connection"
         static let agentNotFound = "Agent not found."
         static let unsupportedAgent = "Update Wristcall to call this agent."
+        static let nothingSent = "Nothing was sent."
 
         static func removed(_ host: String) -> String { "\(host): this watch was removed on the server." }
         static func cantReach(_ host: String) -> String { "Can't reach \(host)." }
@@ -171,8 +172,24 @@ final class AppModel {
     var hasServers: Bool { !servers.isEmpty }
     /// Some server has not answered `GET /v1/me` yet.
     var isLoadingServers: Bool { servers.contains { $0.status == .loading } }
+    /// The agents this build can call (decision W7), in grid order: what the "…" on Home offers.
+    var callableAgents: [AgentTarget] { agents.filter { $0.agent.callType.isSupported } }
     var canCall: Bool {
-        phase == .home && agents.contains { $0.agent.callType.isSupported }
+        phase == .home && !callableAgents.isEmpty
+    }
+
+    /// The server `request` needs has not answered yet: the one of its agent, the first server when
+    /// it names none (decision W17), or any server for a redial by name (the name must be unique).
+    /// A shortcut waits only for that one, so a server that hangs does not hold up the others.
+    func isLoadingServer(for request: PendingCall) -> Bool {
+        if request.agentName != nil { return isLoadingServers }
+        let entry: ServerEntry?
+        if let ref = request.agent {
+            entry = AgentRef(ref).flatMap { ref in servers.first { $0.id == ref.serverID } }
+        } else {
+            entry = servers.first
+        }
+        return entry?.status == .loading
     }
     /// A pairing request is running.
     var isBusy: Bool { pairingTask != nil }
@@ -563,13 +580,19 @@ final class AppModel {
         callHandler?.startCall(request)
     }
 
-    /// A shortcut, the complication, the control or the system's redial. `ref` is the text of an
-    /// `AgentRef`; `nil` calls the first agent this build can call. An agent that is gone never
-    /// turns into a call to another one (decision W4).
+    /// A shortcut, the complication or the control. `ref` is the text of an `AgentRef`; `nil` calls
+    /// the first agent this build can call on the first server (decision W17): with that server down
+    /// or still loading, it says so and calls nothing, never an agent of the next server. An agent
+    /// that is gone never turns into a call to another one (decision W4).
     func startCall(agent ref: String? = nil, turnEnd: TurnEnd? = nil) {
         guard phase == .home else { return }
         guard let ref else {
-            if let first = agents.first(where: { $0.agent.callType.isSupported }) {
+            guard let entry = servers.first else { return }
+            guard entry.isReady else {
+                message = Message.cantReach(entry.host)
+                return
+            }
+            if let first = entry.agents.first(where: { $0.agent.callType.isSupported }) {
                 startCall(first, turnEnd: turnEnd)
             }
             return
@@ -588,6 +611,23 @@ final class AppModel {
             return
         }
         startCall(target, turnEnd: turnEnd)
+    }
+
+    /// The system's redial (decision W19). Its CallKit handle is the agent's display name, so only
+    /// the one agent with exactly that name is called; a name no agent or several agents have says
+    /// "Agent not found." (never a guess). An empty handle calls the first agent, as 0.1.0 did.
+    func startCall(redialing name: String) {
+        guard phase == .home else { return }
+        guard !name.isEmpty else {
+            startCall(agent: nil)
+            return
+        }
+        let named = agents.filter { $0.agent.displayName == name }
+        guard named.count == 1, let target = named.first else {
+            message = Message.agentNotFound
+            return
+        }
+        startCall(target)
     }
 
     /// The "End" button on the call screen.
@@ -625,7 +665,8 @@ final class AppModel {
         case .serverFatal(nil):
             message = "Call failed."
         case .normal:
-            message = nil
+            // A one-way call ended before `session.ready` (no call id): nothing was recorded.
+            message = activeCall?.target.agent.callType.isOneWay == true ? Message.nothingSent : nil
         }
         returnHome()
     }
@@ -651,12 +692,12 @@ final class AppModel {
 
     // MARK: - Result of a one-way call
 
-    /// "Done" on the result screen: stops asking and goes back to the grid.
+    /// "Done" on the result screen: stops asking and goes back to the grid. A message set while the
+    /// screen was up (the server was removed by a `401`) stays: it says why the grid changed.
     func dismissResult() {
         guard phase == .callResult else { return }
         callResult?.stop()
         callResult = nil
-        message = nil
         returnHome()
     }
 

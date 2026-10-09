@@ -757,6 +757,29 @@ struct AppModelTests {
         #expect(handler.started.map(\.target) == [target(assistant, on: first)])
     }
 
+    /// Decision W17: without an agent, the first server's first agent; never one of the second server.
+    @Test func startCallWithoutAnAgentCallsTheFirstServersFirstAgent() async throws {
+        let model = try await makeModelWithTwoServers()
+        let handler = StubCallHandler()
+        model.callHandler = handler
+
+        model.startCall(agent: nil)
+
+        #expect(handler.started.map(\.target) == [target(assistant, on: first)])
+    }
+
+    /// The "…" on Home lists only the agents this build can call (decision W18).
+    @Test func callableAgentsLeaveOutTypesThisBuildDoesNotKnow() async throws {
+        let video = Agent(id: "ag_0", slug: "video", displayName: "Video", callType: .unknown("video"))
+        try store.save([first])
+        pairing.meResults = [.success(DeviceInfo(
+            deviceId: "dev-1", deviceName: "Apple Watch", user: nil, agents: [video, assistant, notes]))]
+        let model = makeModel()
+        await model.launch()
+
+        #expect(model.callableAgents == [target(assistant, on: first), target(notes, on: first)])
+    }
+
     @Test func startCallWithAnAgentRefCallsThatAgent() async throws {
         let model = try await makeModelWithTwoServers()
         let handler = StubCallHandler()
@@ -963,8 +986,20 @@ struct AppModelTests {
 
         #expect(model.phase == .home)
         #expect(model.callResult == nil)
-        #expect(model.message == (reason == .normal ? nil : "Connection lost"))
+        #expect(model.message == (reason == .normal ? "Nothing was sent." : "Connection lost"))
         #expect(pairing.callStatusCount == 0)
+    }
+
+    /// "Send" while still "Connecting…": the user spoke, but the server never started recording.
+    @Test func oneWaySendBeforeReadyTellsNothingWasSent() async throws {
+        let model = try await makeModelInAOneWayCall()
+        model.endCall()
+        // What the coordinator reports for a hang-up before `session.ready`: no call id.
+        model.callDidEnd(.normal, callID: nil)
+
+        #expect(model.phase == .home)
+        #expect(model.callResult == nil)
+        #expect(model.message == "Nothing was sent.")
     }
 
     @Test func oneWayCallEndedByAServerErrorGoesHome() async throws {
@@ -1058,6 +1093,8 @@ struct AppModelTests {
 
         model.dismissResult()
         #expect(model.phase == .home)
+        // "Done" keeps saying why the server's agents are gone from the grid.
+        #expect(model.message == "agent.example.com: this watch was removed on the server.")
     }
 
     @Test func resultUnauthorizedOnTheLastServerGoesToPairingOnDone() async throws {

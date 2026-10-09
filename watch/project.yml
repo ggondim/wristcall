@@ -72,8 +72,9 @@ targets:
     deploymentTarget: "26.0"
     sources:
       - WristcallWidgets
-      # The controls run this intent; the app compiles it too, so the system runs it in the app.
+      # The controls run these intents; the app compiles them too, so the system runs them in the app.
       - path: Wristcall/Intents/StartCallIntent.swift
+      - path: Wristcall/Intents/OpenWristcallIntent.swift
       # The agent parameter of the intent, the complication and the control, read from the App Group.
       - path: Wristcall/Intents/AgentEntity.swift
       - path: Wristcall/AgentIcon.swift

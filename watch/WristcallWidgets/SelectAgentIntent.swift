@@ -24,17 +24,20 @@ struct SelectAgentControlIntent: ControlConfigurationIntent {
 }
 
 /// The agent a complication or control was configured with, as the catalog has it now: a new name
-/// or icon shows up after the app reloads them. An agent that left the catalog keeps the name it
-/// was configured with and its id, so tapping it says "Agent not found." instead of calling another.
+/// or icon shows up after the app reloads them. An agent that left the catalog comes back from
+/// `AgentQuery` as `AgentEntity.gone(id:)` ("Agent not found", a question mark) with its id, so
+/// tapping it says "Agent not found." instead of calling another (decision W20).
 struct ConfiguredAgent {
-    /// `nil` before the person picks one (gallery, placeholder): the plain link, first agent.
+    /// `nil` before the person picks one (gallery, placeholder): "Choose agent", which only opens
+    /// the app.
     let entity: AgentEntity?
     let name: String
     let symbol: String
 
-    static let placeholder = ConfiguredAgent(entity: nil, name: "Call agent", symbol: "phone.fill")
+    static let unconfigured = ConfiguredAgent(entity: nil, name: "Choose agent", symbol: "phone.fill")
 
-    var id: String? { entity?.id }
+    /// What the complication opens: a call to this agent, or only the app.
+    var link: URL { AgentEntity.link(for: entity) }
 
     init(entity: AgentEntity?, name: String, symbol: String) {
         self.entity = entity
@@ -44,7 +47,7 @@ struct ConfiguredAgent {
 
     init(_ entity: AgentEntity?, catalog: [CatalogAgent]) {
         guard let entity else {
-            self = .placeholder
+            self = .unconfigured
             return
         }
         let current = catalog.first { $0.id == entity.id }

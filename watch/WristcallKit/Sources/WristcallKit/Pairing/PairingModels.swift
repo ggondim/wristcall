@@ -87,7 +87,9 @@ public struct DeviceInfo: Sendable, Equatable, Decodable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let deviceId = try container.decode(String.self, forKey: .deviceId)
         let deviceName = try container.decode(String.self, forKey: .deviceName)
-        let agents = try container.decodeIfPresent([Agent].self, forKey: .agents)
+        // One agent a newer server lists without a required field is dropped, not the whole server.
+        let agents = try container.decodeIfPresent([DroppingInvalid<Agent>].self, forKey: .agents)?
+            .compactMap(\.value)
         let profiles = try container.decodeIfPresent([Profile].self, forKey: .profiles)
         if let agents {
             self.init(deviceId: deviceId, deviceName: deviceName, user: try container.decodeIfPresent(UserInfo.self, forKey: .user), agents: agents)
@@ -100,6 +102,15 @@ public struct DeviceInfo: Sendable, Equatable, Decodable {
         } else {
             throw DecodingError.keyNotFound(CodingKeys.profiles, .init(codingPath: decoder.codingPath, debugDescription: "neither agents nor profiles"))
         }
+    }
+}
+
+/// One element of a list that decodes to `nil` instead of failing the whole list.
+private struct DroppingInvalid<Value: Decodable>: Decodable {
+    let value: Value?
+
+    init(from decoder: any Decoder) throws {
+        value = try? Value(from: decoder)
     }
 }
 

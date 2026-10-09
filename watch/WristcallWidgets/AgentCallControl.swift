@@ -4,14 +4,14 @@ import WidgetKit
 import WristcallKit
 
 /// A Control Center button for one agent, chosen by the person when adding it. It runs
-/// `StartCallIntent(agent:)` in the app, like `CallControl`. A new `kind`, so the static control
-/// already in Control Center stays (decision W12).
+/// `OpenWristcallIntent(agent:)` in the app: a call to that agent, or with none chosen only the app
+/// (decision W20). A new `kind`, so the static control already in Control Center stays (decision W12).
 struct AgentCallControl: ControlWidget {
     static let kind = "io.github.ggondim.wristcall.agent-control"
 
     var body: some ControlWidgetConfiguration {
         AppIntentControlConfiguration(kind: Self.kind, provider: AgentControlProvider()) { agent in
-            ControlWidgetButton(action: StartCallIntent(agent: agent.entity)) {
+            ControlWidgetButton(action: OpenWristcallIntent(agent: agent.entity)) {
                 Label(agent.name, systemImage: agent.symbol)
             }
         }

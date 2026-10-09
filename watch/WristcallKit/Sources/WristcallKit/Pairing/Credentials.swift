@@ -4,7 +4,8 @@ import Synchronization
 /// What the watch keeps after pairing: where the server is and how to authenticate.
 public struct Credentials: Codable, Sendable, Equatable {
     /// Local id of this server on this watch (not the device id): it names the server in `AgentRef`s
-    /// and widget configuration, and survives the server being re-paired under another URL.
+    /// and widget configuration. Pairing the same URL and account again keeps it (decision W2); a
+    /// server paired under another URL is a new entry with a new id.
     public var id: String
     public var serverURL: URL
     public var deviceId: String

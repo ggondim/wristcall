@@ -1,4 +1,5 @@
 import Foundation
+import Intents
 import Testing
 import WristcallKit
 @testable import Wristcall
@@ -16,6 +17,11 @@ struct ShortcutCallsTests {
         Agent(id: "ag_2", slug: "notes", displayName: "Notes", callType: .oneShot),
     ])
     let server = URL(string: "https://agent.example.com")!
+    let home = URL(string: "https://home.example.com")!
+    let homeInfo = DeviceInfo(deviceId: "dev-9", deviceName: "Apple Watch", user: nil, agents: [
+        Agent(id: "ag_9", slug: "house", displayName: "House"),
+        Agent(id: "ag_8", slug: "notes", displayName: "Notes", callType: .monologue),
+    ])
 
     var pending: PendingCallStore { PendingCallStore(defaults: defaults, notificationCenter: center) }
 
@@ -24,6 +30,20 @@ struct ShortcutCallsTests {
             try store.save([Credentials(serverURL: server, deviceId: "dev-1", token: "t", id: "srv-1")])
             pairing.meResults = [.success(info)]
         }
+        let model = AppModel(
+            pairing: pairing, store: store, defaults: defaults, sleep: { _ in }, resultPoller: clock.poller)
+        model.callHandler = handler
+        return model
+    }
+
+    /// `server` (srv-1, answers `first`, else `info`) and `home` (srv-2, answers `homeInfo`).
+    func makeModelWithTwoServers(first: Result<DeviceInfo, PairingError>? = nil) throws -> AppModel {
+        try store.save([
+            Credentials(serverURL: server, deviceId: "dev-1", token: "t", id: "srv-1"),
+            Credentials(serverURL: home, deviceId: "dev-9", token: "h", id: "srv-2"),
+        ])
+        pairing.setMeResults([first ?? .success(info)], for: server)
+        pairing.setMeResults([.success(homeInfo)], for: home)
         let model = AppModel(
             pairing: pairing, store: store, defaults: defaults, sleep: { _ in }, resultPoller: clock.poller)
         model.callHandler = handler
@@ -67,6 +87,131 @@ struct ShortcutCallsTests {
         #expect(model.phase == .home)
         #expect(model.message == AppModel.Message.agentNotFound)
         #expect(!pending.isPending)
+    }
+
+    /// Review Focus 4 / decision W20, the whole widget path: the configured agent is gone, the query
+    /// keeps its id, the complication's link carries it, and the app says so instead of calling.
+    @Test func aComplicationOfAnAgentThatIsGoneDoesNotCall() async throws {
+        let model = try makeModel(paired: true)
+        await model.launch()
+        let catalog = AgentCatalog(defaults: defaults)
+        catalog.save(model.agents.map(\.catalogEntry))
+        let configured = try await AgentQuery(catalog: catalog).entities(for: ["srv-1/ag_404"])
+
+        #expect(ShortcutCalls.request(from: AgentEntity.link(for: configured.first), store: pending))
+        await ShortcutCalls(store: pending, model: model).check()
+
+        #expect(handler.started.isEmpty)
+        #expect(model.phase == .home)
+        #expect(model.message == AppModel.Message.agentNotFound)
+    }
+
+    /// Decision W20: a new complication with no agent chosen only opens the app.
+    @Test func theOpenLinkAsksForNoCall() async throws {
+        #expect(!ShortcutCalls.request(from: AgentEntity.link(for: nil), store: pending))
+        #expect(!pending.isPending)
+    }
+
+    /// Review Focus 2 / decision W17: a request waits only for the server it needs.
+    @Test func requestForAReadyServerDoesNotWaitForAnotherLoading() async throws {
+        let model = try makeModelWithTwoServers()
+        let slow = pairing.holdMe(for: home)
+        let launch = Task { await model.launch() }
+        await waitUntil { model.servers.first?.isReady == true }
+        pending.request(agent: "srv-1/ag_2")
+        let started = ContinuousClock.now
+
+        await ShortcutCalls(store: pending, model: model, launchWait: .seconds(10)).check()
+
+        #expect(ContinuousClock.now - started < .seconds(2))
+        #expect(model.isLoadingServers)
+        #expect(handler.started.map(\.target.id) == ["srv-1/ag_2"])
+        slow.open()
+        await launch.value
+    }
+
+    /// Decision W17: "the first agent" is the first server's; with that server down nothing is called.
+    @Test func firstAgentNeverComesFromTheSecondServerWhileTheFirstIsDown() async throws {
+        let model = try makeModelWithTwoServers(first: .failure(.network(.notConnectedToInternet)))
+        await model.launch()
+        try #require(model.agents.map(\.id) == ["srv-2/ag_9", "srv-2/ag_8"])
+        pending.request()
+
+        await ShortcutCalls(store: pending, model: model).check()
+
+        #expect(handler.started.isEmpty)
+        #expect(model.phase == .home)
+        #expect(model.message == "Can't reach agent.example.com.")
+        #expect(!pending.isPending)
+    }
+
+    /// The first server still loading when the wait runs out counts as down, too.
+    @Test func firstAgentWaitsOnlyForTheFirstServerAndThenGivesUp() async throws {
+        let model = try makeModelWithTwoServers()
+        let slow = pairing.holdMe(for: server)
+        let launch = Task { await model.launch() }
+        await waitUntil { model.servers.last?.isReady == true }
+        pending.request()
+
+        await ShortcutCalls(store: pending, model: model, launchWait: .milliseconds(100)).check()
+
+        #expect(handler.started.isEmpty)
+        #expect(model.message == "Can't reach agent.example.com.")
+        slow.open()
+        await launch.value
+    }
+
+    // MARK: - The system's redial (decision W19)
+
+    @Test func redialCallsTheOnlyAgentWithThatName() async throws {
+        let model = try makeModelWithTwoServers()
+        await model.launch()
+        pending.request(agentNamed: "House")
+
+        await ShortcutCalls(store: pending, model: model).check()
+
+        #expect(handler.started.map(\.target.id) == ["srv-2/ag_9"])
+    }
+
+    /// Two agents named "Notes", or none named "Nobody": never a guess.
+    @Test(arguments: ["Notes", "Nobody", "house"])
+    func redialOfADuplicateOrUnknownNameDoesNotCall(name: String) async throws {
+        let model = try makeModelWithTwoServers()
+        await model.launch()
+        pending.request(agentNamed: name)
+
+        await ShortcutCalls(store: pending, model: model).check()
+
+        #expect(handler.started.isEmpty)
+        #expect(model.phase == .home)
+        #expect(model.message == AppModel.Message.agentNotFound)
+        #expect(!pending.isPending)
+    }
+
+    /// The CallKit handle is the agent's name; an intent without one redials like the old complication.
+    @Test func redialRecordsTheHandleOfTheFirstContact() throws {
+        func intent(_ handles: [String?]) -> INStartCallIntent {
+            INStartCallIntent(
+                callRecordFilter: nil, callRecordToCallBack: nil, audioRoute: .unknown, destinationType: .normal,
+                contacts: handles.map { handle in
+                    INPerson(
+                        personHandle: INPersonHandle(value: handle, type: .unknown), nameComponents: nil,
+                        displayName: nil, image: nil, contactIdentifier: nil, customIdentifier: nil)
+                },
+                callCapability: .audioCall)
+        }
+
+        ShortcutCalls.requestRedial(of: intent(["Notes", "House"]), store: pending)
+        #expect(pending.consume() == PendingCall(agentName: "Notes"))
+
+        ShortcutCalls.requestRedial(of: intent([" "]), store: pending)
+        #expect(pending.consume() == PendingCall())
+
+        ShortcutCalls.requestRedial(of: intent([nil]), store: pending)
+        #expect(pending.consume() == PendingCall())
+
+        ShortcutCalls.requestRedial(of: nil, store: pending)
+        #expect(pending.consume() == PendingCall())
     }
 
     /// The result screen of a one-way call does not swallow the request: it closes and the call starts.
@@ -178,6 +323,18 @@ struct ShortcutCallsTests {
 
         #expect(handler.started.count == 1)
         #expect(!pending.isPending)
+    }
+
+    /// Decision W20: the agent control with no agent opens the app and asks for no call.
+    @Test func theOpenIntentWithoutAnAgentAsksForNoCall() async throws {
+        #expect(OpenWristcallIntent.supportedModes == .foreground(.immediate))
+        #expect(OpenWristcallIntent().agent == nil)
+        let standard = PendingCallStore()
+        let wasPending = standard.isPending
+
+        _ = try await OpenWristcallIntent().perform()
+
+        #expect(standard.isPending == wasPending)
     }
 
     @Test func theIntentRunsInTheAppInTheForeground() {

@@ -30,10 +30,24 @@ struct AgentEntity: AppEntity {
     init(_ agent: CatalogAgent) {
         self.init(id: agent.id, displayName: agent.displayName, icon: agent.icon, serverHost: agent.serverHost)
     }
+
+    /// Stands in for an agent that left the catalog (deleted, or its server removed): same id, so a
+    /// complication or control configured for it still names it and the app says "Agent not found."
+    static func gone(id: String) -> AgentEntity {
+        AgentEntity(id: id, displayName: "Agent not found", icon: "questionmark", serverHost: "")
+    }
+
+    /// What a configurable complication opens: a call to `entity`, or only the app when no agent
+    /// was chosen yet (decision W20), never a call to the first agent.
+    static func link(for entity: AgentEntity?) -> URL {
+        entity.map { ShortcutLink.call(agent: $0.id) } ?? ShortcutLink.open
+    }
 }
 
 /// Reads the agents from the shared catalog. An id that is no longer there (agent deleted, server
-/// removed) resolves to nothing, so a complication pointing to it never turns into another agent.
+/// removed) resolves to `AgentEntity.gone(id:)`: the system rebuilds a configured parameter only from
+/// what this returns, so leaving it out would hand the complication or control `nil`, the link of the
+/// first agent (decision W4). Suggestions list only the catalog.
 struct AgentQuery: EntityQuery {
     private let catalog: AgentCatalog
 
@@ -47,7 +61,10 @@ struct AgentQuery: EntityQuery {
 
     func entities(for identifiers: [AgentEntity.ID]) async throws -> [AgentEntity] {
         let agents = Dictionary(catalog.load().map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        return identifiers.compactMap { agents[$0].map(AgentEntity.init) }
+        return identifiers.compactMap { id in
+            if let agent = agents[id] { return AgentEntity(agent) }
+            return AgentRef(id) == nil ? nil : .gone(id: id)
+        }
     }
 
     func suggestedEntities() async throws -> [AgentEntity] {

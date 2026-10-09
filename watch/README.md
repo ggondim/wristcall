@@ -95,11 +95,14 @@ launch arguments:
   Removing a server forgets its token on the watch and tries to revoke it on the server (if the server is out of reach, revoke the watch there). A watch paired with 0.1.0 keeps
   its server when it updates.
 - **Agent grid.** Home shows the agents of every server, two per row, in each server's order. Tap an agent to
-  call it; long press opens its call options (end of turn, auto or manual, for conversations). A server that is
+  call it; long press opens its call options (end of turn, auto or manual, for conversations). The "…" button in
+  the toolbar opens the same options: directly for the only callable agent, or a list of agents to pick from.
+  Messages ("No connection", "Agent not found.") show at the top, above the grid. A server that is
   loading or out of reach shows as a row of its own with "Retry", and the agents of the other servers stay
   callable. A server that rejects the token (revoked) is removed on its own.
 - **Call types.** A conversation agent works as before (CallKit call screen, mute from the system). A one-shot or
-  monologue agent uses the same call but the screen says "Recording" ("Paused" while muted) and "Send" ends it.
+  monologue agent uses the same call but the screen says "Recording" ("Paused" while muted) and "Send" ends it
+  ("Send" while still "Connecting…" records nothing and Home says "Nothing was sent.").
   The server then transcribes and delivers the text, and the watch shows a progress ring while it works, then a
   check ("Delivered") or a cross with the reason, plus the text.
 - **Results are polled while the app is open.** The watch asks the server about the call (`GET /v1/calls/{id}`)
@@ -112,14 +115,20 @@ launch arguments:
 ## Complications, controls and shortcuts
 
 The "Call <agent>" complication, control and shortcut (watchOS 26) call the agent you picked when setting them up.
-The 0.1.0 complication, control and "Call agent" shortcut stay as they were and call the first agent. An agent that
-no longer exists (server removed, agent deleted) never turns into a call to another one.
+Until you pick one, the new complication says "Choose agent" and the new control only opens the app. The 0.1.0
+complication, control and "Call agent" shortcut stay as they were and call the first agent: the first agent of the
+first server in Settings > Servers. If that server is out of reach the watch says "Can't reach <host>." and calls
+nobody, never an agent of the next server. An agent that no longer exists (server removed, agent deleted) never
+turns into a call to another one: the item shows "Agent not found" and tapping it says so. Redialing a call from
+the system's call history calls the agent with that name only when no other agent has the same name.
 
 They read the list of agents from an App Group (`group.<BUNDLE_ID_PREFIX>.wristcall`, names and icons only, never
-a token) shared by the app and the widgets extension. On the first build for your watch, Xcode's automatic
-signing must register this group for the app and for the widgets extension in your team: open the project, select
-each target > Signing & Capabilities and check that "App Groups" shows the group without errors, then build again.
-Without it the new items see no agents and only the old complication and control work.
+a token) shared by the app and the widgets extension. The group is required to install: on the first build for
+your watch, Xcode's automatic signing must register it for the app and for the widgets extension in your team.
+Open the project, select each target > Signing & Capabilities and check that "App Groups" shows the group without
+errors, then build again. If Xcode cannot register it, signing fails and nothing installs; as a fallback, remove
+the two `CODE_SIGN_ENTITLEMENTS` lines from `project.yml`, run `make generate` and install without the new
+complications and controls (the 0.1.0 ones keep working).
 
 ## Install on your watch with a free Apple ID
 

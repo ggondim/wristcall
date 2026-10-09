@@ -7,8 +7,8 @@ public struct CatalogAgent: Codable, Sendable, Hashable, Identifiable {
     public var slug: String
     public var displayName: String
     public var icon: String
-    /// The `call_type` of the wire (`"conversation"`, `"one_way"`), not the `CallType` enum, so a
-    /// type this build does not know survives a round trip.
+    /// The `call_type` of the wire (`"conversation"`, `"one-shot"`, `"monologue"`), not the
+    /// `CallType` enum, so a type this build does not know survives a round trip.
     public var callType: String
     public var serverHost: String
 

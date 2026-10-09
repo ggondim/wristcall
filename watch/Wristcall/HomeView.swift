@@ -1,9 +1,10 @@
 import SwiftUI
 import WristcallKit
 
-/// Home: the agents of every server in a two-column grid (a tap calls with the agent's own mode, a
-/// long press opens its call options), a row for each server still loading or down, and the last
-/// message. The "…" call options of 0.1.0 became that long press.
+/// Home: the last message, a row for each server still loading or down, and the agents of every
+/// server in a two-column grid (a tap calls with the agent's own mode, a long press opens its call
+/// options). The "…" of 0.1.0 stays in the toolbar (decision W18): the options of the only callable
+/// agent, or a list of agents leading to theirs.
 struct HomeView: View {
     let model: AppModel
     /// The agent whose call options are open.
@@ -15,6 +16,13 @@ struct HomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 8) {
+                    // First, so it shows without scrolling past the grid (a tap that did not call says why).
+                    if let message = model.message {
+                        Text(message)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
                     ForEach(model.servers.filter { !$0.isReady }) { entry in
                         ServerStatusRow(model: model, entry: entry)
                     }
@@ -38,16 +46,24 @@ struct HomeView: View {
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                     }
-                    if let message = model.message {
-                        Text(message)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
                 }
             }
             .navigationTitle("Wristcall")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    NavigationLink {
+                        let callable = model.callableAgents
+                        if callable.count == 1, let target = callable.first {
+                            CallOptionsView(model: model, target: target)
+                        } else {
+                            AgentOptionsList(model: model)
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                    }
+                    .disabled(!model.canCall)
+                    .accessibilityLabel("Call options")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink {
                         SettingsView(model: model)
@@ -82,6 +98,33 @@ struct HomeView: View {
         } else {
             model.startCall(target)
         }
+    }
+}
+
+/// The "…" with several callable agents: each one leads to its call options.
+private struct AgentOptionsList: View {
+    let model: AppModel
+
+    var body: some View {
+        List(model.callableAgents) { target in
+            NavigationLink {
+                CallOptionsView(model: model, target: target)
+            } label: {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(target.agent.displayName)
+                            .lineLimit(2)
+                        Text(target.serverHost)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                } icon: {
+                    AgentIconView(icon: target.agent.icon)
+                }
+            }
+        }
+        .navigationTitle("Call options")
     }
 }
 

@@ -5,6 +5,8 @@ import Foundation
 public enum ShortcutLink {
     public static let scheme = "wristcall"
     public static let call = URL(string: "wristcall://call")!
+    /// Opens the app and asks for nothing: a complication with no agent chosen yet (decision W20).
+    public static let open = URL(string: "wristcall://open")!
 
     /// `wristcall://call?agent=<text>`, with the text of an `AgentRef` percent-escaped; `nil` is the
     /// plain `call` link (first agent).

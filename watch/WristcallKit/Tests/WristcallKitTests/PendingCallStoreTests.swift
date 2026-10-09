@@ -90,6 +90,27 @@ struct PendingCallStoreTests {
         #expect(store.consume()?.agent == "not an agent ref")
     }
 
+    @Test func peekShowsTheFreshRequestWithoutConsumingIt() {
+        #expect(store.peek() == nil)
+        store.request(agent: "srv-1/ag_one")
+        #expect(store.peek() == PendingCall(agent: "srv-1/ag_one"))
+        #expect(store.consume() == PendingCall(agent: "srv-1/ag_one"))
+        store.request()
+        clock.advance(PendingCallStore.maxAge + 1)
+        #expect(store.peek() == nil)
+    }
+
+    /// The system's redial knows the agent only by its name (decision W19).
+    @Test func aRedialCarriesTheAgentNameOnly() {
+        store.request(agent: "srv-1/ag_one")
+        store.request(agentNamed: "Notes")
+        #expect(store.consume() == PendingCall(agentName: "Notes"))
+        store.request(agentNamed: "Notes")
+        store.request(agent: "srv-1/ag_one")
+        #expect(store.consume() == PendingCall(agent: "srv-1/ag_one"))
+        #expect(defaults.string(forKey: PendingCallStore.agentNameDefaultsKey) == nil)
+    }
+
     @Test func aStaleRequestWithAgentIsDroppedAndTheAgentCleared() {
         store.request(agent: "srv-1/ag_one")
         clock.advance(PendingCallStore.maxAge + 1)

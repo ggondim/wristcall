@@ -5,15 +5,16 @@ import WidgetKit
 import WristcallKit
 
 /// A complication for one agent, chosen by the person (watchOS 26 asks when `recommendations()` is
-/// empty). It opens `wristcall://call?agent=<ref>`; the app starts the call. A new `kind`, so the
-/// static `CallComplication` already on faces stays where it is (decision W12).
+/// empty). It opens `wristcall://call?agent=<ref>`; the app starts the call. With no agent chosen
+/// yet it says "Choose agent" and only opens the app (decision W20). A new `kind`, so the static
+/// `CallComplication` already on faces stays where it is (decision W12).
 struct AgentCallComplication: Widget {
     static let kind = "io.github.ggondim.wristcall.agent-complication"
 
     var body: some WidgetConfiguration {
         AppIntentConfiguration(kind: Self.kind, intent: SelectAgentIntent.self, provider: AgentCallProvider()) { entry in
             AgentCallComplicationView(agent: entry.agent)
-                .widgetURL(ShortcutLink.call(agent: entry.agent.id))
+                .widgetURL(entry.agent.link)
                 .containerBackground(.clear, for: .widget)
         }
         .configurationDisplayName("Call an agent")
@@ -37,7 +38,7 @@ struct AgentCallProvider: AppIntentTimelineProvider {
     }
 
     func placeholder(in context: Context) -> AgentCallEntry {
-        AgentCallEntry(date: .now, agent: .placeholder)
+        AgentCallEntry(date: .now, agent: .unconfigured)
     }
 
     func snapshot(for configuration: SelectAgentIntent, in context: Context) async -> AgentCallEntry {

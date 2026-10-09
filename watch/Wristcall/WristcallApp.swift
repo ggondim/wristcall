@@ -1,4 +1,5 @@
 import Combine
+import Intents
 import SwiftUI
 import WatchKit
 import WidgetKit
@@ -62,16 +63,17 @@ struct WristcallApp: App {
                 .onReceive(NotificationCenter.default.publisher(for: PendingCallStore.didRequest)) { _ in
                     Task { await shortcuts.check() }
                 }
-                // The complications open `wristcall://call`, with the agent when one was chosen.
+                // The complications open `wristcall://call`, with the agent when one was chosen;
+                // `wristcall://open` (no agent chosen yet) only brings the app up.
                 .onOpenURL { url in
                     ShortcutCalls.request(from: url, store: PendingCallStore())
                 }
-                // Redial on the system call UI. Like a shortcut, so a cold start waits for launch.
-                .onContinueUserActivity(Self.startCallActivity) { _ in
-                    PendingCallStore().request()
+                // Redial on the system call UI: the agent whose name is the CallKit handle.
+                .onContinueUserActivity(Self.startCallActivity) { activity in
+                    ShortcutCalls.requestRedial(of: activity.interaction?.intent, store: PendingCallStore())
                 }
-                .onContinueUserActivity(Self.startAudioCallActivity) { _ in
-                    PendingCallStore().request()
+                .onContinueUserActivity(Self.startAudioCallActivity) { activity in
+                    ShortcutCalls.requestRedial(of: activity.interaction?.intent, store: PendingCallStore())
                 }
         }
     }

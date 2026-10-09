@@ -4,9 +4,13 @@ import Foundation
 /// it against the agents it knows); `nil` means the first agent.
 public struct PendingCall: Sendable, Equatable {
     public var agent: String?
+    /// The system's redial, which knows the agent only by the name in its CallKit handle (decision
+    /// W19): the app calls the one agent with that name. Set only when `agent` is `nil`.
+    public var agentName: String?
 
-    public init(agent: String? = nil) {
+    public init(agent: String? = nil, agentName: String? = nil) {
         self.agent = agent
+        self.agentName = agentName
     }
 }
 
@@ -18,6 +22,7 @@ public struct PendingCallStore: @unchecked Sendable {
     public static let didRequest = Notification.Name("io.github.ggondim.wristcall.callRequested")
     public static let defaultsKey = "pendingCallRequestedAt"
     public static let agentDefaultsKey = "pendingCallAgent"
+    public static let agentNameDefaultsKey = "pendingCallAgentName"
     /// A request older than this is dropped.
     public static let maxAge: TimeInterval = 30
     /// Tolerance for a clock that moved back between the request and the check.
@@ -40,7 +45,17 @@ public struct PendingCallStore: @unchecked Sendable {
 
     /// Records a request (replacing an older one, and its agent) and posts `didRequest`.
     public func request(agent: String? = nil) {
+        record(agent: agent, agentName: nil)
+    }
+
+    /// Records a redial of the agent called `name` (replacing an older request) and posts `didRequest`.
+    public func request(agentNamed name: String) {
+        record(agent: nil, agentName: name)
+    }
+
+    private func record(agent: String?, agentName: String?) {
         defaults.set(agent, forKey: Self.agentDefaultsKey)
+        defaults.set(agentName, forKey: Self.agentNameDefaultsKey)
         defaults.set(now().timeIntervalSince1970, forKey: Self.defaultsKey)
         notificationCenter.post(name: Self.didRequest, object: nil)
     }
@@ -51,13 +66,26 @@ public struct PendingCallStore: @unchecked Sendable {
         return isFresh(requestedAt)
     }
 
+    /// The fresh request, without consuming it (to know which server it waits for); `nil` otherwise.
+    public func peek() -> PendingCall? {
+        guard let requestedAt, isFresh(requestedAt) else { return nil }
+        return stored
+    }
+
     /// The request exactly once, while fresh; `nil` otherwise. Always clears what was stored.
     public func consume() -> PendingCall? {
         guard let requestedAt else { return nil }
-        let agent = defaults.string(forKey: Self.agentDefaultsKey)
+        let request = stored
         defaults.removeObject(forKey: Self.defaultsKey)
         defaults.removeObject(forKey: Self.agentDefaultsKey)
-        return isFresh(requestedAt) ? PendingCall(agent: agent) : nil
+        defaults.removeObject(forKey: Self.agentNameDefaultsKey)
+        return isFresh(requestedAt) ? request : nil
+    }
+
+    private var stored: PendingCall {
+        PendingCall(
+            agent: defaults.string(forKey: Self.agentDefaultsKey),
+            agentName: defaults.string(forKey: Self.agentNameDefaultsKey))
     }
 
     private var requestedAt: TimeInterval? {
