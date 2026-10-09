@@ -34,6 +34,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 - Agent `vad`/`timeouts` values are bounded (for example `silence_ms` 100 to 10000,
   timeouts up to 120 s); imported 0.2.0 profiles keep loading, and values outside
   the bounds are adjusted on import with a warning in the log.
+- Custom endpoints accept only the types in `limits.custom_endpoint_types` (by default
+  `openai_stt`, `openai_chat` and `openai_tts`), and TTS `sample_rate` must be between
+  8000 and 48000.
 
 ## [watch-0.1.0] - 2026-10-07
 
