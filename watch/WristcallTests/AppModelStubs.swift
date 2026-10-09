@@ -14,6 +14,9 @@ final class StubPairingService: PairingService {
         var meByServer: [URL: [Result<DeviceInfo, PairingError>]] = [:]
         var meGates: [URL: Gate] = [:]
         var unpair: Result<Void, PairingError> = .success(())
+        var callStatus: [Result<CallStatus, PairingError>] = []
+        var callStatusGate: Gate?
+        var callStatusTokens: [String] = []
         var calls: [String] = []
         var pollTokens: [String] = []
         var unpairTokens: [String] = []
@@ -27,6 +30,9 @@ final class StubPairingService: PairingService {
     var pollTokens: [String] { state.withLock { $0.pollTokens } }
     /// The device tokens `DELETE /v1/me` revoked, to tell an old token from a new one.
     var unpairTokens: [String] { state.withLock { $0.unpairTokens } }
+    var callStatusTokens: [String] { state.withLock { $0.callStatusTokens } }
+    /// How many `GET /v1/calls/{id}` went out.
+    var callStatusCount: Int { state.withLock { $0.calls.filter { $0.hasPrefix("callStatus ") }.count } }
 
     var resolveResults: [Result<URL, PairingError>] {
         get { state.withLock { $0.resolve } }
@@ -46,6 +52,19 @@ final class StubPairingService: PairingService {
     var meResults: [Result<DeviceInfo, PairingError>] {
         get { state.withLock { $0.me } }
         set { state.withLock { $0.me = newValue } }
+    }
+
+    /// `GET /v1/calls/{id}` answers, in order; once they run out, every fetch fails like a network error would.
+    var callStatusResults: [Result<CallStatus, PairingError>] {
+        get { state.withLock { $0.callStatus } }
+        set { state.withLock { $0.callStatus = newValue } }
+    }
+
+    /// Holds every `GET /v1/calls/{id}` answer until the returned gate opens.
+    func holdCallStatus() -> Gate {
+        let gate = Gate()
+        state.withLock { $0.callStatusGate = gate }
+        return gate
     }
 
     /// Answers for one server, taken before `meResults`: the model asks several servers at once,
@@ -106,6 +125,16 @@ final class StubPairingService: PairingService {
             state.unpairTokens.append(token)
             return state.unpair
         }.get()
+    }
+
+    func callStatus(server: URL, token: String, callID: String) async throws -> CallStatus {
+        let (result, gate) = state.withLock { state in
+            state.calls.append("callStatus \(server.absoluteString) \(callID)")
+            state.callStatusTokens.append(token)
+            return (Self.next(&state.callStatus), state.callStatusGate)
+        }
+        await gate?.wait()
+        return try result.get()
     }
 
     private static func next<T>(_ queue: inout [Result<T, PairingError>]) -> Result<T, PairingError> {
@@ -201,5 +230,22 @@ final class ModelBox {
 func waitUntil(_ condition: () -> Bool) async {
     for _ in 0..<200 where !condition() {
         try? await Task.sleep(for: .milliseconds(10))
+    }
+}
+
+/// A clock for `CallStatusPoller` that never waits: each `sleep` moves it forward at once, so the
+/// 3 minute deadline passes in a few milliseconds.
+final class FakeClock: Sendable {
+    private let start = ContinuousClock.now
+    private let elapsed = Mutex(Duration.zero)
+
+    var poller: CallStatusPoller {
+        CallStatusPoller(
+            sleep: { [self] duration in
+                try Task.checkCancellation()
+                elapsed.withLock { $0 += duration }
+                await Task.yield()
+            },
+            now: { [self] in start + elapsed.withLock { $0 } })
     }
 }

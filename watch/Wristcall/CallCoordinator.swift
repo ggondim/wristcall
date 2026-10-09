@@ -14,9 +14,13 @@ import WristcallKit
 ///   Home, `session.end` + close 1000 go out in the background. CallKit already knows; no report.
 /// - by the server or the network: CallKit gets `reportEnded` (`.remoteEnded` for a normal close,
 ///   `.failed` otherwise; CallKit sees both as "remote ended", see `CallEndCause.callKitReason`)
-///   and `AppModel.callDidEnd(_:)` picks the message ("Connection lost", pairing again after 4401...).
+///   and `AppModel.callDidEnd(_:callID:)` picks the message ("Connection lost", pairing again after 4401...).
 /// - before the call exists (CallKit refused, audio never activated, no microphone):
 ///   `AppModel.callDidFail(message:)`.
+///
+/// A one-way call (one-shot, monologue; decision W9) is the same CallKit call with the same audio
+/// and ends; only the screen differs ("Recording", "Paused" while muted), and its end hands the
+/// `call_id` of `session.ready` to the model, which then asks for the result.
 @MainActor
 final class CallCoordinator: CallHandling {
     typealias TransportFactory = (Credentials) throws -> any CallTransport
@@ -38,12 +42,24 @@ final class CallCoordinator: CallHandling {
         let request: CallRequest
         var session: CallSession?
         var muted = false
+        /// `session.ready` arrived: the call screen follows the mute from here on.
+        var isReady = false
+        /// From `session.ready` of a one-way call; what the result screen asks about.
+        var resultID: String?
         /// Agent audio frames received in the current agent turn (for the log).
         var agentFrames = 0
         var tasks: [Task<Void, Never>] = []
 
         init(request: CallRequest) {
             self.request = request
+        }
+
+        var isOneWay: Bool { request.target.agent.callType.isOneWay }
+
+        /// What the call screen shows while nobody is talking: listening, or recording unless muted.
+        var idleActivity: CallActivity {
+            guard isOneWay else { return .listening }
+            return muted ? .paused : .recording
         }
 
         func cancelTasks() {
@@ -155,6 +171,9 @@ final class CallCoordinator: CallHandling {
 
     private func sessionReady(_ ready: SessionReady, callID id: UUID) {
         guard let call, call.id == id, let session = call.session else { return }
+        call.isReady = true
+        // A conversation never has a result to ask about, even if a server sent an id.
+        call.resultID = call.isOneWay ? ready.callID : nil
         callControl.reportConnected(id: id)
         audio.setMuted(call.muted)
         do {
@@ -164,7 +183,7 @@ final class CallCoordinator: CallHandling {
             finish(id, cause: .failed) { $0.callDidFail(message: AppModel.Message.microphoneUnavailable) }
             return
         }
-        model?.callActivityDidChange(.listening)
+        model?.callActivityDidChange(call.idleActivity)
     }
 
     /// Built outside the main actor: the microphone tap calls it on the audio thread.
@@ -190,7 +209,8 @@ final class CallCoordinator: CallHandling {
             audio.agentTurnEnded()
             model?.callActivityDidChange(.listening)
         case .captured(let callID, let reason):
-            // One-way calls arrive with the new call screens; for now only the close that follows matters.
+            // The server stopped recording (turn or time limit); the normal close that follows ends
+            // the call like a hang-up.
             Self.log.notice("call \(callID, privacy: .private) captured: \(reason, privacy: .public)")
         case .transcript:
             // Informational; not shown in the MVP (and never logged: it is the user's speech).
@@ -198,11 +218,12 @@ final class CallCoordinator: CallHandling {
         case .error(let code, _, let fatal):
             Self.log.error("server error \(code.wireValue, privacy: .public) fatal=\(fatal)")
             if !fatal {
-                model?.callActivityDidChange(.listening)
+                model?.callActivityDidChange(call.idleActivity)
             }
         case .ended(let reason):
             Self.log.notice("call ended by the server or the network: \(String(describing: reason), privacy: .public)")
-            finish(id, cause: reason == .normal ? .remoteEnded : .failed) { $0.callDidEnd(reason) }
+            let resultID = call.resultID
+            finish(id, cause: reason == .normal ? .remoteEnded : .failed) { $0.callDidEnd(reason, callID: resultID) }
         }
     }
 
@@ -213,8 +234,9 @@ final class CallCoordinator: CallHandling {
         guard let call, call.id == id else { return }
         Self.log.notice("call ended by the user")
         let session = call.session
+        let resultID = call.resultID
         release(call)
-        model?.callDidEnd(.normal)
+        model?.callDidEnd(.normal, callID: resultID)
         if let session {
             // session.end, then close 1000; at most CallSession.endFlushTimeout.
             Task { await session.end() }
@@ -274,6 +296,9 @@ extension CallCoordinator: CallControllerDelegate {
         // Audio first: on mute it hands the last words to the session before `mute` goes out.
         audio.setMuted(muted)
         call.session?.setMuted(muted)
+        if call.isReady, call.isOneWay {
+            model?.callActivityDidChange(call.idleActivity)
+        }
     }
 
     func callControllerDidEndCall(_ callID: UUID) {

@@ -17,6 +17,12 @@ struct RootView: View {
             HomeView(model: model)
         case .inCall(let target):
             InCallView(model: model, target: target)
+        case .callResult:
+            if let result = model.callResult {
+                CallResultView(model: model, result: result)
+            } else {
+                ProgressView()
+            }
         }
     }
 }

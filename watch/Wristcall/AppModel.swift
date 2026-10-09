@@ -17,6 +17,8 @@ enum AppPhase: Equatable {
     case unavailable
     /// A call is active with this agent.
     case inCall(AgentTarget)
+    /// After a one-way call: what happened to the recording (`AppModel.callResult`).
+    case callResult
 }
 
 /// What the call screen shows while a call is open (task 10).
@@ -29,6 +31,10 @@ enum CallActivity: Equatable {
     case thinking
     /// The agent's audio is playing.
     case agentSpeaking
+    /// One-way call: the server is recording (decision W9).
+    case recording
+    /// One-way call muted from the system UI: audio sent meanwhile is dropped, the call goes on.
+    case paused
 
     var label: String {
         switch self {
@@ -36,6 +42,8 @@ enum CallActivity: Equatable {
         case .listening: "Listening"
         case .thinking: "Thinking…"
         case .agentSpeaking: "Speaking"
+        case .recording: "Recording"
+        case .paused: "Paused"
         }
     }
 }
@@ -53,9 +61,10 @@ struct CallRequest: Sendable, Equatable {
 /// the handler must hold the model weakly.
 @MainActor
 protocol CallHandling: AnyObject {
-    /// Start a CallKit call for `request`. Report its end, whatever the cause, with `AppModel.callDidEnd(_:)`.
+    /// Start a CallKit call for `request`. Report its end, whatever the cause, with
+    /// `AppModel.callDidEnd(_:callID:)`.
     func startCall(_ request: CallRequest)
-    /// The user tapped "End" in the app. Report the end with `AppModel.callDidEnd(_:)`.
+    /// The user tapped "End" in the app. Report the end with `AppModel.callDidEnd(_:callID:)`.
     func endCall()
 }
 
@@ -110,6 +119,8 @@ final class AppModel {
     private(set) var removingServerIDs: Set<String> = []
     /// What the call screen shows; meaningful only in `.inCall`.
     private(set) var callActivity: CallActivity = .connecting
+    /// The result screen of the last one-way call; set only in `.callResult`.
+    private(set) var callResult: CallResultModel?
     /// The catalog last handed to `onAgentsChanged` (until then, the one the last run saved).
     private(set) var catalog: [CatalogAgent]
     /// Set by the app at launch (task 10). Without one, a call is only a screen with an "End" button.
@@ -117,6 +128,8 @@ final class AppModel {
     /// Told the new catalog whenever it changes (a server answers, is added or removed), to share
     /// it with the widgets and App Intents.
     var onAgentsChanged: (([CatalogAgent]) -> Void)?
+    /// Told when a one-way call's result becomes final, `true` when delivered. The app plays a haptic.
+    var onCallResultFinished: ((Bool) -> Void)?
 
     private var activeCall: CallRequest?
     private var pairingTask: Task<Void, Never>?
@@ -128,6 +141,8 @@ final class AppModel {
     private let sleep: PairingClient.Sleep
     /// Asked before every call; `nil` (tests, previews) never blocks one.
     private let reachability: (any NetworkReachability)?
+    /// Asks for the result of each one-way call.
+    private let resultPoller: CallStatusPoller
 
     init(
         pairing: any PairingService = PairingClient(),
@@ -136,7 +151,8 @@ final class AppModel {
         deviceName: String = AppModel.defaultDeviceName,
         reachability: (any NetworkReachability)? = nil,
         sleep: @escaping PairingClient.Sleep = { try await Task.sleep(for: $0) },
-        savedCatalog: [CatalogAgent] = []
+        savedCatalog: [CatalogAgent] = [],
+        resultPoller: CallStatusPoller = CallStatusPoller()
     ) {
         self.pairing = pairing
         self.store = store
@@ -144,6 +160,7 @@ final class AppModel {
         self.deviceName = deviceName
         self.sleep = sleep
         self.reachability = reachability
+        self.resultPoller = resultPoller
         catalog = savedCatalog
         directoryURL = defaults.string(forKey: Self.directoryDefaultsKey).flatMap(ServerAddress.parse)
             ?? PairingClient.defaultDirectory
@@ -583,9 +600,17 @@ final class AppModel {
         }
     }
 
-    /// Reported by the call layer when a call ends, whoever ended it.
-    func callDidEnd(_ reason: CallEndReason) {
+    /// Reported by the call layer when a call ends, whoever ended it. `callID` comes from
+    /// `session.ready` of a one-way call; a conversation, or a call that never got ready, has none.
+    func callDidEnd(_ reason: CallEndReason, callID: String? = nil) {
         guard case .inCall = phase else { return }
+        // Decision W9: hanging up or a dropped connection (the server counts it as hanging up) both
+        // leave a recording on its way to the agent, so the result screen follows.
+        if let call = activeCall, call.target.agent.callType.isOneWay, let callID,
+           reason == .normal || reason == .connectionLost {
+            showResult(of: call, callID: callID)
+            return
+        }
         switch reason {
         case .unauthorized:
             // 4401: the token of this call's server was revoked; the other servers are not affected.
@@ -622,6 +647,42 @@ final class AppModel {
     private func returnHome() {
         activeCall = nil
         phase = hasServers ? .home : .unpaired
+    }
+
+    // MARK: - Result of a one-way call
+
+    /// "Done" on the result screen: stops asking and goes back to the grid.
+    func dismissResult() {
+        guard phase == .callResult else { return }
+        callResult?.stop()
+        callResult = nil
+        message = nil
+        returnHome()
+    }
+
+    /// The app came to the foreground: a result still waiting asks again (Review Focus 3).
+    func sceneDidBecomeActive() {
+        callResult?.appBecameActive()
+    }
+
+    private func showResult(of call: CallRequest, callID: String) {
+        let result = CallResultModel(
+            target: call.target, callID: callID, credentials: call.credentials, pairing: pairing,
+            poller: resultPoller)
+        result.onFinished = { [weak self] delivered in
+            self?.onCallResultFinished?(delivered)
+        }
+        // The screen stays (it says "Result unavailable"); "Done" then finds the server gone.
+        result.onUnauthorized = { [weak self] in
+            guard let self else { return }
+            forget(call.credentials)
+            message = Message.removed(call.target.serverHost)
+        }
+        activeCall = nil
+        message = nil
+        callResult = result
+        phase = .callResult
+        result.start()
     }
 
     // MARK: - Messages

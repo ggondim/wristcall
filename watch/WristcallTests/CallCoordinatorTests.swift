@@ -46,6 +46,10 @@ final class FakeCallAudio: CallAudio {
 @MainActor
 struct CallCoordinatorTests {
     nonisolated static let ready = #"{"type":"session.ready","session_id":"s1","profile":{"name":"default","display_name":"Agent"},"audio_out":{"codec":"pcm16","sample_rate":24000,"channels":1}}"#
+    /// A one-way agent's `session.ready`: a call id, `manual`, and a nominal `audio_out`.
+    nonisolated static let oneWayReady = #"{"type":"session.ready","session_id":"s2","call_id":"c_42","profile":{"name":"notes","display_name":"Notes"},"turn_end":"manual","audio_out":{"codec":"pcm16","sample_rate":24000,"channels":1}}"#
+    /// A conversation never gets a call id; if a server sent one anyway, it would not open a result.
+    nonisolated static let readyWithCallID = #"{"type":"session.ready","session_id":"s1","call_id":"c_7","profile":{"name":"default","display_name":"Agent"},"audio_out":{"codec":"pcm16","sample_rate":24000,"channels":1}}"#
     nonisolated static let frame = Data(repeating: 7, count: ProtocolConstants.frameBytes)
 
     let store = InMemoryServerStore()
@@ -54,10 +58,17 @@ struct CallCoordinatorTests {
     let credentials = Credentials(
         serverURL: URL(string: "https://agent.example.com")!, deviceId: "dev-1", token: "device-token", id: "srv-1")
     let agent = Agent(id: "ag_1", slug: "default", displayName: "Agent")
+    let notes = Agent(id: "ag_2", slug: "notes", displayName: "Notes", icon: "note.text", callType: .oneShot)
     let info = DeviceInfo(
         deviceId: "dev-1", deviceName: "Apple Watch", user: nil,
-        agents: [Agent(id: "ag_1", slug: "default", displayName: "Agent")])
+        agents: [
+            Agent(id: "ag_1", slug: "default", displayName: "Agent"),
+            Agent(id: "ag_2", slug: "notes", displayName: "Notes", icon: "note.text", callType: .oneShot),
+        ])
     var target: AgentTarget { AgentTarget(serverID: "srv-1", serverHost: "agent.example.com", agent: agent) }
+    var notesTarget: AgentTarget { AgentTarget(serverID: "srv-1", serverHost: "agent.example.com", agent: notes) }
+    /// The result poller never waits for real.
+    let clock = FakeClock()
     let callKit = FakeCallControl()
     let audio = FakeCallAudio()
     let transport = FakeTransport()
@@ -70,7 +81,8 @@ struct CallCoordinatorTests {
     ) async throws -> (CallCoordinator, AppModel) {
         try store.save([credentials])
         pairing.meResults = [.success(info)]
-        let model = AppModel(pairing: pairing, store: store, defaults: defaults, sleep: { _ in })
+        let model = AppModel(
+            pairing: pairing, store: store, defaults: defaults, sleep: { _ in }, resultPoller: clock.poller)
         await model.launch()
         try #require(model.phase == .home)
         let transport = transport ?? self.transport
@@ -92,6 +104,22 @@ struct CallCoordinatorTests {
         callKit.activateAudio()
         try await transport.waitUntilSent { $0.count == 1 }
         transport.serverSends(Self.ready)
+        await waitUntil { audio.isRunning }
+        try #require(audio.isRunning)
+        return (coordinator, model)
+    }
+
+    /// A one-way call to `notes`: CallKit start → audio activated → `session.ready` with `c_42`.
+    func connectedOneWayCall(muted: Bool = false) async throws -> (CallCoordinator, AppModel) {
+        let (coordinator, model) = try await makeCoordinator()
+        model.startCall(notesTarget)
+        await waitUntil { callKit.starts.count == 1 }
+        if muted {
+            callKit.userSetsMuted(true)
+        }
+        callKit.activateAudio()
+        try await transport.waitUntilSent { $0.count == 1 }
+        transport.serverSends(Self.oneWayReady)
         await waitUntil { audio.isRunning }
         try #require(audio.isRunning)
         return (coordinator, model)
@@ -491,5 +519,146 @@ struct CallCoordinatorTests {
         await waitUntil { callKit.starts.count == 2 }
         #expect(callKit.starts.count == 2)
         #expect(coordinator.currentCallID != first)
+    }
+
+    // MARK: - One-way calls (decision W9)
+
+    @Test func oneWayCallIsTheSameCallKitCallAndRecordsAfterReady() async throws {
+        let (coordinator, model) = try await makeCoordinator()
+        model.startCall(notesTarget)
+        await waitUntil { callKit.starts.count == 1 }
+        #expect(callKit.starts.first?.displayName == "Notes")
+        #expect(model.callActivity == .connecting)
+
+        callKit.activateAudio()
+        try await transport.waitUntilSent { $0.count == 1 }
+        transport.serverSends(Self.oneWayReady)
+        await waitUntil { audio.isRunning }
+
+        #expect(callKit.connected == [coordinator.currentCallID])
+        #expect(model.callActivity == .recording)
+        #expect(CallActivity.recording.label == "Recording")
+    }
+
+    @Test func systemMutePausesTheRecording() async throws {
+        let (coordinator, model) = try await connectedOneWayCall()
+        defer { withExtendedLifetime(coordinator) {} }
+
+        callKit.userSetsMuted(true)
+        #expect(model.callActivity == .paused)
+        #expect(CallActivity.paused.label == "Paused")
+
+        callKit.userSetsMuted(false)
+        #expect(model.callActivity == .recording)
+    }
+
+    @Test func oneWayCallMutedBeforeReadyStartsPaused() async throws {
+        let (coordinator, model) = try await connectedOneWayCall(muted: true)
+        defer { withExtendedLifetime(coordinator) {} }
+
+        #expect(model.callActivity == .paused)
+    }
+
+    /// Before `session.ready` the screen stays on "Connecting…" whatever the mute.
+    @Test func muteBeforeReadyKeepsConnecting() async throws {
+        let (coordinator, model) = try await makeCoordinator()
+        defer { withExtendedLifetime(coordinator) {} }
+        model.startCall(notesTarget)
+        await waitUntil { callKit.starts.count == 1 }
+
+        callKit.userSetsMuted(true)
+
+        #expect(model.callActivity == .connecting)
+    }
+
+    @Test func conversationMuteKeepsListening() async throws {
+        let (coordinator, model) = try await connectedCall()
+        defer { withExtendedLifetime(coordinator) {} }
+
+        callKit.userSetsMuted(true)
+
+        #expect(model.callActivity == .listening)
+    }
+
+    @Test func nonFatalErrorKeepsRecording() async throws {
+        let (_, model) = try await connectedOneWayCall()
+
+        transport.serverSends(#"{"type":"error","code":"stt_failed","message":"STT timed out","fatal":false}"#)
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(model.callActivity == .recording)
+        #expect(model.phase == .inCall(notesTarget))
+    }
+
+    @Test func sendEndsTheOneWayCallAndOpensItsResult() async throws {
+        pairing.callStatusResults = [.success(CallStatus(id: "c_42", callType: .oneShot, state: .delivered))]
+        let (_, model) = try await connectedOneWayCall()
+
+        model.endCall()
+
+        await waitUntil { model.phase == .callResult }
+        #expect(model.callResult?.callID == "c_42")
+        #expect(model.callResult?.target == notesTarget)
+        #expect(!audio.isRunning)
+        try await transport.waitUntilSent { $0.suffix(2) == [.text(#"{"type":"session.end"}"#), .close(1000)] }
+        #expect(callKit.ends.isEmpty)
+        await waitUntil { model.callResult?.isChecking == false }
+        #expect(pairing.calls.last == "callStatus https://agent.example.com c_42")
+    }
+
+    /// The server stopped recording by itself (turn limit): `call.captured`, then a normal close.
+    @Test func capturedThenCloseOpensTheResult() async throws {
+        let (_, model) = try await connectedOneWayCall()
+
+        transport.serverSends(#"{"type":"call.captured","call_id":"c_42","reason":"max_turn"}"#)
+        transport.serverCloses(code: 1000)
+
+        await waitUntil { model.phase == .callResult }
+        #expect(try callKit.ends == endReportedForTheStartedCall(.remoteEnded))
+        #expect(model.callResult?.callID == "c_42")
+        #expect(model.message == nil)
+    }
+
+    /// A dropped connection counts as hanging up on the server: the recording is still delivered.
+    @Test func connectionLostDuringAOneWayCallOpensTheResult() async throws {
+        let (_, model) = try await connectedOneWayCall()
+
+        transport.serverCloses(code: nil)
+
+        await waitUntil { model.phase == .callResult }
+        #expect(try callKit.ends == endReportedForTheStartedCall(.failed))
+        #expect(model.callResult?.callID == "c_42")
+    }
+
+    /// No `session.ready`, no call id: nothing was recorded, Home as for any call.
+    @Test func oneWayCallLostBeforeReadyGoesHome() async throws {
+        let (_, model) = try await makeCoordinator()
+        model.startCall(notesTarget)
+        await waitUntil { callKit.starts.count == 1 }
+        callKit.activateAudio()
+        try await transport.waitUntilSent { $0.count == 1 }
+
+        transport.serverCloses(code: nil)
+
+        await waitUntil { model.phase == .home }
+        #expect(model.callResult == nil)
+        #expect(model.message == "Connection lost")
+    }
+
+    @Test func conversationEndCarriesNoCallID() async throws {
+        let (coordinator, model) = try await makeCoordinator()
+        model.startCall(target)
+        await waitUntil { callKit.starts.count == 1 }
+        callKit.activateAudio()
+        try await transport.waitUntilSent { $0.count == 1 }
+        transport.serverSends(Self.readyWithCallID)
+        await waitUntil { audio.isRunning }
+        defer { withExtendedLifetime(coordinator) {} }
+
+        model.endCall()
+
+        await waitUntil { model.phase == .home }
+        #expect(model.callResult == nil)
+        #expect(pairing.callStatusCount == 0)
     }
 }

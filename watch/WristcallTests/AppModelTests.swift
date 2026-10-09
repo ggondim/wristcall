@@ -7,6 +7,8 @@ import WristcallKit
 struct AppModelTests {
     let store = InMemoryServerStore()
     let pairing = StubPairingService()
+    /// The result poller's clock: its 1.5 s waits and 3 min deadline pass at once.
+    let clock = FakeClock()
     let defaults = UserDefaults(suiteName: "AppModelTests.\(UUID().uuidString)")!
     let server = URL(string: "https://agent.example.com")!
     let device = PairedDevice(deviceId: "dev-1", token: "device-token")
@@ -46,7 +48,7 @@ struct AppModelTests {
     ) -> AppModel {
         AppModel(
             pairing: pairing, store: store, defaults: defaults, reachability: reachability, sleep: sleep,
-            savedCatalog: savedCatalog)
+            savedCatalog: savedCatalog, resultPoller: clock.poller)
     }
 
     func makePairedModel(reachability: (any NetworkReachability)? = nil) async throws -> AppModel {
@@ -870,5 +872,161 @@ struct AppModelTests {
         model.endCall()
         #expect(model.phase == .home)
         #expect(model.message == nil)
+    }
+
+    // MARK: - One-way calls (decisions W9 to W11)
+
+    func callStatus(_ state: CallState, id: String = "c_1") -> CallStatus {
+        CallStatus(id: id, callType: .oneShot, state: state, text: state == .delivered ? "buy milk" : nil)
+    }
+
+    /// A one-way call to `notes` on `first`, in progress.
+    func makeModelInAOneWayCall() async throws -> AppModel {
+        let model = try await makePairedModel()
+        model.callHandler = StubCallHandler()
+        model.startCall(target(notes, on: first))
+        try #require(model.phase == .inCall(target(notes, on: first)))
+        return model
+    }
+
+    @Test func oneWayCallEndOpensTheResultAndAsksForIt() async throws {
+        pairing.callStatusResults = [.success(callStatus(.processing)), .success(callStatus(.delivered))]
+        let model = try await makeModelInAOneWayCall()
+        let finishes = Recorder<Bool>()
+        model.onCallResultFinished = { finishes.append($0) }
+
+        model.callDidEnd(.normal, callID: "c_1")
+
+        #expect(model.phase == .callResult)
+        #expect(model.message == nil)
+        let result = try #require(model.callResult)
+        #expect(result.target == target(notes, on: first))
+        #expect(result.callID == "c_1")
+        await waitUntil { !result.isChecking }
+        #expect(result.state == .finished(callStatus(.delivered)))
+        #expect(pairing.callStatusTokens == ["device-token", "device-token"])
+        #expect(finishes.all == [true])
+    }
+
+    /// A dropped connection counts as hanging up on the server: the recording is still delivered.
+    @Test func oneWayCallThatLostTheConnectionOpensTheResult() async throws {
+        pairing.callStatusResults = [.success(callStatus(.delivered))]
+        let model = try await makeModelInAOneWayCall()
+
+        model.callDidEnd(.connectionLost, callID: "c_1")
+
+        #expect(model.phase == .callResult)
+        #expect(model.message == nil)
+        #expect(model.callResult?.callID == "c_1")
+    }
+
+    /// Before `session.ready` there is no call id, and nothing was recorded.
+    @Test(arguments: [CallEndReason.normal, .connectionLost])
+    func oneWayCallWithoutACallIDGoesHome(reason: CallEndReason) async throws {
+        let model = try await makeModelInAOneWayCall()
+
+        model.callDidEnd(reason)
+
+        #expect(model.phase == .home)
+        #expect(model.callResult == nil)
+        #expect(model.message == (reason == .normal ? nil : "Connection lost"))
+        #expect(pairing.callStatusCount == 0)
+    }
+
+    @Test func oneWayCallEndedByAServerErrorGoesHome() async throws {
+        let model = try await makeModelInAOneWayCall()
+
+        model.callDidEnd(.serverFatal(.internal), callID: "c_1")
+
+        #expect(model.phase == .home)
+        #expect(model.callResult == nil)
+        #expect(model.message == "Call failed (internal).")
+    }
+
+    @Test func conversationCallEndGoesHomeEvenWithACallID() async throws {
+        let model = try await makePairedModel()
+        model.callHandler = StubCallHandler()
+        model.startCall(target(assistant, on: first))
+
+        model.callDidEnd(.normal, callID: "c_1")
+
+        #expect(model.phase == .home)
+        #expect(model.callResult == nil)
+    }
+
+    @Test func dismissResultStopsAskingAndGoesHome() async throws {
+        let gate = pairing.holdCallStatus()
+        pairing.callStatusResults = [.success(callStatus(.delivered))]
+        let model = try await makeModelInAOneWayCall()
+        model.callDidEnd(.normal, callID: "c_1")
+        let result = try #require(model.callResult)
+        await waitUntil { pairing.callStatusCount == 1 }
+
+        model.dismissResult()
+
+        #expect(model.phase == .home)
+        #expect(model.callResult == nil)
+        #expect(!result.isChecking)
+        #expect(model.canCall)
+        gate.open()
+    }
+
+    /// Review Focus 3: hanging up with no network or in the background; back in the app, it asks again.
+    @Test func resultPollsAgainWhenTheAppBecomesActive() async throws {
+        pairing.callStatusResults = [.success(callStatus(.processing))]
+        let model = try await makeModelInAOneWayCall()
+        model.callDidEnd(.normal, callID: "c_1")
+        let result = try #require(model.callResult)
+        await waitUntil { !result.isChecking }
+        try #require(result.state == .timedOut(callStatus(.processing)))
+        pairing.callStatusResults = [.success(callStatus(.delivered))]
+
+        model.sceneDidBecomeActive()
+
+        await waitUntil { !result.isChecking }
+        #expect(result.state == .finished(callStatus(.delivered)))
+    }
+
+    @Test func sceneDidBecomeActiveWithoutAResultDoesNothing() async throws {
+        let model = try await makePairedModel()
+
+        model.sceneDidBecomeActive()
+
+        #expect(model.phase == .home)
+        #expect(pairing.callStatusCount == 0)
+    }
+
+    /// `401` on the result: that server's token was revoked; the others stay, and so does the screen.
+    @Test func resultUnauthorizedRemovesThatServer() async throws {
+        pairing.callStatusResults = [.failure(.unauthorized)]
+        let model = try await makeModelWithTwoServers()
+        model.callHandler = StubCallHandler()
+        model.startCall(target(notes, on: first))
+        model.callDidEnd(.normal, callID: "c_1")
+        let result = try #require(model.callResult)
+
+        await waitUntil { !result.isChecking }
+
+        #expect(result.state == .unavailable)
+        #expect(model.phase == .callResult)
+        #expect(model.servers.map(\.credentials) == [second])
+        #expect(try store.load() == [second])
+        #expect(model.message == "agent.example.com: this watch was removed on the server.")
+
+        model.dismissResult()
+        #expect(model.phase == .home)
+    }
+
+    @Test func resultUnauthorizedOnTheLastServerGoesToPairingOnDone() async throws {
+        pairing.callStatusResults = [.failure(.unauthorized)]
+        let model = try await makeModelInAOneWayCall()
+        model.callDidEnd(.normal, callID: "c_1")
+        let result = try #require(model.callResult)
+        await waitUntil { !result.isChecking }
+
+        model.dismissResult()
+
+        #expect(model.phase == .unpaired)
+        #expect(!model.hasServers)
     }
 }

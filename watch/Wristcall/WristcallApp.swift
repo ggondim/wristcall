@@ -1,5 +1,6 @@
 import Combine
 import SwiftUI
+import WatchKit
 import WristcallKit
 
 @main
@@ -17,6 +18,10 @@ struct WristcallApp: App {
         let coordinator = CallCoordinator(callControl: Self.makeCallControl(), audio: Self.makeAudio())
         coordinator.model = model
         model.callHandler = coordinator
+        // The result of a one-way call may arrive with the wrist down: a tap says how it went.
+        model.onCallResultFinished = { delivered in
+            WKInterfaceDevice.current().play(delivered ? .success : .failure)
+        }
         _model = State(initialValue: model)
         self.coordinator = coordinator
         shortcuts = ShortcutCalls(store: PendingCallStore(), model: model)

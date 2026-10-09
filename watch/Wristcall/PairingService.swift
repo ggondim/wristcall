@@ -8,6 +8,7 @@ protocol PairingService: Sendable {
     func poll(server: URL, pollToken: String) async throws -> PollResult
     func me(server: URL, token: String) async throws -> DeviceInfo
     func unpair(server: URL, token: String) async throws
+    func callStatus(server: URL, token: String, callID: String) async throws -> CallStatus
 }
 
 extension PairingClient: PairingService {}
