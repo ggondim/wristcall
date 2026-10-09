@@ -92,8 +92,9 @@ def management_router(
         who = await principal(authorization)
         if isinstance(who, JSONResponse):
             return who
-        view = agent_detail if who.kind == "api" else agent_summary
-        return {"agents": [view(a) for a in await agents.list(who.user_id)]}
+        if who.kind != "api":
+            return {"agents": [agent_summary(a) for a in await agents.list(who.user_id)]}
+        return {"agents": [agent_detail(a, config.history) for a in await agents.list(who.user_id)]}
 
     @router.post("/agents")
     async def create_agent(request: Request, authorization: str | None = Header(default=None)) -> Any:
@@ -107,7 +108,7 @@ def management_router(
             agent = await agents.create(who.user_id, body)
         except AgentError as e:
             return _agent_error(e)
-        return JSONResponse(agent_detail(agent), status_code=201)
+        return JSONResponse(agent_detail(agent, config.history), status_code=201)
 
     @router.get("/agents/{ref}")
     async def get_agent(ref: str, authorization: str | None = Header(default=None)) -> Any:
@@ -118,7 +119,7 @@ def management_router(
             agent = await agents.get(who.user_id, ref)
         except AgentError as e:
             return _agent_error(e)
-        return agent_detail(agent) if who.kind == "api" else agent_summary(agent)
+        return agent_detail(agent, config.history) if who.kind == "api" else agent_summary(agent)
 
     @router.patch("/agents/{ref}")
     async def update_agent(ref: str, request: Request, authorization: str | None = Header(default=None)) -> Any:
@@ -129,7 +130,7 @@ def management_router(
         if isinstance(body, JSONResponse):
             return body
         try:
-            return agent_detail(await agents.update(who.user_id, ref, body))
+            return agent_detail(await agents.update(who.user_id, ref, body), config.history)
         except AgentError as e:
             return _agent_error(e)
 

@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 
 from memory_storage import MemoryStorage
-from wristcall.storage import AgentRecord, CallRecord, Conflict, LimitReached, Storage, open_sqlite_storage
+from wristcall.storage import AgentRecord, CallRecord, Conflict, EntryRecord, LimitReached, Storage, open_sqlite_storage
 
 
 @pytest.fixture(params=["sqlite", "memory"])
@@ -250,39 +250,183 @@ def call(**over) -> CallRecord:
 async def test_calls_create_get_and_save(storage):
     await storage.users.create("u_a", "alice", "Alice", 1.0)
     await storage.users.create("u_b", "bob", "Bob", 1.0)
-    created = await storage.calls.create(call())
+    created = await storage.calls.create(call(agent_slug="note", agent_name="Note", expires_at=99.0))
     assert await storage.calls.get("u_a", "c_1") == created
     assert await storage.calls.get("u_b", "c_1") is None
     done = replace(
-        created, status="delivered", text="buy milk", attempts=2, last_http_status=204,
+        created, status="delivered", attempts=2, last_http_status=204,
         ended_at=2.0, finished_at=3.0, updated_at=3.0,
         # Not changeable by save:
         user_id="u_b", agent_id="ag_x", device_id=None, call_type="monologue", created_at=9.0,
+        agent_slug="x", agent_name="X", expires_at=None,
     )
     saved = await storage.calls.save(done)
-    assert saved == replace(done, user_id="u_a", agent_id="ag_1", device_id="d_1", call_type="one-shot", created_at=1.0)
+    assert saved == replace(
+        done, user_id="u_a", agent_id="ag_1", device_id="d_1", call_type="one-shot", created_at=1.0,
+        agent_slug="note", agent_name="Note", expires_at=99.0,
+    )
     assert await storage.calls.get("u_a", "c_1") == saved
     with pytest.raises(KeyError):
         await storage.calls.save(call(id="c_gone"))
 
 
-async def test_calls_interrupted_at_startup_keep_their_text(storage):
+async def test_calls_interrupted_at_startup(storage):
     await storage.users.create("u_a", "alice", "Alice", 1.0)
     await storage.calls.create(call(id="c_rec"))
-    await storage.calls.create(call(id="c_proc", status="processing", text="half"))
+    await storage.calls.create(call(id="c_proc", status="processing", ended_at=2.0))
     await storage.calls.create(call(id="c_ok", status="delivered", finished_at=2.0))
-    assert await storage.calls.interrupt_unfinished(5.0) == 2
+    await storage.calls.create(call(id="c_conv", call_type="conversation"))
+    await storage.calls.create(call(id="c_conv_done", call_type="conversation", status="ended"))
+    assert await storage.calls.interrupt_unfinished(5.0) == 3
     proc = await storage.calls.get("u_a", "c_proc")
-    assert (proc.status, proc.error, proc.text, proc.finished_at) == ("failed", "interrupted", "half", 5.0)
-    assert (await storage.calls.get("u_a", "c_rec")).status == "failed"
+    assert (proc.status, proc.error, proc.ended_at, proc.finished_at) == ("failed", "interrupted", 2.0, 5.0)
+    rec = await storage.calls.get("u_a", "c_rec")
+    assert (rec.status, rec.ended_at) == ("failed", 5.0)
+    conv = await storage.calls.get("u_a", "c_conv")
+    assert (conv.status, conv.error, conv.ended_at) == ("ended", "interrupted", 5.0)
     assert (await storage.calls.get("u_a", "c_ok")).status == "delivered"
+    assert (await storage.calls.get("u_a", "c_conv_done")).error is None
+
+
+def entry(call_id="c_1", seq=0, role="user", text="hi", **over) -> EntryRecord:
+    return EntryRecord(**{**dict(call_id=call_id, seq=seq, role=role, text=text, sealed=False, error=None, at=2.0), **over})
+
+
+async def test_entries_are_kept_in_order_and_only_for_the_owner(storage):
+    await storage.users.create("u_a", "alice", "Alice", 1.0)
+    await storage.users.create("u_b", "bob", "Bob", 1.0)
+    await storage.calls.create(call(call_type="conversation"))
+    assert await storage.calls.add_entry("u_a", entry(seq=1, role="agent", text="hello", error="tts_failed"), ["hello"])
+    assert await storage.calls.add_entry("u_a", entry(seq=0, text="wc1secret", sealed=True), ["x0123456789abcdef"])
+    assert await storage.calls.add_entry("u_a", entry(seq=2, text=None, error="stt_failed"), [])
+    got = await storage.calls.entries("u_a", "c_1")
+    assert [(e.seq, e.role, e.text, e.sealed, e.error) for e in got] == [
+        (0, "user", "wc1secret", True, None), (1, "agent", "hello", False, "tts_failed"), (2, "user", None, False, "stt_failed"),
+    ]
+    assert await storage.calls.entries("u_b", "c_1") == []
+    assert not await storage.calls.add_entry("u_b", entry(seq=3), ["hi"])  # not bob's call
+    assert not await storage.calls.add_entry("u_a", entry(call_id="c_gone"), ["hi"])
+
+
+async def history(storage) -> None:
+    """alice: c_1 (ag_1, t=10, "buy milk"), c_2 (ag_2, t=20, "milk and bread" / agent "noted"), c_3 (ag_1, t=30, no text).
+    bob: c_9 (t=15, "milk")."""
+    await storage.users.create("u_a", "alice", "Alice", 1.0)
+    await storage.users.create("u_b", "bob", "Bob", 1.0)
+    for cid, agent_id, at, texts in (
+        ("c_1", "ag_1", 10.0, [("user", "buy milk")]),
+        ("c_2", "ag_2", 20.0, [("user", "milk and bread"), ("agent", "noted")]),
+        ("c_3", "ag_1", 30.0, []),
+    ):
+        await storage.calls.create(call(id=cid, agent_id=agent_id, status="ended", created_at=at, updated_at=at))
+        for seq, (role, text) in enumerate(texts):
+            await storage.calls.add_entry("u_a", entry(cid, seq, role, text), text.split())
+    await storage.calls.create(call(id="c_9", user_id="u_b", status="ended", created_at=15.0))
+    await storage.calls.add_entry("u_b", entry("c_9"), ["milk"])
+
+
+async def ids(storage, **kw) -> list[str]:
+    return [c.id for c in await storage.calls.list("u_a", **kw)]
+
+
+async def test_list_is_newest_first_and_filtered(storage):
+    await history(storage)
+    assert await ids(storage) == ["c_3", "c_2", "c_1"]
+    assert await ids(storage, agent_id="ag_1") == ["c_3", "c_1"]
+    assert await ids(storage, since=20.0) == ["c_3", "c_2"]
+    assert await ids(storage, until=20.0) == ["c_1"]
+    assert await ids(storage, since=10.0, until=30.0, agent_id="ag_2") == ["c_2"]
+    assert await ids(storage, limit=2) == ["c_3", "c_2"]
+    assert await ids(storage, before=(20.0, "c_2")) == ["c_1"]
+    await storage.calls.delete("u_a", "c_2")
+    assert await ids(storage, before=(20.0, "c_2")) == ["c_1"]  # a position: the call may be gone
+
+
+async def test_list_searches_terms_in_any_entry(storage):
+    await history(storage)
+    assert await ids(storage, terms=[["milk"]]) == ["c_2", "c_1"]
+    assert await ids(storage, terms=[["milk"], ["bread"]]) == ["c_2"]
+    assert await ids(storage, terms=[["noted"]]) == ["c_2"]  # the agent's answer too
+    assert await ids(storage, terms=[["milk"], ["noted"]]) == ["c_2"]  # words from different utterances of a call
+    assert await ids(storage, terms=[["buy"], ["bread"]]) == []  # but all of them in the same call
+    assert await ids(storage, terms=[["nothing", "bread"]]) == ["c_2"]  # alternatives
+    assert await ids(storage, terms=[["milk"]], agent_id="ag_1") == ["c_1"]
+    assert await ids(storage, terms=[]) == []
+
+
+async def test_same_time_calls_page_by_id(storage):
+    await storage.users.create("u_a", "alice", "Alice", 1.0)
+    for cid in ("c_a", "c_b", "c_c"):
+        await storage.calls.create(call(id=cid, created_at=5.0))
+    assert await ids(storage, limit=2) == ["c_c", "c_b"]
+    assert await ids(storage, before=(5.0, "c_b")) == ["c_a"]
+
+
+async def test_deleting_calls_takes_entries_and_index_along(storage):
+    await history(storage)
+    assert await storage.calls.delete("u_a", "c_2")
+    assert not await storage.calls.delete("u_a", "c_2")
+    assert not await storage.calls.delete("u_a", "c_9")  # bob's
+    assert await storage.calls.entries("u_a", "c_2") == []
+    assert await ids(storage, terms=[["bread"]]) == []
+    assert await storage.calls.delete_all("u_a", "ag_1") == 2
+    assert await ids(storage) == []
+    assert await storage.calls.get("u_b", "c_9") is not None
+    assert await storage.calls.delete_all("u_b") == 1
+    assert await storage.calls.list("u_b") == []
+
+
+async def test_expiry_is_set_capped_and_purged(storage):
+    await history(storage)  # alice: c_1 (ag_1, t=10), c_2 (ag_2, t=20), c_3 (ag_1, t=30)
+    assert await storage.calls.set_expiry("u_a", "ag_1", 100.0) == 2
+    assert [(await storage.calls.get("u_a", c)).expires_at for c in ("c_1", "c_2", "c_3")] == [110.0, None, 130.0]
+    assert await storage.calls.cap_expiry(50.0) == 4  # c_1, c_3 longer; c_2 and bob's c_9 kept forever
+    assert [(await storage.calls.get("u_a", c)).expires_at for c in ("c_1", "c_2", "c_3")] == [60.0, 70.0, 80.0]
+    await storage.calls.create(call(id="c_open", created_at=1.0, expires_at=2.0))  # still recording
+    assert await storage.calls.purge_expired(70.0, limit=2) == 2  # in batches
+    assert await storage.calls.purge_expired(70.0) == 1  # c_1, c_2 and bob's c_9 (65) in all
+    assert await ids(storage) == ["c_3", "c_open"]
+    assert await storage.calls.list("u_b") == []
+    assert await ids(storage, terms=[["milk"]]) == []
+    assert await storage.calls.set_expiry("u_a", "ag_1", None) == 2  # c_3 and c_open
+    assert (await storage.calls.get("u_a", "c_3")).expires_at is None
+
+
+async def test_entries_are_resealed_in_place(storage):
+    await history(storage)
+    plain = await storage.calls.entries_by_seal(False, 10)
+    assert sorted((e.call_id, e.seq) for e in plain) == [("c_1", 0), ("c_2", 0), ("c_2", 1), ("c_9", 0)]
+    assert len(await storage.calls.entries_by_seal(False, 2)) == 2
+    first = [e for e in plain if (e.call_id, e.seq) == ("c_1", 0)][0]
+    assert await storage.calls.replace_entry(replace(first, text="sealed!", sealed=True), ["xabc"])
+    assert not await storage.calls.replace_entry(replace(first, call_id="c_gone"), [])
+    assert [(e.call_id, e.text) for e in await storage.calls.entries_by_seal(True, 10)] == [("c_1", "sealed!")]
+    assert await ids(storage, terms=[["xabc"]]) == ["c_1"]
+    assert await ids(storage, terms=[["buy"]]) == []  # the old terms are gone
+
+
+async def test_meta_delete(storage):
+    await storage.meta.set("k", "1")
+    await storage.meta.delete("k")
+    await storage.meta.delete("k")
+    assert await storage.meta.get("k") is None
 
 
 async def test_deleting_a_user_deletes_their_calls(storage):
-    await storage.users.create("u_a", "alice", "Alice", 1.0)
-    await storage.calls.create(call())
+    await history(storage)
     await storage.users.delete("u_a")
     assert await storage.calls.get("u_a", "c_1") is None
+    assert await storage.calls.entries("u_a", "c_1") == []
+    assert [c.id for c in await storage.calls.list("u_b", terms=[["milk"]])] == ["c_9"]
+
+
+async def test_sqlite_index_forgets_deleted_text():
+    st = open_sqlite_storage(":memory:")
+    await history(st)
+    await st.users.delete("u_a")
+    await st.calls.delete("u_b", "c_9")
+    assert st.db.query("SELECT COUNT(*) FROM history_fts")[0][0] == 0
+    assert st.db.query("SELECT COUNT(*) FROM call_entries")[0][0] == 0
 
 
 async def test_link_central_subject(storage):

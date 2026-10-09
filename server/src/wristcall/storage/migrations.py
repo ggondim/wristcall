@@ -100,6 +100,42 @@ MIGRATIONS: list[list[str]] = [
         "CREATE UNIQUE INDEX users_central_subject ON users(central_subject) WHERE central_subject IS NOT NULL",
         "ALTER TABLE pairing_requests ADD COLUMN target_user_id TEXT REFERENCES users(id) ON DELETE CASCADE",
     ],
+    # 5: history (E3). Every call is recorded; its text moves to call_entries (one row per utterance), indexed by
+    # history_fts (rowid = call_entries.id) with terms the server computes (history_codec.py). calls.text stays, unused.
+    # Rolling back to 0.4.0 needs the backup taken before the upgrade, as for step 4.
+    [
+        "ALTER TABLE calls ADD COLUMN agent_slug TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE calls ADD COLUMN agent_name TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE calls ADD COLUMN expires_at REAL",
+        """CREATE TABLE call_entries (
+          id INTEGER PRIMARY KEY,
+          call_id TEXT NOT NULL REFERENCES calls(id) ON DELETE CASCADE,
+          seq INTEGER NOT NULL,
+          role TEXT NOT NULL,
+          text TEXT,
+          sealed INTEGER NOT NULL DEFAULT 0,
+          error TEXT,
+          at REAL NOT NULL,
+          UNIQUE (call_id, seq)
+        )""",
+        # Terms arrive already cut by history_codec.words(); the tokenizer only splits them on spaces.
+        "CREATE VIRTUAL TABLE history_fts USING fts5(terms, tokenize = 'unicode61 remove_diacritics 2')",
+        # Fires on cascades too (deleting a call or a user): the index never keeps words of deleted text.
+        """CREATE TRIGGER call_entries_unindex AFTER DELETE ON call_entries BEGIN
+          DELETE FROM history_fts WHERE rowid = old.id;
+        END""",
+        """UPDATE calls SET
+          agent_slug = COALESCE((SELECT slug FROM agents WHERE agents.id = calls.agent_id), ''),
+          agent_name = COALESCE((SELECT display_name FROM agents WHERE agents.id = calls.agent_id), '')""",
+        """INSERT INTO call_entries (call_id, seq, role, text, error, at)
+          SELECT id, 0, 'user', text, CASE WHEN error = 'stt_failed' THEN 'stt_failed' END, COALESCE(ended_at, created_at)
+          FROM calls WHERE text IS NOT NULL AND text != ''""",
+        # wristcall_terms: history_codec.words() registered by Database, so moved text is cut like new text.
+        "INSERT INTO history_fts (rowid, terms) SELECT id, wristcall_terms(text) FROM call_entries",
+        "UPDATE calls SET text = NULL",
+        "CREATE INDEX calls_agent ON calls (user_id, agent_id, created_at)",
+        "CREATE INDEX calls_expiry ON calls (expires_at) WHERE expires_at IS NOT NULL",
+    ],
 ]
 
 LATEST = len(MIGRATIONS)

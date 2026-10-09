@@ -461,3 +461,42 @@ async def test_conversation_providers_need_a_voice():
     async with httpx.AsyncClient() as http:
         with pytest.raises(ProviderError, match="needs a tts"):
             build_agent_providers(cfg, spec, http)
+
+
+@pytest.mark.parametrize("value", [0, -1, 36_501, "never", "30", 1.5, True])
+async def test_bad_retention_is_refused(svc, value):
+    with pytest.raises(AgentError) as e:
+        await svc.create("u_a", {"slug": "x", "retention_days": value})
+    assert e.value.code == "invalid" and "retention_days" in e.value.message
+
+
+async def test_retention_is_shown_with_the_one_in_force():
+    cfg = config(history={"default_retention_days": 90, "max_retention_days": 365})
+    svc = await make(cfg)
+    forever = await svc.create("u_a", {"slug": "forever", "retention_days": "forever"})
+    week = await svc.create("u_a", {"slug": "week", "retention_days": 7})
+    plain = await svc.create("u_a", {"slug": "plain"})
+    shown = [agent_detail(a, cfg.history) for a in (forever, week, plain)]
+    assert [(d["retention_days"], d["effective_retention_days"]) for d in shown] == [("forever", 365), (7, 7), (None, 90)]
+    assert "effective_retention_days" not in agent_detail(plain)
+
+
+async def test_changing_the_retention_moves_the_expiry_of_past_calls():
+    from wristcall.storage import CallRecord
+
+    svc = await make(config(history={"default_retention_days": 30}))
+    agent = await svc.create("u_a", {"slug": "note"})
+    st = svc._st
+    await st.calls.create(CallRecord(
+        id="c_1", user_id="u_a", agent_id=agent.id, device_id=None, call_type="conversation", status="ended",
+        created_at=1000.0, updated_at=1000.0, expires_at=1000.0 + 30 * 86_400,
+    ))
+    await svc.update("u_a", "note", {"retention_days": 2})
+    assert (await st.calls.get("u_a", "c_1")).expires_at == 1000.0 + 2 * 86_400
+    await svc.update("u_a", "note", {"retention_days": "forever"})
+    assert (await st.calls.get("u_a", "c_1")).expires_at is None
+    await svc.update("u_a", "note", {"display_name": "Notes"})  # retention untouched
+    assert (await st.calls.get("u_a", "c_1")).expires_at is None
+    updated = await svc.update("u_a", "note", {"retention_days": None})  # back to the operator's default
+    assert updated.spec.retention_days is None
+    assert (await st.calls.get("u_a", "c_1")).expires_at == 1000.0 + 30 * 86_400

@@ -372,3 +372,62 @@ async def test_manual_call_ends_turn_only_on_mute():
     await s.wait_idle()
     assert t.events[0] == {"type": "turn.user_end", "reason": "mute"}
     assert "turn.agent_end" in t.types() and stt.calls == 1
+
+
+class Recorded:
+    def __init__(self) -> None:
+        self.rows: list[tuple] = []
+
+    async def __call__(self, role, text, error) -> None:
+        self.rows.append((role, text, error))
+
+
+def recorded(**kw):
+    rec = Recorded()
+    s, t, _ = make(**kw)
+    s._record = rec
+    return s, t, rec
+
+
+async def test_each_turn_is_recorded_user_then_agent():
+    s, _, rec = recorded()
+    await speak(s)
+    await s.wait_idle()
+    await speak(s)
+    await s.wait_idle()
+    assert rec.rows == [("user", "hi", None), ("agent", "Hello. How are you?", None)] * 2
+
+
+async def test_stt_failure_is_recorded_without_text():
+    s, _, rec = recorded(stt=Stt(exc=ProviderError("down")))
+    await speak(s)
+    await s.wait_idle()
+    assert rec.rows == [("user", None, "stt_failed")]
+
+
+async def test_blank_transcript_records_nothing():
+    s, _, rec = recorded(stt=Stt(text="  "))
+    await speak(s)
+    await s.wait_idle()
+    assert rec.rows == []
+
+
+async def test_responder_failure_is_recorded_with_what_was_said():
+    s, _, rec = recorded(llm=Llm(fail_after=1))
+    await speak(s)
+    await s.wait_idle()
+    assert rec.rows == [("user", "hi", None), ("agent", "Hello.", "responder_failed")]
+
+
+async def test_empty_response_is_recorded_as_a_failure():
+    s, _, rec = recorded(llm=Llm(pieces=()))
+    await speak(s)
+    await s.wait_idle()
+    assert rec.rows == [("user", "hi", None), ("agent", None, "responder_failed")]
+
+
+async def test_tts_failure_keeps_the_answer_text():
+    s, _, rec = recorded(tts=Tts(fail=True))
+    await speak(s)
+    await s.wait_idle()
+    assert rec.rows == [("user", "hi", None), ("agent", "Hello. How are you?", "tts_failed")]

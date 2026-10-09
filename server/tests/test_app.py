@@ -376,6 +376,9 @@ def test_one_shot_call_records_until_hang_up_and_delivers(oneway):
         "status": "delivered", "text": "comprar leite", "attempts": 1, "last_http_status": 204, "error": None,
         "call_type": "one-shot",
     }
+    assert view["agent"] == {"id": view["agent_id"], "slug": "note", "display_name": "note"}
+    assert [(e["role"], e["text"], e["error"]) for e in view["entries"]] == [("user", "comprar leite", None)]
+    assert view["expires_at"] is None
     sent = oneway.hook.calls.last.request
     assert sent.headers["authorization"] == "Bearer s3cret" and sent.headers["idempotency-key"] == call_id
     body = json.loads(sent.content)
@@ -485,12 +488,60 @@ def test_client_gone_before_session_ready_still_finishes_the_call(oneway, monkey
     assert wait_done(oneway, row["id"], auth(token))["status"] == "empty"
 
 
-def test_conversation_ready_has_no_call_id(client):
+def test_conversation_is_recorded_in_the_history(client):
     token = pair(client)
     with client.websocket_connect("/v1/call", headers=auth(token)) as ws:
         ws.send_json(START)
-        assert "call_id" not in ws.receive_json()
+        call_id = ws.receive_json()["call_id"]
+        ws.send_bytes(tone(500) + silence(900))
+        read_until_agent_end(ws)
         ws.send_json({"type": "session.end"})
+    view = client.get(f"/v1/calls/{call_id}", headers=auth(token)).json()
+    assert (view["call_type"], view["status"], view["error"]) == ("conversation", "ended", None)
+    assert view["agent"]["slug"] == "default" and view["ended_at"] >= view["created_at"]
+    [user, agent] = view["entries"]
+    assert (user["role"], agent["role"], agent["error"]) == ("user", "agent", None)
+    assert agent["text"] == f"You said: {user['text']}" and view["text"] == user["text"]
+
+
+def test_conversation_without_speech_is_empty(client):
+    token = pair(client)
+    with client.websocket_connect("/v1/call", headers=auth(token)) as ws:
+        ws.send_json(START)
+        call_id = ws.receive_json()["call_id"]
+        ws.send_json({"type": "session.end"})
+    view = client.get(f"/v1/calls/{call_id}", headers=auth(token)).json()
+    assert (view["status"], view["entries"], view["text"]) == ("empty", [], None)
+
+
+def test_server_refuses_to_start_with_another_history_key():
+    from wristcall.history_codec import HistoryKeyError, new_key
+
+    store = open_sqlite_storage(":memory:")
+    cfg = fake_config()
+    cfg.history.encryption_key = new_key()
+    with TestClient(create_app(cfg, storage=store)):
+        pass
+    cfg.history.encryption_key = new_key()
+    with pytest.raises(HistoryKeyError, match="not the key"):
+        with TestClient(create_app(cfg, storage=store)):
+            pass
+
+
+def test_expired_calls_are_purged_at_startup():
+    from wristcall.storage import CallRecord
+
+    store = open_sqlite_storage(":memory:")
+    cfg = fake_config()
+    with TestClient(create_app(cfg, storage=store)) as c:
+        user = owner(c)
+    run(store.calls.create(CallRecord(
+        id="c_old", user_id=user.id, agent_id="ag_gone", device_id=None, call_type="one-shot",
+        status="delivered", created_at=1.0, updated_at=1.0, expires_at=2.0,
+    )))
+    with TestClient(create_app(cfg, storage=store)):
+        pass
+    assert run(store.calls.get(user.id, "c_old")) is None
 
 
 def test_unfinished_calls_are_interrupted_at_startup():
@@ -499,15 +550,17 @@ def test_unfinished_calls_are_interrupted_at_startup():
     with TestClient(create_app(cfg, storage=store)) as c:
         user = owner(c)
         agent = run(c.app.state.agents.list(user.id))[0]
-    from wristcall.storage import CallRecord
+    from wristcall.storage import CallRecord, EntryRecord
     run(store.calls.create(CallRecord(
         id="c_old", user_id=user.id, agent_id=agent.id, device_id=None, call_type="one-shot",
-        status="processing", created_at=1.0, updated_at=1.0, text="half",
+        status="processing", created_at=1.0, updated_at=1.0,
     )))
+    run(store.calls.add_entry(user.id, EntryRecord("c_old", 0, "user", "half", False, None, 1.0), ["half"]))
     with TestClient(create_app(cfg, storage=store)):
         pass
     old = run(store.calls.get(user.id, "c_old"))
-    assert (old.status, old.error, old.text) == ("failed", "interrupted", "half")
+    assert (old.status, old.error) == ("failed", "interrupted")
+    assert [e.text for e in run(store.calls.entries(user.id, "c_old"))] == ["half"]
 
 
 def test_watch_0_1_0_calling_a_one_way_first_agent_records_and_ends_normally(oneway):

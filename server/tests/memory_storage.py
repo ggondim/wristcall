@@ -6,7 +6,7 @@ epic E9 relies on. Not shipped: it lives in tests/.
 
 from dataclasses import replace
 
-from wristcall.storage import AgentRecord, ApiToken, CallRecord, Conflict, Device, LimitReached, PairingRequest, User
+from wristcall.storage import AgentRecord, ApiToken, CallRecord, Conflict, Device, EntryRecord, LimitReached, PairingRequest, User
 
 TOKEN_TOUCH_S = 60
 
@@ -286,6 +286,7 @@ class _Agents:
 class _Calls:
     def __init__(self) -> None:
         self.rows: dict[str, CallRecord] = {}
+        self.entry_rows: dict[str, list[tuple[EntryRecord, set[str]]]] = {}
 
     async def create(self, record):
         self.rows[record.id] = record
@@ -298,16 +299,100 @@ class _Calls:
     async def save(self, record):
         current = self.rows[record.id]
         self.rows[record.id] = replace(
-            record, user_id=current.user_id, agent_id=current.agent_id, device_id=current.device_id,
-            call_type=current.call_type, created_at=current.created_at,
+            current, status=record.status, error=record.error, attempts=record.attempts,
+            last_http_status=record.last_http_status, ended_at=record.ended_at, finished_at=record.finished_at,
+            updated_at=record.updated_at,
         )
         return self.rows[record.id]
 
     async def interrupt_unfinished(self, now):
         stale = [c for c in self.rows.values() if c.status in ("recording", "processing")]
         for c in stale:
-            self.rows[c.id] = replace(c, status="failed", error="interrupted", finished_at=now, updated_at=now)
+            status = "ended" if c.call_type == "conversation" else "failed"
+            self.rows[c.id] = replace(
+                c, status=status, error="interrupted", ended_at=c.ended_at or now, finished_at=now, updated_at=now,
+            )
         return len(stale)
+
+    async def add_entry(self, user_id, entry, terms):
+        if await self.get(user_id, entry.call_id) is None:
+            return False
+        self.entry_rows.setdefault(entry.call_id, []).append((entry, set(terms)))
+        return True
+
+    async def entries(self, user_id, call_id):
+        if await self.get(user_id, call_id) is None:
+            return []
+        return sorted((e for e, _ in self.entry_rows.get(call_id, [])), key=lambda e: e.seq)
+
+    def _matches(self, call_id, terms):
+        rows = self.entry_rows.get(call_id, [])
+        return all(any(set(group) & found for _, found in rows) for group in terms)
+
+    async def list(self, user_id, *, agent_id=None, since=None, until=None, terms=None, before=None, limit=50):
+        if terms is not None and not terms:
+            return []
+        calls = sorted(
+            (c for c in self.rows.values() if c.user_id == user_id), key=lambda c: (c.created_at, c.id), reverse=True,
+        )
+        if before is not None:
+            calls = [c for c in calls if (c.created_at, c.id) < tuple(before)]
+        return [
+            c for c in calls
+            if (agent_id is None or c.agent_id == agent_id)
+            and (since is None or c.created_at >= since)
+            and (until is None or c.created_at < until)
+            and (not terms or self._matches(c.id, terms))
+        ][:limit]
+
+    def _drop(self, call_ids):
+        for call_id in call_ids:
+            self.rows.pop(call_id, None)
+            self.entry_rows.pop(call_id, None)
+        return len(call_ids)
+
+    async def delete(self, user_id, call_id):
+        return self._drop([call_id] if await self.get(user_id, call_id) else []) == 1
+
+    async def delete_all(self, user_id, agent_id=None):
+        return self._drop([
+            c.id for c in self.rows.values() if c.user_id == user_id and (agent_id is None or c.agent_id == agent_id)
+        ])
+
+    async def set_expiry(self, user_id, agent_id, retention_s):
+        mine = [c for c in self.rows.values() if c.user_id == user_id and c.agent_id == agent_id]
+        for c in mine:
+            self.rows[c.id] = replace(c, expires_at=None if retention_s is None else c.created_at + retention_s)
+        return len(mine)
+
+    async def cap_expiry(self, max_retention_s):
+        longer = [
+            c for c in self.rows.values() if c.expires_at is None or c.expires_at > c.created_at + max_retention_s
+        ]
+        for c in longer:
+            self.rows[c.id] = replace(c, expires_at=c.created_at + max_retention_s)
+        return len(longer)
+
+    async def entries_by_seal(self, sealed, limit):
+        found = [e for rows in self.entry_rows.values() for e, _ in rows if e.text is not None and e.sealed == sealed]
+        return found[:limit]
+
+    async def replace_entry(self, entry, terms):
+        rows = self.entry_rows.get(entry.call_id, [])
+        for i, (e, _) in enumerate(rows):
+            if e.seq == entry.seq:
+                rows[i] = (replace(e, text=entry.text, sealed=entry.sealed), set(terms))
+                return True
+        return False
+
+    async def purge_expired(self, now, limit=500):
+        return self._drop([
+            c.id for c in self.rows.values()
+            if c.expires_at is not None and c.expires_at <= now and c.status not in ("recording", "processing")
+        ][:limit])
+
+    async def compact(self):
+        pass
 
 
 class _Meta:
@@ -319,6 +404,9 @@ class _Meta:
 
     async def set(self, key, value):
         self.rows[key] = value
+
+    async def delete(self, key):
+        self.rows.pop(key, None)
 
 
 class MemoryStorage:
@@ -335,7 +423,7 @@ class MemoryStorage:
         self.tokens.rows = {k: v for k, v in self.tokens.rows.items() if v[0].user_id != user_id}
         self.devices.rows = {k: v for k, v in self.devices.rows.items() if v[0].user_id != user_id}
         self.agents.rows = {k: v for k, v in self.agents.rows.items() if v.user_id != user_id}
-        self.calls.rows = {k: v for k, v in self.calls.rows.items() if v.user_id != user_id}
+        self.calls._drop([c.id for c in self.calls.rows.values() if c.user_id == user_id])
         self.pairing.codes = {k: v for k, v in self.pairing.codes.items() if v["user_id"] != user_id}
         self.pairing.requests = {
             k: v for k, v in self.pairing.requests.items() if user_id not in (v["user_id"], v["target_user_id"])

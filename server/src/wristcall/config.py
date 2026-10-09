@@ -12,6 +12,8 @@ from urllib.parse import urlsplit
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator, model_validator
 
+from .history_codec import HistoryKeyError, parse_key
+
 
 class ConfigError(Exception):
     pass
@@ -131,6 +133,49 @@ class LimitsConfig(BaseModel):
     max_one_way_call_s: int = Field(default=1800, ge=60, le=14_400)
 
 
+class HistoryConfig(BaseModel):
+    """Call history (design decision 16): how long it stays and whether its text is encrypted at rest."""
+
+    model_config = ConfigDict(extra="forbid")
+    # Days a call stays when its agent does not choose; null keeps it until the user deletes it.
+    default_retention_days: int | None = Field(default=None, ge=1, le=36_500)
+    # Ceiling for every agent, "forever" included; null: no ceiling.
+    max_retention_days: int | None = Field(default=None, ge=1, le=36_500)
+    # 32 random bytes in base64 (`wristcall history new-key`). Losing it loses the encrypted history.
+    encryption_key: str | None = None
+    # How often the server deletes expired calls (also once at startup).
+    purge_every_s: int = Field(default=3600, ge=60, le=86_400)
+
+    @field_validator("encryption_key")
+    @classmethod
+    def _check_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            parse_key(value)
+        except HistoryKeyError as e:
+            raise ValueError(str(e)) from None
+        return value
+
+    @model_validator(mode="after")
+    def _check_ceiling(self) -> "HistoryConfig":
+        if self.max_retention_days is not None and (
+            self.default_retention_days is None or self.default_retention_days > self.max_retention_days
+        ):
+            raise ValueError("default_retention_days must be set and at most max_retention_days")
+        return self
+
+    def key(self) -> bytes | None:
+        return parse_key(self.encryption_key) if self.encryption_key else None
+
+    def effective_days(self, agent_days: "int | Literal['forever'] | None") -> int | None:
+        """The agent's choice (None = the operator's default), within the ceiling. None: kept until deleted."""
+        days = self.default_retention_days if agent_days is None else None if agent_days == "forever" else agent_days
+        if self.max_retention_days is None:
+            return days
+        return self.max_retention_days if days is None else min(days, self.max_retention_days)
+
+
 _LOCAL_HOSTS = ("localhost", "127.0.0.1")
 
 
@@ -167,6 +212,7 @@ class AppConfig(BaseModel):
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     profiles: dict[str, ProfileConfig] = Field(default_factory=dict)
     central_account: CentralAccountConfig | None = None
+    history: HistoryConfig = Field(default_factory=HistoryConfig)
 
     @model_validator(mode="after")
     def _check_references(self) -> "AppConfig":

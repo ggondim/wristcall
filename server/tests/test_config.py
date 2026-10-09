@@ -232,3 +232,61 @@ def test_localhost_issuer_may_use_http(issuer):
 def test_central_account_accepts_attestation():
     cfg = parse_config(_with_central(issuer="https://a.example", clients=["a"], device_credential="attestation"), ENV)
     assert cfg.central_account.device_credential == "attestation"
+
+
+KEY = "q83vEjRWeJq83vEjRWeJq83vEjRWeJq83vEjRWeJq8w"  # 32 bytes, URL-safe base64 without padding
+
+
+def test_history_defaults_keep_everything_in_the_clear():
+    h = parse_config(base(), ENV).history
+    assert (h.default_retention_days, h.max_retention_days, h.encryption_key, h.purge_every_s) == (None, None, None, 3600)
+    assert h.key() is None
+
+
+def test_history_settings_parse():
+    data = base()
+    data["history"] = {
+        "default_retention_days": 90, "max_retention_days": 365, "encryption_key": "${HKEY}", "purge_every_s": 600,
+    }
+    h = parse_config(data, {**ENV, "HKEY": KEY}).history
+    assert (h.default_retention_days, h.max_retention_days, h.purge_every_s) == (90, 365, 600)
+    assert len(h.key()) == 32
+
+
+@pytest.mark.parametrize("history", [
+    {"default_retention_days": 0},
+    {"max_retention_days": 30},  # a ceiling needs a default under it
+    {"default_retention_days": 90, "max_retention_days": 30},
+    {"purge_every_s": 10},
+    {"retention": 5},
+])
+def test_bad_history_settings_are_rejected(history):
+    data = base()
+    data["history"] = history
+    with pytest.raises(ConfigError):
+        parse_config(data, ENV)
+
+
+def test_bad_history_key_is_rejected_without_echoing_it():
+    data = base()
+    data["history"] = {"encryption_key": "${HKEY}"}
+    with pytest.raises(ConfigError, match="32 random bytes") as exc:
+        parse_config(data, {**ENV, "HKEY": "c2hvcnQta2V5"})
+    assert "c2hvcnQta2V5" not in str(exc.value)
+
+
+@pytest.mark.parametrize("default, ceiling, agent_days, expected", [
+    (None, None, None, None),  # self-host default: kept until deleted
+    (None, None, 30, 30),
+    (None, None, "forever", None),
+    (90, None, None, 90),  # the operator's default
+    (90, None, "forever", None),
+    (90, 365, "forever", 365),  # the ceiling wins over forever
+    (90, 365, 1000, 365),
+    (90, 365, 7, 7),
+    (90, 365, None, 90),
+])
+def test_effective_retention(default, ceiling, agent_days, expected):
+    data = base()
+    data["history"] = {"default_retention_days": default, "max_retention_days": ceiling}
+    assert parse_config(data, ENV).history.effective_days(agent_days) == expected

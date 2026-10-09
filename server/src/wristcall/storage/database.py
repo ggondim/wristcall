@@ -7,7 +7,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from ..history_codec import words
 from .migrations import migrate
+
+HISTORY_STEP = 5  # schema version that moves call text into the history (epic E3)
 
 
 class DatabaseError(Exception):
@@ -37,6 +40,25 @@ def _enable_wal(conn: sqlite3.Connection, timeout_s: float = 5.0) -> None:
             time.sleep(0.05)
 
 
+def _terms(text: str | None) -> str:
+    """The plain search terms of a text, as history_codec computes them (used by schema step 5 on 0.4.0 text)."""
+    return " ".join(dict.fromkeys(words(text or "")))
+
+
+def _compact(conn: sqlite3.Connection) -> None:
+    conn.execute("INSERT INTO history_fts (history_fts) VALUES ('optimize')")
+    conn.execute("VACUUM")
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
+def _secure_delete_index(conn: sqlite3.Connection) -> None:
+    # Deleted or re-encrypted history text must not stay readable in old index segments (needs the table).
+    try:
+        conn.execute("INSERT INTO history_fts (history_fts, rank) VALUES ('secure-delete', 1)")
+    except sqlite3.OperationalError:
+        pass  # SQLite before 3.42 (FTS5 secure-delete): deleted terms leave the index when FTS5 merges segments (or at compact())
+
+
 class Database:
     def __init__(self, path: Path | str) -> None:
         in_memory = str(path) == ":memory:"
@@ -51,7 +73,14 @@ class Database:
                 _enable_wal(self._conn)
             self._conn.execute("PRAGMA foreign_keys=ON")
             _require_fts5(self._conn)
+            self._conn.create_function("wristcall_terms", 1, _terms, deterministic=True)
+            # Before migrating: step 5 moves 0.4.0 call text and must not leave it in free pages.
+            self._conn.execute("PRAGMA secure_delete=ON")
+            before = self._conn.execute("PRAGMA user_version").fetchone()[0]
             self.version = migrate(self._conn)
+            _secure_delete_index(self._conn)
+            if before < HISTORY_STEP <= self.version:
+                _compact(self._conn)
 
     def query(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
         with self._lock:
@@ -72,6 +101,11 @@ class Database:
                 self._conn.execute("ROLLBACK")
                 raise
             self._conn.execute("COMMIT")
+
+    def compact(self) -> None:
+        """Rewrites the file: nothing deleted or replaced is left in it (after turning encryption on or off)."""
+        with self._lock:
+            _compact(self._conn)
 
     def close(self) -> None:
         with self._lock:

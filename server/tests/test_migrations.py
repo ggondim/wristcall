@@ -197,3 +197,94 @@ def test_version_3_database_gains_central_columns(tmp_path):
     assert db.query("SELECT handle, central_subject FROM users")[0]["handle"] == "owner"
     assert db.query("SELECT central_subject FROM users")[0]["central_subject"] is None
     db.close()
+
+
+def test_version_4_database_moves_call_text_to_the_history(tmp_path):
+    # A database of the E5 main (version 4) with E2 calls: their text becomes a searchable user entry.
+    path = database_path(tmp_path)
+    conn = sqlite3.connect(path, isolation_level=None)
+    for step in MIGRATIONS[:4]:
+        for statement in step:
+            conn.execute(statement)
+    conn.execute("PRAGMA user_version = 4")
+    conn.execute("INSERT INTO users (id, handle, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1.0)")
+    conn.execute(
+        "INSERT INTO agents (id, user_id, slug, display_name, icon, call_type, position, spec, created_at, updated_at) "
+        "VALUES ('ag1', 'u1', 'note', 'Note', 'waveform', 'one-shot', 0, '{}', 1.0, 1.0)"
+    )
+    for cid, status, error, text in (
+        ("c1", "delivered", None, "Reunião às 15h"),
+        ("c2", "failed", "stt_failed", "começo"),
+        ("c3", "empty", None, None),
+    ):
+        conn.execute(
+            "INSERT INTO calls (id, user_id, agent_id, call_type, status, error, text, created_at, ended_at, updated_at) "
+            "VALUES (?, 'u1', ?, 'one-shot', ?, ?, ?, 1.0, 2.0, 2.0)",
+            (cid, "ag_deleted" if cid == "c3" else "ag1", status, error, text),
+        )
+    conn.close()
+    db = Database(path)
+    assert db.version == LATEST
+    assert {"call_entries", "history_fts"} <= tables(db)
+    assert db.query("SELECT COUNT(*) FROM calls WHERE text IS NOT NULL")[0][0] == 0
+    entries = [tuple(r) for r in db.query("SELECT call_id, seq, role, text, sealed, error, at FROM call_entries ORDER BY call_id")]
+    assert entries == [("c1", 0, "user", "Reunião às 15h", 0, None, 2.0), ("c2", 0, "user", "começo", 0, "stt_failed", 2.0)]
+    agents = [tuple(r) for r in db.query("SELECT id, agent_slug, agent_name, expires_at FROM calls ORDER BY id")]
+    assert agents == [("c1", "note", "Note", None), ("c2", "note", "Note", None), ("c3", "", "", None)]
+    # Moved text is found with the words history_codec computes for new text.
+    from wristcall.history_codec import HistoryCodec
+    from wristcall.storage.sqlite import fts_query
+    query = fts_query(HistoryCodec().query_terms("REUNIAO as"))
+    assert [r[0] for r in db.query("SELECT rowid FROM history_fts WHERE history_fts MATCH ?", (query,))] == [1]
+    # Cut exactly like new text (history_codec.words), not by the FTS5 tokenizer: "nº" is "no", "1ª" is "1a".
+    assert db.query("SELECT terms FROM history_fts WHERE rowid = 1")[0][0] == "reuniao as 15h"
+    db.close()
+
+
+def test_step_5_cuts_moved_text_like_new_text(tmp_path):
+    path = database_path(tmp_path)
+    conn = sqlite3.connect(path, isolation_level=None)
+    for step in MIGRATIONS[:4]:
+        for statement in step:
+            conn.execute(statement)
+    conn.execute("PRAGMA user_version = 4")
+    conn.execute("INSERT INTO users (id, handle, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1.0)")
+    conn.execute(
+        "INSERT INTO calls (id, user_id, agent_id, call_type, status, text, created_at, updated_at) "
+        "VALUES ('c1', 'u1', 'ag1', 'one-shot', 'delivered', 'Pedido nº 42, 1ª reunião na Straße', 1.0, 1.0)"
+    )
+    conn.close()
+    from wristcall.history_codec import HistoryCodec, words
+    from wristcall.storage.sqlite import fts_query
+
+    db = Database(path)
+    assert db.query("SELECT terms FROM history_fts")[0][0] == " ".join(words("Pedido nº 42, 1ª reunião na Straße"))
+    for query in ("nº 42", "1ª", "strasse"):
+        match = fts_query(HistoryCodec().query_terms(query))
+        assert db.query("SELECT COUNT(*) FROM history_fts WHERE history_fts MATCH ?", (match,))[0][0] == 1, query
+    db.close()
+
+
+def test_step_5_leaves_no_old_call_text_in_the_files(tmp_path):
+    # Long text (overflow pages) moved out of calls.text must not stay readable in free pages after the migration
+    # and a delete: the migration runs with secure_delete on and compacts the file.
+    path = database_path(tmp_path)
+    conn = sqlite3.connect(path, isolation_level=None)
+    conn.execute("PRAGMA journal_mode=WAL")
+    for step in MIGRATIONS[:4]:
+        for statement in step:
+            conn.execute(statement)
+    conn.execute("PRAGMA user_version = 4")
+    conn.execute("INSERT INTO users (id, handle, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1.0)")
+    conn.execute(
+        "INSERT INTO calls (id, user_id, agent_id, call_type, status, text, created_at, updated_at) "
+        "VALUES ('c1', 'u1', 'ag1', 'one-shot', 'delivered', ?, 1.0, 1.0)",
+        ("zebrasecret in the old text " * 400,),
+    )
+    conn.close()
+    db = Database(path)
+    db.execute("DELETE FROM calls")
+    db.query("PRAGMA wal_checkpoint(TRUNCATE)")
+    raw = b"".join(p.read_bytes() for p in tmp_path.iterdir() if p.is_file())
+    assert b"zebrasecret" not in raw
+    db.close()

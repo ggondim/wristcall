@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 
 from .database import Database, database_path
-from .models import AgentRecord, ApiToken, CallRecord, Conflict, Device, LimitReached, PairingRequest, User
+from .models import AgentRecord, ApiToken, CallRecord, Conflict, Device, EntryRecord, LimitReached, PairingRequest, User
 
 TOKEN_TOUCH_S = 60  # last_used_at precision: one write a minute per token at most
 
@@ -349,11 +349,25 @@ class _Agents:
         return self._db.query("SELECT COUNT(*) FROM agents WHERE user_id = ?", (user_id,))[0][0]
 
 
-_CALL_FIELDS = ("status", "error", "text", "attempts", "last_http_status", "ended_at", "finished_at", "updated_at")
+_CALL_FIELDS = ("status", "error", "attempts", "last_http_status", "ended_at", "finished_at", "updated_at")
+_CALL_COLUMNS = tuple(CallRecord.__dataclass_fields__)
 
 
 def _call(r: sqlite3.Row) -> CallRecord:
-    return CallRecord(**{k: r[k] for k in r.keys()})
+    return CallRecord(**{k: r[k] for k in _CALL_COLUMNS})
+
+
+def _entry(r: sqlite3.Row) -> EntryRecord:
+    return EntryRecord(
+        call_id=r["call_id"], seq=r["seq"], role=r["role"], text=r["text"], sealed=bool(r["sealed"]),
+        error=r["error"], at=r["at"],
+    )
+
+
+def fts_query(terms: list[list[str]]) -> str:
+    """FTS5 query of term groups: (a OR b) AND (c OR d). Terms are letters and digits only (history_codec.words),
+    quoted anyway: nothing the user typed reaches FTS5 syntax."""
+    return " AND ".join("(" + " OR ".join(f'"{t}"' for t in group) + ")" for group in terms)
 
 
 class _Calls:
@@ -361,10 +375,9 @@ class _Calls:
         self._db = db
 
     async def create(self, record: CallRecord) -> CallRecord:
-        names = list(CallRecord.__dataclass_fields__)
         self._db.execute(
-            f"INSERT INTO calls ({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})",
-            tuple(getattr(record, n) for n in names),
+            f"INSERT INTO calls ({', '.join(_CALL_COLUMNS)}) VALUES ({', '.join('?' for _ in _CALL_COLUMNS)})",
+            tuple(getattr(record, n) for n in _CALL_COLUMNS),
         )
         return record
 
@@ -383,10 +396,115 @@ class _Calls:
 
     async def interrupt_unfinished(self, now: float) -> int:
         return self._db.execute(
-            "UPDATE calls SET status = 'failed', error = 'interrupted', finished_at = ?, updated_at = ? "
+            "UPDATE calls SET status = CASE WHEN call_type = 'conversation' THEN 'ended' ELSE 'failed' END, "
+            "error = 'interrupted', ended_at = COALESCE(ended_at, ?), finished_at = ?, updated_at = ? "
             "WHERE status IN ('recording', 'processing')",
-            (now, now),
+            (now, now, now),
         )
+
+    async def add_entry(self, user_id: str, entry: EntryRecord, terms: list[str]) -> bool:
+        with self._db.transaction() as conn:
+            row = conn.execute(
+                "INSERT INTO call_entries (call_id, seq, role, text, sealed, error, at) "
+                "SELECT ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM calls WHERE id = ? AND user_id = ?) RETURNING id",
+                (entry.call_id, entry.seq, entry.role, entry.text, int(entry.sealed), entry.error, entry.at,
+                 entry.call_id, user_id),
+            ).fetchone()
+            if row is None:
+                return False
+            if terms:
+                conn.execute("INSERT INTO history_fts (rowid, terms) VALUES (?, ?)", (row["id"], " ".join(terms)))
+        return True
+
+    async def entries(self, user_id: str, call_id: str) -> list[EntryRecord]:
+        rows = self._db.query(
+            "SELECT e.* FROM call_entries e JOIN calls c ON c.id = e.call_id WHERE e.call_id = ? AND c.user_id = ? "
+            "ORDER BY e.seq",
+            (call_id, user_id),
+        )
+        return [_entry(r) for r in rows]
+
+    async def entries_by_seal(self, sealed: bool, limit: int) -> list[EntryRecord]:
+        rows = self._db.query(
+            "SELECT * FROM call_entries WHERE text IS NOT NULL AND sealed = ? LIMIT ?", (int(sealed), limit)
+        )
+        return [_entry(r) for r in rows]
+
+    async def replace_entry(self, entry: EntryRecord, terms: list[str]) -> bool:
+        with self._db.transaction() as conn:
+            row = conn.execute(
+                "UPDATE call_entries SET text = ?, sealed = ? WHERE call_id = ? AND seq = ? RETURNING id",
+                (entry.text, int(entry.sealed), entry.call_id, entry.seq),
+            ).fetchone()
+            if row is None:
+                return False
+            conn.execute("DELETE FROM history_fts WHERE rowid = ?", (row["id"],))
+            if terms:
+                conn.execute("INSERT INTO history_fts (rowid, terms) VALUES (?, ?)", (row["id"], " ".join(terms)))
+        return True
+
+    async def list(
+        self, user_id: str, *, agent_id: str | None = None, since: float | None = None, until: float | None = None,
+        terms: list[list[str]] | None = None, before: tuple[float, str] | None = None, limit: int = 50,
+    ) -> list[CallRecord]:
+        if terms is not None and not terms:
+            return []
+        where, params = ["c.user_id = ?"], [user_id]
+        if agent_id is not None:
+            where.append("c.agent_id = ?")
+            params.append(agent_id)
+        if since is not None:
+            where.append("c.created_at >= ?")
+            params.append(since)
+        if until is not None:
+            where.append("c.created_at < ?")
+            params.append(until)
+        if before is not None:
+            where.append("(c.created_at, c.id) < (?, ?)")
+            params += list(before)
+        for group in terms or []:
+            # One condition per word: in a conversation, words may come from different utterances.
+            where.append(
+                "c.id IN (SELECT e.call_id FROM call_entries e "
+                "WHERE e.id IN (SELECT rowid FROM history_fts WHERE history_fts MATCH ?))"
+            )
+            params.append(fts_query([group]))
+        rows = self._db.query(
+            f"SELECT c.* FROM calls c WHERE {' AND '.join(where)} ORDER BY c.created_at DESC, c.id DESC LIMIT ?",
+            (*params, limit),
+        )
+        return [_call(r) for r in rows]
+
+    async def delete(self, user_id: str, call_id: str) -> bool:
+        return self._db.execute("DELETE FROM calls WHERE id = ? AND user_id = ?", (call_id, user_id)) == 1
+
+    async def delete_all(self, user_id: str, agent_id: str | None = None) -> int:
+        if agent_id is None:
+            return self._db.execute("DELETE FROM calls WHERE user_id = ?", (user_id,))
+        return self._db.execute("DELETE FROM calls WHERE user_id = ? AND agent_id = ?", (user_id, agent_id))
+
+    async def set_expiry(self, user_id: str, agent_id: str, retention_s: float | None) -> int:
+        return self._db.execute(
+            "UPDATE calls SET expires_at = created_at + ? WHERE user_id = ? AND agent_id = ?",
+            (retention_s, user_id, agent_id),
+        )
+
+    async def cap_expiry(self, max_retention_s: float) -> int:
+        return self._db.execute(
+            "UPDATE calls SET expires_at = created_at + ? WHERE expires_at IS NULL OR expires_at > created_at + ?",
+            (max_retention_s, max_retention_s),
+        )
+
+    async def purge_expired(self, now: float, limit: int = 500) -> int:
+        return self._db.execute(
+            "DELETE FROM calls WHERE id IN (SELECT id FROM calls WHERE expires_at IS NOT NULL AND expires_at <= ? "
+            "AND status NOT IN ('recording', 'processing') LIMIT ?)",
+            (now, limit),
+        )
+
+    async def compact(self) -> None:
+        self._db.compact()
+
 
 
 class _Meta:
@@ -402,6 +520,9 @@ class _Meta:
             "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             (key, value),
         )
+
+    async def delete(self, key: str) -> None:
+        self._db.execute("DELETE FROM meta WHERE key = ?", (key,))
 
 
 class SqliteStorage:

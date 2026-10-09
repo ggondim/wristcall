@@ -93,8 +93,8 @@ def session_ready(
 ) -> dict[str, Any]:
     """`agent` is the agent summary (id, slug, display_name, icon, call_type, turn_end).
 
-    `profile` repeats slug and display_name in the 0.2.0 shape, which watch 0.1.0 requires. `call_id` (one-way
-    calls) is what the client asks `GET /v1/calls/{call_id}` about after hanging up.
+    `profile` repeats slug and display_name in the 0.2.0 shape, which watch 0.1.0 requires. `call_id` (every call,
+    conversation included) is what the client asks `GET /v1/calls/{call_id}` about after hanging up.
     """
     msg = {
         "type": "session.ready",

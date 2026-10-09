@@ -25,12 +25,16 @@ from .auth import Authenticator, Principal
 from .bootstrap import bootstrap, log_report
 from .config import AppConfig
 from .delivery import DeliveryPolicy
-from .oneway import Background, OneWayCall, call_view, new_call_id
+from .history import History, check_key
+from .history_api import calls_router
+from .history_codec import HistoryCodec
+from .oneway import Background, OneWayCall
 from .pairing import DeviceLimit, Paired, PairingDenied, PairingGone, PairingService
 from .providers import ProviderError, check_providers
 from .ratelimit import RateLimiter
+from .redelivery import Redelivery
 from .session import CallSession
-from .storage import CallRecord, Storage, open_sqlite_storage
+from .storage import Storage, open_sqlite_storage
 from .vad import build_vad
 from .warmup import run_background, warm_all, warmup_targets
 
@@ -50,6 +54,17 @@ class PairAccountBody(BaseModel):
 
 class PollBody(BaseModel):
     poll_token: str = Field(min_length=1, max_length=128)
+
+
+async def purge_forever(history: History, every_s: float) -> None:
+    """Deletes expired calls now and then every `every_s`. Only the server purges, never the CLI."""
+    while True:
+        try:
+            if purged := await history.purge():
+                log.info("history: %d expired call(s) deleted", purged)
+        except Exception:
+            log.exception("history: purge failed")
+        await asyncio.sleep(every_s)
 
 
 class _WsTransport:
@@ -85,18 +100,25 @@ def create_app(
     auth = Authenticator(store)
     limiter = RateLimiter(limit=10, window_s=60)
     account = AccountService(store, config.central_account, http_client) if config.central_account else None
+    history = History(store, HistoryCodec(config.history.key()), config.history)
     targets = warmup_targets(config, http_client)
     call_targets = [t for t in targets if t.config.on_call]
     after_calls = Background()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        await check_key(store, history.codec)
         log_report(await bootstrap(store, config))
+        await history.apply_retention()
+        purging = asyncio.create_task(purge_forever(history, config.history.purge_every_s))
         # Only the server does this (the CLI may run next to a live server): its own calls died with it.
         if interrupted := await store.calls.interrupt_unfinished(time.time()):
-            log.warning("%d one-way call(s) left unfinished by the last run marked as interrupted", interrupted)
+            log.warning("%d call(s) left unfinished by the last run marked as interrupted", interrupted)
         background = asyncio.create_task(run_background(targets)) if targets else None
         yield
+        purging.cancel()
+        with suppress(asyncio.CancelledError):
+            await purging
         await after_calls.close()
         if background is not None:
             background.cancel()
@@ -111,6 +133,7 @@ def create_app(
     app.state.agents = agents
     app.state.auth = auth
     app.state.account = account
+    app.state.history = history
 
     def client_ip(request: Request) -> str:
         header = config.server.client_ip_header
@@ -121,6 +144,8 @@ def create_app(
     app.include_router(
         management_router(config, auth, agents, pairing_svc, account, limiter=limiter, client_ip=client_ip)
     )
+    redelivery = Redelivery(history, agents, config, http_client, policy=delivery_policy, background=after_calls)
+    app.include_router(calls_router(auth, agents, history, redelivery.start))
 
     async def device_from(authorization: str | None) -> Principal | None:
         principal = await auth.authenticate(authorization)
@@ -218,17 +243,6 @@ def create_app(
             "profiles": [{"name": a.slug, "display_name": a.display_name} for a in listed],
         }
 
-    @app.get("/v1/calls/{call_id}")
-    async def call_status(call_id: str, authorization: str | None = Header(default=None)) -> Any:
-        # Device or API token: a user sees only their own calls.
-        principal = await auth.authenticate(authorization)
-        if principal is None:
-            return JSONResponse({"error": "unauthorized", "message": "missing or invalid token"}, status_code=401)
-        record = await store.calls.get(principal.user_id, call_id)
-        if record is None:
-            return JSONResponse({"error": "not_found", "message": "call not found"}, status_code=404)
-        return call_view(record)
-
     @app.delete("/v1/me")
     async def unpair(authorization: str | None = Header(default=None)) -> Any:
         principal = await device_from(authorization)
@@ -278,13 +292,10 @@ def create_app(
         """Records until hang-up (or the limit); transcription and delivery go on after the WebSocket closes."""
         # Before the record exists: a VAD that fails to load must not leave a call stuck in "recording".
         vad = build_vad(agent.spec.vad)
-        now = time.time()
-        record = await store.calls.create(CallRecord(
-            id=new_call_id(), user_id=agent.user_id, agent_id=agent.id, device_id=device_id,
-            call_type=agent.call_type, status="recording", created_at=now, updated_at=now,
-        ))
+        call_log = await history.start(agent, device_id)
+        record = call_log.record
         call = OneWayCall(
-            agent, providers, vad, record, store,
+            agent, providers, vad, call_log,
             max_call_ms=config.limits.max_one_way_call_s * 1000, policy=delivery_policy,
         )
         transport = _WsTransport(ws)
@@ -371,31 +382,40 @@ def create_app(
         # because watch 0.1.0 omits turn_end when the user picks auto.
         turn_end = start.turn_end or (agent.spec.turn_end if start.agent else "auto")
         transport = _WsTransport(ws)
-        session = CallSession(agent.spec, provider_set, build_vad(agent.spec.vad), transport, turn_end=turn_end)
-        session_id = secrets.token_hex(8)
-        await transport.send_json(
-            protocol.session_ready(
-                session_id, agent_summary(agent), turn_end, protocol.AudioFormat(sample_rate=provider_set.tts.sample_rate)
-            )
+        vad = build_vad(agent.spec.vad)
+        call_log = await history.start(agent, principal.device.id)
+        record = call_log.record
+        session = CallSession(
+            agent.spec, provider_set, vad, transport, turn_end=turn_end, record=call_log.add,
         )
-        log.info(
-            "call %s started: device=%s agent=%s (%s) turn_end=%s",
-            session_id, principal.device.id, agent.id, agent.slug, turn_end,
-        )
-        warming = asyncio.create_task(warm_all(call_targets)) if call_targets else None
+        warming: asyncio.Task[None] | None = None
 
         async def on_audio(data: bytes) -> bool:
             await session.on_audio(data)
             return False
 
+        # From here on the record exists: whatever happens, it gets closed.
         try:
+            await transport.send_json(
+                protocol.session_ready(
+                    secrets.token_hex(8), agent_summary(agent), turn_end,
+                    protocol.AudioFormat(sample_rate=provider_set.tts.sample_rate), call_id=record.id,
+                )
+            )
+            log.info(
+                "call %s started: device=%s agent=%s (%s) turn_end=%s",
+                record.id, principal.device.id, agent.id, agent.slug, turn_end,
+            )
+            warming = asyncio.create_task(warm_all(call_targets)) if call_targets else None
             await pump(ws, transport, on_audio, session.on_mute)
         finally:
             if warming is not None and not warming.done():
                 warming.cancel()
             await session.close()
+            ended = time.time()
+            await call_log.save(status="ended" if call_log.count else "empty", ended_at=ended, finished=True)
             with suppress(Exception):
                 await ws.close(code=protocol.CLOSE_NORMAL)
-            log.info("call %s ended", session_id)
+            log.info("call %s ended", record.id)
 
     return app
