@@ -312,3 +312,190 @@ def test_broken_provider_fails_at_startup():
     data["providers"]["extra"] = {"type": "openai_stt"}
     with pytest.raises(ProviderError, match="extra"):
         create_app(parse_config(data, {}), storage=open_sqlite_storage(":memory:"))
+
+
+# ---------- one-way calls (one-shot, monologue) ----------
+
+import time  # noqa: E402
+
+import httpx  # noqa: E402
+import respx  # noqa: E402
+
+from wristcall.delivery import DeliveryPolicy  # noqa: E402
+
+HOOK_URL = "https://hooks.example/in"
+
+
+@pytest.fixture
+def oneway():
+    cfg = fake_config()
+    cfg.limits.custom_endpoint_types.append("fake_stt")
+    cfg.limits.max_one_way_call_s = 60  # the lowest allowed
+    app = create_app(cfg, storage=open_sqlite_storage(":memory:"), delivery_policy=DeliveryPolicy(1.0, (0.0, 0.0)))
+    with respx.mock(assert_all_called=False) as mock:
+        mock.route(host="testserver").pass_through()
+        hook = mock.post(HOOK_URL).mock(return_value=httpx.Response(204))
+        with TestClient(app) as c:
+            c.hook = hook
+            for slug, call_type in (("note", "one-shot"), ("ideas", "monologue")):
+                run(c.app.state.agents.create(owner(c).id, {
+                    "slug": slug, "call_type": call_type,
+                    "stt": {"type": "fake_stt", "text": "comprar leite"},
+                    "action": {"type": "webhook", "url": HOOK_URL, "headers": {"Authorization": "Bearer s3cret"}},
+                    "vad": {"type": "energy"},
+                }))
+            yield c
+
+
+def wait_done(client, call_id: str, headers: dict) -> dict:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        view = client.get(f"/v1/calls/{call_id}", headers=headers).json()
+        if view["status"] not in ("recording", "processing"):
+            return view
+        time.sleep(0.02)
+    raise AssertionError(f"call {call_id} still {view['status']}")
+
+
+def test_one_shot_call_records_until_hang_up_and_delivers(oneway):
+    token = pair(oneway)
+    with oneway.websocket_connect("/v1/call", headers=auth(token)) as ws:
+        ws.send_json({**START, "agent": "note", "turn_end": "auto"})
+        ready = ws.receive_json()
+        assert ready["agent"]["call_type"] == "one-shot" and ready["turn_end"] == "manual"
+        assert ready["profile"] == {"name": "note", "display_name": "note"}
+        assert ready["audio_out"] == {"codec": "pcm16", "sample_rate": 16000, "channels": 1}
+        call_id = ready["call_id"]
+        # Long silence after speech ends nothing: no turn.user_end, no answer.
+        ws.send_bytes(tone(500) + silence(2000))
+        ws.send_json({"type": "mute", "muted": True})
+        ws.send_json({"type": "session.end"})
+    view = wait_done(oneway, call_id, auth(token))
+    assert {k: view[k] for k in ("status", "text", "attempts", "last_http_status", "error", "call_type")} == {
+        "status": "delivered", "text": "comprar leite", "attempts": 1, "last_http_status": 204, "error": None,
+        "call_type": "one-shot",
+    }
+    sent = oneway.hook.calls.last.request
+    assert sent.headers["authorization"] == "Bearer s3cret" and sent.headers["idempotency-key"] == call_id
+    body = json.loads(sent.content)
+    assert (body["event"], body["call_id"], body["text"], body["agent"]["slug"]) == ("call.completed", call_id, "comprar leite", "note")
+
+
+def test_one_way_call_is_delivered_after_a_dropped_connection(oneway):
+    token = pair(oneway)
+    with oneway.websocket_connect("/v1/call", headers=auth(token)) as ws:
+        ws.send_json({**START, "agent": "ideas"})
+        call_id = ws.receive_json()["call_id"]
+        ws.send_bytes(tone(500))
+    assert wait_done(oneway, call_id, auth(token))["status"] == "delivered"
+
+
+def test_one_way_call_stops_at_the_limit(oneway):
+    token = pair(oneway)
+    with oneway.websocket_connect("/v1/call", headers=auth(token)) as ws:
+        ws.send_json({**START, "agent": "ideas"})
+        call_id = ws.receive_json()["call_id"]
+        ws.send_bytes(tone(1000) + silence(59_000) + silence(1000))
+        assert ws.receive_json() == {"type": "call.captured", "call_id": call_id, "reason": "limit"}
+        with pytest.raises(WebSocketDisconnect) as e:
+            ws.receive_json()
+        assert e.value.code == 1000
+    assert wait_done(oneway, call_id, auth(token))["status"] == "delivered"
+
+
+def test_failed_delivery_keeps_the_text(oneway):
+    oneway.hook.mock(return_value=httpx.Response(500))
+    token = pair(oneway)
+    with oneway.websocket_connect("/v1/call", headers=auth(token)) as ws:
+        ws.send_json({**START, "agent": "note"})
+        call_id = ws.receive_json()["call_id"]
+        ws.send_bytes(tone(500))
+        ws.send_json({"type": "session.end"})
+    view = wait_done(oneway, call_id, auth(token))
+    assert (view["status"], view["error"], view["text"], view["attempts"], view["last_http_status"]) == (
+        "failed", "delivery_failed", "comprar leite", 3, 500
+    )
+
+
+def test_silent_one_way_call_is_empty(oneway):
+    token = pair(oneway)
+    with oneway.websocket_connect("/v1/call", headers=auth(token)) as ws:
+        ws.send_json({**START, "agent": "note"})
+        call_id = ws.receive_json()["call_id"]
+        ws.send_bytes(silence(1000))
+        ws.send_json({"type": "session.end"})
+    assert wait_done(oneway, call_id, auth(token))["status"] == "empty"
+    assert not oneway.hook.called
+
+
+def test_call_status_is_private_to_the_user(oneway):
+    token = pair(oneway)
+    with oneway.websocket_connect("/v1/call", headers=auth(token)) as ws:
+        ws.send_json({**START, "agent": "note"})
+        call_id = ws.receive_json()["call_id"]
+        ws.send_json({"type": "session.end"})
+    wait_done(oneway, call_id, auth(token))
+    # The owner's API token sees it too.
+    _, api_token = run(UserService(oneway.app.state.storage).issue_token(owner(oneway).id, "cli"))
+    assert oneway.get(f"/v1/calls/{call_id}", headers=auth(api_token)).status_code == 200
+    other = run(oneway.app.state.storage.users.create("u_other", "other", "Other", 1.0))
+    assert oneway.get(f"/v1/calls/{call_id}", headers=auth(pair(oneway, other.id))).status_code == 404
+    assert oneway.get(f"/v1/calls/{call_id}").status_code == 401
+    assert oneway.get("/v1/calls/c_nope", headers=auth(token)).status_code == 404
+
+
+def test_client_gone_before_session_ready_still_finishes_the_call(oneway, monkeypatch):
+    from wristcall import app as app_module
+
+    async def gone(self, msg):
+        raise RuntimeError("client gone")
+
+    monkeypatch.setattr(app_module._WsTransport, "send_json", gone)
+    token = pair(oneway)
+    with pytest.raises(Exception):
+        with oneway.websocket_connect("/v1/call", headers=auth(token)) as ws:
+            ws.send_json({**START, "agent": "note"})
+            ws.receive_json()
+    [row] = oneway.app.state.storage.db.query("SELECT id FROM calls")
+    monkeypatch.undo()
+    assert wait_done(oneway, row["id"], auth(token))["status"] == "empty"
+
+
+def test_conversation_ready_has_no_call_id(client):
+    token = pair(client)
+    with client.websocket_connect("/v1/call", headers=auth(token)) as ws:
+        ws.send_json(START)
+        assert "call_id" not in ws.receive_json()
+        ws.send_json({"type": "session.end"})
+
+
+def test_unfinished_calls_are_interrupted_at_startup():
+    store = open_sqlite_storage(":memory:")
+    cfg = fake_config()
+    with TestClient(create_app(cfg, storage=store)) as c:
+        user = owner(c)
+        agent = run(c.app.state.agents.list(user.id))[0]
+    from wristcall.storage import CallRecord
+    run(store.calls.create(CallRecord(
+        id="c_old", user_id=user.id, agent_id=agent.id, device_id=None, call_type="one-shot",
+        status="processing", created_at=1.0, updated_at=1.0, text="half",
+    )))
+    with TestClient(create_app(cfg, storage=store)):
+        pass
+    old = run(store.calls.get(user.id, "c_old"))
+    assert (old.status, old.error, old.text) == ("failed", "interrupted", "half")
+
+
+def test_watch_0_1_0_calling_a_one_way_first_agent_records_and_ends_normally(oneway):
+    run(oneway.app.state.agents.update(owner(oneway).id, "note", {"position": 0}))
+    token = pair(oneway)
+    me = oneway.get("/v1/me", headers=auth(token)).json()
+    assert me["profiles"][0]["name"] == "note"
+    with oneway.websocket_connect("/v1/call", headers=auth(token)) as ws:
+        # What watch 0.1.0 sends: the first profile, no agent, no turn_end.
+        ws.send_json({**START, "profile": "note"})
+        ready = ws.receive_json()
+        assert {"session_id", "profile", "audio_out"} <= ready.keys()
+        ws.send_bytes(tone(500) + silence(3000))
+        ws.send_json({"type": "session.end"})
+    assert wait_done(oneway, ready["call_id"], auth(token))["status"] == "delivered"

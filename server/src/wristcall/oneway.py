@@ -196,3 +196,20 @@ class Background:
         for task in list(self._tasks):
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
+
+
+def call_view(r: CallRecord) -> dict[str, Any]:
+    """`GET /v1/calls/{id}`: what the client shows after hanging up (ring → check or error)."""
+    return {
+        "id": r.id,
+        "agent_id": r.agent_id,
+        "call_type": r.call_type,
+        "status": r.status,
+        "error": r.error,
+        "text": r.text,
+        "attempts": r.attempts,
+        "last_http_status": r.last_http_status,
+        "created_at": r.created_at,
+        "ended_at": r.ended_at,
+        "finished_at": r.finished_at,
+    }

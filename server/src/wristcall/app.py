@@ -1,9 +1,11 @@
-"""HTTP app: pairing (REST) and calls (WebSocket /v1/call). Protocol in docs/protocol.md."""
+"""HTTP app: pairing (REST), calls (WebSocket /v1/call) and their status. Protocol in docs/protocol.md."""
 
 import asyncio
 import json
 import logging
 import secrets
+import time
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from typing import Any
 
@@ -13,16 +15,21 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import __version__, protocol
-from .agents import AgentError, AgentService, agent_summary, build_agent_providers
+from .agents import (
+    ONE_WAY, Agent, AgentError, AgentService, OneWayProviders, agent_summary, build_agent_providers,
+    build_one_way_providers,
+)
 from .api import management_router
 from .auth import Authenticator, Principal
 from .bootstrap import bootstrap, log_report
 from .config import AppConfig
+from .delivery import DeliveryPolicy
+from .oneway import Background, OneWayCall, call_view, new_call_id
 from .pairing import Paired, PairingDenied, PairingGone, PairingService
 from .providers import ProviderError, check_providers
 from .ratelimit import RateLimiter
 from .session import CallSession
-from .storage import Storage, open_sqlite_storage
+from .storage import CallRecord, Storage, open_sqlite_storage
 from .vad import build_vad
 from .warmup import run_background, warm_all, warmup_targets
 
@@ -58,6 +65,7 @@ def create_app(
     storage: Storage | None = None,
     http: httpx.AsyncClient | None = None,
     start_timeout_s: float = 10.0,
+    delivery_policy: DeliveryPolicy = DeliveryPolicy(),
 ) -> FastAPI:
     own_http = http is None
     http_client = http or httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0))
@@ -71,12 +79,17 @@ def create_app(
     limiter = RateLimiter(limit=10, window_s=60)
     targets = warmup_targets(config, http_client)
     call_targets = [t for t in targets if t.config.on_call]
+    after_calls = Background()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         log_report(await bootstrap(store, config))
+        # Only the server does this (the CLI may run next to a live server): its own calls died with it.
+        if interrupted := await store.calls.interrupt_unfinished(time.time()):
+            log.warning("%d one-way call(s) left unfinished by the last run marked as interrupted", interrupted)
         background = asyncio.create_task(run_background(targets)) if targets else None
         yield
+        await after_calls.close()
         if background is not None:
             background.cancel()
             with suppress(asyncio.CancelledError):
@@ -149,6 +162,17 @@ def create_app(
             "profiles": [{"name": a.slug, "display_name": a.display_name} for a in listed],
         }
 
+    @app.get("/v1/calls/{call_id}")
+    async def call_status(call_id: str, authorization: str | None = Header(default=None)) -> Any:
+        # Device or API token: a user sees only their own calls.
+        principal = await auth.authenticate(authorization)
+        if principal is None:
+            return JSONResponse({"error": "unauthorized", "message": "missing or invalid token"}, status_code=401)
+        record = await store.calls.get(principal.user_id, call_id)
+        if record is None:
+            return JSONResponse({"error": "not_found", "message": "call not found"}, status_code=404)
+        return call_view(record)
+
     @app.delete("/v1/me")
     async def unpair(authorization: str | None = Header(default=None)) -> Any:
         principal = await device_from(authorization)
@@ -162,6 +186,78 @@ def create_app(
         with suppress(Exception):
             await ws.send_text(json.dumps(protocol.error(err.code, err.message, True), ensure_ascii=False))
             await ws.close(code=protocol.CLOSE_PROTOCOL_ERROR)
+
+    async def pump(
+        ws: WebSocket,
+        transport: "_WsTransport",
+        on_audio: Callable[[bytes], Awaitable[bool]],
+        on_mute: Callable[[bool], Awaitable[None]],
+    ) -> None:
+        """Feeds the client's messages to the call until hang-up, disconnect, or on_audio returns True."""
+        while True:
+            message = await ws.receive()
+            if message["type"] == "websocket.disconnect":
+                return
+            data = message.get("bytes")
+            if data is not None:
+                if await on_audio(data):
+                    return
+                continue
+            text = message.get("text")
+            if text is None:
+                continue
+            try:
+                msg = protocol.parse_client_message(text)
+            except protocol.ProtocolError as e:
+                await transport.send_json(protocol.error(e.code, e.message, False))
+                continue
+            if isinstance(msg, protocol.Mute):
+                await on_mute(msg.muted)
+            elif isinstance(msg, protocol.SessionEnd):
+                return
+            else:
+                await transport.send_json(protocol.error(protocol.ErrorCode.BAD_MESSAGE, "session already started", False))
+
+    async def one_way_call(ws: WebSocket, device_id: str, agent: Agent, providers: OneWayProviders) -> None:
+        """Records until hang-up (or the limit); transcription and delivery go on after the WebSocket closes."""
+        now = time.time()
+        record = await store.calls.create(CallRecord(
+            id=new_call_id(), user_id=agent.user_id, agent_id=agent.id, device_id=device_id,
+            call_type=agent.call_type, status="recording", created_at=now, updated_at=now,
+        ))
+        call = OneWayCall(
+            agent, providers, build_vad(agent.spec.vad), record, store,
+            max_call_ms=config.limits.max_one_way_call_s * 1000, policy=delivery_policy,
+        )
+        transport = _WsTransport(ws)
+        warming: asyncio.Task[None] | None = None
+
+        async def on_audio(data: bytes) -> bool:
+            call.on_audio(data)
+            if call.captured:
+                await transport.send_json(protocol.call_captured(record.id, "limit"))
+            return call.captured
+
+        async def on_mute(muted: bool) -> None:
+            call.on_mute(muted)
+
+        # From here on the record exists: whatever happens (even the client gone before session.ready), it gets finished.
+        try:
+            # No voice comes back: audio_out is nominal (watch 0.1.0 requires it). Silence never ends the call.
+            await transport.send_json(protocol.session_ready(
+                secrets.token_hex(8), agent_summary(agent), "manual",
+                protocol.AudioFormat(sample_rate=protocol.INPUT_SAMPLE_RATE), call_id=record.id,
+            ))
+            log.info("call %s started: device=%s agent=%s (%s) type=%s", record.id, device_id, agent.id, agent.slug, agent.call_type)
+            warming = asyncio.create_task(warm_all(call_targets)) if call_targets else None
+            await pump(ws, transport, on_audio, on_mute)
+        finally:
+            if warming is not None and not warming.done():
+                warming.cancel()
+            after_calls.spawn(call.finish())
+            with suppress(Exception):
+                await ws.close(code=protocol.CLOSE_NORMAL)
+            log.info("call %s recorded", record.id)
 
     @app.websocket("/v1/call")
     async def call(ws: WebSocket) -> None:
@@ -196,7 +292,10 @@ def create_app(
                 except AgentError:
                     raise protocol.ProtocolError(protocol.ErrorCode.UNKNOWN_PROFILE, f"unknown agent: {ref}") from None
             try:
-                provider_set = build_agent_providers(config, agent.spec, http_client)
+                if agent.call_type in ONE_WAY:
+                    one_way = build_one_way_providers(config, agent.spec, http_client)
+                else:
+                    provider_set = build_agent_providers(config, agent.spec, http_client)
             except ProviderError as e:
                 log.warning("agent %s unavailable: %s", agent.id, e)
                 raise protocol.ProtocolError(
@@ -204,6 +303,10 @@ def create_app(
                 ) from None
         except protocol.ProtocolError as e:
             await fatal(ws, e)
+            return
+
+        if agent.call_type in ONE_WAY:
+            await one_way_call(ws, principal.device.id, agent, one_way)
             return
 
         # Clients that name the agent get its mode; 0.2.x clients (profile or nothing) keep 0.2.0's default,
@@ -222,29 +325,13 @@ def create_app(
             session_id, principal.device.id, agent.id, agent.slug, turn_end,
         )
         warming = asyncio.create_task(warm_all(call_targets)) if call_targets else None
+
+        async def on_audio(data: bytes) -> bool:
+            await session.on_audio(data)
+            return False
+
         try:
-            while True:
-                message = await ws.receive()
-                if message["type"] == "websocket.disconnect":
-                    break
-                data = message.get("bytes")
-                if data is not None:
-                    await session.on_audio(data)
-                    continue
-                text = message.get("text")
-                if text is None:
-                    continue
-                try:
-                    msg = protocol.parse_client_message(text)
-                except protocol.ProtocolError as e:
-                    await transport.send_json(protocol.error(e.code, e.message, False))
-                    continue
-                if isinstance(msg, protocol.Mute):
-                    await session.on_mute(msg.muted)
-                elif isinstance(msg, protocol.SessionEnd):
-                    break
-                else:
-                    await transport.send_json(protocol.error(protocol.ErrorCode.BAD_MESSAGE, "session already started", False))
+            await pump(ws, transport, on_audio, session.on_mute)
         finally:
             if warming is not None and not warming.done():
                 warming.cancel()

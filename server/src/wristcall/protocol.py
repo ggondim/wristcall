@@ -88,12 +88,15 @@ def check_session_start(msg: SessionStart) -> None:
         raise ProtocolError(ErrorCode.UNSUPPORTED_AUDIO, f"input audio must be pcm16 {INPUT_SAMPLE_RATE} Hz mono")
 
 
-def session_ready(session_id: str, agent: dict[str, Any], turn_end: TurnEnd, audio_out: AudioFormat) -> dict[str, Any]:
+def session_ready(
+    session_id: str, agent: dict[str, Any], turn_end: TurnEnd, audio_out: AudioFormat, *, call_id: str | None = None
+) -> dict[str, Any]:
     """`agent` is the agent summary (id, slug, display_name, icon, call_type, turn_end).
 
-    `profile` repeats slug and display_name in the 0.2.0 shape, which watch 0.1.0 requires.
+    `profile` repeats slug and display_name in the 0.2.0 shape, which watch 0.1.0 requires. `call_id` (one-way
+    calls) is what the client asks `GET /v1/calls/{call_id}` about after hanging up.
     """
-    return {
+    msg = {
         "type": "session.ready",
         "session_id": session_id,
         "profile": {"name": agent["slug"], "display_name": agent["display_name"]},
@@ -101,6 +104,14 @@ def session_ready(session_id: str, agent: dict[str, Any], turn_end: TurnEnd, aud
         "turn_end": turn_end,
         "audio_out": audio_out.model_dump(),
     }
+    if call_id is not None:
+        msg["call_id"] = call_id
+    return msg
+
+
+def call_captured(call_id: str, reason: Literal["limit"]) -> dict[str, Any]:
+    """One-way call: the server stopped recording by itself (time limit) and closes the call (1000)."""
+    return {"type": "call.captured", "call_id": call_id, "reason": reason}
 
 
 def turn_user_end(reason: Literal["vad", "mute", "limit"]) -> dict[str, Any]:
