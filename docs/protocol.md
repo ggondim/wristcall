@@ -301,8 +301,10 @@ starts listening again after the estimated playback time of the audio sent plus 
 Since server 0.4.0, an agent whose `call_type` is `one-shot` or `monologue` only
 listens: no answer, no voice. The server records until the user hangs up,
 transcribes, and posts the text to the agent's webhook (its `action`). Clients
-check `version` in `GET /v1/health` (0.4.0 or later) before offering these agents;
-older servers refuse to create them.
+may check `version` in `GET /v1/health` (0.4.0 or later) before offering these agents;
+older servers refuse to create them. A client may instead rely on the agent list: a
+server older than 0.4.0 cannot create one-way agents, so it never lists them (watch
+0.2.0 does this).
 
 | | `one-shot` | `monologue` |
 |---|---|---|
@@ -370,6 +372,9 @@ After transcribing, the server sends `POST <url>` with the agent's `headers` and
 A watch app older than 0.4.0 (for example watch 0.1.0) can call a one-way agent:
 it records, the call ends normally, and the delivery happens; it just never shows
 the result.
+
+Watch 0.2.0 and later sends both `agent` and `profile` in `session.start`, keeps the `call_id` of a one-way
+call and, after it ends, polls `GET /v1/calls/{call_id}` every 1.5 s for up to 3 minutes while the app is open.
 
 ## History
 

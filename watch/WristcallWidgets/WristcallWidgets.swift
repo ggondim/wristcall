@@ -1,12 +1,16 @@
 import SwiftUI
 import WidgetKit
 
-/// The widget extension: a complication for watch faces and the Smart Stack, and a control for
-/// Control Center (and the Action Button on Apple Watch Ultra). Both start a call in the app.
+/// The widget extension: complications for watch faces and the Smart Stack, and controls for
+/// Control Center (and the Action Button on Apple Watch Ultra). All start a call in the app: the
+/// first agent, or the one the person picked (configurable, decision W12); a configurable one with
+/// no agent picked yet only opens the app (decision W20).
 @main
 struct WristcallWidgets: WidgetBundle {
     var body: some Widget {
         CallComplication()
         CallControl()
+        AgentCallComplication()
+        AgentCallControl()
     }
 }

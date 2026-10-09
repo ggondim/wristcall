@@ -1,5 +1,8 @@
 import Combine
+import Intents
 import SwiftUI
+import WatchKit
+import WidgetKit
 import WristcallKit
 
 @main
@@ -13,10 +16,23 @@ struct WristcallApp: App {
 
     init() {
         // The path monitor starts here, at launch, so it has an answer before the first "Call".
-        let model = AppModel(reachability: NetworkPathMonitor())
+        // The last run's catalog keeps the agents of a server that does not answer this time.
+        let model = AppModel(reachability: NetworkPathMonitor(), savedCatalog: AgentCatalog.shared().load())
         let coordinator = CallCoordinator(callControl: Self.makeCallControl(), audio: Self.makeAudio())
         coordinator.model = model
         model.callHandler = coordinator
+        // The result of a one-way call may arrive with the wrist down: a tap says how it went.
+        model.onCallResultFinished = { delivered in
+            WKInterfaceDevice.current().play(delivered ? .success : .failure)
+        }
+        // Told only when the catalog really changed: the widget extension reads it from the App
+        // Group to configure the complication and the control, and Shortcuts lists its agents.
+        model.onAgentsChanged = { catalog in
+            AgentCatalog.shared().save(catalog)
+            WidgetCenter.shared.reloadAllTimelines()
+            ControlCenter.shared.reloadAllControls()
+            WristcallShortcuts.updateAppShortcutParameters()
+        }
         _model = State(initialValue: model)
         self.coordinator = coordinator
         shortcuts = ShortcutCalls(store: PendingCallStore(), model: model)
@@ -33,28 +49,31 @@ struct WristcallApp: App {
                     #if DEBUG
                     DebugPairing.run(model, arguments: ProcessInfo.processInfo.arguments)
                     await DebugCall.run(model, arguments: ProcessInfo.processInfo.arguments)
+                    DebugShortcut.run(arguments: ProcessInfo.processInfo.arguments)
                     #endif
                 }
                 // A shortcut may record its request before or after the app becomes active.
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active {
+                        // A result still waiting asks again (decision W10).
+                        model.sceneDidBecomeActive()
                         Task { await shortcuts.check() }
                     }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: PendingCallStore.didRequest)) { _ in
                     Task { await shortcuts.check() }
                 }
-                // The complication opens `wristcall://call`.
+                // The complications open `wristcall://call`, with the agent when one was chosen;
+                // `wristcall://open` (no agent chosen yet) only brings the app up.
                 .onOpenURL { url in
-                    guard ShortcutLink.isCall(url) else { return }
-                    PendingCallStore().request()
+                    ShortcutCalls.request(from: url, store: PendingCallStore())
                 }
-                // Redial on the system call UI. Like a shortcut, so a cold start waits for launch.
-                .onContinueUserActivity(Self.startCallActivity) { _ in
-                    PendingCallStore().request()
+                // Redial on the system call UI: the agent whose name is the CallKit handle.
+                .onContinueUserActivity(Self.startCallActivity) { activity in
+                    ShortcutCalls.requestRedial(of: activity.interaction?.intent, store: PendingCallStore())
                 }
-                .onContinueUserActivity(Self.startAudioCallActivity) { _ in
-                    PendingCallStore().request()
+                .onContinueUserActivity(Self.startAudioCallActivity) { activity in
+                    ShortcutCalls.requestRedial(of: activity.interaction?.intent, store: PendingCallStore())
                 }
         }
     }
@@ -91,11 +110,22 @@ struct WristcallApp: App {
 ///     xcrun simctl launch <device> <bundle id> -pairServer http://127.0.0.1:8765 -pairCode 12345678
 ///
 /// does what "Use server URL" + the keypad + "Pair" do, through the same `AppModel` calls.
-/// Without `-pairCode` it sends an approval request (flow B). Ignored when already paired.
+/// Without `-pairCode` it sends an approval request (flow B). When already paired it adds the
+/// server (as "Add server" does), unless that server is already listed.
 enum DebugPairing {
     @MainActor
     static func run(_ model: AppModel, arguments: [String]) {
-        guard model.phase == .unpaired, let server = value(after: "-pairServer", in: arguments) else { return }
+        // `-addServer` alone opens the pairing screen over the servers already paired.
+        if arguments.contains("-addServer"), model.phase == .home { model.addServer() }
+        guard let server = value(after: "-pairServer", in: arguments) else { return }
+        switch model.phase {
+        case .unpaired: break
+        case .home:
+            guard let url = ServerAddress.parse(server), !model.servers.contains(where: { $0.credentials.serverURL == url })
+            else { return }
+            model.addServer()
+        default: return
+        }
         guard model.useServerURL(server) else { return }
         if let code = value(after: "-pairCode", in: arguments).flatMap(PairingCode.init) {
             model.pair(code: code)

@@ -24,7 +24,11 @@ struct PairingIntegrationTests {
         let info = try await client.me(server: server, token: device.token)
         #expect(info.deviceId == device.deviceId)
         #expect(info.deviceName == "Integration Watch")
-        #expect(info.profiles.map(\.name).sorted() == ["default", "demo"])
+        // The config's two profiles; agents that `OneWayCallIntegrationTests` add meanwhile do not count.
+        let configured = info.agents.filter { !OneShotAgent.isTestAgent($0.slug) }
+        #expect(info.profiles.map(\.name).filter { !OneShotAgent.isTestAgent($0) }.sorted() == ["default", "demo"])
+        #expect(configured.map(\.slug).sorted() == ["default", "demo"])
+        #expect(configured.allSatisfy { $0.callType == .conversation && !$0.id.isEmpty })
 
         // The code is single use.
         await #expect(throws: PairingError.invalidCode) {

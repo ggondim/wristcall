@@ -4,19 +4,21 @@ import WristcallKit
 
 /// Which screen the app shows.
 enum AppPhase: Equatable {
-    /// Reading the Keychain and loading the profiles.
+    /// Reading the Keychain.
     case launching
-    /// No credentials: the pairing screen.
+    /// No server yet, or adding one (`AppModel.isAddingServer`): the pairing screen.
     case unpaired
     /// A pairing request is running. `requestId` (4 digits) is set while waiting for the
     /// owner to run `wristcall devices approve <requestId>` (flow B).
     case pairing(requestId: String?)
-    /// Paired; `GET /v1/me` answered.
-    case ready(DeviceInfo)
-    /// Paired, but the profiles could not be loaded (server unreachable, Keychain still locked).
+    /// The agents of every server. Each server loads on its own (`ServerEntry.status`).
+    case home
+    /// The Keychain could not be read (locked before the first unlock, or another error): "Retry".
     case unavailable
-    /// A call is active with this profile (`nil`: the server's default).
-    case inCall(Profile?)
+    /// A call is active with this agent.
+    case inCall(AgentTarget)
+    /// After a one-way call: what happened to the recording (`AppModel.callResult`).
+    case callResult
 }
 
 /// What the call screen shows while a call is open (task 10).
@@ -29,6 +31,10 @@ enum CallActivity: Equatable {
     case thinking
     /// The agent's audio is playing.
     case agentSpeaking
+    /// One-way call: the server is recording (decision W9).
+    case recording
+    /// One-way call muted from the system UI: audio sent meanwhile is dropped, the call goes on.
+    case paused
 
     var label: String {
         switch self {
@@ -36,6 +42,8 @@ enum CallActivity: Equatable {
         case .listening: "Listening"
         case .thinking: "Thinking…"
         case .agentSpeaking: "Speaking"
+        case .recording: "Recording"
+        case .paused: "Paused"
         }
     }
 }
@@ -43,24 +51,25 @@ enum CallActivity: Equatable {
 /// What the call layer (tasks 8 to 10) needs to open a call.
 struct CallRequest: Sendable, Equatable {
     let credentials: Credentials
-    /// The profile to ask for in `session.start`; its `displayName` is the CallKit caller name.
-    let profile: Profile?
-    /// How the user's turn ends in this call (`session.start` `turn_end`).
-    var turnEnd: TurnEnd = .auto
+    /// The agent called; its `displayName` is the CallKit caller name.
+    let target: AgentTarget
+    /// How the user's turn ends (`session.start` `turn_end`); `nil` leaves it to the agent (decision W5).
+    var turnEnd: TurnEnd?
 }
 
 /// Implemented by the `CallCoordinator` (task 10). `AppModel` keeps a strong reference;
 /// the handler must hold the model weakly.
 @MainActor
 protocol CallHandling: AnyObject {
-    /// Start a CallKit call for `request`. Report its end, whatever the cause, with `AppModel.callDidEnd(_:)`.
+    /// Start a CallKit call for `request`. Report its end, whatever the cause, with
+    /// `AppModel.callDidEnd(_:callID:)`.
     func startCall(_ request: CallRequest)
-    /// The user tapped "End" in the app. Report the end with `AppModel.callDidEnd(_:)`.
+    /// The user tapped "End" in the app. Report the end with `AppModel.callDidEnd(_:callID:)`.
     func endCall()
 }
 
-/// State and actions behind every screen: credentials, pairing (flows A, A' and B), unpairing,
-/// settings and the entry point of a call.
+/// State and actions behind every screen: the paired servers and their agents, pairing (flows A,
+/// A' and B), removing a server, settings and the entry point of a call.
 @Observable
 @MainActor
 final class AppModel {
@@ -84,6 +93,12 @@ final class AppModel {
         static let callNotStarted = "Couldn't start the call."
         static let microphoneUnavailable = "Microphone unavailable."
         static let noConnection = "No connection"
+        static let agentNotFound = "Agent not found."
+        static let unsupportedAgent = "Update Wristcall to call this agent."
+        static let nothingSent = "Nothing was sent."
+
+        static func removed(_ host: String) -> String { "\(host): this watch was removed on the server." }
+        static func cantReach(_ host: String) -> String { "Can't reach \(host)." }
     }
 
     static let directoryDefaultsKey = "pairingDirectoryURL"
@@ -97,31 +112,48 @@ final class AppModel {
     private(set) var customServerURL: URL?
     /// Where codes are resolved. Persisted in `UserDefaults`.
     private(set) var directoryURL: URL
-    private(set) var isUnpairing = false
+    /// The paired servers, in the order the grid shows them (the order they were paired in).
+    private(set) var servers: [ServerEntry] = []
+    /// The pairing screen is up to add a server to the ones already paired.
+    private(set) var isAddingServer = false
+    /// Servers whose `DELETE /v1/me` is running.
+    private(set) var removingServerIDs: Set<String> = []
     /// What the call screen shows; meaningful only in `.inCall`.
     private(set) var callActivity: CallActivity = .connecting
+    /// The result screen of the last one-way call; set only in `.callResult`.
+    private(set) var callResult: CallResultModel?
+    /// The catalog last handed to `onAgentsChanged` (until then, the one the last run saved).
+    private(set) var catalog: [CatalogAgent]
     /// Set by the app at launch (task 10). Without one, a call is only a screen with an "End" button.
     var callHandler: (any CallHandling)?
+    /// Told the new catalog whenever it changes (a server answers, is added or removed), to share
+    /// it with the widgets and App Intents.
+    var onAgentsChanged: (([CatalogAgent]) -> Void)?
+    /// Told when a one-way call's result becomes final, `true` when delivered. The app plays a haptic.
+    var onCallResultFinished: ((Bool) -> Void)?
 
-    private var credentials: Credentials?
-    private var deviceInfo: DeviceInfo?
+    private var activeCall: CallRequest?
     private var pairingTask: Task<Void, Never>?
 
     private let pairing: any PairingService
-    private let store: any CredentialStore
+    private let store: any ServerStore
     private let defaults: UserDefaults
     private let deviceName: String
     private let sleep: PairingClient.Sleep
     /// Asked before every call; `nil` (tests, previews) never blocks one.
     private let reachability: (any NetworkReachability)?
+    /// Asks for the result of each one-way call.
+    private let resultPoller: CallStatusPoller
 
     init(
         pairing: any PairingService = PairingClient(),
-        store: any CredentialStore = KeychainCredentialStore(),
+        store: any ServerStore = KeychainServerStore(),
         defaults: UserDefaults = .standard,
         deviceName: String = AppModel.defaultDeviceName,
         reachability: (any NetworkReachability)? = nil,
-        sleep: @escaping PairingClient.Sleep = { try await Task.sleep(for: $0) }
+        sleep: @escaping PairingClient.Sleep = { try await Task.sleep(for: $0) },
+        savedCatalog: [CatalogAgent] = [],
+        resultPoller: CallStatusPoller = CallStatusPoller()
     ) {
         self.pairing = pairing
         self.store = store
@@ -129,27 +161,46 @@ final class AppModel {
         self.deviceName = deviceName
         self.sleep = sleep
         self.reachability = reachability
+        self.resultPoller = resultPoller
+        catalog = savedCatalog
         directoryURL = defaults.string(forKey: Self.directoryDefaultsKey).flatMap(ServerAddress.parse)
             ?? PairingClient.defaultDirectory
     }
 
-    /// The server this watch is paired with.
-    var serverURL: URL? { credentials?.serverURL }
-    /// The profile a call uses: the first one of `GET /v1/me` (no profile picker in the MVP).
-    var profile: Profile? { deviceInfo?.profiles.first }
+    /// The agents of the servers that answered, in server order and then in each server's order.
+    var agents: [AgentTarget] { servers.flatMap(\.agents) }
+    var hasServers: Bool { !servers.isEmpty }
+    /// Some server has not answered `GET /v1/me` yet.
+    var isLoadingServers: Bool { servers.contains { $0.status == .loading } }
+    /// The agents this build can call (decision W7), in grid order: what the "…" on Home offers.
+    var callableAgents: [AgentTarget] { agents.filter { $0.agent.callType.isSupported } }
     var canCall: Bool {
-        if case .ready = phase { true } else { false }
+        phase == .home && !callableAgents.isEmpty
+    }
+
+    /// The server `request` needs has not answered yet: the one of its agent, the first server when
+    /// it names none (decision W17), or any server for a redial by name (the name must be unique).
+    /// A shortcut waits only for that one, so a server that hangs does not hold up the others.
+    func isLoadingServer(for request: PendingCall) -> Bool {
+        if request.agentName != nil { return isLoadingServers }
+        let entry: ServerEntry?
+        if let ref = request.agent {
+            entry = AgentRef(ref).flatMap { ref in servers.first { $0.id == ref.serverID } }
+        } else {
+            entry = servers.first
+        }
+        return entry?.status == .loading
     }
     /// A pairing request is running.
     var isBusy: Bool { pairingTask != nil }
 
     // MARK: - Launch
 
-    /// Loads the credentials from the Keychain and the profiles from the server.
+    /// Reads the servers from the Keychain, goes Home and asks every server for its agents.
     func launch() async {
         phase = .launching
         message = nil
-        let stored: Credentials?
+        let stored: [Credentials]
         do {
             stored = try store.load()
         } catch let error as CredentialStoreError where error.isInteractionNotAllowed {
@@ -158,8 +209,10 @@ final class AppModel {
             message = Message.locked
             return
         } catch CredentialStoreError.corruptedData {
-            // The item is not valid credentials: pairing again is the only way out.
-            try? store.delete()
+            // The item is not a valid list: pairing again is the only way out.
+            try? store.deleteAll()
+            servers = []
+            publishCatalog()
             phase = .unpaired
             return
         } catch {
@@ -168,41 +221,77 @@ final class AppModel {
             message = Message.keychain
             return
         }
-        guard let stored else {
+        servers = stored.map { ServerEntry(credentials: $0, status: .loading) }
+        publishCatalog()
+        guard !stored.isEmpty else {
             phase = .unpaired
             return
         }
-        credentials = stored
-        await loadProfiles()
+        phase = .home
+        await load(stored)
     }
 
-    /// "Retry" on the Home screen.
+    /// "Retry": reads the Keychain again after it failed, or asks again every server that is down.
     func retry() async {
-        if credentials == nil {
+        if phase == .unavailable {
             await launch()
         } else {
-            phase = .launching
-            await loadProfiles()
+            await load(servers.filter(\.isUnavailable).map(\.credentials))
         }
     }
 
-    private func loadProfiles() async {
-        guard let credentials else {
-            phase = .unpaired
-            return
+    /// "Retry" on the row of a server that is down.
+    func retry(serverID: String) async {
+        guard let entry = servers.first(where: { $0.id == serverID }), entry.isUnavailable else { return }
+        await load([entry.credentials])
+    }
+
+    /// Asks every server in `list` at once; each one shows up as soon as it answers. They are marked
+    /// `.loading` before the first suspension, so a second "Retry" meanwhile finds nothing to retry.
+    private func load(_ list: [Credentials]) async {
+        guard !list.isEmpty else { return }
+        for credentials in list {
+            if let index = servers.firstIndex(where: { $0.credentials == credentials }) {
+                servers[index].status = .loading
+            }
         }
+        let pairing = pairing
+        await withTaskGroup(of: (Credentials, Result<DeviceInfo, any Error>).self) { group in
+            for credentials in list {
+                group.addTask { (credentials, await Self.me(credentials, pairing: pairing)) }
+            }
+            for await (credentials, result) in group {
+                apply(result, for: credentials)
+            }
+        }
+    }
+
+    /// An answer lands only on the same server with the same token: a server removed or paired
+    /// again while the request was in flight is left alone.
+    private func apply(_ result: Result<DeviceInfo, any Error>, for credentials: Credentials) {
+        guard let index = servers.firstIndex(where: { $0.credentials == credentials }) else { return }
+        switch result {
+        case .success(let info):
+            servers[index].status = .ready(info)
+        case .failure(PairingError.unauthorized):
+            // Review Focus 2: this token was revoked on the server; the other servers stay.
+            let host = servers[index].host
+            forget(credentials)
+            message = Message.removed(host)
+            return
+        case .failure(let error):
+            servers[index].status = .unavailable(Self.text(for: error))
+        }
+        publishCatalog()
+    }
+
+    private nonisolated static func me(
+        _ credentials: Credentials, pairing: any PairingService
+    ) async -> Result<DeviceInfo, any Error> {
         do {
-            let info = try await pairing.me(server: credentials.serverURL, token: credentials.token)
-            deviceInfo = info
-            phase = .ready(info)
-            message = nil
-        } catch PairingError.unauthorized {
-            // Review Focus 3: the token was revoked on the server.
-            forgetCredentials()
-            message = Message.revoked
+            return .success(try await pairing.me(server: credentials.serverURL, token: credentials.token))
         } catch {
-            phase = .unavailable
-            message = Self.text(for: error)
+            return .failure(error)
         }
     }
 
@@ -275,8 +364,11 @@ final class AppModel {
             do {
                 try await work()
             } catch {
-                phase = .unpaired
-                message = Task.isCancelled || Self.isCancellation(error) ? nil : Self.text(for: error)
+                // A "Cancel" that already left the pairing screen (adding a server) keeps its screen.
+                if case .pairing = phase {
+                    phase = .unpaired
+                    message = Task.isCancelled || Self.isCancellation(error) ? nil : Self.text(for: error)
+                }
             }
             pairingTask = nil
         }
@@ -285,6 +377,7 @@ final class AppModel {
     }
 
     private func complete(_ result: PairResult, server: URL) async throws {
+        try Task.checkCancellation()
         let device: PairedDevice
         switch result {
         case .paired(let paired):
@@ -293,12 +386,50 @@ final class AppModel {
             device = try await waitForApproval(request, server: server)
         }
         try Task.checkCancellation()
+        phase = .pairing(requestId: nil)
         let credentials = Credentials(serverURL: server, device: device)
-        try store.save(credentials)
-        self.credentials = credentials
+        // The device exists on the server from here on: a late "Cancel" must not lose its token,
+        // so `GET /v1/me` runs outside this cancellable task.
+        let pairing = pairing
+        let info = await Task { await Self.me(credentials, pairing: pairing) }.value
+        try add(credentials, info: info)
+    }
+
+    /// Decision W2: the same URL and user as a listed server replaces it under the same local id
+    /// (complications keep pointing to it) and revokes the old token without waiting. Another user
+    /// on the same server is another entry. A server that does not answer is kept, with "Retry".
+    private func add(_ credentials: Credentials, info: Result<DeviceInfo, any Error>) throws {
+        var list = servers
+        var replaced: Credentials?
+        switch info {
+        case .success(let info):
+            if let index = list.firstIndex(where: { $0.isSameAccount(as: credentials.serverURL, info) }) {
+                replaced = list[index].credentials
+                var kept = credentials
+                kept.id = list[index].id
+                list[index] = ServerEntry(credentials: kept, status: .ready(info))
+            } else {
+                list.append(ServerEntry(credentials: credentials, status: .ready(info)))
+            }
+        case .failure(PairingError.unauthorized):
+            throw PairingError.unauthorized
+        case .failure(let error):
+            list.append(ServerEntry(credentials: credentials, status: .unavailable(Self.text(for: error))))
+        }
+        try store.save(list.map(\.credentials))
+        servers = list
+        if let replaced {
+            let pairing = pairing
+            Task { try? await pairing.unpair(server: replaced.serverURL, token: replaced.token) }
+        }
         customServerURL = nil
-        phase = .launching
-        await loadProfiles()
+        isAddingServer = false
+        message = nil
+        switch phase {
+        case .unpaired, .pairing: phase = .home
+        default: break
+        }
+        publishCatalog()
     }
 
     /// Polls every `PairingClient.pollInterval`. Shows only `requestId`: the poll token is a
@@ -319,41 +450,77 @@ final class AppModel {
         }
     }
 
-    // MARK: - Unpair
+    // MARK: - Adding and removing servers
 
-    /// `DELETE /v1/me`, then clears the Keychain even if the server could not be reached.
-    func unpair() async {
-        guard let credentials else {
-            forgetCredentials()
-            return
-        }
-        isUnpairing = true
-        defer { isUnpairing = false }
+    /// "Add server" in Settings: the pairing screen, over the servers already paired.
+    func addServer() {
+        guard phase == .home else { return }
+        isAddingServer = true
+        customServerURL = nil
+        message = nil
+        phase = .unpaired
+    }
+
+    /// "Cancel" on the pairing screen while adding: stops a running request and goes back Home.
+    func cancelAddServer() {
+        guard isAddingServer else { return }
+        pairingTask?.cancel()
+        isAddingServer = false
+        customServerURL = nil
+        message = nil
+        phase = hasServers ? .home : .unpaired
+    }
+
+    /// `DELETE /v1/me`, then forgets the server even if it could not be reached. Replaces 0.1.0's
+    /// "Unpair". A second tap while the first runs does nothing.
+    func removeServer(id: String) async {
+        guard let entry = servers.first(where: { $0.id == id }), !removingServerIDs.contains(id) else { return }
+        removingServerIDs.insert(id)
+        defer { removingServerIDs.remove(id) }
         var offline = false
         do {
-            try await pairing.unpair(server: credentials.serverURL, token: credentials.token)
+            try await pairing.unpair(server: entry.credentials.serverURL, token: entry.credentials.token)
         } catch PairingError.unauthorized {
             // Already revoked on the server.
         } catch {
             offline = true
         }
-        forgetCredentials()
+        message = nil
+        forget(entry.credentials)
         if offline, message == nil {
             message = Message.unpairedOffline
         }
     }
 
-    private func forgetCredentials() {
-        message = nil
+    /// Drops the server with these exact credentials (not one paired again since) from the list and
+    /// the Keychain. With no server left, Home becomes the pairing screen.
+    private func forget(_ credentials: Credentials) {
+        let remaining = servers.filter { $0.credentials != credentials }
+        guard remaining.count < servers.count else { return }
+        servers = remaining
         do {
-            try store.delete()
+            try store.save(remaining.map(\.credentials))
         } catch {
             message = Message.keychain
         }
-        credentials = nil
-        deviceInfo = nil
-        customServerURL = nil
-        phase = .unpaired
+        publishCatalog()
+        if remaining.isEmpty, phase == .home {
+            phase = .unpaired
+        }
+    }
+
+    /// Hands the catalog to `onAgentsChanged` when it changed: the agents of every server that
+    /// answered and, for one that did not (yet), what the last catalog had for it, so complications
+    /// and shortcuts pointing there survive a launch without network. Removed servers drop out.
+    private func publishCatalog() {
+        let previous = Dictionary(grouping: catalog, by: \.ref.serverID)
+        let next = servers.flatMap { entry -> [CatalogAgent] in
+            if case .ready = entry.status { return entry.agents.map(\.catalogEntry) }
+            return previous[entry.id] ?? []
+        }
+        guard next != catalog else { return }
+        catalog = next
+        onAgentsChanged?(next)
     }
 
     // MARK: - Settings
@@ -385,20 +552,89 @@ final class AppModel {
 
     // MARK: - Call (wired by tasks 8 to 10)
 
-    /// The "Call" button (auto), a choice on the call options screen, a shortcut, the complication,
-    /// the control or the system's redial. Only from `.ready`, and only with a network path: without
-    /// one the call would fail, and watchOS 26's "Call Failed" alert crashed the system UI.
-    func startCall(turnEnd: TurnEnd = .auto) {
-        guard case .ready(let info) = phase, let credentials else { return }
+    /// A tap on an agent, or a choice on its call options screen. Only from `.home`, for an agent
+    /// this build can call (decision W7), and only with a network path: without one the call would
+    /// fail, and watchOS 26's "Call Failed" alert crashed the system UI.
+    func startCall(_ target: AgentTarget, turnEnd: TurnEnd? = nil) {
+        guard phase == .home else { return }
+        // The target may come from a screen drawn before the last `/v1/me`: call what is listed now.
+        guard let entry = servers.first(where: { $0.id == target.serverID }),
+              let current = entry.agents.first(where: { $0.agent.id == target.agent.id })
+        else {
+            message = Message.agentNotFound
+            return
+        }
+        guard current.agent.callType.isSupported else {
+            message = Message.unsupportedAgent
+            return
+        }
         guard reachability?.hasNetworkPath != false else {
             message = Message.noConnection
             return
         }
-        let request = CallRequest(credentials: credentials, profile: info.profiles.first, turnEnd: turnEnd)
+        let request = CallRequest(credentials: entry.credentials, target: current, turnEnd: turnEnd)
+        activeCall = request
         message = nil
         callActivity = .connecting
-        phase = .inCall(request.profile)
+        phase = .inCall(current)
         callHandler?.startCall(request)
+    }
+
+    /// A shortcut, the complication or the control. `ref` is the text of an `AgentRef`; `nil` calls
+    /// the first agent this build can call on the first server (decision W17): with that server down
+    /// or still loading, it says so and calls nothing, never an agent of the next server. An agent
+    /// that is gone never turns into a call to another one (decision W4).
+    func startCall(agent ref: String? = nil, turnEnd: TurnEnd? = nil) {
+        guard phase == .home else { return }
+        guard let ref else {
+            guard let entry = servers.first else { return }
+            guard entry.isReady else {
+                message = Message.cantReach(entry.host)
+                return
+            }
+            if let first = entry.agents.first(where: { $0.agent.callType.isSupported }) {
+                startCall(first, turnEnd: turnEnd)
+            }
+            return
+        }
+        guard let agentRef = AgentRef(ref), let entry = servers.first(where: { $0.id == agentRef.serverID }) else {
+            message = Message.agentNotFound
+            return
+        }
+        // Its server is down: the agent may well still exist there.
+        guard case .ready = entry.status else {
+            message = Message.cantReach(entry.host)
+            return
+        }
+        guard let target = entry.agents.first(where: { $0.ref == agentRef }) else {
+            message = Message.agentNotFound
+            return
+        }
+        startCall(target, turnEnd: turnEnd)
+    }
+
+    /// The system's redial (decision W19). Its CallKit handle is the agent's display name, so only
+    /// the one agent with exactly that name is called; a name no agent or several agents have says
+    /// "Agent not found." (never a guess). An empty handle calls the first agent, as 0.1.0 did.
+    /// Uniqueness is only known when every server answered: a server that is down or still loading
+    /// may hold a second agent with the same name, so then it says "Can't reach <host>." and calls
+    /// nobody (decision W4).
+    func startCall(redialing name: String) {
+        guard phase == .home else { return }
+        guard !name.isEmpty else {
+            startCall(agent: nil)
+            return
+        }
+        if let unavailable = servers.first(where: { !$0.isReady }) {
+            message = Message.cantReach(unavailable.host)
+            return
+        }
+        let named = agents.filter { $0.agent.displayName == name }
+        guard named.count == 1, let target = named.first else {
+            message = Message.agentNotFound
+            return
+        }
+        startCall(target)
     }
 
     /// The "End" button on the call screen.
@@ -411,14 +647,24 @@ final class AppModel {
         }
     }
 
-    /// Reported by the call layer when a call ends, whoever ended it.
-    func callDidEnd(_ reason: CallEndReason) {
+    /// Reported by the call layer when a call ends, whoever ended it. `callID` comes from
+    /// `session.ready` of a one-way call; a conversation, or a call that never got ready, has none.
+    func callDidEnd(_ reason: CallEndReason, callID: String? = nil) {
         guard case .inCall = phase else { return }
+        // Decision W9: hanging up or a dropped connection (the server counts it as hanging up) both
+        // leave a recording on its way to the agent, so the result screen follows.
+        if let call = activeCall, call.target.agent.callType.isOneWay, let callID,
+           reason == .normal || reason == .connectionLost {
+            showResult(of: call, callID: callID)
+            return
+        }
         switch reason {
         case .unauthorized:
-            forgetCredentials()
-            message = Message.revoked
-            return
+            // 4401: the token of this call's server was revoked; the other servers are not affected.
+            if let call = activeCall {
+                forget(call.credentials)
+                message = Message.removed(call.target.serverHost)
+            }
         case .connectionLost:
             message = Message.connectionLost
         case .serverFatal(let code?):
@@ -426,7 +672,8 @@ final class AppModel {
         case .serverFatal(nil):
             message = "Call failed."
         case .normal:
-            message = nil
+            // A one-way call ended before `session.ready` (no call id): nothing was recorded.
+            message = activeCall?.target.agent.callType.isOneWay == true ? Message.nothingSent : nil
         }
         returnHome()
     }
@@ -446,11 +693,44 @@ final class AppModel {
     }
 
     private func returnHome() {
-        if let deviceInfo {
-            phase = .ready(deviceInfo)
-        } else {
-            phase = .unavailable
+        activeCall = nil
+        phase = hasServers ? .home : .unpaired
+    }
+
+    // MARK: - Result of a one-way call
+
+    /// "Done" on the result screen: stops asking and goes back to the grid. A message set while the
+    /// screen was up (the server was removed by a `401`) stays: it says why the grid changed.
+    func dismissResult() {
+        guard phase == .callResult else { return }
+        callResult?.stop()
+        callResult = nil
+        returnHome()
+    }
+
+    /// The app came to the foreground: a result still waiting asks again (Review Focus 3).
+    func sceneDidBecomeActive() {
+        callResult?.appBecameActive()
+    }
+
+    private func showResult(of call: CallRequest, callID: String) {
+        let result = CallResultModel(
+            target: call.target, callID: callID, credentials: call.credentials, pairing: pairing,
+            poller: resultPoller)
+        result.onFinished = { [weak self] delivered in
+            self?.onCallResultFinished?(delivered)
         }
+        // The screen stays (it says "Result unavailable"); "Done" then finds the server gone.
+        result.onUnauthorized = { [weak self] in
+            guard let self else { return }
+            forget(call.credentials)
+            message = Message.removed(call.target.serverHost)
+        }
+        activeCall = nil
+        message = nil
+        callResult = result
+        phase = .callResult
+        result.start()
     }
 
     // MARK: - Messages
@@ -479,5 +759,14 @@ final class AppModel {
         case is CredentialStoreError: Message.keychain
         default: Message.unexpected
         }
+    }
+}
+
+private extension ServerEntry {
+    /// Decision W2: the same server and the same account (`user` is `nil` on both for servers
+    /// before 0.5.0, which have a single owner). Only a server that answered can be compared.
+    func isSameAccount(as url: URL, _ info: DeviceInfo) -> Bool {
+        guard credentials.serverURL == url, case .ready(let known) = status else { return false }
+        return known.user?.id == info.user?.id
     }
 }

@@ -181,6 +181,87 @@ struct PairingClientTests {
         #expect(request.headers["Authorization"] == "Bearer secret-token")
     }
 
+    @Test func meFromServer050ReturnsTheUserAndAgents() async throws {
+        let server = StubHost(replies: [(200, """
+            {"device_id":"dev-1","device_name":"Apple Watch",
+             "user":{"id":"u_1","handle":"ana","display_name":"Ana"},
+             "agents":[
+               {"id":"ag_1","slug":"default","display_name":"Agent","icon":"waveform","call_type":"conversation","turn_end":"auto"},
+               {"id":"ag_2","slug":"note","display_name":"Note","icon":"note.text","call_type":"one-shot","turn_end":"manual"}],
+             "profiles":[{"name":"default","display_name":"Agent"},{"name":"note","display_name":"Note"}]}
+            """)])
+        let info = try await client().me(server: server.url, token: "secret-token")
+        #expect(info.user == UserInfo(id: "u_1", handle: "ana", displayName: "Ana"))
+        #expect(info.agents == [
+            Agent(id: "ag_1", slug: "default", displayName: "Agent"),
+            Agent(id: "ag_2", slug: "note", displayName: "Note", icon: "note.text", callType: .oneShot, turnEnd: .manual),
+        ])
+        #expect(info.profiles == [Profile(name: "default", displayName: "Agent"), Profile(name: "note", displayName: "Note")])
+    }
+
+    @Test func meFromServer02xDerivesAgentsFromProfiles() async throws {
+        let server = StubHost(replies: [(200, """
+            {"device_id":"dev-1","device_name":"Apple Watch",
+             "profiles":[{"name":"default","display_name":"Agent"},{"name":"demo","display_name":"Demo"}]}
+            """)])
+        let info = try await client().me(server: server.url, token: "secret-token")
+        #expect(info.user == nil)
+        #expect(info.agents == [
+            Agent(profile: Profile(name: "default", displayName: "Agent")),
+            Agent(profile: Profile(name: "demo", displayName: "Demo")),
+        ])
+    }
+
+    @Test func meWithAgentsOnlyDerivesProfiles() async throws {
+        let server = StubHost(replies: [(200, """
+            {"device_id":"dev-1","device_name":"Apple Watch",
+             "agents":[{"id":"ag_1","slug":"note","display_name":"Note"}]}
+            """)])
+        let info = try await client().me(server: server.url, token: "secret-token")
+        #expect(info.profiles == [Profile(name: "note", displayName: "Note")])
+    }
+
+    /// One agent a newer server sends without a required field does not take the whole server down.
+    @Test func meDropsAMalformedAgentAndKeepsTheOthers() async throws {
+        let server = StubHost(replies: [(200, """
+            {"device_id":"dev-1","device_name":"Apple Watch",
+             "agents":[{"id":"ag_1","slug":"default","display_name":"Agent"},
+                       {"id":"ag_2","slug":"broken","display_name":null},
+                       {"slug":"no-id","display_name":"No id"},
+                       {"id":"ag_3","slug":"note","display_name":"Note","call_type":"one-shot"}]}
+            """)])
+        let info = try await client().me(server: server.url, token: "secret-token")
+        #expect(info.agents == [
+            Agent(id: "ag_1", slug: "default", displayName: "Agent"),
+            Agent(id: "ag_3", slug: "note", displayName: "Note", callType: .oneShot),
+        ])
+        #expect(info.profiles == [Profile(name: "default", displayName: "Agent"), Profile(name: "note", displayName: "Note")])
+    }
+
+    @Test func meWithAgentsThatIsNotAListIsMalformed() async throws {
+        let server = StubHost(replies: [(200, #"{"device_id":"dev-1","device_name":"Apple Watch","agents":{}}"#)])
+        await #expect(throws: PairingError.malformedResponse) {
+            try await client().me(server: server.url, token: "secret-token")
+        }
+    }
+
+    @Test func meWithNeitherAgentsNorProfilesIsMalformed() async throws {
+        let server = StubHost(replies: [(200, #"{"device_id":"dev-1","device_name":"Apple Watch"}"#)])
+        await #expect(throws: PairingError.malformedResponse) {
+            try await client().me(server: server.url, token: "secret-token")
+        }
+    }
+
+    @Test func deviceInfoInitsDeriveTheOtherList() {
+        let fromProfiles = DeviceInfo(deviceId: "d", deviceName: "W", profiles: [Profile(name: "a", displayName: "A")])
+        #expect(fromProfiles.agents == [Agent(id: "a", slug: "a", displayName: "A")])
+        #expect(fromProfiles.user == nil)
+        let agent = Agent(id: "ag_1", slug: "note", displayName: "Note", icon: "note.text", callType: .oneShot)
+        let fromAgents = DeviceInfo(deviceId: "d", deviceName: "W", user: UserInfo(id: "u", handle: "ana", displayName: nil), agents: [agent])
+        #expect(fromAgents.profiles == [Profile(name: "note", displayName: "Note")])
+        #expect(fromAgents.agents == [agent])
+    }
+
     @Test func meWithARevokedTokenIsUnauthorized() async throws {
         let server = StubHost(replies: [(401, #"{"error":"unauthorized"}"#)])
         await #expect(throws: PairingError.unauthorized) {
@@ -202,6 +283,42 @@ struct PairingClientTests {
         let server = StubHost(replies: [(status, "{}")])
         await #expect(throws: expected) {
             try await client().unpair(server: server.url, token: "secret-token")
+        }
+    }
+
+    // MARK: - GET /v1/calls/{id}
+
+    @Test func callStatusReadsTheCallWithTheDeviceToken() async throws {
+        let server = StubHost(path: "/wristcall", replies: [(200, """
+            {"id":"c_5d1f","call_type":"one-shot","status":"processing","error":null,"text":null,
+             "attempts":0,"last_http_status":null}
+            """)])
+        let status = try await client().callStatus(server: server.url, token: "secret-token", callID: "c_5d1f")
+        #expect(status == CallStatus(id: "c_5d1f", callType: .oneShot, state: .processing, attempts: 0))
+        let request = try #require(server.requests.first)
+        #expect(request.method == "GET")
+        #expect(request.path == "/wristcall/v1/calls/c_5d1f")
+        #expect(request.headers["Authorization"] == "Bearer secret-token")
+        #expect(!request.url.absoluteString.contains("secret-token"))
+    }
+
+    @Test func callStatusKeepsTheIdInOnePathSegment() async throws {
+        let server = StubHost(replies: [(200, #"{"id":"x","call_type":"one-shot","status":"empty"}"#)])
+        _ = try await client().callStatus(server: server.url, token: "t", callID: "../me")
+        #expect(server.requests.first?.path == "/v1/calls/..%2Fme")
+    }
+
+    @Test(arguments: [
+        (404, #"{"error":"not_found"}"#, PairingError.notFound),
+        (401, #"{"error":"unauthorized"}"#, .unauthorized),
+        (429, #"{"error":"rate_limited"}"#, .rateLimited),
+        (500, "Internal Server Error", .unexpectedStatus(500)),
+        (200, #"{"id":"c_1"}"#, .malformedResponse),
+    ])
+    func callStatusErrors(status: Int, body: String, expected: PairingError) async throws {
+        let server = StubHost(replies: [(status, body)])
+        await #expect(throws: expected) {
+            try await client().callStatus(server: server.url, token: "secret-token", callID: "c_1")
         }
     }
 

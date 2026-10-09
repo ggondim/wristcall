@@ -25,7 +25,8 @@ public enum CloseCode: UInt16, Sendable {
 
 /// How the user's turn ends during a call (`turn_end` in `session.start`).
 public enum TurnEnd: String, Sendable, Equatable, Hashable, CaseIterable {
-    /// The server closes the turn on silence, mute or the duration limit. The default; not sent on the wire.
+    /// The server closes the turn on silence, mute or the duration limit.
+    /// An explicit `.auto` is sent; only an absent value lets the agent's own mode apply.
     case auto
     /// Only mute (or the duration limit) closes the turn; silence never does.
     case manual

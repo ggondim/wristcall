@@ -49,22 +49,72 @@ public enum PollResult: Sendable, Equatable {
 public struct DeviceInfo: Sendable, Equatable, Decodable {
     public var deviceId: String
     public var deviceName: String
+    /// The account behind the device; `nil` from servers before 0.5.0.
+    public var user: UserInfo?
+    /// What the user can call, in the watch's order. A 0.2.x server sends only `profiles`:
+    /// each one becomes a conversation agent (`Agent(profile:)`).
+    public var agents: [Agent]
+    /// The 0.2.x list (`slug` and `display_name` of each agent), kept for code that predates agents.
     public var profiles: [Profile]
 
+    /// For a 0.2.x server: the agents are derived from `profiles`.
     public init(deviceId: String, deviceName: String, profiles: [Profile]) {
         self.deviceId = deviceId
         self.deviceName = deviceName
+        self.user = nil
+        self.agents = profiles.map(Agent.init(profile:))
         self.profiles = profiles
+    }
+
+    /// The profiles are derived from the agents' `slug` and `displayName`, as the server does.
+    public init(deviceId: String, deviceName: String, user: UserInfo?, agents: [Agent]) {
+        self.deviceId = deviceId
+        self.deviceName = deviceName
+        self.user = user
+        self.agents = agents
+        self.profiles = agents.map { Profile(name: $0.slug, displayName: $0.displayName) }
     }
 
     private enum CodingKeys: String, CodingKey {
         case deviceId = "device_id"
         case deviceName = "device_name"
+        case user
+        case agents
         case profiles
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let deviceId = try container.decode(String.self, forKey: .deviceId)
+        let deviceName = try container.decode(String.self, forKey: .deviceName)
+        // One agent a newer server lists without a required field is dropped, not the whole server.
+        let agents = try container.decodeIfPresent([DroppingInvalid<Agent>].self, forKey: .agents)?
+            .compactMap(\.value)
+        let profiles = try container.decodeIfPresent([Profile].self, forKey: .profiles)
+        if let agents {
+            self.init(deviceId: deviceId, deviceName: deviceName, user: try container.decodeIfPresent(UserInfo.self, forKey: .user), agents: agents)
+            if let profiles {
+                self.profiles = profiles
+            }
+        } else if let profiles {
+            self.init(deviceId: deviceId, deviceName: deviceName, profiles: profiles)
+            user = try container.decodeIfPresent(UserInfo.self, forKey: .user)
+        } else {
+            throw DecodingError.keyNotFound(CodingKeys.profiles, .init(codingPath: decoder.codingPath, debugDescription: "neither agents nor profiles"))
+        }
     }
 }
 
-/// Everything that can go wrong in pairing and in `/v1/me`.
+/// One element of a list that decodes to `nil` instead of failing the whole list.
+private struct DroppingInvalid<Value: Decodable>: Decodable {
+    let value: Value?
+
+    init(from decoder: any Decoder) throws {
+        value = try? Value(from: decoder)
+    }
+}
+
+/// Everything that can go wrong in pairing, in `/v1/me` and in `/v1/calls/{id}`.
 public enum PairingError: Error, Sendable, Equatable {
     /// `401` on `POST /v1/pair`: wrong, expired or used code (in manual mode also: too many pending requests).
     case invalidCode
@@ -76,6 +126,8 @@ public enum PairingError: Error, Sendable, Equatable {
     case unauthorized
     /// The directory answered `404` to the first try and to all retries.
     case codeNotFound
+    /// `404` on `GET /v1/calls/{id}`: the call is not this device's, or it left the history.
+    case notFound
     /// The directory pointed to a URL that is not `https://host`.
     case insecureServerURL
     /// A status the protocol does not define for this route.

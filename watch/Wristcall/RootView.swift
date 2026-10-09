@@ -13,10 +13,16 @@ struct RootView: View {
             PairingView(model: model)
         case .pairing(let requestId?):
             ApprovalView(model: model, requestId: requestId)
-        case .ready, .unavailable:
+        case .home, .unavailable:
             HomeView(model: model)
-        case .inCall(let profile):
-            InCallView(model: model, profile: profile)
+        case .inCall(let target):
+            InCallView(model: model, target: target)
+        case .callResult:
+            if let result = model.callResult {
+                CallResultView(model: model, result: result)
+            } else {
+                ProgressView()
+            }
         }
     }
 }

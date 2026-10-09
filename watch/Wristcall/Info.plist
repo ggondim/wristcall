@@ -18,5 +18,8 @@
 			</array>
 		</dict>
 	</array>
+	<!-- AgentCatalog.shared(): the App Group shared with the widget extension (decision W13). -->
+	<key>WristcallAppGroup</key>
+	<string>group.$(BUNDLE_ID_PREFIX).wristcall</string>
 </dict>
 </plist>

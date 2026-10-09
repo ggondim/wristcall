@@ -12,6 +12,9 @@ public enum CallEvent: Sendable, Equatable {
     case agentAudio(Data)
     /// All of the agent's audio for this turn has been sent.
     case agentTurnEnded
+    /// One-way calls: the server stopped recording by itself (`reason` is free text). The close
+    /// that follows is still `.ended(.normal)`; `callID` is the id to ask about the result.
+    case captured(callID: String, reason: String)
     /// The server reported a failure. With `fatal`, `.ended(.serverFatal(code))` follows.
     case error(code: ServerErrorCode, message: String, fatal: Bool)
     /// The call is over. Always the last event, exactly once.
@@ -32,7 +35,7 @@ public enum CallEndReason: Sendable, Equatable {
 }
 
 public enum CallSessionError: Error, Sendable, Equatable {
-    /// `start(profile:)` was already called on this session.
+    /// `start(agent:profile:turnEnd:)` was already called on this session.
     case alreadyStarted
     /// `session.ready` did not arrive within the timeout. The session ended with `.connectionLost`.
     case timedOut

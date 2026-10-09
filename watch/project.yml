@@ -14,8 +14,8 @@ configFiles:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "0.2.0"
+    CURRENT_PROJECT_VERSION: "2"
 
 packages:
   WristcallKit:
@@ -39,6 +39,8 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         # Keys the generated Info.plist cannot express (arrays) live in this file and are merged in.
         INFOPLIST_FILE: Wristcall/Info.plist
+        # The App Group shares the agent catalog (no secrets) with the widget extension (decision W13).
+        CODE_SIGN_ENTITLEMENTS: Wristcall/Wristcall.entitlements
         INFOPLIST_KEY_CFBundleDisplayName: Wristcall
         INFOPLIST_KEY_WKWatchOnly: YES
         INFOPLIST_KEY_NSMicrophoneUsageDescription: Wristcall sends your voice to your own wristcall server during a call.
@@ -70,8 +72,12 @@ targets:
     deploymentTarget: "26.0"
     sources:
       - WristcallWidgets
-      # The control runs this intent; the app compiles it too, so the system runs it in the app.
+      # The controls run these intents; the app compiles them too, so the system runs them in the app.
       - path: Wristcall/Intents/StartCallIntent.swift
+      - path: Wristcall/Intents/OpenWristcallIntent.swift
+      # The agent parameter of the intent, the complication and the control, read from the App Group.
+      - path: Wristcall/Intents/AgentEntity.swift
+      - path: Wristcall/AgentIcon.swift
     dependencies:
       - package: WristcallKit
     settings:
@@ -81,5 +87,6 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         # NSExtension (a dictionary) lives in this file and is merged in.
         INFOPLIST_FILE: WristcallWidgets/Info.plist
+        CODE_SIGN_ENTITLEMENTS: WristcallWidgets/WristcallWidgets.entitlements
         INFOPLIST_KEY_CFBundleDisplayName: Wristcall
         SKIP_INSTALL: YES

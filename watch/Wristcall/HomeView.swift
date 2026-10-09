@@ -1,48 +1,69 @@
 import SwiftUI
 import WristcallKit
 
-/// Home: profile name, status, the "Call" button (auto turn end) and "…" (call options).
+/// Home: the last message, a row for each server still loading or down, and the agents of every
+/// server in a two-column grid (a tap calls with the agent's own mode, a long press opens its call
+/// options). The "…" of 0.1.0 stays in the toolbar (decision W18): the options of the only callable
+/// agent, or a list of agents leading to theirs.
 struct HomeView: View {
     let model: AppModel
+    /// The agent whose call options are open.
+    @State private var optionsTarget: AgentTarget?
+
+    private let columns = [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)]
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 8) {
-                Text(model.profile?.displayName ?? "wristcall")
-                    .font(.title3)
-                    .lineLimit(1)
-                Text(status)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                HStack(spacing: 4) {
-                    Button {
-                        model.startCall()
-                    } label: {
-                        Label("Call", systemImage: "phone.fill")
-                            .font(.title3)
-                            .frame(maxWidth: .infinity, minHeight: 56)
+            ScrollView {
+                VStack(spacing: 8) {
+                    // First, so it shows without scrolling past the grid (a tap that did not call says why).
+                    if let message = model.message {
+                        Text(message)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.green)
-                    NavigationLink {
-                        CallOptionsView(model: model)
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .frame(minHeight: 56)
+                    ForEach(model.servers.filter { !$0.isReady }) { entry in
+                        ServerStatusRow(model: model, entry: entry)
                     }
-                    .buttonStyle(.bordered)
-                    .frame(width: 44)
-                    .accessibilityLabel("Call options")
-                }
-                .disabled(!model.canCall)
-                if model.phase == .unavailable {
-                    Button("Retry") {
-                        Task { await model.retry() }
+                    if model.phase == .unavailable {
+                        Button("Retry") {
+                            Task { await model.retry() }
+                        }
+                        .frame(minHeight: 44)
+                    }
+                    LazyVGrid(columns: columns, spacing: 6) {
+                        ForEach(model.agents) { target in
+                            AgentCell(
+                                target: target,
+                                onTap: { model.startCall(target) },
+                                onOptions: { open(target) })
+                        }
+                    }
+                    if showsNoAgents {
+                        Text("No agents on your servers.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
                     }
                 }
             }
+            .navigationTitle("Wristcall")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    NavigationLink {
+                        let callable = model.callableAgents
+                        if callable.count == 1, let target = callable.first {
+                            CallOptionsView(model: model, target: target)
+                        } else {
+                            AgentOptionsList(model: model)
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                    }
+                    .disabled(!model.canCall)
+                    .accessibilityLabel("Call options")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink {
                         SettingsView(model: model)
@@ -52,36 +73,179 @@ struct HomeView: View {
                     .accessibilityLabel("Settings")
                 }
             }
+            .navigationDestination(item: $optionsTarget) { target in
+                CallOptionsView(model: model, target: target)
+            }
+            #if DEBUG
+            .task {
+                optionsTarget = await DebugCall.optionsTarget(model, arguments: ProcessInfo.processInfo.arguments)
+            }
+            #endif
         }
     }
 
-    private var status: String {
-        if let message = model.message { return message }
-        return model.canCall ? "Ready" : AppModel.Message.unreachable
+    /// At least one server answered and none of them has an agent (a server that is down or still
+    /// loading says so on its own row).
+    private var showsNoAgents: Bool {
+        model.phase == .home && model.agents.isEmpty && !model.isLoadingServers
+            && model.servers.contains(where: \.isReady)
+    }
+
+    /// An agent this build cannot call has no options: the long press says why, like a tap.
+    private func open(_ target: AgentTarget) {
+        if target.agent.callType.isSupported {
+            optionsTarget = target
+        } else {
+            model.startCall(target)
+        }
     }
 }
 
-/// The app's own call screen (behind the system call UI on the watch): who, what is happening, "End".
+/// The "…" with several callable agents: each one leads to its call options.
+private struct AgentOptionsList: View {
+    let model: AppModel
+
+    var body: some View {
+        List(model.callableAgents) { target in
+            NavigationLink {
+                CallOptionsView(model: model, target: target)
+            } label: {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(target.agent.displayName)
+                            .lineLimit(2)
+                        Text(target.serverHost)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                } icon: {
+                    AgentIconView(icon: target.agent.icon)
+                }
+            }
+        }
+        .navigationTitle("Call options")
+    }
+}
+
+/// One agent: its icon in a circle and its name (two lines at most). An agent of a `call_type` this
+/// build does not know is dimmed; tapping it says to update the app (decision W7).
+private struct AgentCell: View {
+    let target: AgentTarget
+    let onTap: () -> Void
+    let onOptions: () -> Void
+
+    var body: some View {
+        VStack(spacing: 4) {
+            AgentIconView(icon: target.agent.icon)
+                .font(.title3)
+                .foregroundStyle(tint)
+                .frame(width: 44, height: 44)
+                .background(tint.opacity(0.25), in: Circle())
+            Text(target.agent.displayName)
+                .font(.caption2)
+                .lineLimit(2)
+                .minimumScaleFactor(0.8)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, minHeight: 44)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .opacity(target.agent.callType.isSupported ? 1 : 0.4)
+        // Not a `Button`: its tap would swallow the long press.
+        .onTapGesture(perform: onTap)
+        .onLongPressGesture(perform: onOptions)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(target.agent.displayName)
+        .accessibilityValue(target.serverHost)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction(.default, onTap)
+        .accessibilityAction(named: "Options", onOptions)
+    }
+
+    private var tint: Color {
+        target.agent.callType.isOneWay ? .blue : .green
+    }
+}
+
+/// A server that has not answered: "Loading <host>…", or "Can't reach <host>" with "Retry".
+private struct ServerStatusRow: View {
+    let model: AppModel
+    let entry: ServerEntry
+
+    var body: some View {
+        if entry.isUnavailable {
+            Button {
+                Task { await model.retry(serverID: entry.id) }
+            } label: {
+                VStack(spacing: 2) {
+                    Text("Can't reach \(entry.host)")
+                        .font(.footnote)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.8)
+                        .multilineTextAlignment(.center)
+                    Label("Retry", systemImage: "arrow.clockwise")
+                        .font(.footnote.bold())
+                }
+                .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityLabel("Can't reach \(entry.host)")
+            .accessibilityHint("Retry")
+        } else {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Loading \(entry.host)…")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            .frame(maxWidth: .infinity, minHeight: 32)
+        }
+    }
+}
+
+/// The app's own call screen (behind the system call UI on the watch): who, what is happening, and
+/// "End" (conversation) or "Send" (one-way: hanging up is what sends the recording, decision W9).
 /// Mute lives in the system call UI.
 struct InCallView: View {
     let model: AppModel
-    let profile: Profile?
+    let target: AgentTarget
 
     var body: some View {
-        VStack(spacing: 8) {
-            Text(profile?.displayName ?? "wristcall")
+        VStack(spacing: 6) {
+            AgentIconView(icon: target.agent.icon)
                 .font(.title3)
+                .foregroundStyle(target.agent.callType.isOneWay ? Color.blue : Color.green)
+            Text(target.agent.displayName)
+                .font(.title3)
+                .lineLimit(2)
+                .minimumScaleFactor(0.7)
+                .multilineTextAlignment(.center)
             Text(model.callActivity.label)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-            Button(role: .destructive) {
-                model.endCall()
-            } label: {
-                Label("End", systemImage: "phone.down.fill")
-                    .frame(maxWidth: .infinity, minHeight: 56)
+            if target.agent.callType.isOneWay {
+                Button {
+                    model.endCall()
+                } label: {
+                    Label("Send", systemImage: "paperplane.fill")
+                        .frame(maxWidth: .infinity, minHeight: 56)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.blue)
+            } else {
+                Button(role: .destructive) {
+                    model.endCall()
+                } label: {
+                    Label("End", systemImage: "phone.down.fill")
+                        .frame(maxWidth: .infinity, minHeight: 56)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(.red)
         }
     }
 }

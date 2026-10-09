@@ -85,13 +85,14 @@ public final class CallSession: Sendable {
 
     // MARK: - Opening
 
-    /// Connects, sends `session.start` (with `turnEnd`, omitted on the wire when `.auto`) and waits for `session.ready`.
+    /// Connects, sends `session.start` and waits for `session.ready`. A `nil` `agent`, `profile` or
+    /// `turnEnd` is left out of the message (see `ClientMessage.sessionStart`).
     ///
     /// Throws `CallSessionError`: `.timedOut` (no ready within the timeout; the call ends with
     /// `.connectionLost`), `.ended(reason)` (4401, fatal opening error, connection failure, or
     /// `end()` while opening), `.alreadyStarted`. Every failure also emits `.ended`.
     @discardableResult
-    public func start(profile: String? = nil, turnEnd: TurnEnd = .auto) async throws -> SessionReady {
+    public func start(agent: String? = nil, profile: String? = nil, turnEnd: TurnEnd? = nil) async throws -> SessionReady {
         try state.withLock { state in
             switch state.phase {
             case .idle:
@@ -110,7 +111,7 @@ public final class CallSession: Sendable {
             throw CallSessionError.ended(endReason ?? .connectionLost)
         }
 
-        let startText = try ClientMessage.sessionStart(profile: profile, turnEnd: turnEnd).jsonText()
+        let startText = try ClientMessage.sessionStart(agent: agent, profile: profile, turnEnd: turnEnd).jsonText()
         return try await withCheckedThrowingContinuation { waiter in
             let endedEarly = state.withLock { state -> CallEndReason? in
                 guard case .connecting = state.phase else {
@@ -259,6 +260,8 @@ public final class CallSession: Sendable {
             emit(.agentTurnStarted)
         case .agentTurnEnded:
             emit(.agentTurnEnded)
+        case .callCaptured(let captured):
+            emit(.captured(callID: captured.callID, reason: captured.reason))
         case .error(let error):
             if error.fatal {
                 state.withLock { $0.fatalError = error }

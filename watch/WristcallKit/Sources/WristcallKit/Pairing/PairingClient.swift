@@ -1,7 +1,7 @@
 import Foundation
 
 /// REST client for pairing (`docs/protocol.md`, "Pairing"): the optional directory, `POST /v1/pair`,
-/// `POST /v1/pair/poll`, `GET /v1/me` and `DELETE /v1/me`.
+/// `POST /v1/pair/poll`, `GET /v1/me` and `DELETE /v1/me`; plus `GET /v1/calls/{id}`, which uses the same device token.
 ///
 /// `server` and `directory` are base URLs; a path prefix is kept (`https://host/base` → `https://host/base/v1/pair`).
 public struct PairingClient: Sendable {
@@ -124,6 +124,23 @@ public struct PairingClient: Sendable {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (status, _) = try await send(request)
         guard status == 204 || status == 200 else { throw Self.error(for: status) }
+    }
+
+    /// `GET {server}/v1/calls/{callID}`: how a call went (a one-way call's result after hang-up).
+    /// `PairingError.notFound` means the call is not this device's, or no longer in the history.
+    public func callStatus(server: URL, token: String, callID: String) async throws -> CallStatus {
+        // One path segment whatever the id holds: an id from the server is never trusted to build a path.
+        var request = request(server.appending(path: "v1/calls").appending(component: callID), method: "GET")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (status, data) = try await send(request)
+        switch status {
+        case 200:
+            return try decode(data)
+        case 404:
+            throw PairingError.notFound
+        default:
+            throw Self.error(for: status)
+        }
     }
 
     // MARK: - Plumbing
