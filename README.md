@@ -105,8 +105,9 @@ history:
 ```
 
 - Retention: each agent may set `retention_days` (`wristcall agents edit note --retention 30`, `forever`, or
-  `default`); the server deletes expired calls at start and every hour. Without a `history` section nothing is
-  deleted automatically. Deleting an agent keeps its calls; `wristcall history clear --agent <id>` removes them.
+  `default`); the server deletes expired calls at start and then every `purge_every_s` (default 3600 seconds, an
+  optional `history` setting). Without a `history` section the operator sets no default and no ceiling: calls are
+  kept until deleted, unless an agent sets its own `retention_days`. Deleting an agent keeps its calls; `wristcall history clear --agent <id>` removes them.
 - Turning retention on (or lowering it) applies to past calls at the next start: they are deleted then.
 - Encryption: with `encryption_key`, new text is stored with AES-256-GCM and searched through keyed hashes of its
   words (the database shows which entries share a word, not the word). The server records which key it uses and

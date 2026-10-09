@@ -16,7 +16,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 - `GET /v1/calls/{id}` adds `agent`, `expires_at` and `entries`; a conversation's `session.ready` adds `call_id`.
 - Agents have `retention_days` (days, `"forever"` or `null` for the operator's default) and show
   `effective_retention_days`; operator settings in the new `history` section (`default_retention_days`,
-  `max_retention_days`, `purge_every_s`). Without it nothing is deleted.
+  `max_retention_days`, `purge_every_s`). Without it the operator sets no default and no ceiling: calls are kept
+  until deleted, unless an agent sets its own `retention_days`.
 - Optional encryption at rest (`history.encryption_key`): AES-256-GCM for the text, keyed hashes of the words for the
   search. CLI: `wristcall history new-key|encrypt|decrypt`.
 - CLI: `wristcall history list|show|rm|clear|export|redeliver` and `wristcall agents add|edit --retention`.
@@ -54,7 +55,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
   a malicious self-hosted operator could read the victim's agenda and add or delete servers (for example a phishing
   "Home" entry). Only `DELETE /v1/account` is restricted (iOS and PWA clients). Per-server token audiences (epic E6)
   must ship before the Cloud API is deployed.
-
 - With an encryption key set, the server records which key it is and refuses to start with another key or without
   one: losing the key loses the encrypted history. The search index of encrypted text reveals which entries share a
   word (not the word).

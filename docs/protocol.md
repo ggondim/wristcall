@@ -337,6 +337,7 @@ The call goes like this:
 | `delivered` | yes | the webhook answered `2xx` |
 | `failed` | yes | see `error` |
 | `empty` | yes | nothing was said (no speech, or a blank transcript); nothing is delivered |
+| `ended` | yes | a conversation call closed (see [History](#history)) |
 
 | `error` | Meaning |
 |---|---|
@@ -391,7 +392,7 @@ With the user's API token (a device token answers `403 forbidden`, except for `G
 
 | Route | Responses |
 |---|---|
-| `GET /v1/calls` | `200 {"calls":[call],"next_before":id\|null}`, newest first, each call as `GET /v1/calls/{id}`. Query: `agent` (slug or id, also a deleted agent's id), `q` (search), `since` and `until` (Unix seconds or ISO 8601; without an offset, UTC; `until` excluded), `limit` (1 to 100, default 50), `before` (the `next_before` of the previous page: an opaque position, still valid if that call was deleted meanwhile). `404 not_found` (agent), `422 invalid` |
+| `GET /v1/calls` | `200 {"calls":[call],"next_before":string\|null}`, newest first, each call as `GET /v1/calls/{id}`. Query: `agent` (slug or id, also a deleted agent's id), `q` (search), `since` and `until` (Unix seconds or ISO 8601; without an offset, UTC; `until` excluded), `limit` (1 to 100, default 50), `before` (the `next_before` of the previous page: an opaque position, still valid if that call was deleted meanwhile; a full page can return a `next_before` that leads to an empty page). `404 not_found` (agent). `422 {"error":"invalid"}` for a bad `since`, `until` or `before`; a `limit` outside 1 to 100 or a `q` over 500 characters gets the standard validation `422` (`{"detail":[...]}`) |
 | `GET /v1/calls/{id}` | `200 call` (device or API token). `404` |
 | `DELETE /v1/calls/{id}` | `204`. `404` |
 | `DELETE /v1/calls?agent=<ref>` or `?all=true` | `200 {"deleted":n}`. `422` with neither or both |
@@ -400,7 +401,8 @@ With the user's API token (a device token answers `403 forbidden`, except for `G
 
 Search (`q`) matches whole words, all of them in the same call (in what the user said or in the agent's answers),
 ignoring case and accents: `reuniao` finds "Reunião". No prefixes, phrases or operators: anything that is not a
-letter or a digit separates words; an empty `q` does not filter. Redelivery sends the kept text to the agent's webhook as it is configured now, with the same
+letter or a digit separates words; at most 16 words count (the rest are ignored) and each word is cut at 64
+characters. An empty `q` does not filter, but a `q` of only punctuation finds nothing. Redelivery sends the kept text to the agent's webhook as it is configured now, with the same
 `Idempotency-Key` (the call id) and three more attempts; `attempts` adds them up.
 
 ## Agents
