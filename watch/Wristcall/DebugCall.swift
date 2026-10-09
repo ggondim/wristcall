@@ -57,6 +57,8 @@ final class DirectAudioCallControl: CallControlling {
 /// - `-autoCallDelay <seconds>`: waits that long on the Home screen before tapping "Call"
 ///   (time to run `wristcall devices revoke` and see the 4401 path).
 /// - `-endCallAfter <seconds>`: taps "End" that many seconds after the call started.
+/// - `-showOptions <slug>`: opens the call options of that agent on Home (once its server has
+///   answered), as a long press on it does.
 enum DebugCall {
     static func usesCallKit(_ arguments: [String]) -> Bool {
         !arguments.contains("-noCallKit")
@@ -92,6 +94,18 @@ enum DebugCall {
         guard let seconds = seconds(after: "-endCallAfter", in: arguments) else { return }
         try? await Task.sleep(for: .seconds(seconds))
         model.endCall()
+    }
+
+    /// The agent whose options `-showOptions` asks to open; `nil` without the flag or when no listed
+    /// agent has that slug within 10 s.
+    @MainActor
+    static func optionsTarget(_ model: AppModel, arguments: [String]) async -> AgentTarget? {
+        guard let slug = value(after: "-showOptions", in: arguments) else { return nil }
+        for _ in 0..<100 {
+            if let target = model.agents.first(where: { $0.agent.slug == slug }) { return target }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return nil
     }
 
     private static func seconds(after flag: String, in arguments: [String]) -> Double? {

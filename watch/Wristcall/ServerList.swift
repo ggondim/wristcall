@@ -21,6 +21,11 @@ struct ServerEntry: Identifiable, Equatable {
     /// servers differ only by it).
     var host: String { credentials.serverURL.displayHost }
 
+    /// `GET /v1/me` answered: its agents are listed.
+    var isReady: Bool {
+        if case .ready = status { true } else { false }
+    }
+
     /// `GET /v1/me` failed: the row offers "Retry".
     var isUnavailable: Bool {
         if case .unavailable = status { true } else { false }

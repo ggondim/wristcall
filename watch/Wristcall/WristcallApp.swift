@@ -43,6 +43,8 @@ struct WristcallApp: App {
                 // A shortcut may record its request before or after the app becomes active.
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active {
+                        // A result still waiting asks again (decision W10).
+                        model.sceneDidBecomeActive()
                         Task { await shortcuts.check() }
                     }
                 }
@@ -96,11 +98,22 @@ struct WristcallApp: App {
 ///     xcrun simctl launch <device> <bundle id> -pairServer http://127.0.0.1:8765 -pairCode 12345678
 ///
 /// does what "Use server URL" + the keypad + "Pair" do, through the same `AppModel` calls.
-/// Without `-pairCode` it sends an approval request (flow B). Ignored when already paired.
+/// Without `-pairCode` it sends an approval request (flow B). When already paired it adds the
+/// server (as "Add server" does), unless that server is already listed.
 enum DebugPairing {
     @MainActor
     static func run(_ model: AppModel, arguments: [String]) {
-        guard model.phase == .unpaired, let server = value(after: "-pairServer", in: arguments) else { return }
+        // `-addServer` alone opens the pairing screen over the servers already paired.
+        if arguments.contains("-addServer"), model.phase == .home { model.addServer() }
+        guard let server = value(after: "-pairServer", in: arguments) else { return }
+        switch model.phase {
+        case .unpaired: break
+        case .home:
+            guard let url = ServerAddress.parse(server), !model.servers.contains(where: { $0.credentials.serverURL == url })
+            else { return }
+            model.addServer()
+        default: return
+        }
         guard model.useServerURL(server) else { return }
         if let code = value(after: "-pairCode", in: arguments).flatMap(PairingCode.init) {
             model.pair(code: code)

@@ -40,6 +40,10 @@ struct PairingView: View {
                             Button("Use pairing directory") { model.useDirectory() }
                         }
                     }
+                    if model.hasServers {
+                        // Adding a server: back to the agents.
+                        Button("Cancel", role: .cancel) { model.cancelAddServer() }
+                    }
                 }
             }
             .navigationTitle("Pair")
