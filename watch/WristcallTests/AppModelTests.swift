@@ -968,7 +968,16 @@ struct AppModelTests {
         #expect(model.callResult == nil)
         #expect(!result.isChecking)
         #expect(model.canCall)
+
+        // What the stopped query brings back later changes nothing and plays no haptic.
+        let haptics = Recorder<Bool>()
+        model.onCallResultFinished = { haptics.append($0) }
         gate.open()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(haptics.all.isEmpty)
+        #expect(model.phase == .home)
+        #expect(model.callResult == nil)
+        #expect(result.state == .waiting(nil))
     }
 
     /// Review Focus 3: hanging up with no network or in the background; back in the app, it asks again.

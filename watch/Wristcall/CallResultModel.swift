@@ -80,10 +80,12 @@ final class CallResultModel {
         start()
     }
 
-    /// The app is in the foreground again. A query suspended in the background may have timed out
-    /// or never started: without a final status and with nothing running, ask again.
+    /// The app is in the foreground again. A query that lived through the background may be
+    /// overdue, about to fail on a radio that is still waking up, or never have started: without a
+    /// final status, drop whatever is running and ask afresh, with a new deadline.
     func appBecameActive() {
-        guard !isOver, task == nil else { return }
+        guard !isOver else { return }
+        stop()
         start()
     }
 

@@ -122,18 +122,24 @@ struct CallResultModelTests {
         #expect(pairing.callStatusCount == asked)
     }
 
-    @Test func comingBackWhileAskingDoesNotAskTwice() async throws {
+    /// A query that lived through the background is replaced, not trusted: the old run's late
+    /// answer (here a wrong "failed") changes nothing and fires no haptic.
+    @Test func comingBackWhileAskingRestartsWithAFreshDeadline() async throws {
         let gate = pairing.holdCallStatus()
-        pairing.callStatusResults = [.success(status(.delivered))]
+        pairing.callStatusResults = [.success(status(.failed, failure: .internal)), .success(status(.delivered))]
         let result = makeResult()
         result.start()
         await waitUntil { pairing.callStatusCount == 1 }
 
         result.appBecameActive()
+        await waitUntil { pairing.callStatusCount == 2 }
+        #expect(result.isChecking)
         gate.open()
         await waitUntil { !result.isChecking }
+        try await Task.sleep(for: .milliseconds(50))
 
-        #expect(pairing.callStatusCount == 1)
+        #expect(result.state == .finished(status(.delivered)))
+        #expect(pairing.callStatusCount == 2)
         #expect(finishes.all == [true])
     }
 
