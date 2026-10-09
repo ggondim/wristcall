@@ -616,10 +616,17 @@ final class AppModel {
     /// The system's redial (decision W19). Its CallKit handle is the agent's display name, so only
     /// the one agent with exactly that name is called; a name no agent or several agents have says
     /// "Agent not found." (never a guess). An empty handle calls the first agent, as 0.1.0 did.
+    /// Uniqueness is only known when every server answered: a server that is down or still loading
+    /// may hold a second agent with the same name, so then it says "Can't reach <host>." and calls
+    /// nobody (decision W4).
     func startCall(redialing name: String) {
         guard phase == .home else { return }
         guard !name.isEmpty else {
             startCall(agent: nil)
+            return
+        }
+        if let unavailable = servers.first(where: { !$0.isReady }) {
+            message = Message.cantReach(unavailable.host)
             return
         }
         let named = agents.filter { $0.agent.displayName == name }

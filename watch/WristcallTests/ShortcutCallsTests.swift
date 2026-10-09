@@ -188,6 +188,39 @@ struct ShortcutCallsTests {
         #expect(!pending.isPending)
     }
 
+    /// Decision W4: "Notes" exists on both servers, the one that was called last is down. Only the
+    /// other "Notes" is visible, and it must not be taken for the one the user redials.
+    @Test func redialByNameWithAServerDownDoesNotCallTheVisibleMatch() async throws {
+        let model = try makeModelWithTwoServers(first: .failure(.network(.notConnectedToInternet)))
+        await model.launch()
+        try #require(model.agents.map(\.id) == ["srv-2/ag_9", "srv-2/ag_8"])
+        pending.request(agentNamed: "Notes")
+
+        await ShortcutCalls(store: pending, model: model).check()
+
+        #expect(handler.started.isEmpty)
+        #expect(model.phase == .home)
+        #expect(model.message == "Can't reach agent.example.com.")
+        #expect(!pending.isPending)
+    }
+
+    /// Same when the server is still loading as the wait runs out.
+    @Test func redialByNameWithAServerStillLoadingDoesNotCall() async throws {
+        let model = try makeModelWithTwoServers()
+        let slow = pairing.holdMe(for: server)
+        let launch = Task { await model.launch() }
+        await waitUntil { model.servers.last?.isReady == true }
+        pending.request(agentNamed: "House")
+
+        await ShortcutCalls(store: pending, model: model, launchWait: .milliseconds(100)).check()
+
+        #expect(handler.started.isEmpty)
+        #expect(model.message == "Can't reach agent.example.com.")
+        #expect(!pending.isPending)
+        slow.open()
+        await launch.value
+    }
+
     /// The CallKit handle is the agent's name; an intent without one redials like the old complication.
     @Test func redialRecordsTheHandleOfTheFirstContact() throws {
         func intent(_ handles: [String?]) -> INStartCallIntent {
