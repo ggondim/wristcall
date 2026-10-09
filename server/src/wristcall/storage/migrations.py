@@ -71,6 +71,28 @@ MIGRATIONS: list[list[str]] = [
         "CREATE INDEX api_tokens_user ON api_tokens (user_id)",
         "CREATE INDEX agents_user ON agents (user_id, position)",
     ],
+    # 3: calls (one-shot and monologue in E2; the history of epic E3 grows from here). No CHECK on status or
+    # call_type: SQLite cannot alter a CHECK, and the values are validated above the storage.
+    # IF NOT EXISTS: a rollback to 0.3.0 sets user_version back to 2 and keeps the table; the next upgrade adopts it.
+    [
+        """CREATE TABLE IF NOT EXISTS calls (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          agent_id TEXT NOT NULL,
+          device_id TEXT,
+          call_type TEXT NOT NULL,
+          status TEXT NOT NULL,
+          error TEXT,
+          text TEXT,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          last_http_status INTEGER,
+          created_at REAL NOT NULL,
+          ended_at REAL,
+          finished_at REAL,
+          updated_at REAL NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS calls_user ON calls (user_id, created_at)",
+    ],
 ]
 
 LATEST = len(MIGRATIONS)

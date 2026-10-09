@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 
 from memory_storage import MemoryStorage
-from wristcall.storage import AgentRecord, Conflict, LimitReached, Storage, open_sqlite_storage
+from wristcall.storage import AgentRecord, CallRecord, Conflict, LimitReached, Storage, open_sqlite_storage
 
 
 @pytest.fixture(params=["sqlite", "memory"])
@@ -237,3 +237,49 @@ async def test_meta(storage):
     await storage.meta.set("k", "1")
     await storage.meta.set("k", "2")
     assert await storage.meta.get("k") == "2"
+
+
+def call(**over) -> CallRecord:
+    fields = dict(
+        id="c_1", user_id="u_a", agent_id="ag_1", device_id="d_1", call_type="one-shot", status="recording",
+        created_at=1.0, updated_at=1.0,
+    )
+    return CallRecord(**{**fields, **over})
+
+
+async def test_calls_create_get_and_save(storage):
+    await storage.users.create("u_a", "alice", "Alice", 1.0)
+    await storage.users.create("u_b", "bob", "Bob", 1.0)
+    created = await storage.calls.create(call())
+    assert await storage.calls.get("u_a", "c_1") == created
+    assert await storage.calls.get("u_b", "c_1") is None
+    done = replace(
+        created, status="delivered", text="buy milk", attempts=2, last_http_status=204,
+        ended_at=2.0, finished_at=3.0, updated_at=3.0,
+        # Not changeable by save:
+        user_id="u_b", agent_id="ag_x", device_id=None, call_type="monologue", created_at=9.0,
+    )
+    saved = await storage.calls.save(done)
+    assert saved == replace(done, user_id="u_a", agent_id="ag_1", device_id="d_1", call_type="one-shot", created_at=1.0)
+    assert await storage.calls.get("u_a", "c_1") == saved
+    with pytest.raises(KeyError):
+        await storage.calls.save(call(id="c_gone"))
+
+
+async def test_calls_interrupted_at_startup_keep_their_text(storage):
+    await storage.users.create("u_a", "alice", "Alice", 1.0)
+    await storage.calls.create(call(id="c_rec"))
+    await storage.calls.create(call(id="c_proc", status="processing", text="half"))
+    await storage.calls.create(call(id="c_ok", status="delivered", finished_at=2.0))
+    assert await storage.calls.interrupt_unfinished(5.0) == 2
+    proc = await storage.calls.get("u_a", "c_proc")
+    assert (proc.status, proc.error, proc.text, proc.finished_at) == ("failed", "interrupted", "half", 5.0)
+    assert (await storage.calls.get("u_a", "c_rec")).status == "failed"
+    assert (await storage.calls.get("u_a", "c_ok")).status == "delivered"
+
+
+async def test_deleting_a_user_deletes_their_calls(storage):
+    await storage.users.create("u_a", "alice", "Alice", 1.0)
+    await storage.calls.create(call())
+    await storage.users.delete("u_a")
+    assert await storage.calls.get("u_a", "c_1") is None

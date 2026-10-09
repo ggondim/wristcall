@@ -69,3 +69,26 @@ class AgentRecord:
     spec: dict[str, Any]
     created_at: float
     updated_at: float
+
+
+@dataclass(frozen=True)
+class CallRecord:
+    """One call to a one-shot or monologue agent: its transcript and the delivery to the action URL.
+
+    status: recording (the call is open) → processing (transcribing, delivering) → delivered | failed | empty.
+    """
+
+    id: str
+    user_id: str
+    agent_id: str
+    device_id: str | None
+    call_type: str
+    status: str
+    created_at: float
+    updated_at: float
+    error: str | None = None
+    text: str | None = None
+    attempts: int = 0
+    last_http_status: int | None = None
+    ended_at: float | None = None
+    finished_at: float | None = None

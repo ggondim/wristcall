@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 
 from .database import Database, database_path
-from .models import AgentRecord, ApiToken, Conflict, Device, LimitReached, PairingRequest, User
+from .models import AgentRecord, ApiToken, CallRecord, Conflict, Device, LimitReached, PairingRequest, User
 
 TOKEN_TOUCH_S = 60  # last_used_at precision: one write a minute per token at most
 
@@ -313,6 +313,46 @@ class _Agents:
         return self._db.query("SELECT COUNT(*) FROM agents WHERE user_id = ?", (user_id,))[0][0]
 
 
+_CALL_FIELDS = ("status", "error", "text", "attempts", "last_http_status", "ended_at", "finished_at", "updated_at")
+
+
+def _call(r: sqlite3.Row) -> CallRecord:
+    return CallRecord(**{k: r[k] for k in r.keys()})
+
+
+class _Calls:
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def create(self, record: CallRecord) -> CallRecord:
+        names = list(CallRecord.__dataclass_fields__)
+        self._db.execute(
+            f"INSERT INTO calls ({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})",
+            tuple(getattr(record, n) for n in names),
+        )
+        return record
+
+    async def get(self, user_id: str, call_id: str) -> CallRecord | None:
+        rows = self._db.query("SELECT * FROM calls WHERE id = ? AND user_id = ?", (call_id, user_id))
+        return _call(rows[0]) if rows else None
+
+    async def save(self, record: CallRecord) -> CallRecord:
+        rows = self._db.query(
+            f"UPDATE calls SET {', '.join(f'{n} = ?' for n in _CALL_FIELDS)} WHERE id = ? RETURNING *",
+            (*(getattr(record, n) for n in _CALL_FIELDS), record.id),
+        )
+        if not rows:
+            raise KeyError(record.id)
+        return _call(rows[0])
+
+    async def interrupt_unfinished(self, now: float) -> int:
+        return self._db.execute(
+            "UPDATE calls SET status = 'failed', error = 'interrupted', finished_at = ?, updated_at = ? "
+            "WHERE status IN ('recording', 'processing')",
+            (now, now),
+        )
+
+
 class _Meta:
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -336,6 +376,7 @@ class SqliteStorage:
         self.devices = _Devices(db)
         self.pairing = _Pairing(db)
         self.agents = _Agents(db)
+        self.calls = _Calls(db)
         self.meta = _Meta(db)
 
     async def close(self) -> None:
