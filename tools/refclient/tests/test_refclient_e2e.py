@@ -1,15 +1,18 @@
 import asyncio
 import concurrent.futures
+import json
 import socket
 import threading
 import time
 import wave
+import socketserver
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 import uvicorn
 
-from refclient.client import CallError, call_url, pair, run_call, wav_source
+from refclient.client import CallError, call_url, pair, run_call, wait_for_call, wav_source
 from wristcall.app import create_app
 from wristcall.config import parse_config
 from wristcall.providers import ProviderError, register
@@ -46,6 +49,7 @@ class SyncPairing:
     def __init__(self, app) -> None:
         self._pairing = app.state.pairing
         self._storage = app.state.storage
+        self.agents = app.state.agents
 
     def _owner(self) -> str:
         return _sync(self._storage.users.by_handle("owner")).id
@@ -171,3 +175,52 @@ def test_pair_flow_b_waits_for_approval(tmp_path):
     finally:
         server.should_exit = True
         thread.join(5)
+
+
+class Inbox(BaseHTTPRequestHandler):
+    """A webhook receiver: keeps every POSTed body and answers 204."""
+
+    received: list[dict] = []
+
+    def do_POST(self):  # noqa: N802
+        length = int(self.headers["Content-Length"])
+        Inbox.received.append(json.loads(self.rfile.read(length)))
+        self.send_response(204)
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
+class InboxServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer.server_bind resolves the host's FQDN, which can take seconds on some machines.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
+async def test_one_shot_call_hangs_up_and_waits_for_the_delivery(tmp_path):
+    inbox = InboxServer(("127.0.0.1", 0), Inbox)
+    threading.Thread(target=inbox.serve_forever, daemon=True).start()
+    Inbox.received = []
+    base, svc, server, thread = start_server(tmp_path)
+    try:
+        _sync(svc.agents.create(svc._owner(), {
+            "slug": "note", "call_type": "one-shot",
+            "action": {"type": "webhook", "url": f"http://127.0.0.1:{inbox.server_port}/hook"},
+            "vad": {"type": "energy"},
+        }))
+        creds = pair(base, svc.create_code().code, "refclient-test")
+        with wave.open(str(FIXTURE)) as w:
+            pcm = w.readframes(w.getnframes())
+        result = await asyncio.wait_for(
+            run_call(base, creds["token"], wav_source(pcm, realtime=False), agent="note"), timeout=20
+        )
+        assert result.call_id and result.call_id.startswith("c_")
+        view = await asyncio.to_thread(wait_for_call, base, creds["token"], result.call_id, poll_interval_s=0.05, timeout_s=10)
+        assert (view["status"], view["text"]) == ("delivered", "hi")
+        assert [(b["call_id"], b["text"]) for b in Inbox.received] == [(result.call_id, "hi")]
+    finally:
+        server.should_exit = True
+        thread.join(5)
+        inbox.shutdown()
