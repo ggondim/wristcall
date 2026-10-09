@@ -2,7 +2,8 @@
 gives owner-less devices to the only user. Safe to run concurrently and on every start.
 
 Warnings about the import (adjusted values, skipped profiles) are logged here, once, by whoever runs it
-(the server or a CLI command)."""
+(the server or a CLI command). A cloud server (epic E9) does not run the bootstrap: it relies on the operator
+methods of the storage (users.list, devices.list(None), adopt_orphans; see storage/base.py)."""
 
 import logging
 import re

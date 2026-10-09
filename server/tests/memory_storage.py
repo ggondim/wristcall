@@ -208,10 +208,10 @@ class _Agents:
             raise Conflict(f"agent slug already exists: {record.slug}")
 
     async def create(self, record, max_count=None):
-        self._check(record)
         mine = self._mine(record.user_id)
         if max_count is not None and len(mine) >= max_count:
             raise LimitReached(f"agent limit reached ({max_count})")
+        self._check(record)
         position = max((a.position for a in mine), default=-1) + 1
         self.rows[record.id] = replace(record, position=position)
         return self.rows[record.id]
@@ -227,7 +227,7 @@ class _Agents:
         if current is None or current.user_id != record.user_id:
             raise KeyError(record.id)
         self._check(record, exclude=record.id)
-        self.rows[record.id] = replace(record, created_at=current.created_at)
+        self.rows[record.id] = replace(record, created_at=current.created_at, position=current.position)
         return self.rows[record.id]
 
     async def move(self, user_id, agent_id, index):

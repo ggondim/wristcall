@@ -50,7 +50,9 @@ class TokenStore(Protocol):
         """Active tokens, oldest first."""
         ...
 
-    async def revoke(self, token_id: str, now: float) -> bool: ...
+    async def revoke(self, token_id: str, now: float) -> bool:
+        """Operator scope: any user's token (no user_id yet); a route must check the owner before calling it."""
+        ...
 
 
 class DeviceStore(Protocol):
@@ -61,13 +63,13 @@ class DeviceStore(Protocol):
         ...
 
     async def list(self, user_id: str | None = None) -> list[Device]:
-        """Active devices of one user, oldest first. Operator: user_id None lists everyone's."""
+        """Active devices of one user, oldest first. user_id None is operator scope (everyone's): routes always pass it."""
         ...
 
     async def count(self, user_id: str) -> int: ...
 
     async def revoke(self, device_id: str, now: float, user_id: str | None = None) -> bool:
-        """With user_id, only revokes a device of that user."""
+        """With user_id, only revokes a device of that user. None is operator scope: routes always pass it."""
         ...
 
     async def adopt_orphans(self, user_id: str) -> int:
@@ -125,7 +127,8 @@ class AgentStore(Protocol):
     async def create(self, record: AgentRecord, max_count: int | None = None) -> AgentRecord:
         """Appends the agent at the end of the user's list (record.position is ignored).
 
-        Raises Conflict on slug, LimitReached if the user already has max_count agents (checked atomically).
+        Raises LimitReached if the user already has max_count agents (checked atomically and first),
+        then Conflict on slug.
         """
         ...
 
@@ -138,7 +141,10 @@ class AgentStore(Protocol):
         ...
 
     async def update(self, record: AgentRecord) -> AgentRecord:
-        """Replaces every field but id, user_id and created_at. Raises Conflict on slug, KeyError if it is gone."""
+        """Replaces every field but id, user_id, created_at and position (position is owned by move).
+
+        Raises Conflict on slug, KeyError if it is gone.
+        """
         ...
 
     async def move(self, user_id: str, agent_id: str, index: int) -> AgentRecord | None:

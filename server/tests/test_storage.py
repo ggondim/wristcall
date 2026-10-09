@@ -1,6 +1,7 @@
 """Contract of the storage interface. Parametrized by adapter: the Cloud API adapter (E9) joins `params`."""
 
 import sqlite3
+from dataclasses import replace
 
 import pytest
 
@@ -151,9 +152,9 @@ async def test_agents(storage):
     assert [a.slug for a in await storage.agents.list("u_a")] == ["default", "coach"]
     with pytest.raises(Conflict):
         await storage.agents.create(agent("u_a", "coach", agent_id="ag_other"))
-    moved = await storage.agents.update(agent("u_a", "coach2", agent_id="ag_coach", position=0, updated_at=5.0))
-    assert (moved.slug, moved.position, moved.created_at, moved.updated_at) == ("coach2", 0, 1.0, 5.0)
-    assert [a.slug for a in await storage.agents.list("u_a")] == ["default", "coach2"]  # tie on position: creation order
+    renamed = await storage.agents.update(agent("u_a", "coach2", agent_id="ag_coach", position=0, updated_at=5.0))
+    assert (renamed.slug, renamed.position, renamed.created_at, renamed.updated_at) == ("coach2", 1, 1.0, 5.0)
+    assert [a.slug for a in await storage.agents.list("u_a")] == ["default", "coach2"]  # position is owned by move
     with pytest.raises(Conflict):
         await storage.agents.update(agent("u_a", "default", agent_id="ag_coach"))
     assert await storage.agents.count("u_a") == 2
@@ -176,6 +177,24 @@ async def test_agent_limit_is_checked_on_create(storage):
         await storage.agents.create(agent("u_a", "three"), max_count=2)
     assert await storage.agents.count("u_a") == 2
     await storage.agents.create(agent("u_a", "three"))  # no limit given
+
+
+async def test_limit_is_checked_before_the_slug(storage):
+    await storage.users.create("u_a", "alice", "Alice", 1.0)
+    await storage.agents.create(agent("u_a", "one"), max_count=2)
+    await storage.agents.create(agent("u_a", "two"), max_count=2)
+    with pytest.raises(LimitReached):
+        await storage.agents.create(agent("u_a", "one", agent_id="ag_dup"), max_count=2)
+
+
+async def test_update_never_writes_the_position(storage):
+    await storage.users.create("u_a", "alice", "Alice", 1.0)
+    await storage.agents.create(agent("u_a", "a"))
+    await storage.agents.create(agent("u_a", "b"))
+    stale = await storage.agents.get("u_a", "a")  # position 0, read before a concurrent move
+    await storage.agents.move("u_a", "ag_b", 0)
+    await storage.agents.update(replace(stale, display_name="A", updated_at=5.0))
+    assert [(a.slug, a.position) for a in await storage.agents.list("u_a")] == [("b", 0), ("a", 1)]
 
 
 async def test_move_renumbers(storage):

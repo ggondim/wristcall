@@ -277,11 +277,11 @@ class _Agents:
     async def update(self, record: AgentRecord) -> AgentRecord:
         try:
             rows = self._db.query(
-                "UPDATE agents SET slug = ?, display_name = ?, icon = ?, call_type = ?, position = ?, spec = ?, updated_at = ? "
+                "UPDATE agents SET slug = ?, display_name = ?, icon = ?, call_type = ?, spec = ?, updated_at = ? "
                 "WHERE id = ? AND user_id = ? RETURNING *",
                 (
-                    record.slug, record.display_name, record.icon, record.call_type, record.position,
-                    json.dumps(record.spec), record.updated_at, record.id, record.user_id,
+                    record.slug, record.display_name, record.icon, record.call_type, json.dumps(record.spec),
+                    record.updated_at, record.id, record.user_id,
                 ),
             )
         except sqlite3.IntegrityError as e:
