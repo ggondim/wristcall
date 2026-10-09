@@ -11,16 +11,18 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from pymongo.errors import DuplicateKeyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import __version__
+from .agenda import AgendaError, parse_agents, parse_new_server, parse_server_patch
 from .config import CloudConfig, ConfigError
 from .oidc import Identity, OidcError, OidcUnavailable, OidcVerifier
-from .store import Store, open_store
+from .store import Store, open_store, public_server
 
 log = logging.getLogger("wristcall_cloud.app")
 
@@ -143,6 +145,106 @@ def public_config(config: CloudConfig) -> dict[str, Any]:
     return {"issuer": config.issuer, "project_id": config.project_id, "clients": dict(config.clients), "scopes": scopes}
 
 
+router = APIRouter()
+_STATUS = {"invalid": 422, "limit": 403}
+
+
+def _not_found() -> ApiError:
+    return ApiError("not_found", "server not found", 404)
+
+
+@router.get("/v1/account")
+async def get_account(request: Request, caller: Caller = Depends(current_account)) -> dict[str, Any]:
+    store = get_store(request)
+    account = await store.touch_account(caller.key)
+    return {
+        "account": caller.key,
+        "created_at": account["created_at"],
+        "servers": await store.count_servers(caller.key),
+    }
+
+
+@router.delete("/v1/account", status_code=204)
+async def delete_account(request: Request, caller: Caller = Depends(current_account)) -> Response:
+    clients = request.app.state.config.clients
+    # Only the apps may delete the account; a token issued to the watch (or anyone else) may not.
+    if caller.client_id is None or caller.client_id not in (clients.get("ios"), clients.get("pwa")):
+        raise ApiError("forbidden", "this client cannot delete the account", 403)
+    await get_store(request).delete_account(caller.key)
+    return Response(status_code=204)
+
+
+@router.get("/v1/servers")
+async def list_servers(request: Request, caller: Caller = Depends(current_account)) -> dict[str, Any]:
+    return {"servers": [public_server(s) for s in await get_store(request).list_servers(caller.key)]}
+
+
+@router.post("/v1/servers", status_code=201)
+async def create_server(request: Request, caller: Caller = Depends(current_account)) -> dict[str, Any]:
+    fields = parse_new_server(await json_object(request))
+    store = get_store(request)
+    await store.touch_account(caller.key)
+    # Check then insert: two simultaneous requests may overshoot the limit by one server. Accepted, the limit
+    # protects the database from runaway clients, not a quota. The unique index is what decides duplicates.
+    if await store.count_servers(caller.key) >= request.app.state.config.max_servers:
+        raise ApiError("limit", "the account reached its limit of servers", 403)
+    try:
+        doc = await store.add_server(caller.key, fields)
+    except DuplicateKeyError:
+        raise ApiError("conflict", "the account already has a server with this url", 409) from None
+    return public_server(doc)
+
+
+@router.get("/v1/servers/{server_id}")
+async def get_server(server_id: str, request: Request, caller: Caller = Depends(current_account)) -> dict[str, Any]:
+    doc = await get_store(request).get_server(caller.key, server_id)
+    if doc is None:
+        raise _not_found()
+    return public_server(doc)
+
+
+@router.patch("/v1/servers/{server_id}")
+async def patch_server(server_id: str, request: Request, caller: Caller = Depends(current_account)) -> dict[str, Any]:
+    changes = parse_server_patch(await json_object(request))
+    store = get_store(request)
+    await store.touch_account(caller.key)
+    doc = await store.update_server(caller.key, server_id, changes)
+    if doc is None:
+        raise _not_found()
+    return public_server(doc)
+
+
+@router.delete("/v1/servers/{server_id}", status_code=204)
+async def delete_server(server_id: str, request: Request, caller: Caller = Depends(current_account)) -> Response:
+    store = get_store(request)
+    await store.touch_account(caller.key)
+    if not await store.delete_server(caller.key, server_id):
+        raise _not_found()
+    return Response(status_code=204)
+
+
+@router.put("/v1/servers/{server_id}/agents")
+async def put_agents(server_id: str, request: Request, caller: Caller = Depends(current_account)) -> dict[str, Any]:
+    agents = parse_agents(await json_object(request), request.app.state.config.max_agents_per_server)
+    store = get_store(request)
+    await store.touch_account(caller.key)
+    doc = await store.update_server(caller.key, server_id, {"agents": agents})
+    if doc is None:
+        raise _not_found()
+    return {"agents": doc["agents"]}
+
+
+@router.get("/v1/agents")
+async def list_agents(request: Request, caller: Caller = Depends(current_account)) -> dict[str, Any]:
+    return {
+        "agents": [
+            {**agent, "server_id": s["_id"], "server_name": s["name"], "server_url": s["url"]}
+            for s in await get_store(request).list_servers(caller.key)
+            for agent in s["agents"]
+        ]
+    }
+
+
 def create_app(
     config: CloudConfig,
     *,
@@ -184,6 +286,10 @@ def create_app(
     async def api_error(_request: Request, e: ApiError) -> JSONResponse:
         return _error(e.code, e.message, e.status)
 
+    @app.exception_handler(AgendaError)
+    async def agenda_error(_request: Request, e: AgendaError) -> JSONResponse:
+        return _error(e.code, e.message, _STATUS[e.code])
+
     @app.exception_handler(RequestValidationError)
     async def validation_error(_request: Request, e: RequestValidationError) -> JSONResponse:
         return _error("invalid", "the request is not valid", 422)
@@ -197,6 +303,8 @@ def create_app(
             status_code=e.status_code,
             headers=getattr(e, "headers", None),
         )
+
+    app.include_router(router)
 
     @app.get("/v1/health")
     async def health() -> dict[str, str]:

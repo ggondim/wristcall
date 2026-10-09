@@ -39,6 +39,30 @@ that is not a JSON object is `422 invalid`.
 - `GET /v1/health`: `{"status": "ok", "version": ...}`.
 - `GET /v1/config` (public): what an app needs to sign in: `issuer`, `project_id`, `clients` and `scopes`.
 
+All the routes below need the account token. The account is created on first use. A resource of another account
+answers `404 not_found`, never `403`.
+
+| Route | Body | Answers |
+|---|---|---|
+| `GET /v1/account` | | `200 {"account", "created_at", "servers"}` |
+| `DELETE /v1/account` | | `204`, deletes the account and its servers; `403 forbidden` unless the token was issued to the iOS or PWA client |
+| `GET /v1/servers` | | `200 {"servers": [Server]}` by creation |
+| `POST /v1/servers` | `{name, url, kind?, linked?}` | `201 Server`; `409 conflict` for a repeated URL; `403 limit` over `WRISTCALL_CLOUD_MAX_SERVERS` |
+| `GET /v1/servers/{id}` | | `200 Server`; `404` |
+| `PATCH /v1/servers/{id}` | `{name?, linked?}` | `200 Server`; `404`; `422` (the URL and the kind cannot change: delete and create) |
+| `DELETE /v1/servers/{id}` | | `204`; `404` |
+| `PUT /v1/servers/{id}/agents` | `{"agents": [Agent]}` | `200 {"agents"}` (replaces the list); `403 limit` over `WRISTCALL_CLOUD_MAX_AGENTS_PER_SERVER`; `404`; `422` |
+| `GET /v1/agents` | | `200 {"agents": [Agent + server_id, server_name, server_url]}` in the order of the servers and of each list |
+
+`Server` is `{id, name, url, kind, linked, agents, created_at, updated_at}`. `name` is 1 to 64 characters without
+control characters. `url` is http or https with a host, without user, password, query or fragment (up to 2048
+characters); it is normalized (scheme and host in lowercase, no trailing slash) and unique per account. `kind` is
+`self-hosted` (default) or `cloud`; `linked` is a boolean (default `false`).
+
+`Agent` is `{id, slug, display_name, icon, call_type}`: `id` and `slug` are 1 to 64 characters of `A-Za-z0-9_-`,
+`display_name` 1 to 64 characters, `icon` an SF Symbol name (1 to 64 characters of `a-z0-9.`), `call_type` one of
+`conversation`, `one-shot`, `monologue`. Ids must be unique in the list and unknown fields are `422 invalid`.
+
 ## Rate limiting
 
 The service does not limit request rates itself: the reverse proxy of the deployment (Traefik) is expected to, per client
