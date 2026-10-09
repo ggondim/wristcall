@@ -5,12 +5,20 @@ import asyncio
 import json
 import os
 import sys
+import time
 import wave
 from pathlib import Path
 
-from .client import CallError, PairError, pair, run_call, wait_for_call, wav_source
+import httpx
+
+from . import device_flow
+from .client import CallError, PairError, pair, pair_account, run_call, wait_for_call, wav_source
 
 CONFIG = Path(os.environ.get("WRISTCALL_REFCLIENT_CONFIG", Path.home() / ".config" / "wristcall" / "refclient.json"))
+
+
+# Where `login` keeps the central account tokens (next to CONFIG).
+ACCOUNT = CONFIG.parent / "account.json"
 
 
 def _print_event(event: dict) -> None:
@@ -34,10 +42,64 @@ def cmd_pair(args: argparse.Namespace) -> int:
     except PairError as e:
         print(e, file=sys.stderr)
         return 1
+    _save_credentials(args.server, creds)
+    return 0
+
+
+def _save_credentials(server: str, creds: dict) -> None:
     CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG.write_text(json.dumps({"server": args.server, "token": creds["token"]}), encoding="utf-8")
+    CONFIG.write_text(json.dumps({"server": server, "token": creds["token"]}), encoding="utf-8")
     CONFIG.chmod(0o600)
     print(f"Paired as {creds['device_id']}. Credentials saved to {CONFIG}.")
+
+
+def _write_private(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Created 0o600 from the start: the file holds tokens.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    path.chmod(0o600)
+
+
+def cmd_login(args: argparse.Namespace) -> int:
+    try:
+        with httpx.Client(timeout=10.0) as http:
+            code, token_endpoint = device_flow.start(args.issuer, args.client_id, args.scope, http)
+            print(f"Open {code.verification_uri_complete or code.verification_uri} and sign in.")
+            if not code.verification_uri_complete:
+                print(f"Code: {code.user_code}")
+            print("Waiting for the login...", flush=True)
+            tokens = device_flow.wait_for_token(token_endpoint, args.client_id, code, http)
+    except device_flow.DeviceFlowError as e:
+        print(e, file=sys.stderr)
+        return 1
+    account = {"issuer": args.issuer, "access_token": tokens["access_token"]}
+    if tokens.get("refresh_token"):
+        account["refresh_token"] = tokens["refresh_token"]
+    if tokens.get("expires_in"):
+        account["expires_at"] = int(time.time()) + int(tokens["expires_in"])
+    _write_private(ACCOUNT, account)
+    print(f"Logged in. Account tokens saved to {ACCOUNT}.")
+    return 0
+
+
+def cmd_pair_account(args: argparse.Namespace) -> int:
+    try:
+        account = json.loads(ACCOUNT.read_text(encoding="utf-8"))
+        token = account["access_token"]
+    except (OSError, ValueError, KeyError, TypeError):
+        print("no account login: run `wristcall-refclient login` first", file=sys.stderr)
+        return 1
+    if account.get("expires_at") and account["expires_at"] <= time.time():
+        print("the account login expired: run `wristcall-refclient login` again", file=sys.stderr)
+        return 1
+    try:
+        creds = pair_account(args.server, token, args.name)
+    except PairError as e:
+        print(e, file=sys.stderr)
+        return 1
+    _save_credentials(args.server, creds)
     return 0
 
 
@@ -124,6 +186,15 @@ def main() -> None:
     p.add_argument("--code", help="8 digit code (omit in manual approval mode)")
     p.add_argument("--name", default="refclient", help="name of this device")
     p.set_defaults(func=cmd_pair)
+    lg = sub.add_parser("login", help="sign in to a central account (device authorization, RFC 8628)")
+    lg.add_argument("--issuer", required=True, help="issuer URL of the central account, e.g. https://auth.trigram.com.br")
+    lg.add_argument("--client-id", required=True, help="public client id registered at the issuer (device_code grant)")
+    lg.add_argument("--scope", default="openid profile offline_access")
+    lg.set_defaults(func=cmd_login)
+    pa = sub.add_parser("pair-account", help="pair with a server using the central account login")
+    pa.add_argument("--server", required=True, help="server URL, e.g. https://wristcall.yourdomain.com")
+    pa.add_argument("--name", default="refclient", help="name of this device")
+    pa.set_defaults(func=cmd_pair_account)
     c = sub.add_parser("call", help="call the agent")
     c.add_argument("--server")
     c.add_argument("--token")

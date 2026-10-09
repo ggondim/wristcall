@@ -18,6 +18,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 - `POST /v1/pair/poll` can answer `403 {"error":"limit"}` when the device limit blocks collecting an approved device
   (retry after revoking one); a denied request answers `410`.
 - CLI: `wristcall users unlink`, `wristcall devices deny`, and a `linked` column in `wristcall users list`.
+- Reference client: `wristcall-refclient login` (RFC 8628 device authorization against the account issuer) and
+  `pair-account` (pairs through `POST /v1/pair/account`).
 
 ### Changed
 

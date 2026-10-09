@@ -50,6 +50,15 @@ python3 -m venv .venv && .venv/bin/pip install -e 'tools/refclient[mic]'
 .venv/bin/wristcall-refclient call
 ```
 
+With a central account (the server needs `central_account` configured), sign in once with the
+device flow and pair without a code. The issuer and client id are the ones your operator registered
+(for example `https://auth.trigram.com.br` and the watch app's public client):
+
+```bash
+.venv/bin/wristcall-refclient login --issuer https://auth.trigram.com.br --client-id <client-id>
+.venv/bin/wristcall-refclient pair-account --server https://wristcall.yourdomain.com
+```
+
 Use headphones. Enter toggles mute.
 
 ## Configuration
