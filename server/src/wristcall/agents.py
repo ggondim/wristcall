@@ -23,6 +23,7 @@ CallType = Literal["conversation", "one-shot", "monologue"]
 SUPPORTED_CALL_TYPES = {"conversation"}
 REDACTED = "***"
 _SECRET_OPTION = re.compile(r"key|token|secret|password", re.IGNORECASE)
+_OPTION_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 # Agent field → provider kind in the YAML registry ("action" is the responder).
 STAGES: dict[str, Kind] = {"stt": "stt", "action": "responder", "tts": "tts"}
 
@@ -42,8 +43,11 @@ class CustomEndpoint(BaseModel):
 
     @model_validator(mode="after")
     def _not_both(self) -> "CustomEndpoint":
-        if "provider" in (self.model_extra or {}):
+        extra = self.model_extra or {}
+        if "provider" in extra:
             raise ValueError("use either 'provider' or 'type', not both")
+        if "warmup" in extra:
+            raise ValueError("warmup is an operator setting, not available on custom endpoints")
         return self
 
     def options(self) -> dict[str, Any]:
@@ -141,7 +145,11 @@ def resolve_endpoint(config: AppConfig, endpoint: Endpoint, kind: Kind) -> tuple
     else:
         if not config.limits.custom_endpoints:
             raise ProviderError("this server only accepts the providers it offers (custom endpoints are off)")
-        pcfg = ProviderConfig(type=endpoint.type, **endpoint.options())
+        try:
+            pcfg = ProviderConfig(type=endpoint.type, **endpoint.options())
+        except Exception:
+            # Never echo the options: they may hold API keys.
+            raise ProviderError(f"invalid options for type '{endpoint.type}'") from None
         name = f"custom {endpoint.type}"
     actual = provider_kind(pcfg.type)
     if actual is None:
@@ -151,11 +159,26 @@ def resolve_endpoint(config: AppConfig, endpoint: Endpoint, kind: Kind) -> tuple
     return name, pcfg
 
 
+def build_endpoint(config: AppConfig, endpoint: Endpoint, kind: Kind, http: httpx.AsyncClient) -> Any:
+    """Provider instance of an endpoint. Raises ProviderError; for custom endpoints, never with option values."""
+    name, pcfg = resolve_endpoint(config, endpoint, kind)
+    if isinstance(endpoint, ProviderRef):
+        return build_provider(name, pcfg, kind, http)
+    try:
+        return build_provider(name, pcfg, kind, http)
+    except Exception as e:
+        cause = e.__cause__ if isinstance(e, ProviderError) else e
+        missing = cause.args[0] if isinstance(cause, KeyError) and cause.args else None
+        # Only name an option-like key the user did not send and that appears nowhere in the values.
+        if isinstance(missing, str) and _OPTION_NAME.match(missing) and missing not in repr(endpoint.options()):
+            raise ProviderError(f"missing option '{missing}' for type '{endpoint.type}'") from None
+        raise ProviderError(f"invalid options for type '{endpoint.type}'") from None
+
+
 def build_agent_providers(config: AppConfig, spec: AgentSpec, http: httpx.AsyncClient) -> ProviderSet:
     built: dict[str, Any] = {}
     for field, kind in STAGES.items():
-        name, pcfg = resolve_endpoint(config, getattr(spec, field), kind)
-        built[field] = build_provider(name, pcfg, kind, http)
+        built[field] = build_endpoint(config, getattr(spec, field), kind, http)
     return ProviderSet(stt=built["stt"], responder=built["action"], tts=built["tts"])
 
 
@@ -267,8 +290,7 @@ class AgentService:
             raise AgentError("unsupported", f"call_type '{call_type}' is not supported yet (only conversation)")
         for field, kind in STAGES.items():
             try:
-                name, pcfg = resolve_endpoint(self._config, getattr(spec, field), kind)
-                build_provider(name, pcfg, kind, self._http)
+                build_endpoint(self._config, getattr(spec, field), kind, self._http)
             except ProviderError as e:
                 raise AgentError("invalid", f"{field}: {e}") from None
 

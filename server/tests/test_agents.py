@@ -248,3 +248,41 @@ def test_spec_from_profile():
 async def test_record_round_trip(svc):
     a = await svc.create("u_a", {"slug": "own", "stt": {"type": "fake_stt", "text": "x"}})
     assert Agent.from_record(a.to_record()) == a
+
+
+@pytest.mark.parametrize(
+    "field, endpoint, expected, leak",
+    [
+        ("stt", {"type": "fake_stt", "warmup": "sk-LEAK1"}, "warmup is an operator setting", "sk-LEAK1"),
+        (
+            "stt",
+            {"type": "openai_stt", "base_url": "https://stt.example/v1", "model": "w", "extra_form": "x"},
+            "stt: invalid options for type 'openai_stt'",
+            None,
+        ),
+        ("tts", {"type": "tone_tts", "sample_rate": "sk-LEAK2"}, "tts: invalid options for type 'tone_tts'", "sk-LEAK2"),
+        ("stt", {"type": "openai_stt", "model": "w", "api_key": "sk-LEAK3"}, "stt: missing option 'base_url' for type 'openai_stt'", "sk-LEAK3"),
+    ],
+)
+async def test_custom_endpoint_errors_are_invalid_and_never_echo_values(svc, field, endpoint, expected, leak):
+    with pytest.raises(AgentError) as e:
+        await svc.create("u_a", {"slug": "own", field: endpoint})
+    assert e.value.code == "invalid"
+    assert expected in e.value.message
+    if leak:
+        assert leak not in e.value.message and leak not in str(e.value)
+    assert e.value.__cause__ is None
+
+
+async def test_build_agent_providers_wraps_custom_endpoint_failures():
+    cfg = config()
+    spec = AgentSpec(
+        stt=CustomEndpoint(type="openai_stt", base_url="https://stt.example/v1", model="w", extra_form="sk-LEAK4"),
+        action=ProviderRef(provider="llm"),
+        tts=ProviderRef(provider="tts"),
+    )
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(ProviderError) as e:
+            build_agent_providers(cfg, spec, http)
+    assert str(e.value) == "invalid options for type 'openai_stt'"
+    assert e.value.__cause__ is None
