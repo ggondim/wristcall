@@ -242,6 +242,27 @@ def test_approval_device_limit(issuer):
         assert r.status_code == 403 and r.json()["error"] == "limit"
 
 
+def test_approving_before_collecting_cannot_exceed_the_device_limit(issuer):
+    cfg = account_config("approval")
+    cfg = cfg.model_copy(update={"limits": cfg.limits.model_copy(update={"max_devices_per_user": 1})})
+    with make_client(cfg) as c:
+        pat = api_token(c)
+        first = pending_request(c, issuer, pat)
+        second = pair_account(c, issuer.token()).json()
+        assert approve(c, first["request_id"], pat).status_code == 200
+        assert approve(c, second["request_id"], pat).status_code == 200
+        assert poll(c, first["poll_token"]).status_code == 200
+        r = poll(c, second["poll_token"])
+        assert r.status_code == 403 and r.json()["error"] == "limit"
+        assert len(c.get("/v1/devices", headers=h(pat)).json()["devices"]) == 1
+        # Still collectable once a device is revoked.
+        device_id = c.get("/v1/devices", headers=h(pat)).json()["devices"][0]["id"]
+        assert c.delete(f"/v1/devices/{device_id}", headers=h(pat)).status_code == 204
+        r = poll(c, second["poll_token"])
+        assert r.status_code == 200 and set(r.json()) == {"device_id", "token"}
+        assert len(c.get("/v1/devices", headers=h(pat)).json()["devices"]) == 1
+
+
 def test_other_users_requests_are_invisible(appr_client, issuer):
     pat_a = api_token(appr_client)
     pat_b = api_token(appr_client, "bob")

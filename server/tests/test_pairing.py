@@ -419,3 +419,43 @@ async def test_approve_filters_targets_before_the_collision_rule(svc, user, othe
     assert await svc.approve("1234", user.id, targeted_only=True) == "Watch"
     statuses = {r["poll_hash"]: r["status"] for r in svc._st.db.query("SELECT poll_hash, status FROM pairing_requests")}
     assert statuses == {"hash-a": "approved", "hash-b": "pending"}
+
+
+async def test_device_limit_holds_when_approved_requests_are_collected_later():
+    s, _ = await service(max_devices_per_user=2)
+    requests = [await s.pair_for_user("u_a", f"Watch {i}", approval=True) for i in range(5)]
+    for p in requests:
+        await s.approve(p.request_id, "u_a", targeted_only=True)
+    results = []
+    for p in requests:
+        try:
+            results.append(await s.poll(p.poll_token))
+        except DeviceLimit:
+            results.append(None)
+    assert sum(isinstance(r, Paired) for r in results) == 2
+    assert len(await s.list_devices("u_a")) == 2
+    # A refused collection is not spent: after a revoke the next poll delivers.
+    await s.revoke(results[0].device_id)
+    assert isinstance(await s.poll(requests[2].poll_token), Paired)
+    assert len(await s.list_devices("u_a")) == 2
+    with pytest.raises(DeviceLimit):
+        await s.poll(requests[3].poll_token)
+
+
+async def test_device_limit_holds_for_untargeted_approvals_collected_later():
+    s, _ = await service("manual", max_devices_per_user=1)
+    p1, p2 = await s.pair(None, "Watch 1"), await s.pair(None, "Watch 2")
+    await s.approve(p1.request_id, "u_a")
+    await s.approve(p2.request_id, "u_a")
+    assert isinstance(await s.poll(p1.poll_token), Paired)
+    with pytest.raises(DeviceLimit):
+        await s.poll(p2.poll_token)
+    assert len(await s.list_devices("u_a")) == 1
+
+
+async def test_request_id_generation_gives_up_when_ids_run_out(monkeypatch):
+    s, _ = await service("manual")
+    first = await s.pair(None, "Watch")
+    monkeypatch.setattr("wristcall.pairing.secrets.randbelow", lambda n: int(first.request_id))
+    with pytest.raises(PairingDenied):
+        await s.pair(None, "Watch")

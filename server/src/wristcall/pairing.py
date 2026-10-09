@@ -169,9 +169,12 @@ class PairingService:
         elif sum(r.target_user_id == target_user_id for r in pending) >= MAX_PENDING_PER_TARGET:
             raise PairingDenied("too many pending requests for this user; approve or deny them first")
         taken = {r.request_id for r in pending}
-        request_id = f"{secrets.randbelow(10**4):04d}"
-        while request_id in taken:
+        for _ in range(50):
             request_id = f"{secrets.randbelow(10**4):04d}"
+            if request_id not in taken:
+                break
+        else:
+            raise PairingDenied("too many pending requests; try again later")
         poll_token = secrets.token_urlsafe(32)
         expires_at = now + self._request_ttl
         await self._st.pairing.add_request(
@@ -188,6 +191,10 @@ class PairingService:
             return Pending(request_id=req.request_id, poll_token=poll_token, expires_at=req.expires_at)
         if req.status == "denied":
             raise PairingGone("request denied")
+        if req.status == "approved" and req.user_id is not None:
+            # Approval does not reserve a slot: several approved requests may wait for collection. Checked before
+            # deliver flips the status, so a refused collection can be retried once a device is revoked.
+            await self._check_device_limit(req.user_id)
         if req.status == "approved" and req.user_id is not None and await self._st.pairing.deliver(poll_hash):
             paired = await self._create_device(req.user_id, req.device_name)
             await self._st.pairing.set_request_device(poll_hash, paired.device_id)

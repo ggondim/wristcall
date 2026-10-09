@@ -194,6 +194,9 @@ def create_app(
             result = await pairing_svc.poll(body.poll_token)
         except PairingGone as e:
             return JSONResponse({"error": "gone", "message": str(e)}, status_code=410)
+        except DeviceLimit as e:
+            # Approved, but the user reached the device limit meanwhile; the request stays collectable.
+            return JSONResponse({"error": "limit", "message": str(e)}, status_code=403)
         if isinstance(result, Paired):
             log.info("device paired by approval: %s", result.device_id)
             return {"device_id": result.device_id, "token": result.token}
