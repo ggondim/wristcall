@@ -92,8 +92,8 @@ launch arguments:
 
 - **Several servers.** Settings > Servers lists the paired servers. "Add server" opens the pairing screen again
   (cancel to go back) and pairing the same server and user again replaces the old entry and revokes its token.
-  Removing a server forgets its token on the watch and tries to revoke it on the server (if the server is out of reach, revoke the watch there). A watch paired with 0.1.0 keeps
-  its server when it updates.
+  Removing a server forgets its token on the watch and tries to revoke it on the server (if the server is out of
+  reach, revoke the watch there). A watch paired with 0.1.0 keeps its server when it updates.
 - **Agent grid.** Home shows the agents of every server, two per row, in each server's order. Tap an agent to
   call it; long press opens its call options (end of turn, auto or manual, for conversations). The "…" button in
   the toolbar opens the same options: directly for the only callable agent, or a list of agents to pick from.
@@ -108,7 +108,8 @@ launch arguments:
 - **Results are polled while the app is open.** The watch asks the server about the call (`GET /v1/calls/{id}`)
   every 1.5 s for up to 3 minutes, asks again when the app comes back to the foreground, and offers "Check again"
   after that. The result is kept only in memory: if the app is closed first you do not see it (the server still
-  delivers). Push notifications come later.
+  delivers). Push notifications come later. Tapping a complication, control or shortcut while the result screen
+  says "Sending…" closes it and the outcome is not shown (it stays in the server's history).
 - **Servers older than 0.4.0.** With servers 0.2.x each profile appears as one conversation agent. Servers 0.3.0
   and later list real agents and turn modes, and 0.4.0 and later also record one-way agents.
 
@@ -122,17 +123,20 @@ nobody, never an agent of the next server. An agent that no longer exists (serve
 turns into a call to another one: the item shows "Agent not found" and tapping it says so. Redialing a call from
 the system's call history calls the agent with that name only when no other agent has the same name.
 
-They read the list of agents from an App Group (`group.<BUNDLE_ID_PREFIX>.wristcall`, names and icons only, never
-a token) shared by the app and the widgets extension. The group is required to install: on the first build for
-your watch, Xcode's automatic signing must register it for the app and for the widgets extension in your team.
-Open the project, select each target > Signing & Capabilities and check that "App Groups" shows the group without
-errors, then build again. If Xcode cannot register it, signing fails and nothing installs; as a fallback, remove
-the two `CODE_SIGN_ENTITLEMENTS` lines from `project.yml`, run `make generate` and install without the new
-complications and controls (the 0.1.0 ones keep working).
+They read the list of agents from an App Group (`group.<BUNDLE_ID_PREFIX>.wristcall`) shared by the app and the widgets
+extension. For each agent the list holds the server's local id, the agent id, slug, name, icon, call type and the
+server host, never a token. The group is required to install: on the first build for your watch, Xcode's automatic
+signing must register it for the app and for the widgets extension in your team. Open the project, select each
+target > Signing & Capabilities and check that "App Groups" shows the group without errors, then build again.
+If Xcode cannot register it, signing fails and nothing installs. As a fallback, remove the two
+`CODE_SIGN_ENTITLEMENTS` lines from `project.yml`, run `make generate` and install without the App Group: the new
+complication and control still appear in the gallery, but they find no agents to pick, while the 0.1.0 ones keep
+working.
 
 ## Install on your watch with a free Apple ID
 
-A free Apple ID (Personal Team) is enough; no paid capability is used.
+A free Apple ID (Personal Team) is enough. App Groups work with a Personal Team and are the one capability to
+register (for both the app and the widgets extension).
 
 1. Add your Apple ID in Xcode > Settings > Accounts.
 2. Find your team ID: open the generated project, select the `Wristcall` target >

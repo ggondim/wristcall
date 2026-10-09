@@ -301,8 +301,10 @@ starts listening again after the estimated playback time of the audio sent plus 
 Since server 0.4.0, an agent whose `call_type` is `one-shot` or `monologue` only
 listens: no answer, no voice. The server records until the user hangs up,
 transcribes, and posts the text to the agent's webhook (its `action`). Clients
-check `version` in `GET /v1/health` (0.4.0 or later) before offering these agents;
-older servers refuse to create them.
+may check `version` in `GET /v1/health` (0.4.0 or later) before offering these agents;
+older servers refuse to create them. A client may instead rely on the agent list: a
+server older than 0.4.0 cannot create one-way agents, so it never lists them (watch
+0.2.0 does this).
 
 | | `one-shot` | `monologue` |
 |---|---|---|
