@@ -48,7 +48,7 @@ class SessionStart(BaseModel):
     agent: str | None = Field(default=None, max_length=64)
     profile: str | None = Field(default=None, max_length=64)
     audio_in: AudioFormat
-    # Absent: the agent's own turn_end.
+    # Absent: the agent's own turn_end when `agent` is named; otherwise "auto" (0.2.x clients send only `profile`).
     turn_end: TurnEnd | None = None
 
     @field_validator("turn_end", mode="before")

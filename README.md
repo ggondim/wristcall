@@ -102,7 +102,7 @@ The same `coach.json` also works with `agents add <new-slug> --from-json coach.j
 Custom endpoints make the server request URLs your users choose, including your internal network:
 keep `limits.custom_endpoints: true` only when you trust every user of the server.
 
-With more than one user, add `--user <handle>` to `pair`, `devices list|approve`, `agents` and `users tokens add|list`.
+With more than one user, add `--user <handle>` to `pair`, `devices list|approve|assign`, `agents` and `users tokens add|list`.
 
 ## CLI
 

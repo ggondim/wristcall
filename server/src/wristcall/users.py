@@ -54,6 +54,10 @@ class UserService:
         user = await self.resolve(handle)
         if new_handle is not None:
             self._check_handle(new_handle)
+        if display_name is not None:
+            display_name = display_name.strip()[:64]
+            if not display_name:
+                raise UserError("display name cannot be empty")
         try:
             updated = await self._st.users.update(user.id, handle=new_handle, display_name=display_name)
         except Conflict:

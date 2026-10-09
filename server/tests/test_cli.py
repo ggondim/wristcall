@@ -282,6 +282,8 @@ def test_devices_assign(tmp_path):
     st = open_sqlite_storage(tmp_path / "data")
     st.db.execute("INSERT INTO devices (id, name, token_hash, created_at) VALUES ('d0', 'Old', 'h0', 1.0)")
     assert "d0  Old  -  paired" in ok(cfg, "devices", "list")  # two users: no automatic adoption
-    assert "Assigned d0 to bob" in ok(cfg, "devices", "assign", "d0", "--user", "bob")
+    assert ok(cfg, "devices", "assign", "d0", "--user", "bob").strip() == "Assigned d0 to bob."
     assert "d0  Old  bob" in ok(cfg, "devices", "list")
+    assert ok(cfg, "devices", "assign", "d0", "--user", "owner").strip() == "Assigned d0 to owner (was bob)."
+    assert "d0  Old  owner" in ok(cfg, "devices", "list")
     assert invoke(cfg, "devices", "assign", "missing", "--user", "bob").exit_code == 1

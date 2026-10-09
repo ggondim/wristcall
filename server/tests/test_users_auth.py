@@ -110,3 +110,14 @@ async def test_deleting_a_user_logs_out_everything(st):
 async def test_device_without_owner_is_not_a_principal(st):
     st.db.execute("INSERT INTO devices (id, name, token_hash, created_at) VALUES ('d0', 'Old', ?, 1.0)", (hash_secret("old"),))
     assert await Authenticator(st).authenticate("Bearer old") is None
+
+
+async def test_rename_trims_the_display_name(st):
+    users = UserService(st)
+    await users.create("alice")
+    assert (await users.rename("alice", display_name="  Alice A.  ")).display_name == "Alice A."
+    assert (await users.rename("alice", display_name="x" * 80)).display_name == "x" * 64
+    for empty in ("", "   "):
+        with pytest.raises(UserError, match="display name"):
+            await users.rename("alice", display_name=empty)
+    assert (await users.resolve("alice")).display_name == "x" * 64

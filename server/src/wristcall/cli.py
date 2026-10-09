@@ -185,13 +185,16 @@ def devices_assign(device_id: str, config: ConfigOpt = DEFAULT_CONFIG, user: Use
 
     async def body(ctx: Ctx):
         owner = await ctx.users.resolve(user)
-        return owner, await ctx.storage.devices.assign(device_id, owner.id)
+        device = next((d for d in await ctx.storage.devices.list() if d.id == device_id), None)
+        previous = await ctx.storage.users.get(device.user_id) if device and device.user_id else None
+        return owner, previous, await ctx.storage.devices.assign(device_id, owner.id)
 
-    owner, assigned = _run(config, body)
+    owner, previous, assigned = _run(config, body)
     if not assigned:
         typer.echo(f"no active device with id {device_id}", err=True)
         raise typer.Exit(1)
-    typer.echo(f"Assigned {device_id} to {owner.handle}.")
+    was = f" (was {previous.handle})" if previous and previous.id != owner.id else ""
+    typer.echo(f"Assigned {device_id} to {owner.handle}{was}.")
 
 
 # ---------- users ----------
