@@ -1,4 +1,7 @@
-"""Server configuration: YAML with ${ENV} references and profiles that inherit from `default`."""
+"""Operator configuration: YAML with ${ENV} references. Server, providers on offer and limits.
+
+`profiles` (inheriting from `default`) is the 0.2.0 format: imported once as agents (see bootstrap.py).
+"""
 
 import os
 import re
@@ -52,6 +55,27 @@ class ProviderConfig(BaseModel):
 
 
 class VadConfig(BaseModel):
+    # Bounds: agents come from users through the API; max_turn_ms also caps the audio a turn keeps in memory.
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["silero", "energy"] = "silero"
+    threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    energy_dbfs: float = Field(default=-45.0, ge=-120.0, le=0.0)
+    silence_ms: int = Field(default=800, ge=100, le=10_000)
+    min_speech_ms: int = Field(default=300, ge=0, le=5_000)
+    max_turn_ms: int = Field(default=60_000, ge=1_000, le=300_000)
+    pre_roll_ms: int = Field(default=300, ge=0, le=2_000)
+
+
+class Timeouts(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    stt_s: float = Field(default=10.0, gt=0, le=120)
+    first_token_s: float = Field(default=15.0, gt=0, le=120)
+    tts_s: float = Field(default=15.0, gt=0, le=120)
+
+
+class LegacyVadConfig(BaseModel):
+    """VadConfig of the 0.2.0 profiles: same fields, no bounds (values are adjusted on import, see bootstrap.py)."""
+
     model_config = ConfigDict(extra="forbid")
     type: Literal["silero", "energy"] = "silero"
     threshold: float = 0.5
@@ -62,7 +86,7 @@ class VadConfig(BaseModel):
     pre_roll_ms: int = 300
 
 
-class Timeouts(BaseModel):
+class LegacyTimeouts(BaseModel):
     model_config = ConfigDict(extra="forbid")
     stt_s: float = 10.0
     first_token_s: float = 15.0
@@ -78,8 +102,8 @@ class ProfileConfig(BaseModel):
     tts: str
     system_prompt: str = ""
     fallback_message: str = "Sorry, I couldn't answer right now."
-    vad: VadConfig = Field(default_factory=VadConfig)
-    timeouts: Timeouts = Field(default_factory=Timeouts)
+    vad: LegacyVadConfig = Field(default_factory=LegacyVadConfig)
+    timeouts: LegacyTimeouts = Field(default_factory=LegacyTimeouts)
 
 
 class ServerConfig(BaseModel):
@@ -91,28 +115,32 @@ class ServerConfig(BaseModel):
     client_ip_header: str | None = None
 
 
+class LimitsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_agents_per_user: int = Field(default=20, ge=1)
+    max_devices_per_user: int = Field(default=10, ge=1)
+    # Agents may point at the user's own STT/action/TTS URLs. Turn off on a server with untrusted users:
+    # the server would make requests to any URL they give, including the internal network.
+    custom_endpoints: bool = True
+    # Provider types a custom endpoint may use. The fake types (tests) can be made to allocate huge buffers.
+    custom_endpoint_types: list[str] = Field(default_factory=lambda: ["openai_stt", "openai_chat", "openai_tts"])
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     server: ServerConfig
     providers: dict[str, ProviderConfig]
-    profiles: dict[str, ProfileConfig]
+    limits: LimitsConfig = Field(default_factory=LimitsConfig)
+    profiles: dict[str, ProfileConfig] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _check_references(self) -> "AppConfig":
-        if "default" not in self.profiles:
-            raise ValueError("profiles.default is required")
         for pname, p in self.profiles.items():
             for stage in ("stt", "responder", "tts"):
                 ref = getattr(p, stage)
                 if ref not in self.providers:
                     raise ValueError(f"profile {pname}: provider '{ref}' ({stage}) does not exist in providers")
         return self
-
-    def profile(self, name: str | None) -> tuple[str, ProfileConfig]:
-        key = name or "default"
-        if key not in self.profiles:
-            raise KeyError(key)
-        return key, self.profiles[key]
 
 
 def _merge_profiles(raw: dict[str, Any]) -> dict[str, Any]:
@@ -144,9 +172,12 @@ def _merge_profiles(raw: dict[str, Any]) -> dict[str, Any]:
 def parse_config(data: dict[str, Any], env: Mapping[str, str] | None = None) -> AppConfig:
     env = os.environ if env is None else env
     data = _interpolate(data, env)
-    if not isinstance(data.get("profiles"), dict):
-        raise ConfigError("profiles section is missing")
-    data = {**data, "profiles": _merge_profiles(data["profiles"])}
+    if data.get("profiles"):  # absent, null or {}: no legacy profiles
+        if not isinstance(data["profiles"], dict):
+            raise ConfigError("profiles must be a mapping")
+        data = {**data, "profiles": _merge_profiles(data["profiles"])}
+    else:
+        data = {key: value for key, value in data.items() if key != "profiles"}
     try:
         return AppConfig.model_validate(data)
     except ValidationError as e:

@@ -2,6 +2,42 @@
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each component follows [SemVer](https://semver.org/) on its own: the server is published by the `server-vX.Y.Z` tag (Docker image); the watch app is marked by the `watch-vX.Y.Z` tag and has no published binary (build it with Xcode, see [watch/README.md](watch/README.md)).
 
+## [Unreleased]
+
+### Protocol
+
+- `session.start` accepts an optional `agent` (slug or id); `profile` keeps working as
+  a slug. Without `turn_end`, a call that names its `agent` uses the agent's own mode;
+  0.2.x clients (only `profile`) keep `auto`.
+- `session.ready` adds `agent` and `turn_end`; `GET /v1/me` adds `user` and `agents`.
+  The 0.2.x fields (`profile`, `profiles`) stay, so watch 0.1.0 keeps working.
+- New fatal error `agent_unavailable`. New management API (`/v1/agents`,
+  `/v1/providers`, `/v1/devices`, `/v1/pairing-codes`) with per-user API tokens.
+
+### Server (`server/`)
+
+- Multi-user: users, their watches and their agents live in the database, behind a
+  storage interface (SQLite adapter) with versioned migrations (`PRAGMA user_version`).
+  The database of 0.2.0 is migrated on start; 0.2.0 still runs on a migrated database.
+- Agents: name, SF Symbol icon, STT, action, TTS (a provider of the server or the user's
+  own URL), language, prompt, turn end (`auto`/`manual`) and silence. CLI:
+  `wristcall users ...`, `wristcall users tokens ...`, `wristcall agents ...`;
+  `pair` and `devices approve` take `--user`.
+- `profiles` in `wristcall.yaml` are imported once as agents of a user `owner`
+  (`default` first) and existing watches are given to that user; the section is
+  ignored afterwards. New `limits` section (agents and devices per user, custom
+  endpoints on/off).
+- Every provider in the YAML is checked at startup. FTS5 is required from SQLite.
+- Secrets of custom endpoints are redacted at any depth, `base_url` cannot carry
+  credentials, and `vad`/`timeouts` values are bounded. `wristcall devices assign`
+  gives a watch to a user.
+- Agent `vad`/`timeouts` values are bounded (for example `silence_ms` 100 to 10000,
+  timeouts up to 120 s); imported 0.2.0 profiles keep loading, and values outside
+  the bounds are adjusted on import with a warning in the log.
+- Custom endpoints accept only the types in `limits.custom_endpoint_types` (by default
+  `openai_stt`, `openai_chat` and `openai_tts`), and TTS `sample_rate` must be between
+  8000 and 48000.
+
 ## [watch-0.1.0] - 2026-10-07
 
 First version of the watch app (`watch/`), validated on an Apple Watch Series 7 signed with a free Apple ID.

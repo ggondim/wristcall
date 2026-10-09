@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from wristcall.config import load_config
-from wristcall.providers import build_provider_set
+from wristcall.agents import build_agent_providers, spec_from_profile
 
 pytestmark = pytest.mark.integration
 CONFIG = os.environ.get("WRISTCALL_INTEGRATION_CONFIG")
@@ -18,7 +18,7 @@ async def test_real_pipeline(fixtures_dir):
     cfg = load_config(Path(CONFIG))
     profile = cfg.profiles["default"]
     async with httpx.AsyncClient(timeout=120) as http:
-        ps = build_provider_set(cfg, profile, http)
+        ps = build_agent_providers(cfg, spec_from_profile(profile), http)
         text = await ps.stt.transcribe((fixtures_dir / "speech_pt_16k.wav").read_bytes(), "pt")
         assert "teste" in text.lower()
         messages = [{"role": "system", "content": profile.system_prompt}, {"role": "user", "content": text}]

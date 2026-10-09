@@ -177,7 +177,12 @@ async def test_stt_null_text_is_empty_string():
     assert await make("stt", **STT).transcribe(b"RIFF", "en") == ""
 
 
-@pytest.mark.parametrize("rate", [0, -16000])
-def test_tts_rejects_non_positive_sample_rate(rate):
+@pytest.mark.parametrize("rate", [0, -16000, 7999, 48001, 10**12])
+def test_tts_rejects_sample_rate_out_of_range(rate):
     with pytest.raises(ProviderError, match="sample_rate"):
         make("tts", **TTS, sample_rate=rate)
+
+
+@pytest.mark.parametrize("rate", [8000, 48000])
+def test_tts_accepts_the_sample_rate_bounds(rate):
+    assert make("tts", **TTS, sample_rate=rate).sample_rate == rate

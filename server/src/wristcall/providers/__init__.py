@@ -6,7 +6,7 @@ from typing import Any, Literal, Protocol
 
 import httpx
 
-from ..config import AppConfig, ProfileConfig, ProviderConfig
+from ..config import AppConfig, ProviderConfig
 
 Kind = Literal["stt", "responder", "tts"]
 
@@ -75,9 +75,10 @@ def build_provider(name: str, cfg: ProviderConfig, kind: Kind, http: httpx.Async
         raise ProviderError(f"provider '{name}': invalid or missing option: {e}") from e
 
 
-def build_provider_set(config: AppConfig, profile: ProfileConfig, http: httpx.AsyncClient) -> ProviderSet:
-    return ProviderSet(
-        stt=build_provider(profile.stt, config.providers[profile.stt], "stt", http),
-        responder=build_provider(profile.responder, config.providers[profile.responder], "responder", http),
-        tts=build_provider(profile.tts, config.providers[profile.tts], "tts", http),
-    )
+def check_providers(config: AppConfig, http: httpx.AsyncClient) -> None:
+    """Builds every provider of the YAML once, so a broken config fails at startup and not at the first call."""
+    for name, cfg in config.providers.items():
+        kind = provider_kind(cfg.type)
+        if kind is None:
+            raise ProviderError(f"provider '{name}': unknown type '{cfg.type}'")
+        build_provider(name, cfg, kind, http)

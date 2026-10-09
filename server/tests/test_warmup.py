@@ -9,9 +9,8 @@ from fastapi.testclient import TestClient
 
 from wristcall.app import create_app
 from wristcall.config import ConfigError, WarmupConfig, parse_config
-from wristcall.pairing import PairingService
 from wristcall.providers import provider_kind
-from wristcall.store import Database
+from wristcall.storage import open_sqlite_storage
 from wristcall.warmup import WarmupTarget, run_background, warm_one, warmup_targets
 
 START = {"type": "session.start", "protocol": 1, "audio_in": {"codec": "pcm16", "sample_rate": 16000, "channels": 1}}
@@ -124,20 +123,21 @@ def wait_until(predicate, timeout=2.0):
 def test_app_warms_on_start():
     with respx.mock(assert_all_called=False) as mock:
         route = mock.post("http://tts.test/v1/audio/speech").mock(return_value=httpx.Response(200, content=b"\x00\x00"))
-        app = create_app(config(tts_warmup={"on_start": True}), pairing=PairingService(Database(":memory:")))
+        app = create_app(config(tts_warmup={"on_start": True}), storage=open_sqlite_storage(":memory:"))
         with TestClient(app):
             assert wait_until(lambda: route.called)
         assert json.loads(route.calls.last.request.content)["input"] == "Hello."
 
 
 def test_app_warms_on_call():
-    svc = PairingService(Database(":memory:"))
     with respx.mock(assert_all_called=False) as mock:
         route = mock.post("http://tts.test/v1/audio/speech").mock(return_value=httpx.Response(200, content=b"\x00\x00"))
-        with TestClient(create_app(config(tts_warmup={"on_call": True}), pairing=svc)) as client:
+        with TestClient(create_app(config(tts_warmup={"on_call": True}), storage=open_sqlite_storage(":memory:"))) as client:
             time.sleep(0.1)
             assert not route.called
-            token = client.post("/v1/pair", json={"code": svc.create_code().code, "device_name": "w"}).json()["token"]
+            pairing, storage = client.app.state.pairing, client.app.state.storage
+            code = asyncio.run(pairing.create_code(asyncio.run(storage.users.by_handle("owner")).id)).code
+            token = client.post("/v1/pair", json={"code": code, "device_name": "w"}).json()["token"]
             with client.websocket_connect("/v1/call", headers={"Authorization": f"Bearer {token}"}) as ws:
                 ws.send_json(START)
                 assert ws.receive_json()["type"] == "session.ready"

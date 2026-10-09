@@ -7,7 +7,7 @@ from typing import Any
 import httpx
 import numpy as np
 
-from ..audio import frame_bytes, split_frames
+from ..audio import MAX_SAMPLE_RATE, MIN_SAMPLE_RATE, frame_bytes, split_frames
 from . import register
 
 
@@ -37,8 +37,8 @@ class ToneTts:
     def __init__(self, options: dict[str, Any], http: httpx.AsyncClient) -> None:
         self.sample_rate = int(options.get("sample_rate", 24000))
         self.ms_per_char = int(options.get("ms_per_char", 10))
-        if self.sample_rate <= 0:
-            raise ValueError(f"sample_rate must be positive (got {self.sample_rate})")
+        if not MIN_SAMPLE_RATE <= self.sample_rate <= MAX_SAMPLE_RATE:
+            raise ValueError(f"sample_rate must be {MIN_SAMPLE_RATE} to {MAX_SAMPLE_RATE} (got {self.sample_rate})")
         if self.ms_per_char < 0:
             raise ValueError(f"ms_per_char cannot be negative (got {self.ms_per_char})")
 

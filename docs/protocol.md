@@ -16,10 +16,10 @@ or any other) and a wristcall server. Version: **1**.
 
 | Route | Body | Responses |
 |---|---|---|
-| `GET /v1/health` | | `200 {"status":"ok","version":"0.2.0","protocol":1}` |
+| `GET /v1/health` | | `200 {"status":"ok","version":"0.3.0","protocol":1}` |
 | `POST /v1/pair` | `{"code": "12345678" \| null, "device_name": "Apple Watch"}` | `200 {"device_id","token"}`: paired (flow A). `202 {"request_id","poll_token","expires_at"}`: waiting for the owner's approval (flow B). `401 {"error":"invalid_code"}`. `429 {"error":"rate_limited"}` |
 | `POST /v1/pair/poll` | `{"poll_token": "..."}` | `202 {"request_id","expires_at"}`: pending. `200 {"device_id","token"}`: approved (delivered only once). `410 {"error":"gone"}`: expired or already delivered. `422`: body without `poll_token` or with more than 128 characters |
-| `GET /v1/me` | | `200 {"device_id","device_name","profiles":[{"name","display_name"}]}`. `401` |
+| `GET /v1/me` | | `200 {"device_id","device_name","user":{"id","handle","display_name"},"agents":[agent],"profiles":[{"name","display_name"}]}`. `401` |
 | `DELETE /v1/me` | | `204`: token revoked. `401` |
 
 Rules:
@@ -30,6 +30,13 @@ Rules:
   2 s with the `poll_token` in the body. The `poll_token` is a client secret; never
   display it or put it in the URL (the path shows up in access logs).
 - `expires_at` is epoch in seconds (float).
+- A device belongs to the user who issued the code (`wristcall pair --user`, or
+  `POST /v1/pairing-codes`) or who approved the request. `GET /v1/me` lists that
+  user's agents in the watch's order: `agents` holds the agent summary
+  (`{"id","slug","display_name","icon","call_type","turn_end"}`, see
+  [Agents](#agents)); `profiles` repeats `slug` and `display_name` as `name` and
+  `display_name`, the 0.2.x shape. Clients that call "the first one" call the
+  user's first agent.
 
 ### Pairing directory (optional)
 
@@ -66,15 +73,22 @@ Text frames are JSON control messages. Binary frames are audio.
    {"type":"session.start","protocol":1,"profile":"default",
     "audio_in":{"codec":"pcm16","sample_rate":16000,"channels":1},"turn_end":"auto"}
    ```
-   `profile` is optional (absent = `default`).
-   `turn_end` is optional (absent = `"auto"`) and chooses, for this call only,
-   how the user's turn ends (see [End of the user's turn](#end-of-the-users-turn)).
-   Any value other than `"auto"` or `"manual"` is a `bad_message` error.
+   `agent` (an agent `slug` or `id`) and `profile` (a `slug`, the 0.2.x name) are
+   optional; when both are present `agent` wins; when both are absent the call goes
+   to the user's first agent. An agent of another user is unknown.
+   `turn_end` is optional (absent = the agent's own `turn_end` when `agent` is
+   present, `"auto"` otherwise) and chooses, for this call only, how the user's turn ends
+   (see [End of the user's turn](#end-of-the-users-turn)). Any value other than
+   `"auto"` or `"manual"` (including `null`) is a `bad_message` error.
 3. The server answers:
    ```json
    {"type":"session.ready","session_id":"9f2c...","profile":{"name":"default","display_name":"Agent"},
-    "audio_out":{"codec":"pcm16","sample_rate":24000,"channels":1}}
+    "agent":{"id":"ag_3f9c0a1b2c3d","slug":"default","display_name":"Agent","icon":"waveform",
+             "call_type":"conversation","turn_end":"auto"},
+    "turn_end":"auto","audio_out":{"codec":"pcm16","sample_rate":24000,"channels":1}}
    ```
+   `agent` is the agent being called and `turn_end` the mode in force for this
+   call. `profile` repeats the agent's `slug` and `display_name` (0.2.x shape).
    Opening errors arrive as `error` with `fatal: true`, followed by the
    close with code **4400**.
 
@@ -90,12 +104,12 @@ Text frames are JSON control messages. Binary frames are audio.
 
 The turn starts with the first frame the server detects as speech (plus up to
 300 ms of audio from just before it; values here are defaults, configurable per
-profile). How it ends depends on the `turn_end` of
+agent). How it ends depends on the `turn_end` of
 `session.start`:
 
 | `turn_end` | The turn ends by | `turn.user_end` reasons |
 |---|---|---|
-| `"auto"` (default) | 800 ms of silence after speech (VAD; speech shorter than 300 ms followed by silence is dropped as noise), mute, or the duration limit | `"vad"`, `"mute"`, `"limit"` |
+| `"auto"` (default for 0.2.x clients and agents set to auto) | 800 ms of silence after speech (VAD; speech shorter than 300 ms followed by silence is dropped as noise), mute, or the duration limit | `"vad"`, `"mute"`, `"limit"` |
 | `"manual"` | mute or the duration limit only; silence never ends it, however long (a turn that reaches the limit with less than 300 ms of speech is dropped as noise) | `"mute"`, `"limit"` |
 
 In both modes:
@@ -115,6 +129,12 @@ call to such a server behaves as `"auto"` and may end turns by silence
 mode) is a fatal `bad_message` (close 4400). Clients therefore check `version`
 in `GET /v1/health` before sending a non-default value.
 
+Since server 0.3.0, when `session.start` names the agent with `agent`, an
+absent `turn_end` means that agent's own mode (`"auto"` unless its owner set it
+to `"manual"`). Without `agent` (only `profile`, or neither, as 0.2.x clients
+send), an absent `turn_end` stays `"auto"`, as in 0.2.0. `session.ready.turn_end`
+tells which mode is in force.
+
 ### Client messages
 
 | Message | When |
@@ -129,7 +149,7 @@ Unknown fields are ignored (future compatibility).
 
 | Message | Meaning |
 |---|---|
-| `{"type":"turn.user_end","reason":"vad"\|"mute"\|"limit"}` | the user's turn closed: by silence (`"auto"` calls only), by mute or by going over the duration limit (60 s by default, configurable per profile). See [End of the user's turn](#end-of-the-users-turn) |
+| `{"type":"turn.user_end","reason":"vad"\|"mute"\|"limit"}` | the user's turn closed: by silence (`"auto"` calls only), by mute or by going over the duration limit (60 s by default, configurable per agent). See [End of the user's turn](#end-of-the-users-turn) |
 | `{"type":"transcript","role":"user"\|"assistant","text":"..."}` | text of the turn (informational) |
 | `{"type":"turn.agent_start"}` | the response audio is about to start |
 | `{"type":"turn.agent_end"}` | all of the response audio has been sent |
@@ -146,7 +166,8 @@ starts listening again after the estimated playback time of the audio sent plus 
 | `not_started` | yes | the first message was not `session.start`, or it did not arrive within 10 s |
 | `unsupported_protocol` | yes | `protocol` other than 1 |
 | `unsupported_audio` | yes | `audio_in` other than pcm16 16 kHz mono |
-| `unknown_profile` | yes | the profile does not exist on the server |
+| `unknown_profile` | yes | the agent (`agent` or `profile`) does not exist for this device's user, or the user has no agents |
+| `agent_unavailable` | yes | the agent exists but cannot be used now (for example, it names a provider the server no longer offers) |
 | `stt_failed` | no | transcription failed or timed out |
 | `responder_failed` | no | the agent did not answer or stopped midway; if nothing was spoken, the server speaks an apology sentence; if it stopped midway, it keeps what was already said |
 | `tts_failed` | no | the voice failed; the response `transcript` still arrives |
@@ -159,6 +180,65 @@ starts listening again after the estimated playback time of the audio sent plus 
 | 1000 | normal end |
 | 4400 | fatal protocol error |
 | 4401 | missing, invalid or revoked token |
+
+## Agents
+
+An agent is what a call talks to. Its summary, as devices see it:
+
+| Field | Meaning |
+|---|---|
+| `id` | stable id (`ag_` + 12 hex) |
+| `slug` | short name, unique per user: 1 to 32 of `a-z`, `0-9`, `-`, starting with a letter or digit |
+| `display_name` | name on the watch (1 to 64 characters) |
+| `icon` | SF Symbol name (default `waveform`) |
+| `call_type` | `conversation`; `one-shot` and `monologue` are reserved for a later version and refused for now |
+| `turn_end` | `auto` or `manual`: the mode used when `session.start` has no `turn_end` |
+
+The owner also sees (and sets) `position` (order on the watch; setting it moves
+the agent to that index and renumbers the rest), `language`, `stt` (input),
+`action` (the model that answers), `tts` (output), `system_prompt`,
+`fallback_message`, `vad` (`silence_ms` and the other turn settings) and
+`timeouts`. `stt`, `action` and `tts` are either `{"provider":"<name>"}`, a
+provider the server offers (`GET /v1/providers`), or the user's own service:
+`{"type":"openai_stt"|"openai_chat"|"openai_tts", "base_url": ..., "model": ..., ...}`,
+accepted only when the server allows custom endpoints. `base_url` must be an
+`http(s)` URL without credentials, query or fragment (secrets go in options such as
+`api_key`). Options whose name has a word like `key`, `token`, `secret`, `password`
+or `authorization`, at any depth (`extra_body`, `extra_form`), are returned as
+`"***"`; sending `"***"` back in an update of the same `type` keeps the stored value,
+and `"***"` anywhere else is `invalid`. `vad` and `timeouts` values are bounded
+(for example `silence_ms` 100 to 10000, `max_turn_ms` up to 300000, timeouts up to
+120 s).
+
+Custom endpoints make the server send requests to URLs that users choose, including
+addresses inside the server's own network (SSRF). They are on by default for a
+self-hosted server whose users are trusted; on a server with users you do not
+trust, set `limits.custom_endpoints: false` so agents can only use the providers
+the operator offers. A custom endpoint may only use the provider types listed in
+`limits.custom_endpoint_types` (default `openai_stt`, `openai_chat`, `openai_tts`).
+
+## Management API
+
+`Authorization: Bearer <API token>` (`wc_pat_...`, created with
+`wristcall users tokens add`). Everything is scoped to the token's user. A device
+token may only read `GET /v1/agents` and `GET /v1/agents/{ref}` (summary view);
+anything else answers `403 {"error":"forbidden"}`. Errors are
+`{"error": code, "message": text}`.
+A body that is not valid JSON or not a JSON object answers `422 {"error":"invalid"}`.
+
+| Route | Body | Responses |
+|---|---|---|
+| `GET /v1/agents` | | `200 {"agents":[agent]}` in the watch's order |
+| `POST /v1/agents` | agent fields; `slug` required; absent `stt`/`action`/`tts` = the server's only provider of that kind | `201 agent`. `422 invalid\|unsupported`. `409 conflict` (slug taken). `403 limit` |
+| `GET /v1/agents/{ref}` | | `200 agent`. `404 not_found`. `ref` is a `slug` or an `id` |
+| `PATCH /v1/agents/{ref}` | fields to change; `vad` and `timeouts` merge key by key | `200 agent`. `404`, `409`, `422` |
+| `DELETE /v1/agents/{ref}` | | `204`. `404` |
+| `GET /v1/providers` | | `200 {"providers":[{"name","kind":"stt"\|"action"\|"tts"}],"custom_endpoints":true}` |
+| `GET /v1/devices` | | `200 {"devices":[{"id","name","created_at"}]}` |
+| `DELETE /v1/devices/{id}` | | `204`. `404` |
+| `POST /v1/pairing-codes` | | `201 {"code","expires_at","server_url","via_directory"}` (+ `"warning"` when the directory was unreachable). `403 limit` (device limit). `502 directory` |
+
+Missing or invalid token: `401 {"error":"unauthorized"}`.
 
 ## Versioning
 

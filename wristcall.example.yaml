@@ -32,6 +32,14 @@ providers:
   demo-tts:
     type: tone_tts
 
+limits:
+  max_agents_per_user: 20
+  max_devices_per_user: 10
+  custom_endpoints: true        # agents may use their own STT/chat/TTS URLs; false = only the providers above
+  # custom_endpoint_types: [openai_stt, openai_chat, openai_tts]   # provider types a custom endpoint may use
+
+# Imported once as agents of the user `owner` on the first start (default first), then ignored.
+# Manage agents afterwards with `wristcall agents ...`.
 profiles:
   default:
     display_name: Agent

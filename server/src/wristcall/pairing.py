@@ -1,5 +1,6 @@
-"""Watch ↔ server pairing: 8 digit code (flow A) or manual approval (flow B)."""
+"""Watch ↔ server pairing: 8 digit code bound to a user (flow A) or manual approval (flow B)."""
 
+import asyncio
 import hashlib
 import re
 import secrets
@@ -8,7 +9,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from .store import Database
+from .directory_client import CodeConflict, DirectoryClient, DirectoryError
+from .storage import Device, Storage
 
 MAX_PENDING = 20
 
@@ -33,18 +35,17 @@ class Pending:
 
 
 @dataclass(frozen=True)
-class Device:
-    id: str
-    name: str
-    created_at: float
-    revoked_at: float | None
-
-
-@dataclass(frozen=True)
 class PendingRequest:
     request_id: str
     device_name: str
     expires_at: float
+
+
+@dataclass(frozen=True)
+class IssuedCode:
+    code: PairingCode
+    via_directory: bool
+    warning: str | None = None
 
 
 class PairingDenied(Exception):
@@ -56,6 +57,10 @@ class PairingGone(Exception):
 
 
 class NotFound(Exception):
+    pass
+
+
+class DeviceLimit(PairingDenied):
     pass
 
 
@@ -75,76 +80,66 @@ def normalize_code(raw: str) -> str | None:
 class PairingService:
     def __init__(
         self,
-        db: Database,
+        storage: Storage,
         approval: Literal["code", "manual"] = "code",
         *,
         now: Callable[[], float] = time.time,
         code_ttl_s: float = 600,
         request_ttl_s: float = 600,
         max_attempts: int = 5,
+        max_devices_per_user: int | None = None,
     ) -> None:
-        self._db = db
+        self._st = storage
         self.approval = approval
         self._now = now
         self._code_ttl = code_ttl_s
         self._request_ttl = request_ttl_s
         self._max_attempts = max_attempts
+        self._max_devices = max_devices_per_user
 
-    def _purge(self) -> None:
-        now = self._now()
-        self._db.execute("DELETE FROM pairing_codes WHERE expires_at < ?", (now,))
-        self._db.execute("DELETE FROM pairing_requests WHERE expires_at < ?", (now,))
+    async def _check_device_limit(self, user_id: str) -> None:
+        if self._max_devices is not None and await self._st.devices.count(user_id) >= self._max_devices:
+            raise DeviceLimit(f"device limit reached ({self._max_devices}); revoke a device first")
 
-    def create_code(self) -> PairingCode:
-        self._purge()
+    async def create_code(self, user_id: str) -> PairingCode:
+        await self._check_device_limit(user_id)
+        await self._st.pairing.purge(self._now())
         expires_at = self._now() + self._code_ttl
         for _ in range(10):
             code = f"{secrets.randbelow(10**8):08d}"
-            if self._db.query("SELECT 1 FROM pairing_codes WHERE code = ?", (code,)):
-                continue
-            self._db.execute("INSERT INTO pairing_codes (code, expires_at) VALUES (?, ?)", (code, expires_at))
-            return PairingCode(code=code, expires_at=expires_at)
+            if await self._st.pairing.add_code(code, user_id, expires_at):
+                return PairingCode(code=code, expires_at=expires_at)
         raise RuntimeError("could not generate a unique code")
 
-    def discard_code(self, code: str) -> None:
-        self._db.execute("DELETE FROM pairing_codes WHERE code = ?", (code,))
+    async def discard_code(self, code: str) -> None:
+        await self._st.pairing.discard_code(code)
 
-    def pair(self, code: str | None, device_name: str) -> Paired | Pending:
+    async def pair(self, code: str | None, device_name: str) -> Paired | Pending:
         printable = "".join(ch for ch in device_name if ord(ch) >= 0x20 and ord(ch) != 0x7F)
         name = printable.strip()[:64] or "watch"
         now = self._now()
         normalized = normalize_code(code) if code else None
         if normalized is not None:
-            used = self._db.execute(
-                "UPDATE pairing_codes SET used_at = ? "
-                "WHERE code = ? AND used_at IS NULL AND expires_at > ? AND attempts < ?",
-                (now, normalized, now, self._max_attempts),
-            )
-            if used == 1:
-                return self._create_device(name)
+            user_id = await self._st.pairing.claim_code(normalized, now, self._max_attempts)
+            if user_id is not None:
+                await self._check_device_limit(user_id)
+                return await self._create_device(user_id, name)
         if code:
-            self._db.execute(
-                "UPDATE pairing_codes SET attempts = attempts + 1 WHERE used_at IS NULL AND expires_at > ?",
-                (now,),
-            )
+            await self._st.pairing.count_failed_attempt(now)
         if self.approval == "manual":
-            return self._create_request(name)
+            return await self._create_request(name)
         raise PairingDenied("invalid or expired code")
 
-    def _create_device(self, name: str) -> Paired:
+    async def _create_device(self, user_id: str, name: str) -> Paired:
         device_id = secrets.token_hex(4)
         token = secrets.token_urlsafe(32)
-        self._db.execute(
-            "INSERT INTO devices (id, name, token_hash, created_at) VALUES (?, ?, ?, ?)",
-            (device_id, name, hash_secret(token), self._now()),
-        )
+        await self._st.devices.create(device_id, user_id, name, hash_secret(token), self._now())
         return Paired(device_id=device_id, token=token)
 
-    def _create_request(self, name: str) -> Pending:
-        self._purge()
+    async def _create_request(self, name: str) -> Pending:
         now = self._now()
-        rows = self._db.query("SELECT short_id FROM pairing_requests WHERE status = 'pending' AND expires_at > ?", (now,))
-        taken = {r["short_id"] for r in rows}
+        await self._st.pairing.purge(now)
+        taken = await self._st.pairing.pending_ids(now)
         if len(taken) >= MAX_PENDING:
             raise PairingDenied("too many pending requests; try again later")
         request_id = f"{secrets.randbelow(10**4):04d}"
@@ -152,72 +147,70 @@ class PairingService:
             request_id = f"{secrets.randbelow(10**4):04d}"
         poll_token = secrets.token_urlsafe(32)
         expires_at = now + self._request_ttl
-        self._db.execute(
-            "INSERT INTO pairing_requests (poll_hash, short_id, device_name, created_at, expires_at, status) "
-            "VALUES (?, ?, ?, ?, ?, 'pending')",
-            (hash_secret(poll_token), request_id, name, now, expires_at),
-        )
+        await self._st.pairing.add_request(hash_secret(poll_token), request_id, name, now, expires_at)
         return Pending(request_id=request_id, poll_token=poll_token, expires_at=expires_at)
 
-    def poll(self, poll_token: str) -> Paired | Pending:
-        now = self._now()
+    async def poll(self, poll_token: str) -> Paired | Pending:
         poll_hash = hash_secret(poll_token)
-        rows = self._db.query("SELECT * FROM pairing_requests WHERE poll_hash = ? AND expires_at > ?", (poll_hash, now))
-        if not rows:
+        req = await self._st.pairing.get_request(poll_hash, self._now())
+        if req is None:
             raise PairingGone("request does not exist or has expired")
-        row = rows[0]
-        if row["status"] == "pending":
-            return Pending(request_id=row["short_id"], poll_token=poll_token, expires_at=row["expires_at"])
-        if row["status"] == "approved":
-            claimed = self._db.execute(
-                "UPDATE pairing_requests SET status = 'delivered' WHERE poll_hash = ? AND status = 'approved'",
-                (poll_hash,),
-            )
-            if claimed == 1:
-                paired = self._create_device(row["device_name"])
-                self._db.execute("UPDATE pairing_requests SET device_id = ? WHERE poll_hash = ?", (paired.device_id, poll_hash))
-                return paired
+        if req.status == "pending":
+            return Pending(request_id=req.request_id, poll_token=poll_token, expires_at=req.expires_at)
+        if req.status == "approved" and req.user_id is not None and await self._st.pairing.deliver(poll_hash):
+            paired = await self._create_device(req.user_id, req.device_name)
+            await self._st.pairing.set_request_device(poll_hash, paired.device_id)
+            return paired
         raise PairingGone("request already delivered")
 
-    def approve(self, request_id: str) -> str:
+    async def approve(self, request_id: str, user_id: str) -> str:
         now = self._now()
-        rows = self._db.query(
-            "SELECT poll_hash, device_name FROM pairing_requests WHERE short_id = ? AND status = 'pending' AND expires_at > ?",
-            (request_id, now),
-        )
+        found = await self._st.pairing.pending_by_id(request_id, now)
         # Exactly one request: with a short_id collision there is no way to know which one the operator saw.
-        if len(rows) != 1:
+        if len(found) != 1:
             raise NotFound(f"no pending request with id {request_id}")
-        approved = self._db.execute(
-            "UPDATE pairing_requests SET status = 'approved', expires_at = ? "
-            "WHERE poll_hash = ? AND short_id = ? AND status = 'pending' AND expires_at > ?",
-            (now + self._request_ttl, rows[0]["poll_hash"], request_id, now),
-        )
-        if approved != 1:
+        await self._check_device_limit(user_id)
+        if not await self._st.pairing.approve(found[0].poll_hash, user_id, now, now + self._request_ttl):
             raise NotFound(f"no pending request with id {request_id}")
-        return rows[0]["device_name"]
+        return found[0].device_name
 
-    def authenticate(self, token: str) -> Device | None:
-        rows = self._db.query("SELECT * FROM devices WHERE token_hash = ? AND revoked_at IS NULL", (hash_secret(token),))
-        return self._device(rows[0]) if rows else None
+    async def authenticate(self, token: str) -> Device | None:
+        device = await self._st.devices.by_token(hash_secret(token))
+        # A device without an owner (paired by 0.2.0, not adopted yet) cannot call: there is no agent to pick.
+        return device if device is not None and device.user_id is not None else None
 
-    def list_devices(self) -> list[Device]:
-        rows = self._db.query("SELECT * FROM devices WHERE revoked_at IS NULL ORDER BY created_at")
-        return [self._device(r) for r in rows]
+    async def list_devices(self, user_id: str | None = None) -> list[Device]:
+        return await self._st.devices.list(user_id)
 
-    def list_pending(self) -> list[PendingRequest]:
-        rows = self._db.query(
-            "SELECT short_id, device_name, expires_at FROM pairing_requests "
-            "WHERE status = 'pending' AND expires_at > ? ORDER BY created_at",
-            (self._now(),),
-        )
-        return [PendingRequest(r["short_id"], r["device_name"], r["expires_at"]) for r in rows]
+    async def list_pending(self) -> list[PendingRequest]:
+        return [
+            PendingRequest(r.request_id, r.device_name, r.expires_at) for r in await self._st.pairing.list_pending(self._now())
+        ]
 
-    def revoke(self, device_id: str) -> bool:
-        return self._db.execute(
-            "UPDATE devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL", (self._now(), device_id)
-        ) == 1
+    async def revoke(self, device_id: str, user_id: str | None = None) -> bool:
+        return await self._st.devices.revoke(device_id, self._now(), user_id)
 
-    @staticmethod
-    def _device(row) -> Device:
-        return Device(id=row["id"], name=row["name"], created_at=row["created_at"], revoked_at=row["revoked_at"])
+
+async def issue_code(
+    svc: PairingService, user_id: str, public_url: str, directory: DirectoryClient | None
+) -> IssuedCode:
+    """Creates a code and, with a directory, registers it there (3 tries on conflict).
+
+    Raises DirectoryError if the directory rejects 3 codes in a row; if the directory is unreachable,
+    the code still works by typing the URL on the watch (warning set, via_directory False).
+    """
+    code = await svc.create_code(user_id)
+    if directory is None:
+        return IssuedCode(code, via_directory=False)
+    for attempt in range(3):
+        try:
+            await asyncio.to_thread(directory.register, public_url, code.code)
+            return IssuedCode(code, via_directory=True)
+        except CodeConflict:
+            await svc.discard_code(code.code)
+            if attempt == 2:
+                raise DirectoryError("the directory rejected 3 codes in a row; try again") from None
+            code = await svc.create_code(user_id)
+        except DirectoryError as e:
+            return IssuedCode(code, via_directory=False, warning=f"could not register with the directory ({e})")
+    raise AssertionError("unreachable")

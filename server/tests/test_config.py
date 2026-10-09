@@ -1,6 +1,7 @@
 import pytest
+from pydantic import ValidationError
 
-from wristcall.config import ConfigError, load_config, parse_config
+from wristcall.config import ConfigError, Timeouts, VadConfig, load_config, parse_config
 
 
 def base(**profiles_extra):
@@ -31,8 +32,7 @@ ENV = {"KEY": "secret"}
 
 def test_minimal_config_with_defaults():
     cfg = parse_config(base(), ENV)
-    name, p = cfg.profile(None)
-    assert name == "default"
+    p = cfg.profiles["default"]
     assert p.language == "en"
     assert p.vad.silence_ms == 700 and p.vad.min_speech_ms == 300
     assert p.timeouts.stt_s == 10.0
@@ -47,7 +47,7 @@ def test_missing_env_var_is_error():
 
 def test_profile_inherits_and_overrides_only_declared_fields():
     cfg = parse_config(base(coach={"responder": "llm2", "system_prompt": "coach", "vad": {"min_speech_ms": 500}}), ENV)
-    _, p = cfg.profile("coach")
+    p = cfg.profiles["coach"]
     assert p.responder == "llm2" and p.stt == "stt1" and p.tts == "tts1"
     assert p.display_name == "Agent"
     assert p.vad.silence_ms == 700 and p.vad.min_speech_ms == 500
@@ -74,10 +74,26 @@ def test_typo_in_profile_is_rejected():
         parse_config(data, ENV)
 
 
-def test_unknown_profile_lookup():
-    cfg = parse_config(base(), ENV)
-    with pytest.raises(KeyError):
-        cfg.profile("does_not_exist")
+def test_profiles_are_optional_and_limits_have_defaults():
+    data = base()
+    del data["profiles"]
+    cfg = parse_config(data, ENV)
+    assert cfg.profiles == {}
+    assert (cfg.limits.max_agents_per_user, cfg.limits.max_devices_per_user, cfg.limits.custom_endpoints) == (20, 10, True)
+    assert cfg.limits.custom_endpoint_types == ["openai_stt", "openai_chat", "openai_tts"]
+    for empty in ({}, None):
+        data["profiles"] = empty  # the operator emptied the section after the import
+        assert parse_config(data, ENV).profiles == {}
+
+
+def test_limits_are_validated():
+    data = base()
+    data["limits"] = {"max_agents_per_user": 0}
+    with pytest.raises(ConfigError, match="max_agents_per_user"):
+        parse_config(data, ENV)
+    data["limits"] = {"max_agent_per_user": 5}
+    with pytest.raises(ConfigError, match="max_agent_per_user"):
+        parse_config(data, ENV)
 
 
 def test_load_config_from_file(tmp_path):
@@ -126,3 +142,37 @@ def test_non_mapping_default_profile_is_config_error():
 def test_non_mapping_nested_section_is_config_error():
     with pytest.raises(ConfigError, match="vad"):
         parse_config(base(coach={"vad": 5}), ENV)
+
+
+@pytest.mark.parametrize(
+    "section, values",
+    [
+        ("vad", {"silence_ms": 0}),
+        ("vad", {"silence_ms": 60_000}),
+        ("vad", {"max_turn_ms": 10_000_000}),
+        ("vad", {"threshold": 2}),
+        ("timeouts", {"stt_s": 0}),
+        ("timeouts", {"tts_s": 3600}),
+    ],
+)
+def test_turn_and_timeout_values_are_bounded(section, values):
+    model = {"vad": VadConfig, "timeouts": Timeouts}[section]
+    with pytest.raises(ValidationError, match=list(values)[0]):
+        model(**values)
+
+
+def test_legacy_profiles_load_without_the_new_bounds():
+    # Valid 0.2.0 YAML: the values are adjusted when the profile is imported as an agent (bootstrap.py).
+    data = base()
+    data["profiles"]["default"]["vad"] = {"silence_ms": 50, "max_turn_ms": 10_000_000}
+    data["profiles"]["default"]["timeouts"] = {"first_token_s": 180}
+    p = parse_config(data, ENV).profiles["default"]
+    assert (p.vad.silence_ms, p.vad.max_turn_ms, p.timeouts.first_token_s) == (50, 10_000_000, 180)
+    assert (p.vad.min_speech_ms, p.timeouts.stt_s) == (300, 10.0)
+
+
+def test_production_values_are_within_bounds():
+    data = base()
+    data["profiles"]["default"]["vad"] = {"silence_ms": 2000}
+    data["profiles"]["default"]["timeouts"] = {"stt_s": 30, "first_token_s": 20, "tts_s": 30}
+    assert parse_config(data, ENV).profiles["default"].vad.silence_ms == 2000
