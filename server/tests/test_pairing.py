@@ -269,3 +269,153 @@ async def test_issue_code_with_unreachable_directory_still_returns_a_code():
     issued = await issue_code(s, "u_a", "https://wc.test", DirectoryClient("https://dir.test"))
     assert issued.via_directory is False and "directory" in issued.warning
     assert isinstance(await s.pair(issued.code.code, "Watch"), Paired)
+
+
+# ---------- pairing through the central account (mechanisms A and B) ----------
+
+
+@pytest.fixture
+async def svc():
+    return (await service())[0]
+
+
+@pytest.fixture
+async def svc_manual():
+    return (await service("manual"))[0]
+
+
+@pytest.fixture
+async def user(svc):
+    return await svc._st.users.get("u_a")
+
+
+@pytest.fixture
+async def other_user(svc):
+    return await svc._st.users.get("u_b")
+
+
+async def test_pair_for_user_attestation_creates_device(svc, user):
+    r = await svc.pair_for_user(user.id, "Watch\x1b[2J", approval=False)
+    assert isinstance(r, Paired)
+    dev = await svc.authenticate(r.token)
+    assert dev.user_id == user.id and dev.name == "Watch[2J"
+    assert await svc.list_pending() == []
+
+
+async def test_pair_for_user_approval_creates_targeted_request(svc, user):
+    p = await svc.pair_for_user(user.id, "  ", approval=True)
+    assert isinstance(p, Pending)
+    assert isinstance(await svc.poll(p.poll_token), Pending)
+    assert [(r.request_id, r.device_name) for r in await svc.pending_for(user.id)] == [(p.request_id, "watch")]
+    assert await svc.approve(p.request_id, user.id, targeted_only=True) == "watch"
+    paired = await svc.poll(p.poll_token)
+    assert isinstance(paired, Paired)
+    assert (await svc.authenticate(paired.token)).user_id == user.id
+    assert await svc.pending_for(user.id) == []
+
+
+async def test_cannot_approve_someone_elses_request(svc, user, other_user):
+    pending = await svc.pair_for_user(user.id, "watch", approval=True)
+    with pytest.raises(NotFound):
+        await svc.approve(pending.request_id, other_user.id)
+    with pytest.raises(NotFound):
+        await svc.approve(pending.request_id, other_user.id, targeted_only=True)
+    with pytest.raises(NotFound):
+        await svc.deny(pending.request_id, other_user.id)
+    assert await svc.pending_for(other_user.id) == []
+    assert isinstance(await svc.poll(pending.poll_token), Pending)
+
+
+async def test_denied_request_is_gone_for_the_device(svc, user):
+    p = await svc.pair_for_user(user.id, "Watch", approval=True)
+    assert await svc.deny(p.request_id, user.id) == "Watch"
+    with pytest.raises(PairingGone, match="denied"):
+        await svc.poll(p.poll_token)
+    with pytest.raises(NotFound):
+        await svc.approve(p.request_id, user.id)
+    with pytest.raises(NotFound):
+        await svc.deny(p.request_id, user.id)
+
+
+async def test_operator_denies_any_pending_request(svc_manual, user):
+    anonymous = await svc_manual.pair(None, "Anon")
+    targeted = await svc_manual.pair_for_user(user.id, "Mine", approval=True)
+    assert await svc_manual.deny(anonymous.request_id, None) == "Anon"
+    assert await svc_manual.deny(targeted.request_id, None) == "Mine"
+    for p in (anonymous, targeted):
+        with pytest.raises(PairingGone):
+            await svc_manual.poll(p.poll_token)
+
+
+async def test_user_cannot_deny_untargeted_request(svc_manual, user):
+    p = await svc_manual.pair(None, "Anon")
+    with pytest.raises(NotFound):
+        await svc_manual.deny(p.request_id, user.id)
+    assert isinstance(await svc_manual.poll(p.poll_token), Pending)
+
+
+async def test_targeted_pending_cap(svc, user, other_user):
+    for _ in range(5):
+        await svc.pair_for_user(user.id, "watch", approval=True)
+    with pytest.raises(PairingDenied):
+        await svc.pair_for_user(user.id, "watch", approval=True)
+    # Someone else's queue is untouched.
+    assert isinstance(await svc.pair_for_user(other_user.id, "watch", approval=True), Pending)
+
+
+async def test_targeted_requests_do_not_count_against_the_global_cap(svc_manual, user):
+    for _ in range(20):
+        await svc_manual.pair(None, "anon")
+    with pytest.raises(PairingDenied):
+        await svc_manual.pair(None, "anon")
+    p = await svc_manual.pair_for_user(user.id, "mine", approval=True)
+    assert isinstance(p, Pending)
+    # ... and the targeted request does not use up an anonymous slot either.
+    assert p.request_id not in {r.request_id for r in await svc_manual.list_pending() if r.device_name == "anon"}
+
+
+async def test_pair_for_user_checks_the_device_limit_early():
+    s, _ = await service(max_devices_per_user=1)
+    await s.pair_for_user("u_a", "Watch 1", approval=False)
+    with pytest.raises(DeviceLimit):
+        await s.pair_for_user("u_a", "Watch 2", approval=False)
+    with pytest.raises(DeviceLimit):
+        await s.pair_for_user("u_a", "Watch 2", approval=True)
+    assert await s.pending_for("u_a") == []
+
+
+async def test_cli_style_approve_still_takes_untargeted(svc_manual, user):
+    p = await svc_manual.pair(None, "Watch")
+    with pytest.raises(NotFound):
+        await svc_manual.approve(p.request_id, user.id, targeted_only=True)
+    assert await svc_manual.approve(p.request_id, user.id) == "Watch"
+    assert (await svc_manual.authenticate((await svc_manual.poll(p.poll_token)).token)).user_id == user.id
+
+
+async def test_operator_approval_respects_the_target(svc_manual, user, other_user):
+    p = await svc_manual.pair_for_user(user.id, "Watch", approval=True)
+    with pytest.raises(NotFound):
+        await svc_manual.approve(p.request_id, other_user.id)
+    assert await svc_manual.approve(p.request_id, user.id) == "Watch"
+
+
+async def test_untargeted_manual_flow_unchanged(svc_manual, user):
+    p = await svc_manual.pair(None, "My Apple Watch")
+    assert isinstance(p, Pending)
+    assert await svc_manual.pending_for(user.id) == []
+    assert [r.request_id for r in await svc_manual.list_pending()] == [p.request_id]
+    assert await svc_manual.approve(p.request_id, user.id) == "My Apple Watch"
+    assert isinstance(await svc_manual.poll(p.poll_token), Paired)
+
+
+async def test_approve_filters_targets_before_the_collision_rule(svc, user, other_user):
+    clock = svc._now
+    for poll_hash, target in (("hash-a", user.id), ("hash-b", other_user.id)):
+        svc._st.db.execute(
+            "INSERT INTO pairing_requests (poll_hash, short_id, device_name, created_at, expires_at, status, target_user_id) "
+            "VALUES (?, '1234', 'Watch', ?, ?, 'pending', ?)",
+            (poll_hash, clock(), clock() + 600, target),
+        )
+    assert await svc.approve("1234", user.id, targeted_only=True) == "Watch"
+    statuses = {r["poll_hash"]: r["status"] for r in svc._st.db.query("SELECT poll_hash, status FROM pairing_requests")}
+    assert statuses == {"hash-a": "approved", "hash-b": "pending"}

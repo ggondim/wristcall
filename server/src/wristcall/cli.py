@@ -176,6 +176,13 @@ def devices_approve(request_id: str, config: ConfigOpt = DEFAULT_CONFIG, user: U
     typer.echo(f"Approved: {name} ({owner.handle}). The watch receives access in a few seconds.")
 
 
+@devices_app.command("deny")
+def devices_deny(request_id: str, config: ConfigOpt = DEFAULT_CONFIG) -> None:
+    """Denies a pending pairing request: the watch is told on its next check."""
+    name = _run(config, lambda ctx: ctx.pairing.deny(request_id, None))
+    typer.echo(f"Denied: {name}.")
+
+
 @devices_app.command("revoke")
 def devices_revoke(device_id: str, config: ConfigOpt = DEFAULT_CONFIG) -> None:
     """Revokes a device: its token stops working right away."""

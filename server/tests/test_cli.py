@@ -3,12 +3,13 @@ import json
 import re
 
 import httpx
+import pytest
 import respx
 import yaml
 from typer.testing import CliRunner
 
 from wristcall import cli
-from wristcall.pairing import Paired, PairingService
+from wristcall.pairing import Paired, PairingGone, PairingService
 from wristcall.storage import open_sqlite_storage
 
 runner = CliRunner()
@@ -317,3 +318,31 @@ def test_agents_add_one_shot_with_a_webhook(tmp_path):
     assert shown["action"]["headers"] == {"Authorization": "***"}
     line = next(x for x in ok(cfg, "agents", "list").splitlines() if " note " in x)
     assert "one-shot" in line and "action=custom" in line and "tts=-" in line
+
+
+def test_cli_approve_respects_target(tmp_path):
+    cfg = write_config(tmp_path, pairing_approval="manual")
+    ok(cfg, "users", "add", "ana")
+    ok(cfg, "users", "add", "bia")
+    st = open_sqlite_storage(tmp_path / "data")
+    ana = run(st.users.by_handle("ana"))
+    svc = svc_for(tmp_path, "manual")
+    pending = run(svc.pair_for_user(ana.id, "Ana's Watch", approval=True))
+    r = invoke(cfg, "devices", "approve", pending.request_id, "--user", "bia")
+    assert r.exit_code == 1 and "no pending request" in r.output
+    assert "Approved" in ok(cfg, "devices", "approve", pending.request_id, "--user", "ana")
+    paired = run(svc.poll(pending.poll_token))
+    assert run(svc.authenticate(paired.token)).user_id == ana.id
+
+
+def test_cli_deny(tmp_path):
+    cfg = write_config(tmp_path, pairing_approval="manual")
+    ok(cfg, "devices", "list")
+    svc = svc_for(tmp_path, "manual")
+    pending = run(svc.pair(None, "Stranger's Watch"))
+    assert "Denied" in ok(cfg, "devices", "deny", pending.request_id)
+    with pytest.raises(PairingGone):
+        run(svc.poll(pending.poll_token))
+    assert pending.request_id not in ok(cfg, "devices", "list")
+    r = invoke(cfg, "devices", "deny", pending.request_id)
+    assert r.exit_code == 1 and "no pending request" in r.output

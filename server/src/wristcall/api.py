@@ -17,7 +17,7 @@ from .agents import AgentError, AgentService, agent_detail, agent_summary
 from .auth import Authenticator, Principal
 from .config import AppConfig
 from .directory_client import DirectoryClient, DirectoryError
-from .pairing import DeviceLimit, PairingService, issue_code
+from .pairing import DeviceLimit, NotFound, PairingService, issue_code
 from .providers import provider_kind
 from .ratelimit import RateLimiter
 
@@ -198,6 +198,52 @@ def management_router(
         if issued.warning:
             body["warning"] = issued.warning
         return JSONResponse(body, status_code=201)
+
+    # Requests aimed at this user (central account login, device_credential: approval). Only a user API token:
+    # the account token proves the login on the watch, so it cannot also approve it.
+    @router.get("/pairing-requests")
+    async def list_pairing_requests(authorization: str | None = Header(default=None)) -> Any:
+        if account is None:
+            return _not_configured()
+        who = await owner(authorization)
+        if isinstance(who, JSONResponse):
+            return who
+        return {
+            "requests": [
+                {"request_id": r.request_id, "device_name": r.device_name, "expires_at": r.expires_at}
+                for r in await pairing.pending_for(who.user_id)
+            ]
+        }
+
+    @router.post("/pairing-requests/{request_id}/approve")
+    async def approve_pairing_request(request_id: str, authorization: str | None = Header(default=None)) -> Any:
+        if account is None:
+            return _not_configured()
+        who = await owner(authorization)
+        if isinstance(who, JSONResponse):
+            return who
+        try:
+            name = await pairing.approve(request_id, who.user_id, targeted_only=True)
+        except DeviceLimit as e:
+            return _error("limit", str(e), 403)
+        except NotFound:
+            return _error("not_found", "no pending request with this id", 404)
+        log.info("pairing request approved by user %s", who.user_id)
+        return {"device_name": name}
+
+    @router.post("/pairing-requests/{request_id}/deny")
+    async def deny_pairing_request(request_id: str, authorization: str | None = Header(default=None)) -> Any:
+        if account is None:
+            return _not_configured()
+        who = await owner(authorization)
+        if isinstance(who, JSONResponse):
+            return who
+        try:
+            await pairing.deny(request_id, who.user_id)
+        except NotFound:
+            return _error("not_found", "no pending request with this id", 404)
+        log.info("pairing request denied by user %s", who.user_id)
+        return Response(status_code=204)
 
     @router.post("/account/link")
     async def link_account(request: Request, authorization: str | None = Header(default=None)) -> Any:
