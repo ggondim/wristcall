@@ -15,7 +15,10 @@ def _unique(e: sqlite3.IntegrityError) -> bool:
 
 
 def _user(r: sqlite3.Row) -> User:
-    return User(id=r["id"], handle=r["handle"], display_name=r["display_name"], created_at=r["created_at"])
+    return User(
+        id=r["id"], handle=r["handle"], display_name=r["display_name"], created_at=r["created_at"],
+        central_subject=r["central_subject"],
+    )
 
 
 def _token(r: sqlite3.Row) -> ApiToken:
@@ -32,7 +35,7 @@ def _device(r: sqlite3.Row) -> Device:
 def _request(r: sqlite3.Row) -> PairingRequest:
     return PairingRequest(
         poll_hash=r["poll_hash"], request_id=r["short_id"], device_name=r["device_name"],
-        user_id=r["user_id"], status=r["status"], expires_at=r["expires_at"],
+        user_id=r["user_id"], status=r["status"], expires_at=r["expires_at"], target_user_id=r["target_user_id"],
     )
 
 
@@ -85,6 +88,23 @@ class _Users:
 
     async def delete(self, user_id: str) -> bool:
         return self._db.execute("DELETE FROM users WHERE id = ?", (user_id,)) == 1
+
+    async def link_central(self, user_id: str, subject: str) -> bool:
+        try:
+            return self._db.execute("UPDATE users SET central_subject = ? WHERE id = ?", (subject, user_id)) == 1
+        except sqlite3.IntegrityError as e:
+            if not _unique(e):
+                raise
+            raise Conflict("central account already linked to another user") from e
+
+    async def unlink_central(self, user_id: str) -> bool:
+        return self._db.execute(
+            "UPDATE users SET central_subject = NULL WHERE id = ? AND central_subject IS NOT NULL", (user_id,)
+        ) == 1
+
+    async def by_central(self, subject: str) -> User | None:
+        rows = self._db.query("SELECT * FROM users WHERE central_subject = ?", (subject,))
+        return _user(rows[0]) if rows else None
 
 
 class _Tokens:
@@ -196,11 +216,14 @@ class _Pairing:
     async def count_failed_attempt(self, now: float) -> None:
         self._db.execute("UPDATE pairing_codes SET attempts = attempts + 1 WHERE used_at IS NULL AND expires_at > ?", (now,))
 
-    async def add_request(self, poll_hash: str, request_id: str, device_name: str, now: float, expires_at: float) -> None:
+    async def add_request(
+        self, poll_hash: str, request_id: str, device_name: str, now: float, expires_at: float,
+        target_user_id: str | None = None,
+    ) -> None:
         self._db.execute(
-            "INSERT INTO pairing_requests (poll_hash, short_id, device_name, created_at, expires_at, status) "
-            "VALUES (?, ?, ?, ?, ?, 'pending')",
-            (poll_hash, request_id, device_name, now, expires_at),
+            "INSERT INTO pairing_requests (poll_hash, short_id, device_name, created_at, expires_at, status, target_user_id) "
+            "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+            (poll_hash, request_id, device_name, now, expires_at, target_user_id),
         )
 
     async def pending_ids(self, now: float) -> set[str]:
@@ -229,6 +252,19 @@ class _Pairing:
         return self._db.execute(
             "UPDATE pairing_requests SET status = 'delivered' WHERE poll_hash = ? AND status = 'approved'", (poll_hash,)
         ) == 1
+
+    async def deny(self, poll_hash: str) -> bool:
+        return self._db.execute(
+            "UPDATE pairing_requests SET status = 'denied' WHERE poll_hash = ? AND status = 'pending'", (poll_hash,)
+        ) == 1
+
+    async def pending_for(self, target_user_id: str, now: float) -> list[PairingRequest]:
+        rows = self._db.query(
+            "SELECT * FROM pairing_requests WHERE target_user_id = ? AND status = 'pending' AND expires_at > ? "
+            "ORDER BY created_at",
+            (target_user_id, now),
+        )
+        return [_request(r) for r in rows]
 
     async def set_request_device(self, poll_hash: str, device_id: str) -> None:
         self._db.execute("UPDATE pairing_requests SET device_id = ? WHERE poll_hash = ?", (device_id, poll_hash))

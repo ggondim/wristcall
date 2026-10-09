@@ -5,7 +5,7 @@ import pytest
 
 from wristcall.storage import database as database_module
 from wristcall.storage.database import Database, DatabaseError, database_path
-from wristcall.storage.migrations import LATEST, MigrationError
+from wristcall.storage.migrations import LATEST, MIGRATIONS, MigrationError
 
 # Schema exactly as server 0.2.0 created it (store.py SCHEMA), to prove adoption of existing databases.
 SCHEMA_0_2_0 = """
@@ -42,10 +42,11 @@ def legacy_db(path) -> None:
 
 def test_fresh_database_is_at_latest_version(tmp_path):
     db = Database(database_path(tmp_path))
-    assert db.version == LATEST == 3
-    assert db.query("PRAGMA user_version")[0][0] == 3
+    assert db.version == LATEST
+    assert db.query("PRAGMA user_version")[0][0] == LATEST
     assert {"devices", "pairing_codes", "pairing_requests", "users", "api_tokens", "agents", "meta", "calls"} <= tables(db)
     assert "user_id" in columns(db, "devices") and "user_id" in columns(db, "pairing_codes")
+    assert "central_subject" in columns(db, "users") and "target_user_id" in columns(db, "pairing_requests")
     assert db.query("PRAGMA foreign_keys")[0][0] == 1
 
 
@@ -67,7 +68,7 @@ def test_legacy_database_is_adopted_and_keeps_devices(tmp_path):
 
 def test_reopening_does_not_reapply(tmp_path):
     path = database_path(tmp_path)
-    Database(path).execute("INSERT INTO users VALUES ('u1', 'owner', 'Owner', 1.0)")
+    Database(path).execute("INSERT INTO users (id, handle, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1.0)")
     db = Database(path)
     assert db.version == LATEST
     assert db.query("SELECT handle FROM users")[0]["handle"] == "owner"
@@ -159,17 +160,40 @@ def test_fts5_is_available_here():
 
 
 def test_rollback_to_0_3_0_and_upgrade_again_adopts_the_calls_table(tmp_path):
-    # Rollback to 0.3.0 (which refuses a newer schema): the operator sets user_version back to 2 and keeps
-    # the calls table. The next upgrade must adopt it with its rows.
+    # Rollback to 0.3.0 (which refuses a newer schema): the operator restores a version 3 database (the schema of
+    # 0.4.0, before the central account columns) and sets user_version back to 2, keeping the calls table.
+    # The next upgrade must adopt it with its rows.
     path = database_path(tmp_path)
-    db = Database(path)
-    db.execute("INSERT INTO users (id, handle, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1.0)")
-    db.execute(
+    conn = sqlite3.connect(path, isolation_level=None)
+    for step in MIGRATIONS[:3]:
+        for statement in step:
+            conn.execute(statement)
+    conn.execute("INSERT INTO users (id, handle, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1.0)")
+    conn.execute(
         "INSERT INTO calls (id, user_id, agent_id, call_type, status, created_at, updated_at) "
         "VALUES ('c1', 'u1', 'ag1', 'one-shot', 'delivered', 1.0, 1.0)"
     )
-    db.execute("PRAGMA user_version = 2")
-    db.close()
+    conn.execute("PRAGMA user_version = 2")
+    conn.close()
     again = Database(path)
-    assert again.version == 3
+    assert again.version == LATEST
     assert [r["id"] for r in again.query("SELECT id FROM calls")] == ["c1"]
+
+
+def test_version_3_database_gains_central_columns(tmp_path):
+    # A 0.4.0 database (version 3) upgrades in place and keeps its rows.
+    path = database_path(tmp_path)
+    conn = sqlite3.connect(path, isolation_level=None)
+    for step in MIGRATIONS[:3]:
+        for statement in step:
+            conn.execute(statement)
+    conn.execute("PRAGMA user_version = 3")
+    conn.execute("INSERT INTO users VALUES ('u_000000000001', 'owner', 'Owner', 1.0)")
+    conn.close()
+    db = Database(path)
+    assert db.version == LATEST
+    assert "central_subject" in columns(db, "users")
+    assert "target_user_id" in columns(db, "pairing_requests")
+    assert db.query("SELECT handle, central_subject FROM users")[0]["handle"] == "owner"
+    assert db.query("SELECT central_subject FROM users")[0]["central_subject"] is None
+    db.close()

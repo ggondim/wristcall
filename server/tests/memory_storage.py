@@ -46,6 +46,25 @@ class _Users:
         self._root.cascade(user_id)
         return True
 
+    async def link_central(self, user_id, subject):
+        user = self.rows.get(user_id)
+        if user is None:
+            return False
+        if any(u.central_subject == subject and u.id != user_id for u in self.rows.values()):
+            raise Conflict("central account already linked to another user")
+        self.rows[user_id] = replace(user, central_subject=subject)
+        return True
+
+    async def unlink_central(self, user_id):
+        user = self.rows.get(user_id)
+        if user is None or user.central_subject is None:
+            return False
+        self.rows[user_id] = replace(user, central_subject=None)
+        return True
+
+    async def by_central(self, subject):
+        return next((u for u in self.rows.values() if u.central_subject == subject), None)
+
 
 class _Tokens:
     def __init__(self) -> None:
@@ -148,14 +167,16 @@ class _Pairing:
             if c["used_at"] is None and c["expires_at"] > now:
                 c["attempts"] += 1
 
-    async def add_request(self, poll_hash, request_id, device_name, now, expires_at):
+    async def add_request(self, poll_hash, request_id, device_name, now, expires_at, target_user_id=None):
         self.requests[poll_hash] = {
             "request_id": request_id, "device_name": device_name, "user_id": None, "status": "pending",
-            "created_at": now, "expires_at": expires_at, "device_id": None,
+            "created_at": now, "expires_at": expires_at, "device_id": None, "target_user_id": target_user_id,
         }
 
     def _record(self, poll_hash, r):
-        return PairingRequest(poll_hash, r["request_id"], r["device_name"], r["user_id"], r["status"], r["expires_at"])
+        return PairingRequest(
+            poll_hash, r["request_id"], r["device_name"], r["user_id"], r["status"], r["expires_at"], r["target_user_id"]
+        )
 
     def _pending(self, now):
         return [(h, r) for h, r in self.requests.items() if r["status"] == "pending" and r["expires_at"] > now]
@@ -183,6 +204,17 @@ class _Pairing:
             return False
         r["status"] = "delivered"
         return True
+
+    async def deny(self, poll_hash):
+        r = self.requests.get(poll_hash)
+        if r is None or r["status"] != "pending":
+            return False
+        r["status"] = "denied"
+        return True
+
+    async def pending_for(self, target_user_id, now):
+        found = [(h, r) for h, r in self._pending(now) if r["target_user_id"] == target_user_id]
+        return [self._record(h, r) for h, r in sorted(found, key=lambda e: e[1]["created_at"])]
 
     async def set_request_device(self, poll_hash, device_id):
         if poll_hash in self.requests:
@@ -305,7 +337,9 @@ class MemoryStorage:
         self.agents.rows = {k: v for k, v in self.agents.rows.items() if v.user_id != user_id}
         self.calls.rows = {k: v for k, v in self.calls.rows.items() if v.user_id != user_id}
         self.pairing.codes = {k: v for k, v in self.pairing.codes.items() if v["user_id"] != user_id}
-        self.pairing.requests = {k: v for k, v in self.pairing.requests.items() if v["user_id"] != user_id}
+        self.pairing.requests = {
+            k: v for k, v in self.pairing.requests.items() if user_id not in (v["user_id"], v["target_user_id"])
+        }
 
     async def close(self) -> None:
         pass

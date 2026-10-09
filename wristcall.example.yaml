@@ -6,6 +6,12 @@ server:
   pairing_approval: code        # code: only the code from `wristcall pair` | manual: accepts requests and approves them in the CLI
   data_dir: /data
 
+# Central account (wristcall cloud account, OIDC). Optional: without it the server works on its own.
+# central_account:
+#   issuer: https://auth.trigram.com.br
+#   clients: ["<watch client id>", "<iOS client id>", "<PWA client id>"]  # app client ids, not the project id
+#   device_credential: approval   # approval (you approve each new device) | attestation (any linked login pairs)
+
 providers:
   openai-stt:
     type: openai_stt

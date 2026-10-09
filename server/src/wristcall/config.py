@@ -6,10 +6,11 @@
 import os
 import re
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Annotated, Any, Literal, Mapping
+from urllib.parse import urlsplit
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator, model_validator
 
 
 class ConfigError(Exception):
@@ -130,12 +131,39 @@ class LimitsConfig(BaseModel):
     max_one_way_call_s: int = Field(default=1800, ge=60, le=14_400)
 
 
+_LOCAL_HOSTS = ("localhost", "127.0.0.1")
+
+
+class CentralAccountConfig(BaseModel):
+    """Optional link to the wristcall cloud account (OIDC). Without it the server works on its own."""
+
+    model_config = ConfigDict(extra="forbid")
+    issuer: str  # https://...; http only for localhost/127.0.0.1; the trailing slash is dropped
+    # Accepted OIDC client_ids (the apps' client ids, not the project id).
+    clients: list[Annotated[str, StringConstraints(pattern=r"^\S{1,255}$")]] = Field(min_length=1)
+    # approval: the owner approves each new device; attestation: any linked login pairs.
+    device_credential: Literal["approval", "attestation"] = "approval"
+
+    @field_validator("issuer")
+    @classmethod
+    def _check_issuer(cls, value: str) -> str:
+        url = urlsplit(value)
+        if url.query or url.fragment or "?" in value or "#" in value:
+            raise ValueError("issuer must not have a query or fragment")
+        if not url.hostname:
+            raise ValueError("issuer must have a host")
+        if url.scheme != "https" and not (url.scheme == "http" and url.hostname in _LOCAL_HOSTS):
+            raise ValueError("issuer must be an https URL (http only for localhost)")
+        return value.rstrip("/")
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     server: ServerConfig
     providers: dict[str, ProviderConfig]
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     profiles: dict[str, ProfileConfig] = Field(default_factory=dict)
+    central_account: CentralAccountConfig | None = None
 
     @model_validator(mode="after")
     def _check_references(self) -> "AppConfig":
