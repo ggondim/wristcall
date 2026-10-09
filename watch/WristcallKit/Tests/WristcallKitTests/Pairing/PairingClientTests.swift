@@ -262,6 +262,42 @@ struct PairingClientTests {
         }
     }
 
+    // MARK: - GET /v1/calls/{id}
+
+    @Test func callStatusReadsTheCallWithTheDeviceToken() async throws {
+        let server = StubHost(path: "/wristcall", replies: [(200, """
+            {"id":"c_5d1f","call_type":"one-shot","status":"processing","error":null,"text":null,
+             "attempts":0,"last_http_status":null}
+            """)])
+        let status = try await client().callStatus(server: server.url, token: "secret-token", callID: "c_5d1f")
+        #expect(status == CallStatus(id: "c_5d1f", callType: .oneShot, state: .processing, attempts: 0))
+        let request = try #require(server.requests.first)
+        #expect(request.method == "GET")
+        #expect(request.path == "/wristcall/v1/calls/c_5d1f")
+        #expect(request.headers["Authorization"] == "Bearer secret-token")
+        #expect(!request.url.absoluteString.contains("secret-token"))
+    }
+
+    @Test func callStatusKeepsTheIdInOnePathSegment() async throws {
+        let server = StubHost(replies: [(200, #"{"id":"x","call_type":"one-shot","status":"empty"}"#)])
+        _ = try await client().callStatus(server: server.url, token: "t", callID: "../me")
+        #expect(server.requests.first?.path == "/v1/calls/..%2Fme")
+    }
+
+    @Test(arguments: [
+        (404, #"{"error":"not_found"}"#, PairingError.notFound),
+        (401, #"{"error":"unauthorized"}"#, .unauthorized),
+        (429, #"{"error":"rate_limited"}"#, .rateLimited),
+        (500, "Internal Server Error", .unexpectedStatus(500)),
+        (200, #"{"id":"c_1"}"#, .malformedResponse),
+    ])
+    func callStatusErrors(status: Int, body: String, expected: PairingError) async throws {
+        let server = StubHost(replies: [(status, body)])
+        await #expect(throws: expected) {
+            try await client().callStatus(server: server.url, token: "secret-token", callID: "c_1")
+        }
+    }
+
     // MARK: - Secrets stay out of logs
 
     @Test func secretsAreRedactedInDescriptions() {

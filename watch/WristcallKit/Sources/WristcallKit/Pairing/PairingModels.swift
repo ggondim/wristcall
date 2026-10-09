@@ -103,7 +103,7 @@ public struct DeviceInfo: Sendable, Equatable, Decodable {
     }
 }
 
-/// Everything that can go wrong in pairing and in `/v1/me`.
+/// Everything that can go wrong in pairing, in `/v1/me` and in `/v1/calls/{id}`.
 public enum PairingError: Error, Sendable, Equatable {
     /// `401` on `POST /v1/pair`: wrong, expired or used code (in manual mode also: too many pending requests).
     case invalidCode
@@ -115,6 +115,8 @@ public enum PairingError: Error, Sendable, Equatable {
     case unauthorized
     /// The directory answered `404` to the first try and to all retries.
     case codeNotFound
+    /// `404` on `GET /v1/calls/{id}`: the call is not this device's, or it left the history.
+    case notFound
     /// The directory pointed to a URL that is not `https://host`.
     case insecureServerURL
     /// A status the protocol does not define for this route.
