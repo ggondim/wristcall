@@ -7,7 +7,7 @@ whole history.
 
 import re
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -36,6 +36,14 @@ class RedeliveryError(Exception):
         self.message = message
 
 
+async def resolve_agent_id(agents: AgentService, user_id: str, ref: str) -> str | None:
+    """An agent's id by id or slug; a deleted agent's id still names its calls. None if neither."""
+    try:
+        return (await agents.get(user_id, ref)).id
+    except AgentError:
+        return ref if AGENT_ID.fullmatch(ref) else None
+
+
 def _error(code: str, message: str, status: int) -> JSONResponse:
     return JSONResponse({"error": code, "message": message}, status_code=status)
 
@@ -60,13 +68,8 @@ def calls_router(
         return who
 
     async def agent_id(user_id: str, ref: str) -> str | JSONResponse:
-        """An agent's id by id or slug; a deleted agent's id still filters its calls."""
-        try:
-            return (await agents.get(user_id, ref)).id
-        except AgentError:
-            if AGENT_ID.fullmatch(ref):
-                return ref
-            return _error("not_found", f"agent not found: {ref}", 404)
+        found = await resolve_agent_id(agents, user_id, ref)
+        return found if found is not None else _error("not_found", f"agent not found: {ref}", 404)
 
     def period(since: str | None, until: str | None) -> tuple[float | None, float | None] | JSONResponse:
         try:
@@ -143,19 +146,10 @@ def calls_router(
         if isinstance(where, JSONResponse):
             return where
 
-        async def views() -> AsyncIterator[dict[str, Any]]:
-            before = None
-            while True:
-                page = await calls.list(who.user_id, **where, before=before, limit=MAX_PAGE)
-                for record in page:
-                    yield await history.detail(record)
-                if len(page) < MAX_PAGE:
-                    return
-                before = page[-1].id
-
         moment = now()
         stamp = datetime.fromtimestamp(moment, UTC).strftime("%Y%m%d-%H%M%S")
-        body = export_markdown(views(), moment) if format == "md" else export_json(views(), moment)
+        views = history.details(who.user_id, **where)
+        body = export_markdown(views, moment) if format == "md" else export_json(views, moment)
         media = "text/markdown; charset=utf-8" if format == "md" else "application/json"
         return StreamingResponse(
             body, media_type=media,

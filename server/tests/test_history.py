@@ -52,8 +52,8 @@ async def test_entries_are_sealed_at_rest_and_opened_for_the_owner(st):
     ]
     found = await st.calls.list("u_a", terms=HistoryCodec(KEY).query_terms("LEITE"))
     assert [c.id for c in found] == [call_log.record.id]
-    with pytest.raises(HistoryKeyError):
-        await History(st, HistoryCodec()).entries(call_log.record)
+    unreadable = await History(st, HistoryCodec()).entries(call_log.record)
+    assert [(e.text, e.error) for e in unreadable] == [(None, "unreadable"), (None, "unreadable"), (None, "stt_failed")]
 
 
 async def test_recording_an_utterance_never_fails_the_call(st, caplog):

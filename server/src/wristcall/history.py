@@ -7,7 +7,7 @@ epic E9 too) receives it already sealed and never holds the key.
 import logging
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -141,15 +141,74 @@ class History:
         """Operator. Deletes the expired calls; returns how many."""
         return await self.storage.calls.purge_expired(self._now())
 
-    async def entries(self, record: CallRecord) -> list[Entry]:
-        """Raises HistoryKeyError if a sealed text cannot be opened."""
-        return [
-            Entry(
-                seq=e.seq, role=e.role, error=e.error, at=e.at,
-                text=None if e.text is None else self.codec.open(e.text, e.sealed, aad(e.call_id, e.seq)),
+    async def details(
+        self, user_id: str, *, agent_id: str | None = None, since: float | None = None, until: float | None = None,
+        terms: list[list[str]] | None = None, page: int = 100,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Every matching call of the user, newest first, read a page at a time (export, CLI)."""
+        before = None
+        while True:
+            found = await self.storage.calls.list(
+                user_id, agent_id=agent_id, since=since, until=until, terms=terms, before=before, limit=page,
             )
-            for e in await self.storage.calls.entries(record.user_id, record.id)
-        ]
+            for record in found:
+                yield await self.detail(record)
+            if len(found) < page:
+                return
+            before = found[-1].id
+
+    async def _reseal(self, sealed: bool, convert: Callable[[EntryRecord], tuple[str, bool, list[str]]]) -> int:
+        done = 0
+        while batch := await self.storage.calls.entries_by_seal(sealed, 200):
+            for e in batch:
+                text, now_sealed, terms = convert(e)
+                if await self.storage.calls.replace_entry(replace(e, text=text, sealed=now_sealed), terms):
+                    done += 1
+        return done
+
+    async def encrypt_all(self) -> int:
+        """Operator. Seals the entries kept in the clear (written before the key was set). Returns how many."""
+        if not self.codec.encrypted:
+            raise HistoryKeyError("set history.encryption_key first")
+        await check_key(self.storage, self.codec)
+
+        def seal(e: EntryRecord) -> tuple[str, bool, list[str]]:
+            assert e.text is not None
+            stored, sealed = self.codec.seal(e.text, aad(e.call_id, e.seq))
+            return stored, sealed, self.codec.index_terms(e.text)
+
+        return await self._reseal(False, seal)
+
+    async def decrypt_all(self) -> int:
+        """Operator. Opens every sealed entry with the configured key and forgets the key: afterwards the server runs
+        without history.encryption_key. Returns how many."""
+        if not self.codec.encrypted:
+            raise HistoryKeyError("set history.encryption_key to the key that encrypted the history")
+        await check_key(self.storage, self.codec)
+        plain = HistoryCodec()
+
+        def unseal(e: EntryRecord) -> tuple[str, bool, list[str]]:
+            assert e.text is not None
+            text = self.codec.open(e.text, True, aad(e.call_id, e.seq))
+            return text, False, plain.index_terms(text)
+
+        done = await self._reseal(True, unseal)
+        await self.storage.meta.delete(KEY_ID)
+        return done
+
+    def _open(self, e: EntryRecord) -> Entry:
+        if e.text is None:
+            return Entry(seq=e.seq, role=e.role, text=None, error=e.error, at=e.at)
+        try:
+            return Entry(seq=e.seq, role=e.role, text=self.codec.open(e.text, e.sealed, aad(e.call_id, e.seq)), error=e.error, at=e.at)
+        except HistoryKeyError:
+            # Sealed with a key this server does not have (check_key refuses that at startup; possible only if the
+            # history was decrypted while a server with the key kept writing): shown as unreadable, never a 500.
+            log.warning("call %s: utterance %d cannot be decrypted", e.call_id, e.seq)
+            return Entry(seq=e.seq, role=e.role, text=None, error="unreadable", at=e.at)
+
+    async def entries(self, record: CallRecord) -> list[Entry]:
+        return [self._open(e) for e in await self.storage.calls.entries(record.user_id, record.id)]
 
     async def detail(self, record: CallRecord) -> dict[str, Any]:
         return call_detail(record, await self.entries(record))

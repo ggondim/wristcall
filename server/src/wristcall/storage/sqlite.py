@@ -424,6 +424,25 @@ class _Calls:
         )
         return [_entry(r) for r in rows]
 
+    async def entries_by_seal(self, sealed: bool, limit: int) -> list[EntryRecord]:
+        rows = self._db.query(
+            "SELECT * FROM call_entries WHERE text IS NOT NULL AND sealed = ? LIMIT ?", (int(sealed), limit)
+        )
+        return [_entry(r) for r in rows]
+
+    async def replace_entry(self, entry: EntryRecord, terms: list[str]) -> bool:
+        with self._db.transaction() as conn:
+            row = conn.execute(
+                "UPDATE call_entries SET text = ?, sealed = ? WHERE call_id = ? AND seq = ? RETURNING id",
+                (entry.text, int(entry.sealed), entry.call_id, entry.seq),
+            ).fetchone()
+            if row is None:
+                return False
+            conn.execute("DELETE FROM history_fts WHERE rowid = ?", (row["id"],))
+            if terms:
+                conn.execute("INSERT INTO history_fts (rowid, terms) VALUES (?, ?)", (row["id"], " ".join(terms)))
+        return True
+
     async def list(
         self, user_id: str, *, agent_id: str | None = None, since: float | None = None, until: float | None = None,
         terms: list[list[str]] | None = None, before: str | None = None, limit: int = 50,
@@ -482,6 +501,7 @@ class _Calls:
         )
 
 
+
 class _Meta:
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -495,6 +515,9 @@ class _Meta:
             "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             (key, value),
         )
+
+    async def delete(self, key: str) -> None:
+        self._db.execute("DELETE FROM meta WHERE key = ?", (key,))
 
 
 class SqliteStorage:

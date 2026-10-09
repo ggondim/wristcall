@@ -375,6 +375,18 @@ class _Calls:
             self.rows[c.id] = replace(c, expires_at=c.created_at + max_retention_s)
         return len(longer)
 
+    async def entries_by_seal(self, sealed, limit):
+        found = [e for rows in self.entry_rows.values() for e, _ in rows if e.text is not None and e.sealed == sealed]
+        return found[:limit]
+
+    async def replace_entry(self, entry, terms):
+        rows = self.entry_rows.get(entry.call_id, [])
+        for i, (e, _) in enumerate(rows):
+            if e.seq == entry.seq:
+                rows[i] = (replace(e, text=entry.text, sealed=entry.sealed), set(terms))
+                return True
+        return False
+
     async def purge_expired(self, now):
         return self._drop([
             c.id for c in self.rows.values()
@@ -391,6 +403,9 @@ class _Meta:
 
     async def set(self, key, value):
         self.rows[key] = value
+
+    async def delete(self, key):
+        self.rows.pop(key, None)
 
 
 class MemoryStorage:

@@ -212,6 +212,14 @@ class CallStore(Protocol):
         """By seq; empty if the call is not the user's."""
         ...
 
+    async def entries_by_seal(self, sealed: bool, limit: int) -> list[EntryRecord]:
+        """Operator. Entries with text, sealed or not (turning encryption on or off), any order."""
+        ...
+
+    async def replace_entry(self, entry: EntryRecord, terms: list[str]) -> bool:
+        """Operator. Rewrites the text and sealed flag of the entry (call_id, seq) and its terms. False if gone."""
+        ...
+
     async def list(
         self, user_id: str, *, agent_id: str | None = None, since: float | None = None, until: float | None = None,
         terms: list[list[str]] | None = None, before: str | None = None, limit: int = 50,
@@ -244,6 +252,8 @@ class MetaStore(Protocol):
     async def get(self, key: str) -> str | None: ...
 
     async def set(self, key: str, value: str) -> None: ...
+
+    async def delete(self, key: str) -> None: ...
 
 
 class Storage(Protocol):

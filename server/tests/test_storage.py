@@ -390,6 +390,26 @@ async def test_expiry_is_set_capped_and_purged(storage):
     assert (await storage.calls.get("u_a", "c_3")).expires_at is None
 
 
+async def test_entries_are_resealed_in_place(storage):
+    await history(storage)
+    plain = await storage.calls.entries_by_seal(False, 10)
+    assert sorted((e.call_id, e.seq) for e in plain) == [("c_1", 0), ("c_2", 0), ("c_2", 1), ("c_9", 0)]
+    assert len(await storage.calls.entries_by_seal(False, 2)) == 2
+    first = [e for e in plain if (e.call_id, e.seq) == ("c_1", 0)][0]
+    assert await storage.calls.replace_entry(replace(first, text="sealed!", sealed=True), ["xabc"])
+    assert not await storage.calls.replace_entry(replace(first, call_id="c_gone"), [])
+    assert [(e.call_id, e.text) for e in await storage.calls.entries_by_seal(True, 10)] == [("c_1", "sealed!")]
+    assert await ids(storage, terms=[["xabc"]]) == ["c_1"]
+    assert await ids(storage, terms=[["buy"]]) == []  # the old terms are gone
+
+
+async def test_meta_delete(storage):
+    await storage.meta.set("k", "1")
+    await storage.meta.delete("k")
+    await storage.meta.delete("k")
+    assert await storage.meta.get("k") is None
+
+
 async def test_deleting_a_user_deletes_their_calls(storage):
     await history(storage)
     await storage.users.delete("u_a")

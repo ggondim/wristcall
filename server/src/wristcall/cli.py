@@ -1,4 +1,4 @@
-"""wristcall CLI: serve, users, devices, agents. Runs inside the container (docker exec / compose exec)."""
+"""wristcall CLI: serve, users, devices, agents, history. Runs inside the container (docker exec / compose exec)."""
 
 import asyncio
 import json
@@ -19,8 +19,13 @@ from .agents import Agent, AgentError, AgentService, agent_detail
 from .bootstrap import bootstrap
 from .config import AppConfig, ConfigError, HistoryConfig, load_config
 from .directory_client import DirectoryClient, DirectoryError
+from .history import History, check_key
+from .history_api import RedeliveryError, resolve_agent_id
+from .history_codec import HistoryCodec, HistoryKeyError, new_key
+from .history_export import TimeError, export_json, export_markdown, parse_time
 from .pairing import DeviceLimit, NotFound, PairingService, format_code, issue_code
 from .providers import ProviderError
+from .redelivery import Redelivery
 from .storage import Storage, open_sqlite_storage
 from .users import UserError, UserService
 
@@ -29,10 +34,12 @@ devices_app = typer.Typer(help="Paired devices and pending requests.", no_args_i
 users_app = typer.Typer(help="Users of this server.", no_args_is_help=True)
 tokens_app = typer.Typer(help="A user's API tokens (for the management API).", no_args_is_help=True)
 agents_app = typer.Typer(help="A user's agents.", no_args_is_help=True)
+history_app = typer.Typer(help="A user's call history: list, search, export, delete; encryption at rest.", no_args_is_help=True)
 app.add_typer(devices_app, name="devices")
 app.add_typer(users_app, name="users")
 users_app.add_typer(tokens_app, name="tokens")
 app.add_typer(agents_app, name="agents")
+app.add_typer(history_app, name="history")
 
 DEFAULT_CONFIG = Path("/config/wristcall.yaml")
 ConfigOpt = Annotated[
@@ -59,6 +66,8 @@ class Ctx:
     users: UserService
     pairing: PairingService
     agents: AgentService
+    history: History
+    http: httpx.AsyncClient
 
 
 def _run(config: Path, body: Callable[[Ctx], Awaitable[T]]) -> T:
@@ -74,6 +83,7 @@ def _run(config: Path, body: Callable[[Ctx], Awaitable[T]]) -> T:
                     cfg, storage, UserService(storage),
                     PairingService(storage, cfg.server.pairing_approval, max_devices_per_user=cfg.limits.max_devices_per_user),
                     AgentService(storage, cfg, http),
+                    History(storage, HistoryCodec(cfg.history.key()), cfg.history), http,
                 )
                 return await body(ctx)
         finally:
@@ -81,7 +91,7 @@ def _run(config: Path, body: Callable[[Ctx], Awaitable[T]]) -> T:
 
     try:
         return asyncio.run(main())
-    except (UserError, AgentError, NotFound, DeviceLimit, DirectoryError) as e:
+    except (UserError, AgentError, NotFound, DeviceLimit, DirectoryError, HistoryKeyError, RedeliveryError, TimeError) as e:
         typer.echo(f"error: {getattr(e, 'message', None) or e}", err=True)
         raise typer.Exit(1) from None
 
@@ -546,3 +556,184 @@ def agents_rm(
 
     _run(config, body)
     typer.echo(f"Deleted agent {ref}.")
+
+
+# ---------- history ----------
+
+AgentFilterOpt = Annotated[str | None, typer.Option("--agent", "-a", help="Agent slug or id (also of a deleted agent).")]
+SinceOpt = Annotated[str | None, typer.Option("--since", help="From this time on: Unix seconds or ISO 8601 (UTC).")]
+UntilOpt = Annotated[str | None, typer.Option("--until", help="Before this time: Unix seconds or ISO 8601 (UTC).")]
+YesOpt = Annotated[bool, typer.Option("--yes", "-y", help="Do not ask for confirmation.")]
+
+
+async def _history_filters(ctx: Ctx, user: str | None, agent: str | None, since: str | None, until: str | None) -> tuple[str, dict[str, Any]]:
+    await check_key(ctx.storage, ctx.history.codec)
+    owner = await ctx.users.resolve(user)
+    agent_id = None
+    if agent is not None:
+        agent_id = await resolve_agent_id(ctx.agents, owner.id, agent)
+        if agent_id is None:
+            raise AgentError("not_found", f"agent not found: {agent}")
+    return owner.id, {
+        "agent_id": agent_id,
+        "since": parse_time(since) if since is not None else None,
+        "until": parse_time(until) if until is not None else None,
+    }
+
+
+@history_app.command("list")
+def history_list(
+    config: ConfigOpt = DEFAULT_CONFIG,
+    user: UserOpt = None,
+    agent: AgentFilterOpt = None,
+    search: Annotated[str | None, typer.Option("--search", "-s", help="Whole words, all of them (accents and case ignored).")] = None,
+    since: SinceOpt = None,
+    until: UntilOpt = None,
+    limit: Annotated[int, typer.Option("--limit", "-n", min=1, max=1000)] = 20,
+) -> None:
+    """Lists a user's calls, newest first (local time)."""
+
+    async def body(ctx: Ctx):
+        owner_id, where = await _history_filters(ctx, user, agent, since, until)
+        terms = ctx.history.codec.query_terms(search) if search is not None else None
+        records = await ctx.storage.calls.list(owner_id, **where, terms=terms, limit=limit)
+        return [await ctx.history.detail(r) for r in records]
+
+    views = _run(config, body)
+    if not views:
+        typer.echo("No calls.")
+    for v in views:
+        status = v["status"] + (f"/{v['error']}" if v["error"] else "")
+        text = (v["text"] or "").replace("\n", " ")
+        text = text if len(text) <= 60 else text[:59] + "…"
+        typer.echo(f"{v['id']}  {_when(v['created_at'])}  {v['agent']['slug'] or '-':<12}  {v['call_type']:<12}  {status:<24}  {text}")
+
+
+@history_app.command("show")
+def history_show(call_id: str, config: ConfigOpt = DEFAULT_CONFIG, user: UserOpt = None) -> None:
+    """Shows one call with everything said (JSON)."""
+
+    async def body(ctx: Ctx):
+        owner_id, _ = await _history_filters(ctx, user, None, None, None)
+        record = await ctx.storage.calls.get(owner_id, call_id)
+        if record is None:
+            raise NotFound(f"call not found: {call_id}")
+        return await ctx.history.detail(record)
+
+    typer.echo(json.dumps(_run(config, body), indent=2, ensure_ascii=False))
+
+
+@history_app.command("rm")
+def history_rm(call_id: str, config: ConfigOpt = DEFAULT_CONFIG, user: UserOpt = None, yes: YesOpt = False) -> None:
+    """Deletes one call and everything said in it."""
+    _confirm(yes, f"Delete call {call_id}?")
+
+    async def body(ctx: Ctx):
+        owner = await ctx.users.resolve(user)
+        if not await ctx.storage.calls.delete(owner.id, call_id):
+            raise NotFound(f"call not found: {call_id}")
+
+    _run(config, body)
+    typer.echo(f"Deleted call {call_id}.")
+
+
+@history_app.command("clear")
+def history_clear(
+    config: ConfigOpt = DEFAULT_CONFIG,
+    user: UserOpt = None,
+    agent: AgentFilterOpt = None,
+    all_calls: Annotated[bool, typer.Option("--all", help="Every call of the user.")] = False,
+    yes: YesOpt = False,
+) -> None:
+    """Deletes every call of one agent (--agent) or of the user (--all)."""
+    if (agent is None) == (not all_calls):
+        typer.echo("error: pass either --agent or --all", err=True)
+        raise typer.Exit(2)
+    _confirm(yes, f"Delete every call of {'agent ' + agent if agent else 'this user'}? This cannot be undone.")
+
+    async def body(ctx: Ctx):
+        owner_id, where = await _history_filters(ctx, user, agent, None, None)
+        return await ctx.storage.calls.delete_all(owner_id, where["agent_id"])
+
+    typer.echo(f"Deleted {_run(config, body)} call(s).")
+
+
+@history_app.command("export")
+def history_export(
+    config: ConfigOpt = DEFAULT_CONFIG,
+    user: UserOpt = None,
+    fmt: Annotated[str, typer.Option("--format", "-f", help="md or json.")] = "md",
+    agent: AgentFilterOpt = None,
+    since: SinceOpt = None,
+    until: UntilOpt = None,
+    output: Annotated[Path | None, typer.Option("--output", "-o", help="File to write; standard output if absent.")] = None,
+) -> None:
+    """Exports calls in Markdown or JSON, newest first (times in UTC)."""
+    if fmt not in ("md", "json"):
+        typer.echo("error: --format must be md or json", err=True)
+        raise typer.Exit(2)
+
+    async def body(ctx: Ctx):
+        owner_id, where = await _history_filters(ctx, user, agent, since, until)
+        views = ctx.history.details(owner_id, **where)
+        moment = time.time()
+        parts = export_markdown(views, moment) if fmt == "md" else export_json(views, moment)
+        out = output.open("w", encoding="utf-8") if output is not None else sys.stdout
+        try:
+            async for part in parts:
+                out.write(part)
+        finally:
+            if output is not None:
+                out.close()
+
+    _run(config, body)
+    if output is not None:
+        typer.echo(f"Exported to {output}.", err=True)
+
+
+@history_app.command("redeliver")
+def history_redeliver(call_id: str, config: ConfigOpt = DEFAULT_CONFIG, user: UserOpt = None) -> None:
+    """Delivers a failed one-shot or monologue call again to its agent's webhook (as configured now)."""
+
+    async def body(ctx: Ctx):
+        owner_id, _ = await _history_filters(ctx, user, None, None, None)
+        record = await ctx.storage.calls.get(owner_id, call_id)
+        if record is None:
+            raise NotFound(f"call not found: {call_id}")
+        return await Redelivery(ctx.history, ctx.agents, ctx.cfg, ctx.http).run(record)
+
+    done = _run(config, body)
+    if done.status == "delivered":
+        typer.echo(f"Delivered (HTTP {done.last_http_status}, {done.attempts} attempt(s) in all).")
+    else:
+        http = f", last HTTP {done.last_http_status}" if done.last_http_status is not None else ""
+        typer.echo(f"Failed again: {done.error}{http}.", err=True)
+        raise typer.Exit(1)
+
+
+@history_app.command("new-key")
+def history_new_key() -> None:
+    """Prints a new random key for history.encryption_key. Keep it safe: losing it loses the encrypted history."""
+    typer.echo(new_key())
+
+
+@history_app.command("encrypt")
+def history_encrypt(config: ConfigOpt = DEFAULT_CONFIG, yes: YesOpt = False) -> None:
+    """Encrypts the history kept in the clear with history.encryption_key (calls made before the key was set)."""
+    _confirm(yes, "Encrypt the call history with history.encryption_key? Without that key it cannot be read again.")
+
+    async def body(ctx: Ctx):
+        return await ctx.history.encrypt_all()
+
+    typer.echo(f"Encrypted {_run(config, body)} utterance(s).")
+
+
+@history_app.command("decrypt")
+def history_decrypt(config: ConfigOpt = DEFAULT_CONFIG, yes: YesOpt = False) -> None:
+    """Decrypts the whole history; then remove history.encryption_key and restart. Stop the server first."""
+    _confirm(yes, "Decrypt the call history and keep it in the clear?")
+
+    async def body(ctx: Ctx):
+        return await ctx.history.decrypt_all()
+
+    typer.echo(f"Decrypted {_run(config, body)} utterance(s). Now remove history.encryption_key and restart the server.")
