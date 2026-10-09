@@ -93,6 +93,13 @@ MIGRATIONS: list[list[str]] = [
         )""",
         "CREATE INDEX IF NOT EXISTS calls_user ON calls (user_id, created_at)",
     ],
+    # 4: central account link (E5); nullable, so a database without links behaves like step 3.
+    # A server older than this step refuses to open the migrated database: rolling back needs the backup.
+    [
+        "ALTER TABLE users ADD COLUMN central_subject TEXT",
+        "CREATE UNIQUE INDEX users_central_subject ON users(central_subject) WHERE central_subject IS NOT NULL",
+        "ALTER TABLE pairing_requests ADD COLUMN target_user_id TEXT REFERENCES users(id) ON DELETE CASCADE",
+    ],
 ]
 
 LATEST = len(MIGRATIONS)

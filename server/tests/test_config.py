@@ -1,6 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
+from conftest import fake_config
 from wristcall.config import ConfigError, Timeouts, VadConfig, load_config, parse_config
 
 
@@ -176,3 +177,58 @@ def test_production_values_are_within_bounds():
     data["profiles"]["default"]["vad"] = {"silence_ms": 2000}
     data["profiles"]["default"]["timeouts"] = {"stt_s": 30, "first_token_s": 20, "tts_s": 30}
     assert parse_config(data, ENV).profiles["default"].vad.silence_ms == 2000
+
+
+def _with_central(**central):
+    return {**base(), "central_account": central}
+
+
+def test_central_account_is_optional():
+    assert fake_config().central_account is None
+
+
+def test_central_account_parses_and_normalizes_issuer():
+    cfg = parse_config(_with_central(issuer="https://auth.example.com/", clients=["a", "b"]), ENV)
+    assert cfg.central_account.issuer == "https://auth.example.com"
+    assert cfg.central_account.clients == ["a", "b"]
+    assert cfg.central_account.device_credential == "approval"
+
+
+@pytest.mark.parametrize(
+    "central",
+    [
+        {"issuer": "http://auth.example.com", "clients": ["a"]},
+        {"issuer": "https://auth.example.com", "clients": []},
+        {"issuer": "https://auth.example.com", "clients": ["a b"]},
+        {"issuer": "https://auth.example.com", "clients": [""]},
+        {"issuer": "https://auth.example.com", "clients": ["a" * 256]},
+        {"issuer": "https://auth.example.com", "clients": ["a"], "device_credential": "magic"},
+        {"issuer": "https://auth.example.com", "clients": ["a"], "extra": 1},
+        {"issuer": "ftp://auth.example.com", "clients": ["a"]},
+        {"issuer": "https://auth.example.com?x=1", "clients": ["a"]},
+        {"issuer": "https://auth.example.com#frag", "clients": ["a"]},
+        {"issuer": "https:///path", "clients": ["a"]},
+        {"issuer": "https://user:pass@auth.example.com", "clients": ["a"]},
+        {"issuer": "https://user@auth.example.com", "clients": ["a"]},
+        {"issuer": "https://:pass@auth.example.com", "clients": ["a"]},
+    ],
+)
+def test_bad_central_account_is_rejected(central):
+    with pytest.raises(ConfigError):
+        parse_config(_with_central(**central), ENV)
+
+
+def test_central_account_issuer_is_stripped():
+    cfg = parse_config(_with_central(issuer="  https://auth.example.com/ \n", clients=["a"]), ENV)
+    assert cfg.central_account.issuer == "https://auth.example.com"
+
+
+@pytest.mark.parametrize("issuer", ["http://localhost:8080", "http://127.0.0.1:8080"])
+def test_localhost_issuer_may_use_http(issuer):
+    cfg = parse_config(_with_central(issuer=issuer, clients=["a"]), ENV)
+    assert cfg.central_account.issuer == issuer
+
+
+def test_central_account_accepts_attestation():
+    cfg = parse_config(_with_central(issuer="https://a.example", clients=["a"], device_credential="attestation"), ENV)
+    assert cfg.central_account.device_credential == "attestation"

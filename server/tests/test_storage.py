@@ -283,3 +283,66 @@ async def test_deleting_a_user_deletes_their_calls(storage):
     await storage.calls.create(call())
     await storage.users.delete("u_a")
     assert await storage.calls.get("u_a", "c_1") is None
+
+
+async def test_link_central_subject(storage):
+    u = await storage.users.create("u_000000000001", "ana", "Ana", 1.0)
+    assert await storage.users.link_central(u.id, "https://i#sub-1")
+    assert (await storage.users.by_central("https://i#sub-1")).id == u.id
+    assert (await storage.users.get(u.id)).central_subject == "https://i#sub-1"
+    assert await storage.users.link_central(u.id, "https://i#sub-1")  # idempotent
+    assert await storage.users.link_central("u_missing00000", "https://i#x") is False
+
+
+async def test_central_subject_is_unique(storage):
+    a = await storage.users.create("u_000000000001", "ana", "Ana", 1.0)
+    b = await storage.users.create("u_000000000002", "bia", "Bia", 1.0)
+    await storage.users.link_central(a.id, "https://i#sub-1")
+    with pytest.raises(Conflict):
+        await storage.users.link_central(b.id, "https://i#sub-1")
+    assert (await storage.users.get(b.id)).central_subject is None
+
+
+async def test_relink_replaces_and_unlink_clears(storage):
+    u = await storage.users.create("u_000000000001", "ana", "Ana", 1.0)
+    await storage.users.link_central(u.id, "https://i#old")
+    await storage.users.link_central(u.id, "https://i#new")
+    assert await storage.users.by_central("https://i#old") is None
+    assert await storage.users.unlink_central(u.id) is True
+    assert await storage.users.unlink_central(u.id) is False
+    assert await storage.users.by_central("https://i#new") is None
+    assert (await storage.users.get(u.id)).central_subject is None
+
+
+async def test_targeted_requests(storage):
+    u = await storage.users.create("u_000000000001", "ana", "Ana", 1.0)
+    await storage.pairing.add_request("h1", "1234", "watch", 10.0, 100.0, target_user_id=u.id)
+    await storage.pairing.add_request("h2", "5678", "other", 10.0, 100.0)
+    found = await storage.pairing.pending_for(u.id, 20.0)
+    assert [r.poll_hash for r in found] == ["h1"] and found[0].target_user_id == u.id
+    assert (await storage.pairing.get_request("h2", 20.0)).target_user_id is None
+    assert await storage.pairing.pending_for(u.id, 200.0) == []  # expired
+
+
+async def test_pending_for_is_oldest_first_and_only_pending(storage):
+    u = await storage.users.create("u_000000000001", "ana", "Ana", 1.0)
+    await storage.pairing.add_request("h2", "0002", "second", 12.0, 100.0, target_user_id=u.id)
+    await storage.pairing.add_request("h1", "0001", "first", 11.0, 100.0, target_user_id=u.id)
+    await storage.pairing.add_request("h3", "0003", "denied", 13.0, 100.0, target_user_id=u.id)
+    await storage.pairing.deny("h3")
+    assert [r.poll_hash for r in await storage.pairing.pending_for(u.id, 20.0)] == ["h1", "h2"]
+
+
+async def test_deny_request(storage):
+    await storage.pairing.add_request("h1", "1234", "watch", 10.0, 100.0)
+    assert await storage.pairing.deny("h1") is True
+    assert (await storage.pairing.get_request("h1", 20.0)).status == "denied"
+    assert await storage.pairing.deny("h1") is False
+    assert await storage.pairing.pending_by_id("1234", 20.0) == []
+
+
+async def test_deleting_user_drops_targeted_requests(storage):
+    u = await storage.users.create("u_000000000001", "ana", "Ana", 1.0)
+    await storage.pairing.add_request("h1", "1234", "watch", 10.0, 100.0, target_user_id=u.id)
+    await storage.users.delete(u.id)
+    assert await storage.pairing.get_request("h1", 20.0) is None

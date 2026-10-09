@@ -25,6 +25,32 @@ jobs:
           docker build -t wristcall-ci server
           docker run --rm --entrypoint python wristcall-ci -c "from wristcall.storage import open_sqlite_storage; print('schema', open_sqlite_storage(':memory:').db.version)"
 
+  cloud:
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:8
+        ports: ["27017:27017"]
+    defaults:
+      run:
+        working-directory: cloud
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -e '.[dev]'
+      - run: python -m pytest -q
+        env:
+          WRISTCALL_CLOUD_TEST_MONGO_URL: mongodb://localhost:27017
+      # The Cloud carries a copy of the server's OIDC verifier; only the docstring opener and the User-Agent may differ.
+      - name: OIDC verifier copies are in sync
+        shell: bash
+        run: |
+          diff <(grep -v -e '^"""' -e 'User-Agent' ../server/src/wristcall/oidc.py) \
+               <(grep -v -e '^"""' -e 'User-Agent' src/wristcall_cloud/oidc.py)
+      - run: docker build -t wristcall-cloud-ci .
+
   directory:
     runs-on: ubuntu-latest
     defaults:

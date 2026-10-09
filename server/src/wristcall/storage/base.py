@@ -38,6 +38,19 @@ class UserStore(Protocol):
         """Also deletes the user's devices, tokens and agents."""
         ...
 
+    async def link_central(self, user_id: str, subject: str) -> bool:
+        """Links the central account `subject` ("<issuer>#<sub>"), replacing the user's previous link.
+
+        False if the user does not exist; raises Conflict if another user has the subject. Idempotent.
+        """
+        ...
+
+    async def unlink_central(self, user_id: str) -> bool:
+        """True if the user had a link."""
+        ...
+
+    async def by_central(self, subject: str) -> User | None: ...
+
 
 class TokenStore(Protocol):
     async def create(self, token_id: str, user_id: str, name: str, token_hash: str, now: float) -> ApiToken: ...
@@ -100,7 +113,12 @@ class PairingStore(Protocol):
         """A wrong code was tried: every active code gets one attempt closer to being blocked."""
         ...
 
-    async def add_request(self, poll_hash: str, request_id: str, device_name: str, now: float, expires_at: float) -> None: ...
+    async def add_request(
+        self, poll_hash: str, request_id: str, device_name: str, now: float, expires_at: float,
+        target_user_id: str | None = None,
+    ) -> None:
+        """target_user_id: the user who must approve it (central account flow); None for the code and manual flows."""
+        ...
 
     async def pending_ids(self, now: float) -> set[str]: ...
 
@@ -114,6 +132,14 @@ class PairingStore(Protocol):
 
     async def deliver(self, poll_hash: str) -> bool:
         """approved → delivered, at most once; False if someone else delivered it."""
+        ...
+
+    async def deny(self, poll_hash: str) -> bool:
+        """pending → denied; False if it was no longer pending."""
+        ...
+
+    async def pending_for(self, target_user_id: str, now: float) -> list[PairingRequest]:
+        """Pending, unexpired requests aimed at this user, oldest first."""
         ...
 
     async def set_request_device(self, poll_hash: str, device_id: str) -> None: ...

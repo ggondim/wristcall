@@ -54,16 +54,54 @@ def pair(
         raise PairError(f"pairing rejected ({r.status_code}): {r.text[:200]}")
     body = r.json()
     print(f"Request {body['request_id']} waiting for approval. On the server: wristcall devices approve {body['request_id']}")
+    return _wait_approval(client, base, body["poll_token"], poll_interval_s, timeout_s)
+
+
+def _wait_approval(client: httpx.Client, base: str, poll_token: str, poll_interval_s: float, timeout_s: float) -> dict[str, str]:
+    """Polls /v1/pair/poll until an approver decides; shared by `pair` and `pair_account`."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         time.sleep(poll_interval_s)
         # poll_token is a secret: it goes in the body, never in the path (which shows up in access logs).
-        p = client.post(f"{base}/v1/pair/poll", json={"poll_token": body["poll_token"]})
+        p = client.post(f"{base}/v1/pair/poll", json={"poll_token": poll_token})
         if p.status_code == 200:
             return p.json()
         if p.status_code != 202:
             raise PairError(f"request closed ({p.status_code}): {p.text[:200]}")
     raise PairError("approval timed out")
+
+
+def _error_name(r: httpx.Response) -> str:
+    try:
+        body = r.json()
+    except ValueError:
+        return "unknown"
+    return str(body.get("error", "unknown")) if isinstance(body, dict) else "unknown"
+
+
+def pair_account(
+    server: str,
+    account_token: str,
+    device_name: str,
+    *,
+    poll_interval_s: float = 2.0,
+    timeout_s: float = 600.0,
+    http: httpx.Client | None = None,
+) -> dict[str, str]:
+    """Pairs with the user linked to a central account login (the token from `login`)."""
+    client = http or httpx.Client(timeout=10.0)
+    base = server.rstrip("/")
+    r = client.post(f"{base}/v1/pair/account", json={"token": account_token, "device_name": device_name})
+    if r.status_code == 200:
+        return r.json()
+    if r.status_code != 202:
+        raise PairError(f"pairing rejected ({r.status_code}): {_error_name(r)}")
+    body = r.json()
+    print(
+        f"Waiting for approval of request {body['request_id']} in the wristcall app "
+        f"(or: wristcall devices approve {body['request_id']})"
+    )
+    return _wait_approval(client, base, body["poll_token"], poll_interval_s, timeout_s)
 
 
 async def wav_source(pcm: bytes, *, realtime: bool = True, trailing_silence_ms: int = 1200) -> AsyncIterator[bytes]:

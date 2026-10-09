@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wristcall-cloud"
+version = "0.1.0"
+description = "wristcall cloud: central account API (servers and agents linked to a user's central account)"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.142",
+  "uvicorn[standard]>=0.54",
+  "httpx>=0.28",
+  "pydantic>=2.13",
+  "PyJWT[crypto]>=2.10",
+  "pymongo>=4.13",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9", "pytest-asyncio>=1.4", "respx>=0.23"]
+
+[project.scripts]
+wristcall-cloud = "wristcall_cloud.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wristcall_cloud"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = [
+  # Starlette deprecates httpx inside TestClient; FastAPI's TestClient still wraps it.
+  "ignore:Using `httpx` with `starlette.testclient`",
+  # test_oidc.py (an exact copy of the server's) signs with a short HMAC key on purpose: the token must be rejected.
+  "ignore::jwt.warnings.InsecureKeyLengthWarning",
+]

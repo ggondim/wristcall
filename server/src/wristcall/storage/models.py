@@ -26,6 +26,7 @@ class User:
     handle: str
     display_name: str
     created_at: float
+    central_subject: str | None = None  # "<issuer>#<sub>" of the linked central account
 
 
 @dataclass(frozen=True)
@@ -49,12 +50,16 @@ class Device:
 
 @dataclass(frozen=True)
 class PairingRequest:
+    """status: pending → approved → delivered, or pending → denied. target_user_id: set when the request names the
+    user who must approve it (central account login); None for the code and manual flows."""
+
     poll_hash: str
     request_id: str
     device_name: str
     user_id: str | None
     status: str
     expires_at: float
+    target_user_id: str | None = None
 
 
 @dataclass(frozen=True)

@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import __version__, protocol
+from .account import AccountError, AccountService
 from .agents import (
     ONE_WAY, Agent, AgentError, AgentService, OneWayProviders, agent_summary, build_agent_providers,
     build_one_way_providers,
@@ -25,7 +26,7 @@ from .bootstrap import bootstrap, log_report
 from .config import AppConfig
 from .delivery import DeliveryPolicy
 from .oneway import Background, OneWayCall, call_view, new_call_id
-from .pairing import Paired, PairingDenied, PairingGone, PairingService
+from .pairing import DeviceLimit, Paired, PairingDenied, PairingGone, PairingService
 from .providers import ProviderError, check_providers
 from .ratelimit import RateLimiter
 from .session import CallSession
@@ -38,6 +39,12 @@ log = logging.getLogger("wristcall.app")
 
 class PairBody(BaseModel):
     code: str | None = None
+    device_name: str = Field(default="watch", max_length=64)
+
+
+class PairAccountBody(BaseModel):
+    # No max_length on the token: a validation error would echo it back. The verifier caps its length.
+    token: str
     device_name: str = Field(default="watch", max_length=64)
 
 
@@ -77,6 +84,7 @@ def create_app(
     agents = AgentService(store, config, http_client)
     auth = Authenticator(store)
     limiter = RateLimiter(limit=10, window_s=60)
+    account = AccountService(store, config.central_account, http_client) if config.central_account else None
     targets = warmup_targets(config, http_client)
     call_targets = [t for t in targets if t.config.on_call]
     after_calls = Background()
@@ -102,7 +110,7 @@ def create_app(
     app.state.pairing = pairing_svc
     app.state.agents = agents
     app.state.auth = auth
-    app.include_router(management_router(config, auth, agents, pairing_svc))
+    app.state.account = account
 
     def client_ip(request: Request) -> str:
         header = config.server.client_ip_header
@@ -110,13 +118,23 @@ def create_app(
             return value.split(",")[0].strip()
         return request.client.host if request.client else "unknown"
 
+    app.include_router(
+        management_router(config, auth, agents, pairing_svc, account, limiter=limiter, client_ip=client_ip)
+    )
+
     async def device_from(authorization: str | None) -> Principal | None:
         principal = await auth.authenticate(authorization)
         return principal if principal is not None and principal.kind == "device" else None
 
     @app.get("/v1/health")
     async def health() -> dict[str, Any]:
-        return {"status": "ok", "version": __version__, "protocol": protocol.PROTOCOL_VERSION}
+        central = config.central_account
+        return {
+            "status": "ok",
+            "version": __version__,
+            "protocol": protocol.PROTOCOL_VERSION,
+            "account": {"issuer": central.issuer, "device_credential": central.device_credential} if central else None,
+        }
 
     @app.post("/v1/pair")
     async def pair(body: PairBody, request: Request) -> Any:
@@ -134,6 +152,41 @@ def create_app(
             status_code=202,
         )
 
+    @app.post("/v1/pair/account")
+    async def pair_account(body: PairAccountBody, request: Request) -> Any:
+        # Public: the central account's access token in the body is the only proof (no Authorization header).
+        # Neither the token nor the body is ever logged or echoed.
+        if not limiter.allow(client_ip(request)):
+            return JSONResponse({"error": "rate_limited"}, status_code=429)
+        if account is None:
+            return JSONResponse(
+                {"error": "not_configured", "message": "this server is not linked to a central account"}, status_code=404
+            )
+        try:
+            user = await account.user_for(body.token)
+        except AccountError as e:
+            status = 503 if e.code == "account_unavailable" else 401
+            return JSONResponse({"error": e.code, "message": e.message}, status_code=status)
+        if user is None:
+            return JSONResponse(
+                {"error": "not_linked", "message": "link this account to a user on the server first"}, status_code=403
+            )
+        approval = account.config.device_credential == "approval"
+        try:
+            result = await pairing_svc.pair_for_user(user.id, body.device_name, approval=approval)
+        except DeviceLimit as e:  # a PairingDenied too: it must come first
+            return JSONResponse({"error": "limit", "message": str(e)}, status_code=403)
+        except PairingDenied as e:
+            return JSONResponse({"error": "too_many_requests", "message": str(e)}, status_code=429)
+        if isinstance(result, Paired):
+            log.info("device paired via account: %s", result.device_id)
+            return {"device_id": result.device_id, "token": result.token}
+        log.info("pairing request for user %s", user.id)
+        return JSONResponse(
+            {"request_id": result.request_id, "poll_token": result.poll_token, "expires_at": result.expires_at},
+            status_code=202,
+        )
+
     @app.post("/v1/pair/poll")
     async def poll(body: PollBody) -> Any:
         # The poll_token is a secret: it goes in the body, not in the path, so it does not show up in the access log.
@@ -141,6 +194,9 @@ def create_app(
             result = await pairing_svc.poll(body.poll_token)
         except PairingGone as e:
             return JSONResponse({"error": "gone", "message": str(e)}, status_code=410)
+        except DeviceLimit as e:
+            # Approved, but the user reached the device limit meanwhile; the request stays collectable.
+            return JSONResponse({"error": "limit", "message": str(e)}, status_code=403)
         if isinstance(result, Paired):
             log.info("device paired by approval: %s", result.device_id)
             return {"device_id": result.device_id, "token": result.token}
