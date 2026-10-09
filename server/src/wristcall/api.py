@@ -6,7 +6,7 @@ list its user's agents (GET /v1/agents and GET /v1/agents/{ref}, summary view).
 
 from typing import Any
 
-from fastapi import APIRouter, Body, Header, Response
+from fastapi import APIRouter, Header, Request, Response
 from fastapi.responses import JSONResponse
 
 from .agents import AgentError, AgentService, agent_detail, agent_summary
@@ -31,8 +31,18 @@ def _forbidden() -> JSONResponse:
     return _error("forbidden", "this needs a user API token, not a device token", 403)
 
 
+async def _json_object(request: Request) -> dict[str, Any] | JSONResponse:
+    try:
+        body = await request.json()
+    except ValueError:
+        return _error("invalid", "body must be valid JSON", 422)
+    if not isinstance(body, dict):
+        return _error("invalid", "body must be a JSON object", 422)
+    return body
+
+
 def _agent_error(e: AgentError) -> JSONResponse:
-    return _error(e.code, e.message, _STATUS[e.code])
+    return _error(e.code, e.message, _STATUS.get(e.code, 422))
 
 
 def management_router(
@@ -60,10 +70,13 @@ def management_router(
         return {"agents": [view(a) for a in await agents.list(who.user_id)]}
 
     @router.post("/agents")
-    async def create_agent(body: dict[str, Any] = Body(...), authorization: str | None = Header(default=None)) -> Any:
+    async def create_agent(request: Request, authorization: str | None = Header(default=None)) -> Any:
         who = await owner(authorization)
         if isinstance(who, JSONResponse):
             return who
+        body = await _json_object(request)
+        if isinstance(body, JSONResponse):
+            return body
         try:
             agent = await agents.create(who.user_id, body)
         except AgentError as e:
@@ -82,10 +95,13 @@ def management_router(
         return agent_detail(agent) if who.kind == "api" else agent_summary(agent)
 
     @router.patch("/agents/{ref}")
-    async def update_agent(ref: str, body: dict[str, Any] = Body(...), authorization: str | None = Header(default=None)) -> Any:
+    async def update_agent(ref: str, request: Request, authorization: str | None = Header(default=None)) -> Any:
         who = await owner(authorization)
         if isinstance(who, JSONResponse):
             return who
+        body = await _json_object(request)
+        if isinstance(body, JSONResponse):
+            return body
         try:
             return agent_detail(await agents.update(who.user_id, ref, body))
         except AgentError as e:

@@ -181,3 +181,47 @@ def test_pairing_code_with_directory():
         r = client.post("/v1/pairing-codes", headers=h(api_token(client)))
         assert r.status_code == 201 and r.json()["via_directory"] is True
         assert route.called
+
+
+def test_auth_comes_before_body_parsing(client):
+    for method, path in [("post", "/v1/agents"), ("patch", "/v1/agents/default")]:
+        for kwargs in [{}, {"content": b"{not json"}, {"json": [1]}]:
+            r = client.request(method.upper(), path, **kwargs)
+            assert r.status_code == 401 and r.json()["error"] == "unauthorized" and "detail" not in r.json()
+        d = device_token(client)
+        r = client.request(method.upper(), path, headers=h(d), json=[{"api_key": "sk-secret"}])
+        assert r.status_code == 403 and r.json()["error"] == "forbidden" and "sk-secret" not in r.text
+
+
+def test_bad_bodies_are_invalid_without_echo(client):
+    t = api_token(client)
+    for method, path in [("post", "/v1/agents"), ("patch", "/v1/agents/default")]:
+        for kwargs in [
+            {"json": [{"api_key": "sk-secret"}]},
+            {"json": "sk-secret"},
+            {"content": b'{"api_key": "sk-secret"', "headers": {"Content-Type": "application/json"}},
+            {},
+        ]:
+            headers = {**h(t), **kwargs.pop("headers", {})}
+            r = client.request(method.upper(), path, headers=headers, **kwargs)
+            assert r.status_code == 422, (method, kwargs)
+            assert r.json()["error"] == "invalid" and "detail" not in r.json()
+            assert "sk-secret" not in r.text
+
+
+def test_device_cannot_read_another_users_agent_by_id(client):
+    bob = api_token(client, "bob")
+    bob_agent = client.post("/v1/agents", headers=h(bob), json={"slug": "private"}).json()["id"]
+    alice_device = device_token(client)
+    assert client.get(f"/v1/agents/{bob_agent}", headers=h(alice_device)).status_code == 404
+
+
+@respx.mock
+def test_pairing_code_directory_conflicts_are_502():
+    route = respx.post("https://dir.test/v1/codes").mock(return_value=httpx.Response(409, json={}))
+    data = fake_config().model_dump(mode="json")
+    data["server"] = {"public_url": "https://wc.test", "directory_url": "https://dir.test"}
+    with make_client(parse_config(data, {})) as client:
+        r = client.post("/v1/pairing-codes", headers=h(api_token(client)))
+        assert r.status_code == 502 and r.json()["error"] == "directory"
+        assert route.call_count == 3
