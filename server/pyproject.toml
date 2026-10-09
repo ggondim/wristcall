@@ -32,5 +32,8 @@ packages = ["src/wristcall"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-markers = ["integration: needs the real providers (WRISTCALL_INTEGRATION_CONFIG)"]
-addopts = "-m 'not integration'"
+markers = [
+  "integration: needs the real providers (WRISTCALL_INTEGRATION_CONFIG)",
+  "zitadel: needs the real central account issuer (WRISTCALL_ZITADEL_E2E_SECRET)",
+]
+addopts = "-m 'not integration and not zitadel'"

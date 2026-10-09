@@ -16,9 +16,9 @@ or any other) and a wristcall server. Version: **1**.
 
 | Route | Body | Responses |
 |---|---|---|
-| `GET /v1/health` | | `200 {"status":"ok","version":"0.4.0","protocol":1}` |
+| `GET /v1/health` | | `200 {"status":"ok","version":"0.4.0","protocol":1,"account":null}`. `account` is `{"issuer","device_credential"}` when the server accepts a [central account](#central-account-optional), `null` otherwise (older servers omit it) |
 | `POST /v1/pair` | `{"code": "12345678" \| null, "device_name": "Apple Watch"}` | `200 {"device_id","token"}`: paired (flow A). `202 {"request_id","poll_token","expires_at"}`: waiting for the owner's approval (flow B). `401 {"error":"invalid_code"}`. `429 {"error":"rate_limited"}` |
-| `POST /v1/pair/poll` | `{"poll_token": "..."}` | `202 {"request_id","expires_at"}`: pending. `200 {"device_id","token"}`: approved (delivered only once). `410 {"error":"gone"}`: expired or already delivered. `422`: body without `poll_token` or with more than 128 characters |
+| `POST /v1/pair/poll` | `{"poll_token": "..."}` | `202 {"request_id","expires_at"}`: pending. `200 {"device_id","token"}`: approved (delivered only once). `403 {"error":"limit"}`: approved, but the user is at the device limit, so the device cannot be collected yet (the request stays valid; try again after a device is revoked). `410 {"error":"gone"}`: expired, denied or already delivered. `422`: body without `poll_token` or with more than 128 characters |
 | `GET /v1/calls/{call_id}` | | `200 call` (see [One-way calls](#one-way-calls-one-shot-monologue)): a call of this token's user, with a device or an API token. `404 {"error":"not_found"}`. `401` |
 | `GET /v1/me` | | `200 {"device_id","device_name","user":{"id","handle","display_name"},"agents":[agent],"profiles":[{"name","display_name"}]}`. `401` |
 | `DELETE /v1/me` | | `204`: token revoked. `401` |
@@ -60,6 +60,117 @@ Uniqueness and single use are best effort (eventually consistent KV): in
 rare races, two simultaneous registrations of the same code or two back to back
 resolutions may go through. Security comes from the code validated by the server at
 `POST /v1/pair`, not from the directory.
+
+## Central account (optional)
+
+A server can accept the login of a central account (OIDC, for example the one run for the
+project's own apps) as a way to pair watches and to link a user, so nobody types an 8 digit code. It
+is off unless the operator sets `central_account` in `wristcall.yaml`; without it the server
+behaves like 0.4.0 and every route below answers `404 {"error":"not_configured"}`
+(`POST /v1/pair/account` spends from the per-IP budget before it answers that).
+
+Clients read `account` in `GET /v1/health`: `{"issuer","device_credential"}` or `null`.
+`device_credential` is `"approval"` or `"attestation"` (see [Configuration](../README.md#central-account)).
+The client logs in at `issuer`, with its own `client_id` (one of the server's `clients`), and gets an
+**access token**. On a watch, use the device authorization grant (RFC 8628).
+
+The central account's access token is **not** a credential of this server. It does not authenticate the
+management API, calls or `GET /v1/me`; it only works as proof of who the person is, in
+`POST /v1/pair/account` and `POST /v1/account/link`. Only access tokens are accepted (an ID token is
+refused), and its `client_id` or `azp` must be in the server's `clients`.
+
+Why: the same login works on every server that trusts the issuer. If the token were enough to
+manage a server, a token handed to one server's operator would manage all of them. A local user
+therefore has to be linked first, with a second proof that only this server can give (an API token
+or a pairing code), and the token only opens the door to pairing.
+
+### Linking a user
+
+| Route | Body | Responses |
+|---|---|---|
+| `POST /v1/account/link` | `{"token": "<central access token>"}` with `Authorization: Bearer <API token>`, or `{"token": "...", "code": "12345678"}` without `Authorization` | With an API token: `200 {"linked":true,"issuer"}` (a `code` sent along is ignored and not spent). With a code: `200 {"linked":true,"issuer","user":{"id","handle"},"api_token"}`. Errors below |
+| `DELETE /v1/account/link` | | `204`: the user's link removed. `404 {"error":"not_found"}`: not linked. `401`, `403 forbidden` (device token) |
+
+Errors of `POST /v1/account/link`, in the order they are checked:
+
+| Status | `error` | When |
+|---|---|---|
+| `404` | `not_configured` | the server has no `central_account` |
+| `429` | `rate_limited` | more than 10 requests a minute from one IP (the budget is shared with `POST /v1/pair` and `POST /v1/pair/account`) |
+| `401` | `unauthorized` | `Authorization` sent but not a valid token; or neither an API token nor a `code` |
+| `403` | `forbidden` | `Authorization` is a device token |
+| `422` | `invalid` | body is not a JSON object, `token` missing or empty, or `code` not a string |
+| `401` | `invalid_account_token` | signature, issuer, audience, expiry, `client_id` or token type is wrong (the `message` says which) |
+| `503` | `account_unavailable` | the issuer or its keys cannot be reached and nothing is cached; try again later |
+| `401` | `invalid_code` | code wrong, expired or already used (a wrong code counts as a failed attempt, as in `POST /v1/pair`; five burn the code) |
+| `409` | `conflict` | this central account is already linked to another user of the server |
+
+Rules:
+- A user links one central account; one central account links one user per server. Linking again with the same user
+  replaces the previous link.
+- The central token is checked before the code is claimed, so a bad token or an unreachable issuer
+  does not spend the code. A code is spent as soon as it is claimed, even when the link then fails
+  with `409 conflict`: ask for a new one.
+- **A pairing code now also grants management.** Linking with a code returns `api_token`, a new
+  API token (named `account link`) of the code's user. Whoever holds a valid central login and
+  sees a code first, for example a code shown on a screen, links to that user and gets a full management
+  token (agents, devices, webhooks, unlinking). Treat the code as a secret until it is used. A token
+  created this way can be revoked with `wristcall users tokens revoke`.
+- `DELETE /v1/account/link` or `wristcall users unlink <handle>` removes the link. Devices already
+  paired stay paired.
+
+### Pairing with the account
+
+| Route | Body | Responses |
+|---|---|---|
+| `POST /v1/pair/account` | `{"token": "<central access token>", "device_name": "Apple Watch"}` (no `Authorization`) | `200 {"device_id","token"}`: paired (`attestation`). `202 {"request_id","poll_token","expires_at"}`: waiting for the user's approval (`approval`). Errors below |
+
+| Status | `error` | When |
+|---|---|---|
+| `422` | | body without `token`, or `device_name` over 64 characters |
+| `429` | `rate_limited` | per-IP budget (10 a minute, shared with `POST /v1/pair` and `POST /v1/account/link`); checked first, even when the server has no central account |
+| `404` | `not_configured` | the server has no `central_account` |
+| `401` | `invalid_account_token` | the token is not acceptable (same reasons as above) |
+| `503` | `account_unavailable` | the issuer cannot be reached |
+| `403` | `not_linked` | no user of the server is linked to this central account; link one first |
+| `403` | `limit` | the user is at the device limit (`limits.max_devices_per_user`) |
+| `429` | `too_many_requests` | too many pending requests for this user (5); approve or deny them first |
+
+In `approval` mode the client then polls `POST /v1/pair/poll` with the `poll_token`, exactly as in flow B, and
+gets `200 {"device_id","token"}` once approved. A denied request answers `410 {"error":"gone"}`;
+an approved one answers `403 {"error":"limit"}` while the user is at the device limit (the limit is checked again
+when the device is collected, so approving cannot get around it).
+
+### Approving requests
+
+Requests created by `POST /v1/pair/account` in `approval` mode are aimed at one user. Only that user
+can see, approve or deny them, with an **API token** (never the central token: the login that
+asks for a device cannot also approve it).
+
+| Route | Body | Responses |
+|---|---|---|
+| `GET /v1/pairing-requests` | | `200 {"requests":[{"request_id","device_name","expires_at"}]}`: pending requests aimed at the token's user |
+| `POST /v1/pairing-requests/{request_id}/approve` | | `200 {"device_name"}`. `404 {"error":"not_found"}`: no such pending request aimed at this user. `403 {"error":"limit"}`: device limit |
+| `POST /v1/pairing-requests/{request_id}/deny` | | `204`. `404 {"error":"not_found"}` |
+
+All three answer `404 not_configured` without `central_account`, `401 unauthorized` without a valid token and
+`403 forbidden` with a device token. Requests without a target (flow B of `pairing_approval: manual`) are not listed
+here and cannot be approved or denied through this API: the operator uses `wristcall devices approve|deny`.
+A request lives 10 minutes. Each user can have 5 pending at once.
+
+### Revocation and limits
+
+- The server only checks the token's signature and claims against the issuer's published keys
+  (cached for 1 hour; kept if the issuer goes down; at most one key fetch a minute). It never asks the
+  issuer whether a login is still valid. A session revoked at the issuer is accepted here until the access
+  token expires, so keep access tokens short (minutes) at the issuer.
+- `unlink` does not revoke devices already paired: use `wristcall devices revoke` or `DELETE /v1/devices/{id}`.
+- In `attestation` mode a leaked access token of a linked account pairs a device until the token expires; revoke the
+  device afterwards. `approval` mode puts the user between the token and the device.
+- Every server accepts the same app client ids. A central token given to one server's operator can be replayed at
+  another server's `/v1/account/link` and `/v1/pair/account` (it pairs a device wherever that account is linked). Per
+  server registration, which closes this, is planned (epic E6). Until then, use `approval`, and log in to servers
+  you do not trust only with a throwaway account.
 
 ## Call (`WS /v1/call`)
 
@@ -327,8 +438,13 @@ A body that is not valid JSON or not a JSON object answers `422 {"error":"invali
 | `GET /v1/devices` | | `200 {"devices":[{"id","name","created_at"}]}` |
 | `DELETE /v1/devices/{id}` | | `204`. `404` |
 | `POST /v1/pairing-codes` | | `201 {"code","expires_at","server_url","via_directory"}` (+ `"warning"` when the directory was unreachable). `403 limit` (device limit). `502 directory` |
+| `POST /v1/account/link` | see [Linking a user](#linking-a-user) | `200`, `401`, `404`, `409`, `422`, `429`, `503` |
+| `DELETE /v1/account/link` | | `204`. `404` |
+| `GET /v1/pairing-requests` | | `200 {"requests":[...]}` |
+| `POST /v1/pairing-requests/{id}/approve` | | `200 {"device_name"}`. `403 limit`. `404` |
+| `POST /v1/pairing-requests/{id}/deny` | | `204`. `404` |
 
-Missing or invalid token: `401 {"error":"unauthorized"}`.
+Missing or invalid token: `401 {"error":"unauthorized"}`. The central account routes answer `404 not_configured` when the server has no `central_account`.
 
 ## Versioning
 

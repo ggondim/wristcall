@@ -81,6 +81,52 @@ watches and agents live in the server's database (`data_dir/wristcall.db`).
   always loaded (uses GPU memory). Example: `warmup: {on_call: true}`.
 - Behind a proxy: the server trusts `X-Forwarded-For` only from the IPs in `FORWARDED_ALLOW_IPS` (the example compose already sets it). Behind Cloudflare, use `server.client_ip_header: CF-Connecting-IP`.
 
+## Central account (optional)
+
+`central_account` lets a watch or app pair with a login of the project's central account (OIDC)
+instead of an 8 digit code. Without it the server works as before and the routes below answer
+`404 not_configured`.
+
+```yaml
+central_account:
+  issuer: https://auth.trigram.com.br      # https; http only for localhost
+  clients: ["<watch client id>", "<iOS client id>"]   # app client ids
+  device_credential: approval              # or attestation
+```
+
+- `issuer`: where the login happens. The server reads its public keys (`/.well-known/openid-configuration`) and never calls it with a user token.
+- `clients`: the client ids of the apps whose logins you accept. Use the apps' client ids, never
+  the id of the project: that would accept every app of the project. A token must be an access token
+  of one of these clients; ID tokens are refused.
+- `device_credential` decides what a login can do on this server:
+  - `approval` (default): the linked user approves each new device (`wristcall devices approve <id>`
+    or `POST /v1/pairing-requests/{id}/approve`).
+  - `attestation`: any login linked to a user pairs a device right away.
+
+A user has to be linked first: with an API token (`POST /v1/account/link` from the app, or
+the app sends a pairing code from `wristcall pair`). Remove the link with `wristcall users unlink <handle>`.
+Routes and error codes: [docs/protocol.md](docs/protocol.md#central-account-optional).
+
+Know before you turn it on:
+- A pairing code now also links a login and returns a management API token to whoever links first. Do not
+  show codes in public places.
+- The server does not ask the issuer whether a login was revoked: it is accepted until its access token
+  expires. Configure short access tokens at the issuer.
+- `users unlink` does not revoke devices already paired (`wristcall devices revoke`). In `attestation`
+  mode a leaked login pairs a device until the token expires.
+- Servers accept the same app client ids, so a token given to one server's operator can be replayed at another
+  server that has the same account linked. Per server registration is planned (epic E6); `approval` limits the damage.
+- Keys of the issuer are cached for 1 hour (stale keys are used if the issuer is down; at most one fetch a minute).
+
+## Upgrading from 0.4.0
+
+1. Back up `data_dir` first: stop the server and copy it, or run `sqlite3 <db> ".backup <file>"`. The database migrates to schema 4 on start (a nullable `central_subject`
+   on users and a target on pairing requests); the YAML stays as it is and nothing changes until you add `central_account`.
+2. The server gains the `PyJWT[crypto]` dependency (included in the image).
+3. Rolling back to 0.4.0 needs the backup taken before the upgrade: 0.4.0 refuses the newer schema, and
+   setting `user_version` back by hand makes the next upgrade fail with a duplicate column error, because step 4 runs again on
+   a migrated database.
+
 ## Upgrading from 0.3.0
 
 1. Back up `data_dir` first (as below). The database migrates to version 3 on start (a new
@@ -154,10 +200,12 @@ With more than one user, add `--user <handle>` to `pair`, `devices list|approve|
 | `wristcall serve` | starts the server (default in the container) |
 | `wristcall pair [--user]` | generates an 8 digit code for a user, valid for 10 minutes |
 | `wristcall devices list` | lists paired watches (and their user) and pending requests |
-| `wristcall devices approve <id> [--user]` | approves a request for a user |
+| `wristcall devices approve <id> [--user]` | approves a request for a user (requests aimed at another user are not matched) |
+| `wristcall devices deny <id>` | denies a pending request: the watch is told on its next check |
 | `wristcall devices revoke <id>` | revokes a watch |
 | `wristcall devices assign <id> --user <handle>` | gives a watch to a user |
-| `wristcall users list\|add\|edit\|rm` | manages users |
+| `wristcall users list\|add\|edit\|rm` | manages users (`list` shows which are linked to the central account) |
+| `wristcall users unlink <handle>` | removes a user's link to the central account |
 | `wristcall users tokens add\|list\|revoke` | API tokens for the management API |
 | `wristcall agents list\|show\|add\|edit\|rm` | manages a user's agents |
 
@@ -165,7 +213,8 @@ With more than one user, add `--user <handle>` to `pair`, `devices list|approve|
 
 With an API token (`wristcall users tokens add`), in `Authorization: Bearer wc_pat_...`:
 `GET/POST /v1/agents`, `GET/PATCH/DELETE /v1/agents/{slug or id}`, `GET /v1/providers`,
-`GET /v1/devices`, `DELETE /v1/devices/{id}`, `POST /v1/pairing-codes`. The JSON fields are
+`GET /v1/devices`, `DELETE /v1/devices/{id}`, `POST /v1/pairing-codes`. With `central_account`:
+`POST/DELETE /v1/account/link` and `GET /v1/pairing-requests` with `POST .../{id}/approve|deny`. The JSON fields are
 the ones `wristcall agents show` prints. See [docs/protocol.md](docs/protocol.md#management-api).
 
 ## Documentation

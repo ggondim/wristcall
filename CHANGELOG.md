@@ -2,6 +2,43 @@
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each component follows [SemVer](https://semver.org/) on its own: the server is published by the `server-vX.Y.Z` tag (Docker image); the watch app is marked by the `watch-vX.Y.Z` tag and has no published binary (build it with Xcode, see [watch/README.md](watch/README.md)).
 
+## Unreleased
+
+### Added
+
+- Central account (optional, `central_account` in `wristcall.yaml`: `issuer`, `clients`, `device_credential`).
+  Without it the server behaves as 0.4.0 and the new routes answer `404 not_configured`.
+- `POST /v1/account/link` links a user to a central account login, proved by an API token or by an
+  8 digit pairing code (with a code, the response carries a new `api_token`); `DELETE /v1/account/link` removes the link.
+- `POST /v1/pair/account` pairs a device with a central account login: right away
+  (`device_credential: attestation`) or after the linked user approves (`approval`).
+- Pairing requests API for the linked user: `GET /v1/pairing-requests` and
+  `POST /v1/pairing-requests/{id}/approve|deny`.
+- `GET /v1/health` adds `account` (`{"issuer","device_credential"}` or `null`).
+- `POST /v1/pair/poll` can answer `403 {"error":"limit"}` when the device limit blocks collecting an approved device
+  (retry after revoking one); a denied request answers `410`.
+- CLI: `wristcall users unlink`, `wristcall devices deny`, and a `linked` column in `wristcall users list`.
+
+### Changed
+
+- `wristcall devices approve` ignores requests aimed at another user.
+- New dependency: `PyJWT[crypto]>=2.10`.
+
+### Security
+
+- A pairing code now also links a central account login and returns a management API token to whoever links first. Do
+  not show codes in public places.
+- Central access tokens are checked against the issuer's keys only: a login revoked at the issuer is accepted until its
+  access token expires (use short access tokens). `users unlink` does not revoke devices already paired. In `attestation`
+  mode a leaked token becomes a device until revoked.
+- Every server accepts the same app client ids, so a central token handed to one server's operator can be replayed at
+  another server's link and pair routes. Per server registration is planned (epic E6).
+
+### Upgrade note
+
+- The database gains schema step 4; rolling back to 0.4.0 needs the backup taken before the upgrade
+  (running step 4 again on a migrated database fails with a duplicate column error).
+
 ## [0.4.0] - 2026-10-09
 
 ### Protocol
