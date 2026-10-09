@@ -7,5 +7,8 @@
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.widgetkit-extension</string>
 	</dict>
+	<!-- AgentCatalog.shared(): the App Group shared with the app (decision W13). -->
+	<key>WristcallAppGroup</key>
+	<string>group.$(BUNDLE_ID_PREFIX).wristcall</string>
 </dict>
 </plist>

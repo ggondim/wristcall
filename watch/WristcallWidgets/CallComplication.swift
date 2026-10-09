@@ -2,8 +2,9 @@ import SwiftUI
 import WidgetKit
 import WristcallKit
 
-/// A complication that opens the app on `wristcall://call`; the app starts the call
-/// (`ShortcutLink`, `PendingCallStore`). Nothing to refresh: one entry, never reloaded.
+/// A complication that opens the app on `wristcall://call`; the app calls the first agent
+/// (`ShortcutLink`, `PendingCallStore`). Nothing to refresh: one entry, never reloaded. Left as it
+/// was when `AgentCallComplication` came, so the faces that have it keep it (decision W12).
 struct CallComplication: Widget {
     static let kind = "io.github.ggondim.wristcall.call-complication"
 
@@ -14,7 +15,7 @@ struct CallComplication: Widget {
                 .containerBackground(.clear, for: .widget)
         }
         .configurationDisplayName("Call agent")
-        .description("Calls your agent with Wristcall.")
+        .description("Calls your first agent with Wristcall.")
         .supportedFamilies([.accessoryCircular, .accessoryCorner, .accessoryInline])
     }
 }

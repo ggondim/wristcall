@@ -1,6 +1,7 @@
 import Combine
 import SwiftUI
 import WatchKit
+import WidgetKit
 import WristcallKit
 
 @main
@@ -14,13 +15,22 @@ struct WristcallApp: App {
 
     init() {
         // The path monitor starts here, at launch, so it has an answer before the first "Call".
-        let model = AppModel(reachability: NetworkPathMonitor())
+        // The last run's catalog keeps the agents of a server that does not answer this time.
+        let model = AppModel(reachability: NetworkPathMonitor(), savedCatalog: AgentCatalog.shared().load())
         let coordinator = CallCoordinator(callControl: Self.makeCallControl(), audio: Self.makeAudio())
         coordinator.model = model
         model.callHandler = coordinator
         // The result of a one-way call may arrive with the wrist down: a tap says how it went.
         model.onCallResultFinished = { delivered in
             WKInterfaceDevice.current().play(delivered ? .success : .failure)
+        }
+        // Told only when the catalog really changed: the widget extension reads it from the App
+        // Group to configure the complication and the control, and Shortcuts lists its agents.
+        model.onAgentsChanged = { catalog in
+            AgentCatalog.shared().save(catalog)
+            WidgetCenter.shared.reloadAllTimelines()
+            ControlCenter.shared.reloadAllControls()
+            WristcallShortcuts.updateAppShortcutParameters()
         }
         _model = State(initialValue: model)
         self.coordinator = coordinator
@@ -38,6 +48,7 @@ struct WristcallApp: App {
                     #if DEBUG
                     DebugPairing.run(model, arguments: ProcessInfo.processInfo.arguments)
                     await DebugCall.run(model, arguments: ProcessInfo.processInfo.arguments)
+                    DebugShortcut.run(arguments: ProcessInfo.processInfo.arguments)
                     #endif
                 }
                 // A shortcut may record its request before or after the app becomes active.
@@ -51,10 +62,9 @@ struct WristcallApp: App {
                 .onReceive(NotificationCenter.default.publisher(for: PendingCallStore.didRequest)) { _ in
                     Task { await shortcuts.check() }
                 }
-                // The complication opens `wristcall://call`.
+                // The complications open `wristcall://call`, with the agent when one was chosen.
                 .onOpenURL { url in
-                    guard ShortcutLink.isCall(url) else { return }
-                    PendingCallStore().request()
+                    ShortcutCalls.request(from: url, store: PendingCallStore())
                 }
                 // Redial on the system call UI. Like a shortcut, so a cold start waits for launch.
                 .onContinueUserActivity(Self.startCallActivity) { _ in

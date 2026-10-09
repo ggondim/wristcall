@@ -34,6 +34,10 @@ final class ShortcutCalls {
             try? await Task.sleep(for: .milliseconds(50))
         }
         guard let request = store.consume() else { return }
+        // The result screen of the last one-way call is not worth keeping over a call asked for now.
+        if model.phase == .callResult {
+            model.dismissResult()
+        }
         guard model.phase == .home else {
             // Not paired, Keychain locked or already in a call: the screen already says so.
             Self.log.notice("call requested by a shortcut, but the app cannot call now")
@@ -41,10 +45,22 @@ final class ShortcutCalls {
         }
         // An agent that is gone (or a server that is down) leaves a message on Home instead.
         model.startCall(agent: request.agent)
-        if case .inCall = model.phase {
-            Self.log.notice("call requested by a shortcut")
+        if case .inCall(let target) = model.phase {
+            // Ids and slug only, nothing secret: which agent a complication or control reached.
+            Self.log.notice(
+                "call requested by a shortcut: \(target.agent.slug, privacy: .public) (\(target.id, privacy: .public))")
         } else {
-            Self.log.notice("call requested by a shortcut, but that agent cannot be called now")
+            Self.log.notice(
+                "call requested by a shortcut, but that agent cannot be called now: \(model.message ?? "", privacy: .public)")
         }
+    }
+
+    /// `wristcall://call` (the complications), with the agent it names, becomes a request in
+    /// `store`; `false` for any other URL.
+    @discardableResult
+    static func request(from url: URL, store: PendingCallStore) -> Bool {
+        guard ShortcutLink.isCall(url) else { return false }
+        store.request(agent: ShortcutLink.agent(in: url))
+        return true
     }
 }

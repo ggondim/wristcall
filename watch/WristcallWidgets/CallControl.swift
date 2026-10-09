@@ -16,6 +16,6 @@ struct CallControl: ControlWidget {
             }
         }
         .displayName("Call agent")
-        .description("Calls your agent with Wristcall.")
+        .description("Calls your first agent with Wristcall.")
     }
 }

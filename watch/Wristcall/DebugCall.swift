@@ -2,6 +2,7 @@
 import AVFAudio
 import Foundation
 import os
+import WristcallKit
 
 /// Simulator stand-in for CallKit (Debug builds only, `-noCallKit`).
 ///
@@ -115,6 +116,22 @@ enum DebugCall {
     private static func value(after flag: String, in arguments: [String]) -> String? {
         guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
         return arguments[index + 1]
+    }
+}
+
+/// `-openURL <url>` (Debug builds only): hands `url` to what `onOpenURL` does, because
+/// `xcrun simctl openurl` fails on the watch simulator (LaunchServices error 115). Everything after
+/// the system's delivery of the URL runs as for a tapped complication:
+///
+///     xcrun simctl launch <device> <bundle id> -noCallKit -syntheticMic \
+///         -openURL 'wristcall://call?agent=<serverID>/<agentID>'
+enum DebugShortcut {
+    @MainActor
+    static func run(arguments: [String]) {
+        guard let index = arguments.firstIndex(of: "-openURL"), arguments.indices.contains(index + 1),
+              let url = URL(string: arguments[index + 1])
+        else { return }
+        ShortcutCalls.request(from: url, store: PendingCallStore())
     }
 }
 #endif

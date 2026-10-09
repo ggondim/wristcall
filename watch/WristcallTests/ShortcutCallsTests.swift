@@ -10,6 +10,7 @@ struct ShortcutCallsTests {
     let handler = StubCallHandler()
     let defaults = UserDefaults(suiteName: "ShortcutCallsTests.\(UUID().uuidString)")!
     let center = NotificationCenter()
+    let clock = FakeClock()
     let info = DeviceInfo(deviceId: "dev-1", deviceName: "Apple Watch", user: nil, agents: [
         Agent(id: "ag_1", slug: "default", displayName: "Agent"),
         Agent(id: "ag_2", slug: "notes", displayName: "Notes", callType: .oneShot),
@@ -23,7 +24,8 @@ struct ShortcutCallsTests {
             try store.save([Credentials(serverURL: server, deviceId: "dev-1", token: "t", id: "srv-1")])
             pairing.meResults = [.success(info)]
         }
-        let model = AppModel(pairing: pairing, store: store, defaults: defaults, sleep: { _ in })
+        let model = AppModel(
+            pairing: pairing, store: store, defaults: defaults, sleep: { _ in }, resultPoller: clock.poller)
         model.callHandler = handler
         return model
     }
@@ -51,16 +53,50 @@ struct ShortcutCallsTests {
         #expect(!pending.isPending)
     }
 
-    @Test func pendingRequestForAnAgentThatIsGoneDoesNotCall() async throws {
+    /// Review Focus 4: a complication, control or shortcut that points to an agent that was deleted,
+    /// to a server that was removed, or to nothing valid never calls another agent.
+    @Test(arguments: ["srv-1/ag_404", "srv-gone/ag_1", "not-a-ref"])
+    func unknownAgentDoesNotCall(ref: String) async throws {
         let model = try makeModel(paired: true)
         await model.launch()
-        pending.request(agent: "srv-1/ag_404")
+        pending.request(agent: ref)
 
         await ShortcutCalls(store: pending, model: model).check()
 
         #expect(handler.started.isEmpty)
         #expect(model.phase == .home)
         #expect(model.message == AppModel.Message.agentNotFound)
+        #expect(!pending.isPending)
+    }
+
+    /// The result screen of a one-way call does not swallow the request: it closes and the call starts.
+    @Test func requestWhileTheResultIsOpenClosesItAndCalls() async throws {
+        let model = try makeModel(paired: true)
+        await model.launch()
+        _ = pairing.holdCallStatus()
+        model.startCall(model.agents[1])
+        model.callDidEnd(.normal, callID: "c_1")
+        try #require(model.phase == .callResult)
+        let result = try #require(model.callResult)
+        pending.request(agent: "srv-1/ag_1")
+
+        await ShortcutCalls(store: pending, model: model).check()
+
+        #expect(handler.started.map(\.target.agent.slug) == ["notes", "default"])
+        #expect(model.phase == .inCall(model.agents[0]))
+        #expect(model.callResult == nil)
+        #expect(!result.isChecking)
+        #expect(!pending.isPending)
+    }
+
+    @Test func callLinkWithAnAgentRecordsThatAgent() {
+        #expect(ShortcutCalls.request(from: ShortcutLink.call(agent: "srv-1/ag_2"), store: pending))
+        #expect(pending.consume() == PendingCall(agent: "srv-1/ag_2"))
+
+        #expect(ShortcutCalls.request(from: URL(string: "wristcall://call")!, store: pending))
+        #expect(pending.consume() == PendingCall(agent: nil))
+
+        #expect(!ShortcutCalls.request(from: URL(string: "wristcall://settings?agent=srv-1/ag_2")!, store: pending))
         #expect(!pending.isPending)
     }
 
@@ -149,5 +185,14 @@ struct ShortcutCallsTests {
         // host app watches, and a paired host would place a real call.
         #expect(StartCallIntent.supportedModes == .foreground(.immediate))
         #expect(WristcallShortcuts.appShortcuts.count == 1)
+    }
+
+    /// The control and the "Call <agent>" shortcut carry the agent; the old ones carry none.
+    @Test func theIntentCarriesTheAgentItWasMadeFor() {
+        let notes = AgentEntity(CatalogAgent(
+            ref: AgentRef(serverID: "srv-1", agentID: "ag_2"), slug: "notes", displayName: "Notes",
+            icon: "note.text", callType: "one-shot", serverHost: "agent.example.com"))
+        #expect(StartCallIntent(agent: notes).agent?.id == "srv-1/ag_2")
+        #expect(StartCallIntent().agent == nil)
     }
 }

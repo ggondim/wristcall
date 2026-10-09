@@ -624,6 +624,40 @@ struct AppModelTests {
         #expect(catalogs.count == count)
     }
 
+    /// The app reloads widgets, controls and shortcut parameters on every change: a launch that finds
+    /// the agents the last run saved changes nothing and must not reload them.
+    @Test func launchThatFindsTheSavedCatalogTellsNobody() async throws {
+        try store.save([first])
+        pairing.meResults = [.success(info)]
+        let saved = info.agents.map { AgentTarget(serverID: "srv-1", serverHost: "agent.example.com", agent: $0) }
+            .map(\.catalogEntry)
+        let model = makeModel(savedCatalog: saved)
+        var catalogs: [[CatalogAgent]] = []
+        model.onAgentsChanged = { catalogs.append($0) }
+
+        await model.launch()
+
+        #expect(model.agents.count == 2)
+        #expect(catalogs.isEmpty)
+        #expect(model.catalog == saved)
+    }
+
+    /// An agent renamed on the server is told once, with the new name.
+    @Test func catalogChangeIsToldOnce() async throws {
+        try store.save([first])
+        pairing.meResults = [.success(info)]
+        var stale = AgentTarget(serverID: "srv-1", serverHost: "agent.example.com", agent: assistant).catalogEntry
+        stale.displayName = "Old name"
+        let model = makeModel(savedCatalog: [stale])
+        var catalogs: [[CatalogAgent]] = []
+        model.onAgentsChanged = { catalogs.append($0) }
+
+        await model.launch()
+
+        #expect(catalogs.count == 1)
+        #expect(catalogs.last?.map(\.displayName) == ["Agent", "Notes"])
+    }
+
     /// A server that is down keeps the agents the last catalog had for it, so complications and
     /// shortcuts that point to them survive a launch without network.
     @Test func catalogKeepsTheAgentsOfAnUnreachableServer() async throws {
