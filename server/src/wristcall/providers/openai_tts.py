@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 
-from ..audio import ByteAligner
+from ..audio import MAX_SAMPLE_RATE, MIN_SAMPLE_RATE, ByteAligner
 from . import ProviderError, auth_headers, register
 
 
@@ -19,8 +19,8 @@ class OpenAITts:
         self._headers = auth_headers(options.get("api_key"))
         self._speed = options.get("speed")
         self.sample_rate = int(options.get("sample_rate", 24000))
-        if self.sample_rate <= 0:
-            raise ValueError(f"sample_rate must be positive (got {self.sample_rate})")
+        if not MIN_SAMPLE_RATE <= self.sample_rate <= MAX_SAMPLE_RATE:
+            raise ValueError(f"sample_rate must be {MIN_SAMPLE_RATE} to {MAX_SAMPLE_RATE} (got {self.sample_rate})")
 
     async def synthesize(self, text: str) -> AsyncIterator[bytes]:
         body: dict[str, Any] = {"model": self._model, "voice": self._voice, "input": text, "response_format": "pcm"}

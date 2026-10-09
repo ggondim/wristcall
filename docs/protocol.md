@@ -214,7 +214,8 @@ Custom endpoints make the server send requests to URLs that users choose, includ
 addresses inside the server's own network (SSRF). They are on by default for a
 self-hosted server whose users are trusted; on a server with users you do not
 trust, set `limits.custom_endpoints: false` so agents can only use the providers
-the operator offers.
+the operator offers. A custom endpoint may only use the provider types listed in
+`limits.custom_endpoint_types` (default `openai_stt`, `openai_chat`, `openai_tts`).
 
 ## Management API
 

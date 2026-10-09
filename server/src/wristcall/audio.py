@@ -8,6 +8,9 @@ import numpy as np
 SAMPLE_RATE_IN = 16_000
 FRAME_MS = 20
 SAMPLE_WIDTH = 2
+# Sample rates a TTS provider may declare (output to the watch).
+MIN_SAMPLE_RATE = 8_000
+MAX_SAMPLE_RATE = 48_000
 
 
 def frame_bytes(sample_rate: int, frame_ms: int = FRAME_MS) -> int:

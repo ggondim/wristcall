@@ -40,11 +40,19 @@ async def test_unknown_type_and_wrong_kind():
             build_provider("x", ProviderConfig(type="tone_tts"), "stt", http)
 
 
-@pytest.mark.parametrize("opts", [{"sample_rate": 0}, {"sample_rate": -1}, {"ms_per_char": -1}])
+@pytest.mark.parametrize(
+    "opts", [{"sample_rate": 0}, {"sample_rate": -1}, {"sample_rate": 7999}, {"sample_rate": 48001}, {"sample_rate": 10**12}, {"ms_per_char": -1}]
+)
 async def test_tone_tts_rejects_invalid_options(opts):
     async with httpx.AsyncClient() as http:
         with pytest.raises(ProviderError, match="sample_rate|ms_per_char"):
             build_provider("t", ProviderConfig(type="tone_tts", **opts), "tts", http)
+
+
+@pytest.mark.parametrize("rate", [8000, 48000])
+async def test_tone_tts_accepts_the_sample_rate_bounds(rate):
+    async with httpx.AsyncClient() as http:
+        assert build_provider("t", ProviderConfig(type="tone_tts", sample_rate=rate), "tts", http).sample_rate == rate
 
 
 def test_auth_headers():

@@ -62,7 +62,9 @@ watches and agents live in the server's database (`data_dir/wristcall.db`).
   `fake_stt`, `echo_chat`, `tone_tts`.
 - `limits`: `max_agents_per_user` (20), `max_devices_per_user` (10) and
   `custom_endpoints` (`true`: agents may use their own STT/chat/TTS URLs; turn it off on a
-  server with users you do not trust, since the server would request any URL they give).
+  server with users you do not trust, since the server would request any URL they give) and
+  `custom_endpoint_types` (the provider types a custom endpoint may use; default `openai_stt`,
+  `openai_chat`, `openai_tts`).
 - `profiles` (optional, the 0.2.x format): on the first start they become agents of a user
   called `owner`, `default` first. After that the section is ignored; manage agents with
   `wristcall agents`.

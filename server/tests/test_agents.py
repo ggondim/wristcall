@@ -28,6 +28,8 @@ def config(**over):
             "llm": {"type": "echo_chat"},
             "tts": {"type": "tone_tts", "sample_rate": 16000},
         },
+        # The fake types too, so that tests can build custom endpoints without a network.
+        "limits": {"custom_endpoint_types": ["openai_stt", "openai_chat", "openai_tts", "fake_stt", "echo_chat", "tone_tts"]},
         **over,
     }
     return parse_config(data, {})
@@ -221,7 +223,13 @@ async def test_nested_secrets_are_redacted_and_kept():
 @pytest.mark.parametrize(
     "key, secret",
     [("api_key", True), ("apiKey", True), ("x-api-key", True), ("access_token", True), ("client_secret", True),
-     ("password", True), ("Authorization", True), ("max_tokens", False), ("model", False), ("tokenizer", False), ("keyword", False)],
+     ("password", True), ("Authorization", True), ("apitoken", True), ("accesstoken", True), ("authtoken", True),
+     ("secretkey", True), ("privatekey", True), ("apisecret", True), ("api_keys", True), ("secrets", True),
+     ("passwords", True), ("auth", True), ("cookie", True), ("Set-Cookie", True), ("pwd", True), ("passphrase", True),
+     ("client_credentials", True), ("keyword", True),  # over-redaction is fine: `***` round trips keep the value
+     ("max_tokens", False), ("max_completion_tokens", False), ("max_output_tokens", False), ("min_tokens", False),
+     ("maxTokens", False), ("tokenizer", False), ("tokenization", False), ("model", False), ("voice", False),
+     ("base_url", False), ("sample_rate", False)],
 )
 def test_is_secret(key, secret):
     from wristcall.agents import _is_secret
@@ -342,3 +350,22 @@ async def test_slug_and_icon_reject_a_trailing_newline(svc, field, value):
     with pytest.raises(AgentError) as e:
         await svc.update("u_a", "coach", {field: value})
     assert e.value.code == "invalid" and field in e.value.message
+
+
+async def test_custom_endpoints_allow_only_the_openai_types_by_default():
+    svc = await make(config(limits={}))
+    with pytest.raises(AgentError) as e:
+        await svc.create("u_a", {"slug": "big", "tts": {"type": "tone_tts", "sample_rate": 10**12}})
+    assert e.value.code == "invalid"
+    assert e.value.message == "tts: type 'tone_tts' is not allowed for custom endpoints on this server"
+    stt = {"type": "openai_stt", "base_url": "https://stt.example/v1", "model": "w"}
+    assert isinstance((await svc.create("u_a", {"slug": "own", "stt": stt})).spec.stt, CustomEndpoint)
+    # The operator's own providers of any type keep working.
+    assert (await svc.create("u_a", {"slug": "mine", "tts": {"provider": "tts"}})).spec.tts.provider == "tts"
+
+
+async def test_custom_endpoint_types_are_an_operator_setting():
+    svc = await make(config(limits={"custom_endpoint_types": ["tone_tts"]}))
+    assert (await svc.create("u_a", {"slug": "tone", "tts": {"type": "tone_tts"}})).spec.tts.type == "tone_tts"
+    with pytest.raises(AgentError, match="not allowed"):
+        await svc.create("u_a", {"slug": "own", "stt": {"type": "openai_stt", "base_url": "https://s.example/v1", "model": "w"}})

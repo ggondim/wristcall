@@ -24,14 +24,19 @@ CallType = Literal["conversation", "one-shot", "monologue"]
 SUPPORTED_CALL_TYPES = {"conversation"}
 REDACTED = "***"
 _OPTION_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
-# A key is secret when one of its words is one of these: api_key, access_token, x-api-key, client_secret...
-# Whole words, so that max_tokens is not hidden.
-_SECRET_WORDS = {"key", "apikey", "token", "secret", "password", "passwd", "authorization", "credential", "credentials"}
+# A key is secret when its name contains one of these (api_key, x-api-key, accesstoken, client_secret, Set-Cookie...).
+# Over-redaction is harmless: sending `***` back keeps the stored value.
+_SECRET_MARKS = ("key", "token", "secret", "passw", "pwd", "auth", "credential", "cookie", "passphrase")
+# Counts and tokenizers stay visible (max_tokens, max_completion_tokens, min_tokens, tokenizer), unless
+# another mark is left in the name.
+_TOKEN_COUNT = re.compile(r"(max|min)[\w-]*tokens?")
 
 
 def _is_secret(key: str) -> bool:
-    words = re.split(r"[^a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key).lower())
-    return any(w in _SECRET_WORDS for w in words)
+    name = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key).lower().replace("tokeniz", "")
+    if _TOKEN_COUNT.fullmatch(name):
+        name = re.sub(r"tokens?$", "", name)
+    return any(mark in name for mark in _SECRET_MARKS)
 
 
 # Agent field → provider kind in the YAML registry ("action" is the responder).
@@ -163,6 +168,8 @@ def resolve_endpoint(config: AppConfig, endpoint: Endpoint, kind: Kind) -> tuple
     else:
         if not config.limits.custom_endpoints:
             raise ProviderError("this server only accepts the providers it offers (custom endpoints are off)")
+        if endpoint.type not in config.limits.custom_endpoint_types:
+            raise ProviderError(f"type '{endpoint.type}' is not allowed for custom endpoints on this server")
         try:
             pcfg = ProviderConfig(type=endpoint.type, **endpoint.options())
         except Exception:
