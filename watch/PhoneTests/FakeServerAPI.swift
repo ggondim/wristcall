@@ -44,5 +44,17 @@ final class FakeServerAPI: ServerAPI, @unchecked Sendable {
     func export(_ format: ExportFormat, agent: String?) async throws -> HistoryExport {
         HistoryExport(filename: "x", data: Data())
     }
+    var pushKeys: [String] = []
+    var pushKeyError: (any Error)?
+    func setPushKey(_ key: String) async throws {
+        calls.append("setPushKey")
+        if let pushKeyError { throw pushKeyError }
+        pushKeys.append(key)
+    }
+    func clearPushKey() async throws {
+        calls.append("clearPushKey")
+        if let pushKeyError { throw pushKeyError }
+        pushKeys = []
+    }
     func linkAccount(accountToken: String) async throws -> AccountLink { throw APIError.notFound }
 }

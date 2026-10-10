@@ -90,6 +90,9 @@ struct ServerDetailView: View {
         } catch ServerNameError.empty {
             renameError = "The name cannot be empty."
             name = server.name
+        } catch ServerNameError.storage(let text) {
+            renameError = text
+            name = server.name
         } catch {
             renameError = "The name could not be saved."
             name = server.name

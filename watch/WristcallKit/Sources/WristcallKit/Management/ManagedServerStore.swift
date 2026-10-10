@@ -51,6 +51,16 @@ extension ManagedServer: CustomStringConvertible, CustomDebugStringConvertible {
     public var debugDescription: String { description }
 }
 
+/// `dump(_:)` and other Mirror based output show the token as `<redacted>` too.
+extension ManagedServer: CustomReflectable {
+    public var customMirror: Mirror {
+        Mirror(self, children: [
+            "id": id, "name": name, "url": url, "token": "<redacted>",
+            "cloudServerID": cloudServerID as Any, "linked": linked,
+        ], displayStyle: .struct)
+    }
+}
+
 /// Persistence for the iPhone app's server list.
 public protocol ManagedServerStore: Sendable {
     func load() throws -> [ManagedServer]

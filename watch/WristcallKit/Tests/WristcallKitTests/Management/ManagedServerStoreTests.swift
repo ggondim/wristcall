@@ -32,6 +32,16 @@ struct ManagedServerStoreTests {
         #expect(first.description.contains("<redacted>"))
     }
 
+    @Test func dumpHidesToken() {
+        var text = ""
+        dump(first, to: &text)
+        dump([second], to: &text)
+        #expect(!text.contains("secret"))
+        #expect(text.contains("<redacted>"))
+        #expect(text.contains("Home"))
+        #expect(Mirror(reflecting: first).children.count == 6)
+    }
+
     @Test func codableRoundTrip() throws {
         let data = try JSONEncoder().encode([first, second])
         #expect(try JSONDecoder().decode([ManagedServer].self, from: data) == [first, second])

@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import Testing
 import WristcallKit
 @testable import WristcallPhone
@@ -164,6 +165,78 @@ struct AppStateTests {
         state.hooks.serverRemoved = { _ in removed += 1 }
         await state.remove("nope")
         #expect(removed == 0)
+    }
+
+    /// A store whose reads fail until `readable` is set; records what is saved.
+    final class FlakyStore: ManagedServerStore, @unchecked Sendable {
+        var saved: [ManagedServer]
+        var readable = false
+        var saveError: (any Error)?
+        var saves = 0
+        init(_ saved: [ManagedServer]) { self.saved = saved }
+        func load() throws -> [ManagedServer] {
+            if !readable { throw CredentialStoreError.keychain(errSecInteractionNotAllowed) }
+            return saved
+        }
+        func save(_ servers: [ManagedServer]) throws {
+            if let saveError { throw saveError }
+            saves += 1
+            saved = servers
+        }
+    }
+
+    private let kept = ManagedServer(id: "keep", name: "Kept", url: URL(string: "https://keep.test")!, token: "wc_pat_keep")
+
+    @Test func unreadableStoreRefusesToSave() async throws {
+        let flaky = FlakyStore([kept])
+        let state = AppState(store: flaky, makeAPI: { _, _ in FakeServerAPI() })
+        await state.load()
+        #expect(state.loadError == "Can't read saved servers. Unlock the iPhone and try again.")
+        await #expect(throws: AddServerError.storage("Can't read saved servers. Unlock the iPhone and try again.")) {
+            try await state.addServer(urlText: "https://new.test", token: "wc_pat_new", name: nil)
+        }
+        await state.remove("keep")
+        #expect(flaky.saves == 0)
+        #expect(flaky.saved == [kept])
+    }
+
+    @Test func renameRefusedWhileStoreUnreadable() async throws {
+        let flaky = FlakyStore([kept])
+        let state = AppState(store: flaky, makeAPI: { _, _ in FakeServerAPI() })
+        await state.load()
+        #expect(throws: ServerNameError.storage("Can't read saved servers. Unlock the iPhone and try again.")) {
+            try state.rename("keep", to: "Other")
+        }
+        #expect(flaky.saves == 0)
+    }
+
+    @Test func addServerWorksAfterTheStoreBecomesReadable() async throws {
+        let flaky = FlakyStore([kept])
+        let state = AppState(store: flaky, makeAPI: { _, _ in FakeServerAPI() })
+        await state.load()
+        flaky.readable = true
+        let added = try await state.addServer(urlText: "https://new.test", token: "wc_pat_new", name: nil)
+        #expect(flaky.saved == [kept, added])
+        #expect(state.servers == [kept, added])
+        #expect(state.loadError == nil)
+    }
+
+    @Test func saveFailureIsNotReportedAsUnreachable() async throws {
+        let flaky = FlakyStore([])
+        flaky.readable = true
+        flaky.saveError = CredentialStoreError.keychain(errSecInteractionNotAllowed)
+        let state = AppState(store: flaky, makeAPI: { _, _ in FakeServerAPI() })
+        await state.load()
+        await #expect(throws: AddServerError.storage("The servers could not be saved to the Keychain.")) {
+            try await state.addServer(urlText: "https://new.test", token: "wc_pat_new", name: nil)
+        }
+        #expect(state.servers.isEmpty)
+    }
+
+    @Test func errorMessagesHaveNoBackticks() {
+        let all: [AddServerError] = [.invalidURL, .notPersonalToken, .deviceToken, .unauthorized,
+                                     .unreachable(""), .storage("x")]
+        #expect(all.allSatisfy { !$0.message.contains("`") })
     }
 
     @Test func storeFailureOnLoadIsReported() async {

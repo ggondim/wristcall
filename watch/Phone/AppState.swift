@@ -11,26 +11,35 @@ enum AddServerError: Error, Equatable {
     case deviceToken
     case unauthorized
     case unreachable(String)
+    /// The Keychain list cannot be read or written; nothing was changed.
+    case storage(String)
 
     var message: String {
         switch self {
         case .invalidURL:
             "Enter an https:// address. Plain http:// only works for localhost."
         case .notPersonalToken:
-            "That is not a personal token. Create one with `wristcall users tokens add --name iphone`."
+            "That is not a personal token. Create one with: wristcall users tokens add --name iphone"
         case .deviceToken:
-            ManagementClient.deviceTokenMessage
+            "This is a device token, not a personal token. Create one with: wristcall users tokens add --name iphone"
         case .unauthorized:
             "The server did not accept this token. It may have been revoked."
         case .unreachable(let text):
             text.isEmpty ? "Can't reach the server." : text
+        case .storage(let text):
+            text
         }
     }
 }
 
 enum ServerNameError: Error, Equatable {
     case empty
+    /// The Keychain list cannot be read or written; nothing was changed.
+    case storage(String)
 }
+
+private let unreadableMessage = "Can't read saved servers. Unlock the iPhone and try again."
+private let unwritableMessage = "The servers could not be saved to the Keychain."
 
 /// What the app knows of a server right now.
 enum ServerStatus: Equatable, Sendable {
@@ -60,11 +69,14 @@ final class AppState {
     var hooks = AppHooks()
 
     @ObservationIgnored private let store: any ManagedServerStore
-    @ObservationIgnored private let makeAPI: @Sendable (URL, String) -> any ServerAPI
+    @ObservationIgnored private let makeAPI: ServerAPIFactory
+    /// `false` after a failed Keychain read: the list in memory is not the saved one, so nothing is
+    /// saved until a read succeeds (otherwise the saved servers would be overwritten).
+    @ObservationIgnored private var storeReadable = true
 
     init(
         store: any ManagedServerStore = KeychainManagedServerStore(),
-        makeAPI: @escaping @Sendable (URL, String) -> any ServerAPI = { LiveServerAPI(server: $0, token: $1) }
+        makeAPI: @escaping ServerAPIFactory = { LiveServerAPI(server: $0, token: $1) }
     ) {
         self.store = store
         self.makeAPI = makeAPI
@@ -74,16 +86,33 @@ final class AppState {
 
     /// Reads the Keychain, then asks every server for its health, in parallel.
     func load() async {
-        do {
-            servers = try store.load()
-            loadError = nil
-        } catch {
-            servers = []
-            loadError = "The saved servers could not be read from the Keychain."
-        }
+        readStore()
         statuses = Dictionary(uniqueKeysWithValues: servers.map { ($0.id, ServerStatus.checking) })
         healths = [:]
         await refresh()
+    }
+
+    /// Reads the saved list; a failure leaves the store marked unreadable and the list empty.
+    private func readStore() {
+        do {
+            servers = try store.load()
+            storeReadable = true
+            loadError = nil
+        } catch {
+            servers = []
+            storeReadable = false
+            loadError = unreadableMessage
+        }
+    }
+
+    /// `true` when the saved list is in memory: after a failed read, tries again once.
+    private func ensureReadable() -> Bool {
+        if storeReadable { return true }
+        readStore()
+        if storeReadable {
+            statuses = Dictionary(uniqueKeysWithValues: servers.map { ($0.id, ServerStatus.checking) })
+        }
+        return storeReadable
     }
 
     /// Checks every server again (pull to refresh).
@@ -127,6 +156,7 @@ final class AppState {
         guard let url = ServerAddress.parse(urlText) else { throw AddServerError.invalidURL }
         let token = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard ManagementClient.isPersonalToken(token) else { throw AddServerError.notPersonalToken }
+        guard ensureReadable() else { throw AddServerError.storage(unreadableMessage) }
 
         let api = makeAPI(url, token)
         do {
@@ -156,7 +186,7 @@ final class AppState {
         do {
             try store.save(list)
         } catch {
-            throw AddServerError.unreachable("The server could not be saved to the Keychain.")
+            throw AddServerError.storage(unwritableMessage)
         }
         servers = list
         statuses[saved.id] = .reachable
@@ -167,6 +197,7 @@ final class AppState {
 
     func rename(_ id: String, to name: String) throws {
         guard let name = Self.cleanName(name) else { throw ServerNameError.empty }
+        guard ensureReadable() else { throw ServerNameError.storage(unreadableMessage) }
         guard let index = servers.firstIndex(where: { $0.id == id }) else { return }
         var list = servers
         list[index].name = name
@@ -176,12 +207,13 @@ final class AppState {
 
     /// Takes the server out of the Keychain. Its token keeps working on the server until revoked there.
     func remove(_ id: String) async {
+        guard ensureReadable() else { return }
         guard let server = servers.first(where: { $0.id == id }) else { return }
         let list = servers.filter { $0.id != id }
         do {
             try store.save(list)
         } catch {
-            loadError = "The server could not be removed from the Keychain."
+            loadError = unwritableMessage
             return
         }
         servers = list

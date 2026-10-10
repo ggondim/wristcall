@@ -35,6 +35,7 @@ struct AddServerView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .disabled(busy)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if busy {

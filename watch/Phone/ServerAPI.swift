@@ -1,6 +1,9 @@
 import Foundation
 import WristcallKit
 
+/// Makes the `ServerAPI` for a server URL and its personal token.
+typealias ServerAPIFactory = @Sendable (URL, String) -> any ServerAPI
+
 /// What the screens use of one server. `LiveServerAPI` talks to the server; the tests use a fake.
 protocol ServerAPI: Sendable {
     /// `GET /v1/health`; needs no token.
@@ -28,24 +31,28 @@ protocol ServerAPI: Sendable {
     func redeliver(_ id: String) async throws -> CallRecord
     func export(_ format: ExportFormat, agent: String?) async throws -> HistoryExport
 
+    /// `PUT /v1/push` with the push key; `DELETE /v1/push` (nothing stored counts as done).
+    func setPushKey(_ key: String) async throws
+    func clearPushKey() async throws
+
     /// Links the signed-in account to the user of this token (`serverToken` is the Cloud's token for it).
     func linkAccount(accountToken: String) async throws -> AccountLink
 }
 
 /// The real thing: the Kit's clients with the server's personal token.
 struct LiveServerAPI: ServerAPI {
-    private let server: URL
+    private let push: ServerPushClient
     private let management: ManagementClient
     private let history: HistoryClient
 
     init(server: URL, token: String, session: URLSession = .shared) {
-        self.server = server
+        push = ServerPushClient(server: server, token: token, session: session)
         management = ManagementClient(server: server, token: token, session: session)
         history = HistoryClient(server: server, token: token, session: session)
     }
 
     func health() async throws -> ServerHealth {
-        try await ServerPushClient.health(of: server)
+        try await push.health()
     }
     func verify() async throws { try await management.verify() }
 
@@ -72,6 +79,9 @@ struct LiveServerAPI: ServerAPI {
     func export(_ format: ExportFormat, agent: String?) async throws -> HistoryExport {
         try await history.export(format, agent: agent)
     }
+
+    func setPushKey(_ key: String) async throws { try await push.setPushKey(key) }
+    func clearPushKey() async throws { try await push.clearPushKey() }
 
     func linkAccount(accountToken: String) async throws -> AccountLink {
         try await management.linkAccount(serverToken: accountToken)
