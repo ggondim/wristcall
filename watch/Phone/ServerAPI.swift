@@ -29,7 +29,9 @@ protocol ServerAPI: Sendable {
     func deleteCall(_ id: String) async throws
     func deleteCalls(agent: String?) async throws -> Int
     func redeliver(_ id: String) async throws -> CallRecord
-    func export(_ format: ExportFormat, agent: String?) async throws -> HistoryExport
+    /// `GET /v1/calls/{id}`: one call as it is now (follows a redelivery).
+    func call(_ id: String) async throws -> CallRecord
+    func export(_ format: ExportFormat, agent: String?, since: Date?, until: Date?) async throws -> HistoryExport
 
     /// `PUT /v1/push` with the push key; `DELETE /v1/push` (nothing stored counts as done).
     func setPushKey(_ key: String) async throws
@@ -76,8 +78,9 @@ struct LiveServerAPI: ServerAPI {
     func deleteCall(_ id: String) async throws { try await history.deleteCall(id) }
     func deleteCalls(agent: String?) async throws -> Int { try await history.deleteCalls(agent: agent) }
     func redeliver(_ id: String) async throws -> CallRecord { try await history.redeliver(id) }
-    func export(_ format: ExportFormat, agent: String?) async throws -> HistoryExport {
-        try await history.export(format, agent: agent)
+    func call(_ id: String) async throws -> CallRecord { try await history.call(id) }
+    func export(_ format: ExportFormat, agent: String?, since: Date?, until: Date?) async throws -> HistoryExport {
+        try await history.export(format, agent: agent, since: since, until: until)
     }
 
     func setPushKey(_ key: String) async throws { try await push.setPushKey(key) }

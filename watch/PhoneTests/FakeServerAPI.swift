@@ -141,13 +141,76 @@ final class FakeServerAPI: ServerAPI, @unchecked Sendable {
         deniedRequests.append(requestID)
     }
 
-    func calls(_ query: HistoryQuery) async throws -> CallPage { CallPage(calls: []) }
-    func deleteCall(_ id: String) async throws {}
-    func deleteCalls(agent: String?) async throws -> Int { 0 }
-    func redeliver(_ id: String) async throws -> CallRecord { throw APIError.notFound }
-    func export(_ format: ExportFormat, agent: String?) async throws -> HistoryExport {
-        HistoryExport(filename: "x", data: Data())
+    // MARK: History
+
+    /// Pages of the history, newest first; a query with `before == nil` gets the first, one with the
+    /// previous page's `nextBefore` gets the next, anything else an empty page.
+    var pages: [CallPage] = []
+    private(set) var queries: [HistoryQuery] = []
+    var callsError: (any Error)?
+    /// What `call(_:)` answers; falls back to the calls in `pages`.
+    var singleCalls: [String: CallRecord] = [:]
+    var callError: (any Error)?
+    private(set) var deletedCalls: [String] = []
+    var deleteCallError: (any Error)?
+    /// The `agent` of each `deleteCalls(agent:)` (`nil` = all).
+    private(set) var deleteAllRequests: [String?] = []
+    var deleteAllResult = 0
+    var deleteAllError: (any Error)?
+    private(set) var redelivered: [String] = []
+    var redeliverResult: CallRecord?
+    var redeliverError: (any Error)?
+    struct ExportRequest: Equatable {
+        var format: ExportFormat
+        var agent: String?
+        var since: Date?
+        var until: Date?
     }
+    private(set) var exports: [ExportRequest] = []
+    var exportResult = HistoryExport(filename: "wristcall-history.md", data: Data("# History\n".utf8))
+    var exportError: (any Error)?
+
+    init(pages: [CallPage] = []) { self.pages = pages }
+
+    func calls(_ query: HistoryQuery) async throws -> CallPage {
+        queries.append(query)
+        if let callsError { throw callsError }
+        guard let before = query.before else { return pages.first ?? CallPage(calls: []) }
+        guard let index = pages.firstIndex(where: { $0.nextBefore == before }), pages.indices.contains(index + 1)
+        else { return CallPage(calls: []) }
+        return pages[index + 1]
+    }
+
+    func call(_ id: String) async throws -> CallRecord {
+        if let callError { throw callError }
+        if let found = singleCalls[id] ?? pages.lazy.flatMap(\.calls).first(where: { $0.id == id }) { return found }
+        throw APIError.notFound
+    }
+
+    func deleteCall(_ id: String) async throws {
+        if let deleteCallError { throw deleteCallError }
+        deletedCalls.append(id)
+    }
+
+    func deleteCalls(agent: String?) async throws -> Int {
+        if let deleteAllError { throw deleteAllError }
+        deleteAllRequests.append(agent)
+        return deleteAllResult
+    }
+
+    func redeliver(_ id: String) async throws -> CallRecord {
+        redelivered.append(id)
+        if let redeliverError { throw redeliverError }
+        guard let redeliverResult else { throw APIError.notFound }
+        return redeliverResult
+    }
+
+    func export(_ format: ExportFormat, agent: String?, since: Date?, until: Date?) async throws -> HistoryExport {
+        exports.append(ExportRequest(format: format, agent: agent, since: since, until: until))
+        if let exportError { throw exportError }
+        return exportResult
+    }
+
     var pushKeys: [String] = []
     var pushKeyError: (any Error)?
     func setPushKey(_ key: String) async throws {

@@ -5,12 +5,14 @@ import WristcallKit
 struct PhoneApp: App {
     @State private var state: AppState
     @State private var approvals: ApprovalsModel
+    @State private var history: HistoryModel
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
         let state = AppState()
         _state = State(initialValue: state)
         _approvals = State(initialValue: ApprovalsModel(state: state))
+        _history = State(initialValue: HistoryModel(state: state))
     }
 
     var body: some Scene {
@@ -18,6 +20,7 @@ struct PhoneApp: App {
             RootView()
                 .environment(state)
                 .environment(approvals)
+                .environment(history)
                 .task { await start() }
                 .onChange(of: scenePhase) { _, phase in
                     // Back in the foreground: ask the servers for device approvals waiting for the owner.
@@ -41,22 +44,25 @@ struct PhoneApp: App {
 
 struct RootView: View {
     @Environment(ApprovalsModel.self) private var approvals
+    @State private var tab = Self.firstTab
+
+    private static var firstTab: String {
+        #if DEBUG
+        if DebugRoute.opensHistory { return "history" }
+        #endif
+        return "servers"
+    }
 
     var body: some View {
-        TabView {
-            Tab("Servers", systemImage: "server.rack") {
+        TabView(selection: $tab) {
+            Tab("Servers", systemImage: "server.rack", value: "servers") {
                 ServersView()
             }
             .badge(approvals.pending.count)
-            Tab("History", systemImage: "clock") {
-                NavigationStack {
-                    ContentUnavailableView(
-                        "No history yet", systemImage: "clock",
-                        description: Text("Calls from your servers will show up here."))
-                    .navigationTitle("History")
-                }
+            Tab("History", systemImage: "clock", value: "history") {
+                HistoryView()
             }
-            Tab("Settings", systemImage: "gear") {
+            Tab("Settings", systemImage: "gear", value: "settings") {
                 SettingsView()
             }
         }
@@ -105,7 +111,7 @@ enum DebugLaunch {
 #endif
 
 #if DEBUG
-/// `-debugOpen server|agents|form-new|form-edit|devices|code` opens that screen at launch (simulator smoke tests have no
+/// `-debugOpen history|history-detail` opens the History tab (or its first call); `-debugOpen server|agents|form-new|form-edit|devices|code` opens that screen at launch (simulator smoke tests have no
 /// way to tap): the first server, its agents, the form for a new agent, the form of the last agent, the devices of the server, or its pairing code.
 enum DebugRoute {
     static let value: String? = {
@@ -114,7 +120,8 @@ enum DebugRoute {
         return args[index + 1]
     }()
 
-    static var opensServer: Bool { value != nil }
+    static var opensHistory: Bool { ["history", "history-detail"].contains(value ?? "") }
+    static var opensServer: Bool { value != nil && !opensHistory }
     static var opensDevices: Bool { ["devices", "code"].contains(value ?? "") }
     static var opensAgents: Bool { ["agents", "form-new", "form-edit"].contains(value ?? "") }
 }
