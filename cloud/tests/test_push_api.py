@@ -577,3 +577,91 @@ def test_lone_surrogates_are_422_not_500(client, fake):
         r = client.post("/v1/push/send", content=body.encode(), headers={**headers, **auth(key)})
         assert r.status_code == 422 and r.json()["error"] == "invalid"
     assert fake.sent == []
+
+
+def test_nan_and_infinity_in_data_are_422(client, fake):
+    # Python's JSON reader takes NaN and Infinity, which are not JSON: they must not reach a channel.
+    key = register(client)
+    headers = {"Content-Type": "application/json", **auth(key)}
+    for value in ("NaN", "Infinity", "-Infinity"):
+        body = '{"event": "test", "title": "t", "data": {"x": %s}}' % value
+        r = client.post("/v1/push/send", content=body.encode(), headers=headers)
+        assert r.status_code == 422 and r.json()["error"] == "invalid"
+    assert fake.sent == []
+
+
+def test_shutdown_closes_clients_when_the_purge_task_failed(mongo_db, fake_verifier, monkeypatch):
+    import httpx
+
+    import wristcall_cloud.app as app_module
+
+    async def broken_loop(*args, **kwargs):
+        raise RuntimeError("purge task died")
+
+    closed: list[str] = []
+
+    class Mongo:
+        async def close(self) -> None:
+            closed.append("mongo")
+
+    original_aclose = httpx.AsyncClient.aclose
+
+    async def aclose(self) -> None:
+        closed.append("http")
+        await original_aclose(self)
+
+    monkeypatch.setattr(app_module, "purge_idle_loop", broken_loop)
+    monkeypatch.setattr(app_module, "open_store", lambda config: (Mongo(), Store(mongo_db)))
+    monkeypatch.setattr(httpx.AsyncClient, "aclose", aclose)
+    cfg = CloudConfig(mongo_url=mongo_url(), issuer=ISSUER, clients=dict(CLIENTS))
+    for c in serve(create_app(cfg), mongo_db):  # no verifier: the app owns its HTTP client
+        assert c.get("/v1/health").status_code == 200
+    assert "mongo" in closed and "http" in closed
+
+
+async def test_purge_loop_survives_any_error():
+    calls: list[float] = []
+    sleeps: list[float] = []
+
+    class FakeStore:
+        async def purge_idle_registrations(self, before: float) -> int:
+            calls.append(before)
+            if len(calls) == 1:
+                raise RuntimeError("unexpected")
+            return 0
+
+    async def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        if len(sleeps) == 3:
+            raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await purge_idle_loop(FakeStore(), every_s=60, idle_s=1, sleep=sleep, now=lambda: 100.0)
+    assert len(calls) == 2
+
+
+async def test_new_registration_is_never_evicted(store):
+    # A registration older than the newest 20 (clock moved back) must not be the one that goes.
+    keys = [new_push_key() for _ in range(20)]
+    for i, key in enumerate(keys):
+        await store.add_registration(key_id(key), _reg("aa" * 32), now=1000.0 + i)
+    newest = new_push_key()
+    await store.add_registration(key_id(newest), _reg("aa" * 32), now=1.0)
+    assert await store.get_registration(key_id(newest)) is not None
+    assert await store.get_registration(key_id(keys[0])) is None
+    for key in keys[1:]:
+        assert await store.get_registration(key_id(key)) is not None
+
+
+def test_registration_rate_limit_reads_every_header_line(mongo_db, fake_verifier, fake):
+    # A proxy may add its own header line instead of appending to the client's: the last line's last value counts.
+    cfg = CloudConfig(mongo_url=mongo_url(), issuer=ISSUER, clients=dict(CLIENTS), apns_topics=(TOPIC,),
+                      client_ip_header="X-Forwarded-For")
+    app = create_app(cfg, store=Store(mongo_db), verifier=fake_verifier, channels={"apns": fake})
+    for c in serve(app, mongo_db):
+        codes = [
+            c.post("/v1/push/registrations", json=APNS,
+                   headers=[("X-Forwarded-For", f"10.9.9.{i}"), ("X-Forwarded-For", "203.0.113.7")]).status_code
+            for i in range(11)
+        ]
+    assert codes[:10] == [201] * 10 and codes[10] == 429

@@ -98,9 +98,10 @@ def _retry_after(seconds: float) -> int:
 
 def client_ip(request: Request, header: str | None) -> str:
     """The client address: the last value of the proxy's header when one is configured (what the proxy itself
-    appended; anything before it came from the client), the connection's address otherwise."""
+    appended, on the same line or on a line of its own; anything before it came from the client), the connection's
+    address otherwise."""
     if header:
-        value = request.headers.get(header, "").rpartition(",")[2].strip()
+        value = ",".join(request.headers.getlist(header)).rpartition(",")[2].strip()
         if value:
             return value
     return request.client.host if request.client else "unknown"

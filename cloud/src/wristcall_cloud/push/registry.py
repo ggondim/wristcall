@@ -19,8 +19,6 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
-from pymongo.errors import PyMongoError
-
 from ..config import CloudConfig
 from .channels import Message
 
@@ -203,9 +201,11 @@ def parse_message(body: Any, registration: dict[str, Any]) -> Message:
     if not isinstance(data, dict):
         raise _invalid("data must be an object")
     try:
-        size = len(json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode())
+        size = len(json.dumps(data, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode())
     except UnicodeEncodeError:
         raise _invalid("data must be valid text") from None
+    except ValueError:  # NaN and Infinity: Python reads them, but they are not JSON
+        raise _invalid("data must be valid JSON") from None
     if size > MAX_DATA:
         raise _invalid(f"data must be up to {MAX_DATA} bytes")
     ttl_s = body.get("ttl_s", DEFAULT_TTL)
@@ -244,7 +244,7 @@ async def purge_idle_loop(
         await sleep(every_s)
         try:
             purged = await store.purge_idle_registrations(now() - idle_s)
-        except PyMongoError as e:
+        except Exception as e:  # whatever went wrong, the next round tries again
             log.warning("purging idle push registrations failed (%s)", type(e).__name__)
             continue
         if purged:

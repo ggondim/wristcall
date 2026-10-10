@@ -6,7 +6,6 @@ left to the reverse proxy of the deployment (see README), except for the push re
 """
 
 import asyncio
-import contextlib
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -383,14 +382,20 @@ def create_app(
             )
             yield
         finally:
-            if purger is not None:
-                purger.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await purger
-            if mongo is not None:
-                await mongo.close()
-            if owned_http is not None:
-                await owned_http.aclose()
+            try:
+                if purger is not None:
+                    purger.cancel()
+                    try:
+                        await purger
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as e:  # the task died earlier; the clients below must close all the same
+                        log.warning("push purge task had stopped (%s)", type(e).__name__)
+            finally:
+                if mongo is not None:
+                    await mongo.close()
+                if owned_http is not None:
+                    await owned_http.aclose()
 
     app = FastAPI(title="wristcall-cloud", version=__version__, lifespan=lifespan)
     app.state.config = config

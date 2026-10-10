@@ -98,10 +98,11 @@ class Store:
         now = time.time() if now is None else now
         doc = {"_id": registration_id, **fields, "created_at": now, "last_sent_at": now}
         await self.push_registrations.insert_one(doc)
+        # The new registration always stays, whatever its time says: the oldest of the others go.
         cursor = (
-            self.push_registrations.find({"channel": doc["channel"]}, {"_id": 1})
+            self.push_registrations.find({"channel": doc["channel"], "_id": {"$ne": registration_id}}, {"_id": 1})
             .sort([("created_at", DESCENDING), ("_id", DESCENDING)])
-            .skip(max_per_channel)
+            .skip(max_per_channel - 1)
         )
         extra = [d["_id"] async for d in cursor]
         if extra:
