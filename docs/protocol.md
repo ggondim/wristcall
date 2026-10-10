@@ -453,7 +453,8 @@ The client knows the relay URL from its own configuration, never from a server: 
 | `DELETE /v1/push` | device or API token | | `204`: removed (and dropped at the relay). `404 {"error":"not_found"}`: no key. `401`. `404 not_configured` |
 
 The key is a secret: the server never logs it or sends it back, and the body is never echoed. Revoking the device or
-the API token deletes its key.
+the API token deletes its key on the server, but the server does not drop it at the relay: the registration stays
+there until it has been idle for 180 days (the relay's default) or the device unregisters it.
 
 What the server sends (the relay adds the label as the notification's subtitle and the tag as `wristcall.tag`):
 

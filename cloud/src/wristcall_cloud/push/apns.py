@@ -25,6 +25,8 @@ APNS_HOSTS = {"production": "https://api.push.apple.com", "sandbox": "https://ap
 CATEGORIES = {"call.finished": "WC_CALL_FINISHED", "device.approval": "WC_DEVICE_APPROVAL", "test": "WC_TEST"}
 MAX_PAYLOAD = 4096  # bytes, what APNs takes for an alert
 GONE_REASONS = frozenset({"BadDeviceToken", "DeviceTokenNotForTopic", "Unregistered"})
+# Gone for this device, but also what every device answers when the Cloud's configuration is wrong.
+CONFIG_REASONS = frozenset({"BadDeviceToken", "DeviceTokenNotForTopic"})
 TOKEN_REASONS = frozenset({"ExpiredProviderToken", "InvalidProviderToken"})
 _REASON = re.compile(r"[A-Za-z]{1,64}")
 
@@ -144,6 +146,11 @@ class ApnsChannel:
             if status == 200:
                 return
             reason = _reason(response)
+            if status == 400 and reason in CONFIG_REASONS:
+                log.warning(
+                    "apns refused the device token (reason %s): if many do, check the environment and topic"
+                    " configuration (a sandbox token sent to production, or another bundle id)", reason,
+                )
             if status == 410 or (status == 400 and reason in GONE_REASONS):
                 log.info("apns device token gone (status %d, reason %s)", status, reason)
                 raise ChannelGone("device token gone")

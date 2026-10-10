@@ -193,15 +193,22 @@ shares the proxy's address.
 ## Before deploying
 
 - **Replay between servers.** The block that kept the Cloud API from being deployed (a Zitadel token given to a server
-  could be replayed here) is lifted once every server linked to a Cloud account runs 0.6.0 with
-  `central_account.audience` set: those servers take only per-server tokens. A server still on 0.5.0 with an
-  `issuer` of Zitadel keeps the problem for its own operator, so upgrade (or unlink) them first.
-- **Registration limit at the proxy.** `POST /v1/push/registrations` is anonymous. Besides the Cloud's own limit per
-  client address, put a limit on it in Traefik, and set `WRISTCALL_CLOUD_CLIENT_IP_HEADER` to the header Traefik
-  writes.
+  could be replayed here) is lifted only once every server linked to a Cloud account runs 0.6.0 with
+  `central_account.audience` set: those servers take only per-server tokens. A server still on 0.5.0 with a
+  `central_account` receives the user's Zitadel login token, and whoever operates it can call
+  `POST /v1/server-tokens` with that token and mint valid per-server tokens for **any** 0.6.0 server where the same
+  user is linked: there they can pair a device (in `attestation` mode) or send approval requests to the user. So
+  upgrade every 0.5.0 server with `central_account` to 0.6.0, or unlink its users, **before** setting
+  `WRISTCALL_CLOUD_SIGNING_KEY`. Apps must never send a login token to a server, only per-server tokens.
+- **Rate limit at the proxy (Traefik).** `POST /v1/push/registrations` is anonymous, and `POST /v1/push/send` with
+  random keys costs one MongoDB lookup each before it is refused (the per key limit only counts known keys). Besides
+  the Cloud's own limits, put a limit per client address on both in Traefik, and set
+  `WRISTCALL_CLOUD_CLIENT_IP_HEADER` to the header Traefik writes.
 - **Keys do not change without a plan.** Changing the VAPID key invalidates every Web Push subscription (each device
-  must subscribe again). Changing the signing key makes the per-server tokens already issued fail for up to one
-  minute, until servers fetch the new key. The APNs key can be replaced by a new one of the same team and topics.
+  must subscribe again). After the signing key changes, tokens signed with the old key are refused by a server as
+  soon as it fetches the new JWKS, and new tokens can fail for up to one minute, until the server fetches it (a
+  server looks up an unknown key id at most once every 60 seconds). The APNs key can be replaced by a new one of the
+  same team and topics.
 - **Store the keys as secrets** (`_FILE` variables), and never run with `WRISTCALL_CLOUD_PUSH_FAKE` outside a local test.
 
 ## Development

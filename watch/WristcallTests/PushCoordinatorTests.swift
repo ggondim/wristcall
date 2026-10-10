@@ -272,6 +272,71 @@ struct PushCoordinatorTests {
         #expect(keys.all["srv-a"] != nil)
     }
 
+    @Test func theSameRelayWrittenAnotherWayIsAccepted() async throws {
+        let model = try await makeModel()
+        servers.setHealth(.success(ServerHealth(version: "0.6.0", relay: URL(string: "HTTP://127.0.0.1:8090/")!)), for: "b.example.com")
+        let coordinator = makeCoordinator(model)
+
+        await coordinator.didRegister(token: token)?.value
+
+        #expect(keys.all["srv-b"] != nil)
+        #expect(servers.calls.contains { $0.hasPrefix("put b.example.com") })
+    }
+
+    @Test(arguments: [
+        ("https://cloud.example.com", "https://cloud.example.com/"),
+        ("https://cloud.example.com", "HTTPS://Cloud.Example.com:443"),
+        ("https://cloud.example.com/relay", "https://cloud.example.com:443/relay/"),
+        ("http://localhost", "http://LOCALHOST:80/"),
+        ("http://127.0.0.1:8090", "http://127.0.0.1:8090/"),
+    ])
+    func sameRelayIgnoresCaseDefaultPortAndTrailingSlash(_ lhs: String, _ rhs: String) {
+        #expect(PushCoordinator.sameRelay(URL(string: lhs)!, URL(string: rhs)!))
+    }
+
+    @Test(arguments: [
+        ("https://cloud.example.com", "http://cloud.example.com"),
+        ("https://cloud.example.com", "https://cloud.example.com:8443"),
+        ("http://localhost", "http://localhost:443"),
+        ("https://cloud.example.com", "https://evil.example.com"),
+        ("https://cloud.example.com/relay", "https://cloud.example.com/other"),
+        ("https://cloud.example.com/Relay", "https://cloud.example.com/relay"),
+        ("https://cloud.example.com", "https://user@cloud.example.com"),
+        ("https://cloud.example.com?a=1", "https://cloud.example.com?a=1"),
+    ])
+    func sameRelayTellsDifferentRelaysApart(_ lhs: String, _ rhs: String) {
+        #expect(!PushCoordinator.sameRelay(URL(string: lhs)!, URL(string: rhs)!))
+    }
+
+    @Test func aLongHostIsCutTo64CharactersInTheLabel() async throws {
+        // The relay refuses a label over 64 characters: the registration would fail for good.
+        let host = String(repeating: "a", count: 60) + ".example.com"
+        let url = URL(string: "https://\(host)")!
+        try store.save([Credentials(serverURL: url, deviceId: "dev-l", token: "tl", id: "srv-l")])
+        pairing.setMeResults([.success(info)], for: url)
+        servers.setHealth(.success(ServerHealth(version: "0.6.0", relay: relayURL)), for: host)
+        let model = AppModel(
+            pairing: pairing, store: store, defaults: defaults, sleep: { _ in }, resultPoller: clock.poller,
+            pendingResults: PendingResultStore(defaults: defaults))
+        await model.launch()
+        let coordinator = makeCoordinator(model)
+
+        await coordinator.didRegister(token: token)?.value
+
+        let label = String(host.prefix(64))
+        #expect(relay.calls == [
+            "register tag=srv-l label=\(label) token=0a0b0c topic=io.github.ggondim.wristcall env=sandbox",
+        ])
+        #expect(keys.all["srv-l"]?.pushKey == "wc_push_1")
+    }
+
+    @Test func registrationLabelIsTheHostUpTo64Characters() {
+        #expect(PushCoordinator.registrationLabel(for: URL(string: "https://a.example.com")!) == "a.example.com")
+        let long = String(repeating: "b", count: 80) + ".example.com"
+        #expect(PushCoordinator.registrationLabel(for: URL(string: "https://\(long)")!) == String(repeating: "b", count: 64))
+        #expect(PushCoordinator.registrationLabel(for: URL(string: "file:///tmp/x")!) == "wristcall")
+    }
+
     @Test func aServerWithoutPushIsSkipped() async throws {
         let model = try await makeModel()
         // 0.5.0 (no `push` in health) and a relay that has push off (`404` on register).

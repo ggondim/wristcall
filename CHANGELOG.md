@@ -14,8 +14,9 @@ configured and a relay (wristcall Cloud 0.2.0); with servers 0.5.0 and older the
 - Push notifications in the `DebugPush` build configuration only (`WRISTCALL_PUSH`, `Config/Push.xcconfig`,
   `make -C watch build-sim-push`). Debug and Release are as in 0.2.0 and never ask for notifications.
 - The relay comes from the app's own configuration (`WRISTCALL_RELAY_URL`, `WRISTCALL_PUSH_ENVIRONMENT`), never from a
-  server: a server whose `/v1/health` names another relay, or none, is skipped.
-- One relay key per paired server: the watch registers its APNs token at the relay (label: the server's host; tag: the
+  server: a server whose `/v1/health` names another relay, or none, is skipped (URLs compared with scheme and host
+  lowercased, default port and trailing slash dropped).
+- One relay key per paired server: the watch registers its APNs token at the relay (label: the server's host, up to 64 characters; tag: the
   server's local id; event `call.finished`), hands the key to the server (`PUT /v1/push`) and checks every key each
   time the app comes to the foreground (a key the relay forgot is registered again, a new APNs token replaces the old
   keys). Removing a server clears its key on the server, then at the relay.
@@ -60,9 +61,14 @@ push relay of epic E6. Configuration, routes and deployment notes: [cloud/README
 ### Security
 
 - The Cloud API refuses per-server tokens and servers 0.6.0 refuse the central account's own token, so neither can be
-  replayed at the other or at another server. This lifts the block on deploying the Cloud noted in 0.5.0, once every
-  server linked to a Cloud account runs 0.6.0 with `central_account.audience` (a server still on 0.5.0 keeps receiving
-  login tokens that the Cloud accepts: upgrade or unlink it first).
+  replayed at the other or at another server. This lifts the block on deploying the Cloud noted in 0.5.0 only once
+  every server linked to a Cloud account runs 0.6.0 with `central_account.audience`. A server still on 0.5.0 with a
+  `central_account` receives the user's login token, and its operator can exchange it at `POST /v1/server-tokens` for
+  valid per-server tokens for any 0.6.0 server where that user is linked (and pair a device there in `attestation`
+  mode, or send the user approval requests). Upgrade every 0.5.0 server with `central_account` (or unlink its users)
+  before setting `WRISTCALL_CLOUD_SIGNING_KEY`; apps must never send login tokens to servers.
+- APNs answers `BadDeviceToken` and `DeviceTokenNotForTopic` delete the registration and log a warning (reason only):
+  many of them at once point to a wrong environment or topic in the Cloud's configuration.
 - Only the SHA-256 of a push key is stored. Web Push endpoints must be https on port 443 at a known push service
   (`WRISTCALL_CLOUD_WEBPUSH_HOSTS`); redirects are never followed. A database error is `503`, never the `410` that makes
   a server drop a key.
@@ -98,7 +104,8 @@ push relay of epic E6. Configuration, routes and deployment notes: [cloud/README
 
 - **Breaking for `central_account`:** the server accepts only per-server tokens signed by the wristcall Cloud
   (`typ` `wc-server+jwt`, `aud` = this server's URL). `central_account.issuer` is now the Cloud URL and the new
-  `central_account.audience` (this server's URL(s), as apps reach it) is required: a 0.5.0 `central_account`
+  `central_account.audience` (this server's URL(s), as apps reach it) is required (both are kept in canonical form:
+  scheme and host lowercased, default port and trailing slash dropped): a 0.5.0 `central_account`
   without it stops the server at startup (`central_account.audience: Field required`). `clients` is optional.
   The account key of a link becomes `<Cloud URL>#<account issuer>#<subject>`. Without `central_account` nothing changes.
 - Reference client: `pair-account` takes `--cloud`, refuses a server whose `account.issuer` is another Cloud, and asks

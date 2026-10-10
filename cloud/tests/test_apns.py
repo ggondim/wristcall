@@ -131,6 +131,31 @@ async def test_apns_unregistered_removes_registration(apns, status, reason, clie
         assert route.call_count == 2
 
 
+@pytest.mark.parametrize("reason", ["BadDeviceToken", "DeviceTokenNotForTopic"])
+async def test_apns_wrong_environment_or_topic_is_warned_about(apns, reason, caplog):
+    # A whole fleet of these at once is a configuration mistake (sandbox token sent to production, wrong bundle id),
+    # not devices gone: the operator is told, with the reason only.
+    channel, _ = apns
+    with respx.mock() as router, caplog.at_level(logging.INFO, logger="wristcall_cloud.push"):
+        router.post(URL).mock(return_value=refused(400, reason))
+        with pytest.raises(ChannelGone):
+            await channel.send(REG, MSG)
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    text = warnings[0].getMessage()
+    assert reason in text and "environment" in text and "topic" in text
+    assert DEVICE not in caplog.text and TOPIC not in caplog.text
+
+
+async def test_apns_unregistered_is_not_warned_about(apns, caplog):
+    channel, _ = apns
+    with respx.mock() as router, caplog.at_level(logging.INFO, logger="wristcall_cloud.push"):
+        router.post(URL).mock(return_value=refused(410, "Unregistered"))
+        with pytest.raises(ChannelGone):
+            await channel.send(REG, MSG)
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
 @pytest.mark.parametrize("why", ["ExpiredProviderToken", "InvalidProviderToken"])
 async def test_expired_provider_token_is_refreshed_once(why):
     clock = Clock()

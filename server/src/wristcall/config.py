@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator, model_validator
 
-from .audience import is_loopback, normalize_audience
+from .audience import AudienceError, is_loopback, normalize_audience
 from .history_codec import HistoryKeyError, parse_key
 
 
@@ -201,7 +201,7 @@ class CentralAccountConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     # The wristcall Cloud URL: it signs the per-server tokens. https://...; http only for localhost/127.0.0.1;
-    # the trailing slash is dropped.
+    # kept in canonical form (scheme and host lowercased, default port and trailing slash dropped).
     issuer: str
     # The server's URL(s), exactly as apps reach it: a token is accepted only if it was made for one of them.
     audience: list[str] = Field(min_length=1)
@@ -213,7 +213,12 @@ class CentralAccountConfig(BaseModel):
     @field_validator("issuer")
     @classmethod
     def _check_issuer(cls, value: str) -> str:
-        return _check_base_url(value, "issuer")
+        # Canonical (lowercase scheme and host, no default port, no trailing slash): the Cloud's `iss` is in this
+        # form, and the comparison with it is byte for byte.
+        try:
+            return normalize_audience(_check_base_url(value, "issuer"))
+        except AudienceError as e:
+            raise ValueError(str(e).replace("audience", "issuer", 1)) from None
 
     @field_validator("audience")
     @classmethod

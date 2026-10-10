@@ -261,6 +261,32 @@ def test_central_account_issuer_is_stripped():
     assert cfg.central_account.issuer == "https://auth.example.com"
 
 
+@pytest.mark.parametrize(
+    ("issuer", "canonical"),
+    [
+        ("https://Cloud.example.com:443/", "https://cloud.example.com"),
+        ("HTTPS://CLOUD.EXAMPLE.COM", "https://cloud.example.com"),
+        ("https://cloud.example.com:8443/wc/", "https://cloud.example.com:8443/wc"),
+        ("http://LOCALHOST:80/", "http://localhost"),
+    ],
+)
+def test_central_account_issuer_is_canonical(issuer, canonical):
+    # The Cloud signs with its canonical URL as `iss`: the configured issuer must be that same form.
+    cfg = parse_config(_with_central(issuer=issuer), ENV)
+    assert cfg.central_account.issuer == canonical
+
+
+@pytest.mark.parametrize("issuer", ["http://cloud.example.com", "http://127.0.0.2:8080", "http://[::1]:8080"])
+def test_central_account_issuer_http_only_for_localhost(issuer):
+    with pytest.raises(ConfigError, match="issuer"):
+        parse_config(_with_central(issuer=issuer), ENV)
+
+
+def test_central_account_invalid_issuer_names_the_issuer():
+    with pytest.raises(ConfigError, match="issuer has an invalid host"):
+        parse_config(_with_central(issuer="https://bad_host.example.com"), ENV)
+
+
 @pytest.mark.parametrize("issuer", ["http://localhost:8080", "http://127.0.0.1:8080"])
 def test_localhost_issuer_may_use_http(issuer):
     cfg = parse_config(_with_central(issuer=issuer, clients=["a"]), ENV)
