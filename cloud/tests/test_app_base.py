@@ -324,6 +324,15 @@ def test_zitadel_secret_from_a_file(tmp_path):
     assert config_from_env({**env, "WRISTCALL_CLOUD_ZITADEL_CLIENT_SECRET_FILE": str(path)}).zitadel_client_secret == "s3cr3t-file"
 
 
+def test_zitadel_secret_file_must_be_text(tmp_path):
+    path = tmp_path / "secret"
+    path.write_bytes(b"\xff\xfe\x00")
+    env = {**BASE_ENV, **ZITADEL_ENV}
+    del env["WRISTCALL_CLOUD_ZITADEL_CLIENT_SECRET"]
+    with pytest.raises(ConfigError, match="WRISTCALL_CLOUD_ZITADEL_CLIENT_SECRET"):
+        config_from_env({**env, "WRISTCALL_CLOUD_ZITADEL_CLIENT_SECRET_FILE": str(path)})
+
+
 @pytest.mark.parametrize("missing", list(ZITADEL_ENV))
 def test_zitadel_variables_go_together(missing):
     env = {**BASE_ENV, **ZITADEL_ENV}

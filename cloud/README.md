@@ -98,8 +98,11 @@ which the Cloud API does not accept: see "Before deploying".
 named by the token's `sub` at Zitadel (`DELETE /management/v1/users/{id}` with `x-zitadel-orgid`), signed in as the
 machine user (client credentials, token cached until a minute before it expires). The call is scoped to the
 organization: a user of another organization of the instance (who may sign in to the apps too) is not found there
-and is left alone, as is one already deleted. After the deletion Zitadel refuses the user's refresh token, and its
-end-session page sends the app straight back.
+and is left alone, as is one already deleted (a warning is logged: for every user it means a wrong organization id).
+After the deletion Zitadel refuses the user's refresh token, and its end-session page sends the app straight back.
+Known gaps: the app's confirmation says the sign-in is deleted even when the Cloud lacks these variables or the user
+belongs to another organization; and an access token issued before the deletion (the watch's, say) stays valid until
+it expires, so a call with it in that window records an empty account again, which nothing deletes later.
 
 `src/wristcall_cloud/oidc.py` is a copy of `server/src/wristcall/oidc.py` (only the user agent differs); keep
 both in sync.

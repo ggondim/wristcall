@@ -253,7 +253,11 @@ def _server_tokens(env: Mapping[str, str], issuer: str) -> tuple[str | None, byt
 def _zitadel(env: Mapping[str, str]) -> tuple[str | None, str | None, str | None]:
     names = ("WRISTCALL_CLOUD_ZITADEL_ORG_ID", "WRISTCALL_CLOUD_ZITADEL_CLIENT_ID", "WRISTCALL_CLOUD_ZITADEL_CLIENT_SECRET")
     secret = _secret(env, names[2])
-    values = (_get(env, names[0]), _get(env, names[1]), secret.decode().strip() if secret is not None else None)
+    try:
+        text = secret.decode().strip() if secret is not None else None
+    except UnicodeDecodeError:
+        raise ConfigError(f"{names[2]} must be text") from None
+    values = (_get(env, names[0]), _get(env, names[1]), text or None)
     if any(v is None for v in values) and any(v is not None for v in values):
         raise ConfigError(f"{names[0]}, {names[1]} and {names[2]} (or {names[2]}_FILE) go together")
     return values

@@ -63,7 +63,7 @@ class Users(Protocol):
 class Caller:
     key: str  # "<issuer>#<subject>": the account's id in this service
     client_id: str | None
-    subject: str = ""  # the user's id at the issuer
+    subject: str  # the user's id at the issuer
 
 
 class ApiError(Exception):
@@ -249,7 +249,8 @@ async def delete_account(request: Request, caller: Caller = Depends(current_acco
             log.warning("account deleted, its sign-in not: %s", e)
             raise ApiError("account_unavailable", "the sign-in could not be deleted; try again later", 503) from None
         if not deleted:
-            log.info("account deleted; its sign-in is not a user of the Cloud's organization (left alone)")
+            # Expected for a user of another organization; for every user it means a wrong WRISTCALL_CLOUD_ZITADEL_ORG_ID.
+            log.warning("account deleted; its sign-in is not a user of the Cloud's organization (left alone)")
     return Response(status_code=204)
 
 
