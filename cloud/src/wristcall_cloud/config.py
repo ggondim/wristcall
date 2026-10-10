@@ -1,14 +1,17 @@
 """Configuration from the environment. Error messages name the variable, never its value (it may hold a password)."""
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .audience import AudienceError, normalize_audience
+from .audience import AudienceError, is_loopback, normalize_audience
 from .signing import SigningKey
 
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_TOPIC = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]{0,254}")
+_HEADER = re.compile(r"[A-Za-z0-9-]{1,64}")
 CLIENT_VARS = {"ios": "WRISTCALL_CLOUD_CLIENT_IOS", "pwa": "WRISTCALL_CLOUD_CLIENT_PWA", "watch": "WRISTCALL_CLOUD_CLIENT_WATCH"}
 
 
@@ -28,6 +31,17 @@ class CloudConfig:
     server_token_ttl_s: int = 300
     # Lets clients ask for tokens meant for http://localhost and friends (development only).
     allow_loopback_audience: bool = False
+    # Push relay. APNs topics are the bundle ids a registration may name.
+    apns_topics: tuple[str, ...] = ()
+    push_per_minute: int = 30  # sends per push key
+    push_per_day: int = 500
+    registrations_per_minute_per_ip: int = 10
+    # Header the reverse proxy puts the client address in (its last value counts); None: the connection's address.
+    client_ip_header: str | None = None
+    push_idle_days: int = 180  # registrations without a send for this long are deleted
+    push_cleanup_every_s: int = 21600
+    # One fake channel for every platform: nothing is delivered (local end-to-end tests only, loopback public_url).
+    push_fake: bool = False
 
 
 class ConfigError(Exception):
@@ -118,6 +132,31 @@ def check_public_url(public_url: str, issuer: str) -> None:
         raise ConfigError("WRISTCALL_CLOUD_PUBLIC_URL must differ from WRISTCALL_CLOUD_ISSUER")
 
 
+def check_push_fake(public_url: str | None) -> None:
+    """The fake channel answers every send without delivering it: only on a Cloud that lives on this machine."""
+    try:
+        loopback = public_url is not None and is_loopback(normalize_audience(public_url))
+    except AudienceError:
+        loopback = False
+    if not loopback:
+        raise ConfigError("WRISTCALL_CLOUD_PUSH_FAKE needs a loopback WRISTCALL_CLOUD_PUBLIC_URL (local tests only)")
+
+
+def _apns_topics(env: Mapping[str, str]) -> tuple[str, ...]:
+    name = "WRISTCALL_CLOUD_APNS_TOPICS"
+    topics = tuple(t for t in (s.strip() for s in (_get(env, name) or "").split(",")) if t)
+    if not all(_TOPIC.fullmatch(t) for t in topics):
+        raise ConfigError(f"{name} must be a comma-separated list of bundle ids")
+    return topics
+
+
+def _header_name(env: Mapping[str, str], name: str) -> str | None:
+    raw = _get(env, name)
+    if raw is not None and not _HEADER.fullmatch(raw):
+        raise ConfigError(f"{name} must be an HTTP header name")
+    return raw
+
+
 def _server_tokens(env: Mapping[str, str], issuer: str) -> tuple[str | None, bytes | None]:
     public_url = _https_url(env, "WRISTCALL_CLOUD_PUBLIC_URL", None)
     pem = _secret(env, "WRISTCALL_CLOUD_SIGNING_KEY")
@@ -144,6 +183,9 @@ def config_from_env(env: Mapping[str, str]) -> CloudConfig:
         raise ConfigError("at least one of " + ", ".join(CLIENT_VARS.values()) + " is required")
     issuer = _issuer(env)
     public_url, signing_key_pem = _server_tokens(env, issuer)
+    push_fake = _flag(env, "WRISTCALL_CLOUD_PUSH_FAKE")
+    if push_fake:
+        check_push_fake(public_url)
     return CloudConfig(
         mongo_url=mongo_url,
         database=_get(env, "WRISTCALL_CLOUD_DATABASE") or CloudConfig.database,
@@ -155,4 +197,13 @@ def config_from_env(env: Mapping[str, str]) -> CloudConfig:
         public_url=public_url,
         signing_key_pem=signing_key_pem,
         allow_loopback_audience=_flag(env, "WRISTCALL_CLOUD_ALLOW_LOOPBACK_AUDIENCE"),
+        apns_topics=_apns_topics(env),
+        push_per_minute=_positive_int(env, "WRISTCALL_CLOUD_PUSH_PER_MINUTE", CloudConfig.push_per_minute),
+        push_per_day=_positive_int(env, "WRISTCALL_CLOUD_PUSH_PER_DAY", CloudConfig.push_per_day),
+        registrations_per_minute_per_ip=_positive_int(
+            env, "WRISTCALL_CLOUD_REGISTRATIONS_PER_MINUTE", CloudConfig.registrations_per_minute_per_ip
+        ),
+        client_ip_header=_header_name(env, "WRISTCALL_CLOUD_CLIENT_IP_HEADER"),
+        push_idle_days=_positive_int(env, "WRISTCALL_CLOUD_PUSH_IDLE_DAYS", CloudConfig.push_idle_days),
+        push_fake=push_fake,
     )

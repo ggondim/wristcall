@@ -43,6 +43,7 @@ def test_config_is_public_and_has_clients(client):
         "clients": {"ios": "client-ios", "pwa": "client-pwa", "watch": "client-watch"},
         "scopes": ["openid", "profile", "offline_access", "urn:zitadel:iam:org:project:id:1234:aud"],
         "server_tokens": False,
+        "push": {"apns": False, "webpush": False, "vapid_public_key": None, "apns_topics": []},
     }
 
 

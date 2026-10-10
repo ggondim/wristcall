@@ -1,9 +1,12 @@
-"""HTTP API of the cloud. Callers authenticate with a central account access token (`Authorization: Bearer`).
+"""HTTP API of the cloud. Callers authenticate with a central account access token (`Authorization: Bearer`), except
+on the push relay (push/api.py), whose keys are their own credentials.
 
 Every error is `{"error": code, "message": ...}`. Request bodies are capped at MAX_BODY bytes. Rate limiting is
-left to the reverse proxy of the deployment (see README).
+left to the reverse proxy of the deployment (see README), except for the push relay's own limits (push/limits.py).
 """
 
+import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -22,8 +25,13 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from . import __version__
 from .agenda import AgendaError, parse_agents, parse_new_server, parse_server_patch
 from .audience import AudienceError, is_loopback, normalize_audience
-from .config import CloudConfig, ConfigError, check_public_url, same_url
+from .config import CloudConfig, ConfigError, check_public_url, check_push_fake, same_url
 from .oidc import Identity, OidcError, OidcUnavailable, OidcVerifier
+from .push.api import push_error_response
+from .push.api import router as push_router
+from .push.channels import Channel, FakeChannel
+from .push.limits import RegistrationLimiter, SendLimiter
+from .push.registry import PushError, purge_idle_loop
 from .signing import SigningKey, server_token_claims
 from .store import Store, open_store, public_server
 
@@ -141,7 +149,9 @@ def get_store(request: Request) -> Store:
     return request.app.state.store
 
 
-def public_config(config: CloudConfig, *, server_tokens: bool = False) -> dict[str, Any]:
+def public_config(
+    config: CloudConfig, *, server_tokens: bool = False, channels: dict[str, Channel] | None = None
+) -> dict[str, Any]:
     scopes = list(BASE_SCOPES)
     if config.project_id:
         scopes.append(f"urn:zitadel:iam:org:project:id:{config.project_id}:aud")
@@ -151,6 +161,12 @@ def public_config(config: CloudConfig, *, server_tokens: bool = False) -> dict[s
         "clients": dict(config.clients),
         "scopes": scopes,
         "server_tokens": server_tokens,
+        "push": {
+            "apns": "apns" in (channels or {}),
+            "webpush": "webpush" in (channels or {}),
+            "vapid_public_key": None,
+            "apns_topics": list(config.apns_topics),
+        },
     }
 
 
@@ -324,16 +340,25 @@ def create_app(
     verifier: Verifier | None = None,
     http: httpx.AsyncClient | None = None,
     signing_key: SigningKey | None = None,
+    channels: dict[str, Channel] | None = None,
 ) -> FastAPI:
-    # httpx logs every request URL at INFO, and some URLs the Cloud calls are secrets.
-    for name in ("httpx", "httpcore"):
+    # httpx logs every request URL at INFO, and some URLs the Cloud calls are secrets; pymongo logs every command
+    # and reply at DEBUG, documents included (push channels: APNs tokens, Web Push endpoints).
+    for name in ("httpx", "httpcore", "pymongo"):
         logging.getLogger(name).setLevel(logging.WARNING)
     if signing_key is None and config.signing_key_pem is not None:
         signing_key = SigningKey(config.signing_key_pem)
     if signing_key is not None and not config.public_url:
         raise ConfigError("WRISTCALL_CLOUD_PUBLIC_URL and WRISTCALL_CLOUD_SIGNING_KEY go together")
+    if config.push_fake:
+        check_push_fake(config.public_url)
     if config.public_url:
         check_public_url(config.public_url, config.issuer)
+    if channels is None:
+        channels = {}
+        if config.push_fake:
+            fake = FakeChannel()
+            channels = {"apns": fake, "webpush": fake}
     owned_http: httpx.AsyncClient | None = None
     if verifier is None:
         if not config.clients:
@@ -350,10 +375,18 @@ def create_app(
         if current is None:
             mongo, current = open_store(config)
         app.state.store = current
+        purger: asyncio.Task[None] | None = None
         try:
             await current.ensure_indexes()
+            purger = asyncio.create_task(
+                purge_idle_loop(current, every_s=config.push_cleanup_every_s, idle_s=config.push_idle_days * 86400)
+            )
             yield
         finally:
+            if purger is not None:
+                purger.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await purger
             if mongo is not None:
                 await mongo.close()
             if owned_http is not None:
@@ -363,6 +396,11 @@ def create_app(
     app.state.config = config
     app.state.verifier = verifier
     app.state.signing_key = signing_key
+    app.state.channels = channels
+    app.state.send_limiter = SendLimiter(config.push_per_minute, config.push_per_day)
+    app.state.registration_limiter = RegistrationLimiter(config.registrations_per_minute_per_ip)
+    if config.push_fake:
+        log.warning("push: fake channel, nothing is delivered (WRISTCALL_CLOUD_PUSH_FAKE)")
     app.add_middleware(BodyLimit, limit=MAX_BODY)
 
     @app.exception_handler(ApiError)
@@ -372,6 +410,10 @@ def create_app(
     @app.exception_handler(AgendaError)
     async def agenda_error(_request: Request, e: AgendaError) -> JSONResponse:
         return _error(e.code, e.message, _STATUS[e.code])
+
+    @app.exception_handler(PushError)
+    async def push_error(_request: Request, e: PushError) -> JSONResponse:
+        return push_error_response(e)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_request: Request, e: RequestValidationError) -> JSONResponse:
@@ -388,6 +430,7 @@ def create_app(
         )
 
     app.include_router(router)
+    app.include_router(push_router)
 
     @app.get("/v1/health")
     async def health() -> dict[str, str]:
@@ -395,6 +438,6 @@ def create_app(
 
     @app.get("/v1/config")
     async def public() -> dict[str, Any]:
-        return public_config(config, server_tokens=signing_key is not None)
+        return public_config(config, server_tokens=signing_key is not None, channels=app.state.channels)
 
     return app
