@@ -97,10 +97,23 @@ launch arguments:
 
 ## iPhone app
 
-`Phone/` is the iPhone app. Its bundle id is `<BUNDLE_ID_PREFIX>.wristcall` and it embeds the watch app
-(`Wristcall.app/Watch/`), so both carry the same version (0.4.0, build 4). Today it manages servers: add one
-with its address and a personal token (`wristcall users tokens add --name iphone`), rename it, remove it.
-Tokens live in the iPhone Keychain, readable after the first unlock and never synced.
+`Phone/` is the iPhone app (tag `ios-vX.Y.Z`; first release 0.1.0). Its bundle id is `<BUNDLE_ID_PREFIX>.wristcall` and
+it embeds the watch app (`Wristcall.app/Watch/`). Apple refuses an embedded watch app whose version differs from the
+iPhone app's, so both bundles carry the same version (0.4.0, build 4), even though the iPhone app's own release is 0.1.0.
+
+What it does (it makes no calls; the watch does):
+
+- **Servers.** Add one with its address and a personal token (`wristcall users tokens add --name iphone`), rename
+  it, remove it. Tokens live in the iPhone Keychain, readable after the first unlock and never synced. A pasted
+  device token, an empty one or one the server refuses saves nothing and says why.
+- **Agents.** List, create, edit, delete and reorder a server's agents (conversation, one-shot, monologue; custom
+  endpoints when the server allows them).
+- **Devices.** Watches paired with the server, pending requests to approve or deny (read on opening, on coming to the
+  foreground and every 10 seconds on the devices screen; the Servers tab badge counts them), pairing codes.
+- **History.** The calls of every server in one list, with search, filters by server and agent, export (a file per
+  server) and redelivery of failed one-way calls.
+- **Add to watch.** Makes a pairing code and sends the server address and code to the embedded watch app over
+  WatchConnectivity; "Refresh watch" makes the watch read its agents again.
 
 With a Cloud in the build (`CLOUD_URL`), Settings offers the central account: "Sign in" opens the provider's
 page in the system web sheet (Authorization Code with PKCE, client `wristcall-ios`, redirect
@@ -108,26 +121,47 @@ page in the system web sheet (Authorization Code with PKCE, client `wristcall-io
 Signed in, "Add server" also takes a pairing code (`wristcall pair --user <you>` on the server's host) when the
 server uses the same account, "Link account" links a saved server, and the servers (name, address, linked) and
 their agents are mirrored to the account's server list in the Cloud; servers there without a token on this
-iPhone show under "From your account". "Sign out" revokes the refresh token and ends the provider's session;
-"Delete account" deletes the server list in the Cloud (servers and tokens stay).
+iPhone show under "From your account". The watch signs in with the account through a device code, which the iPhone
+asks you to approve. "Sign out" revokes the refresh token and ends the provider's session; "Delete account"
+deletes the server list in the Cloud (servers and tokens stay).
+
+The default build has `WRISTCALL_CLOUD_URL` empty: no account features show and nothing talks to a Cloud until you
+set one. The iPhone sign-in could not be verified against the real identity provider, whose hosted login page
+(login v2) was down when this was built; the watch's device code sign-in was verified end to end.
 
 ```sh
 make -C watch build-ios                # builds the iPhone app and the embedded watch app
 make -C watch test-ios                 # PhoneTests on an iPhone 17 simulator
 make -C watch test-ios IOS_DESTINATION='platform=iOS Simulator,id=<UDID>'
 make -C watch build-ios CLOUD_URL=http://127.0.0.1:8090   # point the build at a Cloud
+make -C watch build-ios-push           # push build (see below)
 ```
 
 The default `IOS_DESTINATION` is an "iPhone 17" simulator. `CLOUD_URL` and `RELAY_URL` set
 `WRISTCALL_CLOUD_URL` and `WRISTCALL_RELAY_URL` for every build target of the Makefile (they can also go in
 `Config/Local.xcconfig`); left empty, the apps have no account and no push. In Debug builds
 `-addServer <URL> -addServerToken <token> [-addServerName <name>]` adds a server at launch, and
-`-debugOpen server|agents|form-new|form-edit|devices|code|settings` opens that screen (simulator smoke tests, which cannot tap).
+`-debugOpen server|agents|form-new|form-edit|devices|code|watch|history|history-detail|settings` opens that screen.
 `AgentsLiveTests` run against a test server when `TEST_RUNNER_WRISTCALL_TEST_SERVER` and
 `TEST_RUNNER_WRISTCALL_TEST_TOKEN` are set for `make test-ios`.
 
+**UI smoke test.** `PhoneUITests/PhoneSmokeTests.swift` (XCUITest, scheme `WristcallPhoneUI`) adds a server, opens
+its agents, creates a one-shot agent, opens History and Settings, and attaches a screenshot of each screen. It has
+its own scheme, so `make test-ios` and CI never run it. With the test server up (`make -C watch test-server`) and a
+personal token of it (`wristcall users tokens add`, with the test config), run:
+
+```sh
+TEST_RUNNER_WRISTCALL_UI_TOKEN=wc_pat_... make -C watch test-ios-ui
+```
+
+`TEST_RUNNER_WRISTCALL_UI_SERVER` changes the server address (default `http://127.0.0.1:8765`) and
+`TEST_RUNNER_WRISTCALL_UI_SHOTS=<folder>` also writes the screenshots there. Without the token the test skips. It
+deletes the agent it created. The simulator pair used for the screenshots is an iPhone 17 and, for the watch
+tests, "WC Series 7" (`python3 watch/scripts/ensure_simulator.py`); the iPhone simulator and a watch simulator can
+be paired in Xcode (Window > Devices and Simulators) to try WatchConnectivity.
+
 The watch app's bundle id (and so its APNs topic) is now `<BUNDLE_ID_PREFIX>.wristcall.watchkitapp`, no longer
-`<BUNDLE_ID_PREFIX>.wristcall`: a Cloud that pushes to both apps lists both in `WRISTCALL_CLOUD_APNS_TOPICS`.
+`<BUNDLE_ID_PREFIX>.wristcall`: the Cloud pushes to both apps, so it lists both in `WRISTCALL_CLOUD_APNS_TOPICS`.
 
 ## Servers, agents and calls
 
@@ -135,6 +169,15 @@ The watch app's bundle id (and so its APNs topic) is now `<BUNDLE_ID_PREFIX>.wri
   (cancel to go back) and pairing the same server and user again replaces the old entry and revokes its token.
   Removing a server forgets its token on the watch and tries to revoke it on the server (if the server is out of
   reach, revoke the watch there). A watch paired with 0.1.0 keeps its server when it updates.
+- **Pairing from the iPhone.** The iPhone app's "Add to watch" sends a server address and a pairing code over
+  WatchConnectivity; the watch pairs at once (it says "busy" during a call). The iPhone's "Refresh watch" makes the
+  watch read its agents again.
+- **Sign in with account.** With a Cloud in the build, the pairing screen and Settings offer "Sign in with account":
+  the watch shows a short code and opens the provider's device page on the iPhone, where you approve it (the same
+  code goes to the iPhone app, which asks you). Then the watch reads the account's server list and pairs each
+  server that is not paired yet, only when the server names the same Cloud as its issuer; a server that needs your
+  approval waits for it on the iPhone ("Approve on your iPhone: 0423"). "Sync with account" repeats this, "Sign out
+  of account" forgets the account (servers stay). The refresh token is in the watch Keychain.
 - **Agent grid.** Home shows the agents of every server, two per row, in each server's order. Tap an agent to
   call it; long press opens its call options (end of turn, auto or manual, for conversations). The "…" button in
   the toolbar opens the same options: directly for the only callable agent, or a list of agents to pick from.
@@ -220,7 +263,11 @@ working.
 ## Install on your watch with a free Apple ID
 
 A free Apple ID (Personal Team) is enough. App Groups work with a Personal Team and are the one capability to
-register (for both the app and the widgets extension).
+register (for both the app and the widgets extension). The watch app now installs through the iPhone app: run the
+`WristcallPhone` scheme on your iPhone and Xcode installs the embedded watch app on the paired watch. A Personal
+Team registers three App IDs for it (iPhone app, watch app, widgets extension). If you had the 0.3.0 watch app
+(bundle id `<BUNDLE_ID_PREFIX>.wristcall`), delete it from the watch first: the 0.4.0 watch app is a new app
+(`....wristcall.watchkitapp`) with its own Keychain, so pair it again.
 
 1. Add your Apple ID in Xcode > Settings > Accounts.
 2. Find your team ID: open the generated project, select the `Wristcall` target >
@@ -237,7 +284,7 @@ register (for both the app and the widgets extension).
    A bundle id belongs to a single team, so use a prefix of your own.
 4. `make -C watch generate`, open the project, connect the iPhone paired with the watch,
    enable Developer Mode on the iPhone and on the watch (Settings > Privacy & Security)
-   when asked, pick your watch as the run destination and press Run.
+   when asked, pick the `WristcallPhone` scheme with your iPhone as the run destination and press Run.
 5. If the first launch is refused as an untrusted developer, trust your Apple ID under
    Settings > General > VPN & Device Management on the paired iPhone and run again.
 

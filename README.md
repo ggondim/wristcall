@@ -9,8 +9,8 @@ the watch, transcribes it, asks your agent and sends back the spoken answer. Eac
 stage is a provider you can swap through configuration: any OpenAI compatible
 API works (OpenAI, Speaches, openedai-speech, LiteLLM, Ollama, vLLM).
 
-Status: server, reference client, pairing directory and watch app are ready. The
-watch app is built and installed with Xcode; see [watch/README.md](watch/README.md).
+Status: server, reference client, pairing directory, watch app and iPhone app are ready. Both apps are
+built and installed with Xcode; see [watch/README.md](watch/README.md).
 
 ## Run the server in 5 minutes
 
@@ -322,9 +322,28 @@ With an API token (`wristcall users tokens add`), in `Authorization: Bearer wc_p
 `PUT/DELETE /v1/push` (the app's relay key). The JSON fields are
 the ones `wristcall agents show` prints. See [docs/protocol.md](docs/protocol.md#management-api).
 
+## iPhone app
+
+The iPhone app (`watch/Phone/`, tag `ios-vX.Y.Z`) manages your servers from the phone: add a server with its
+address and a personal token (`wristcall users tokens add --name iphone`), create, edit and delete agents, approve
+or deny watches waiting to pair, make pairing codes, and read, search, export and redeliver the call history of
+all servers in one list. It does not make calls; the watch does. The watch app is embedded in the iPhone app, so
+"Add watch" can hand a server to the watch over WatchConnectivity.
+
+With the wristcall Cloud in the build, the iPhone also signs in with the central account (Authorization Code
+with PKCE), mirrors your servers and agents to the account, and lets the watch sign in with a device code that
+you approve on the phone. The default build has no Cloud (`WRISTCALL_CLOUD_URL` empty), so those parts stay
+hidden until a Cloud is deployed and set. Push notifications for device approvals, App Store distribution and
+Sign in with Apple need a paid Apple Developer account; a free Apple ID builds everything else. There is no
+published binary: build it with Xcode, see [watch/README.md](watch/README.md#iphone-app).
+
+Known limitation: the iPhone sign-in could not be verified against the real identity provider, whose hosted
+login page was down while this was built. The watch's device code sign-in was verified end to end.
+
 ## Documentation
 
 - Client ↔ server protocol: [docs/protocol.md](docs/protocol.md)
+- Watch and iPhone apps (build, test, install): [watch/README.md](watch/README.md)
 - Pairing directory: [directory/README.md](directory/README.md)
 - wristcall Cloud (central account, per-server tokens, push relay): [cloud/README.md](cloud/README.md)
 - History: [CHANGELOG.md](CHANGELOG.md)

@@ -1,6 +1,61 @@
 # Changelog
 
-Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each component follows [SemVer](https://semver.org/) on its own: the server is published by the `server-vX.Y.Z` tag (Docker image); the Cloud (`cloud/`) by the `cloud-vX.Y.Z` tag (Docker image); the watch app is marked by the `watch-vX.Y.Z` tag and has no published binary (build it with Xcode, see [watch/README.md](watch/README.md)).
+Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each component follows [SemVer](https://semver.org/) on its own: the server is published by the `server-vX.Y.Z` tag (Docker image); the Cloud (`cloud/`) by the `cloud-vX.Y.Z` tag (Docker image); the watch app is marked by the `watch-vX.Y.Z` tag and the iPhone app by the `ios-vX.Y.Z` tag; neither has a published binary (build them with Xcode, see [watch/README.md](watch/README.md)).
+
+## [ios-0.1.0] - 2026-10-10
+
+First release of the iPhone app (`watch/Phone/`, tag `ios-v0.1.0`). It is meant for servers 0.6.0 (older ones lack parts of the
+management API).
+
+Notes: it ships inside bundle version 0.4.0 (build 4), the same as the watch app, because Apple requires the embedded
+watch app's version to match the iPhone app's. No binary is published. Push notifications (APNs), App Store
+distribution and Sign in with Apple need a paid Apple Developer account; everything else builds with a free Apple ID.
+
+### Added
+
+- Servers: add one with its address and a personal token (a pasted device token or a wrong one saves nothing), rename,
+  remove. Tokens live in the iPhone Keychain.
+- Agents: list, create, edit, delete and reorder, for conversation, one-shot and monologue agents.
+- Devices: paired watches, pending pairing requests to approve or deny (read on opening, on coming to the foreground and
+  every 10 seconds on the devices screen), pairing codes, and "Add to watch" over WatchConnectivity to the embedded
+  watch app.
+- History: the calls of every server in one list, with search, filters, export and redelivery of failed one-way calls.
+- Central account (when the build has a Cloud, `WRISTCALL_CLOUD_URL`): sign in with PKCE, add a server with a pairing
+  code, link a server, mirror servers and agents to the account, approve the watch's device code login, sign out and
+  delete the account.
+- Push build (`DebugPush`): device approval notifications with Approve and Deny actions.
+- UI smoke test with screenshots (`make -C watch test-ios-ui`, its own scheme, not part of CI).
+
+### Known limitations
+
+- The iPhone sign-in (PKCE) could not be verified against the real identity provider: its hosted login page (login v2)
+  was down when this was built. The watch's device code sign-in was verified end to end.
+- The default build has `WRISTCALL_CLOUD_URL` empty, so the account features are hidden until the Cloud is deployed.
+
+## [watch-0.4.0] - 2026-10-10
+
+Works with the same servers as 0.3.0. The account sign-in needs a Cloud in the build and servers 0.6.0.
+
+### Watch app
+
+- Sign in with the central account through a device code, approved on the iPhone; the watch then pairs the account's
+  servers, asking for approval on the iPhone when the server requires it ("Sync with account", "Sign out of account").
+- WatchConnectivity pairing: the iPhone app sends a server address and a pairing code, and asks the watch to refresh
+  its agents.
+
+### Changed
+
+- The bundle id is now `<BUNDLE_ID_PREFIX>.wristcall.watchkitapp` (the iPhone app owns `<BUNDLE_ID_PREFIX>.wristcall`),
+  and the app has the companion keys (`WKCompanionAppBundleIdentifier`, `WKRunsIndependentlyOfCompanionApp`) instead of
+  `WKWatchOnly`. The widgets extension is `<BUNDLE_ID_PREFIX>.wristcall.watchkitapp.widgets`. The watch app installs
+  through the iPhone app.
+
+### Upgrade notes
+
+- Delete the 0.3.0 watch app from the watch first: the new bundle id is a different app with its own Keychain, so it
+  has to be paired again. A Personal Team registers three new App IDs (iPhone app, watch app, widgets extension).
+- The Cloud's `WRISTCALL_CLOUD_APNS_TOPICS` must list `io.github.ggondim.wristcall` and
+  `io.github.ggondim.wristcall.watchkitapp` (with your own prefix if you set one) for push to reach both apps.
 
 ## [watch-0.3.0] - 2026-10-10
 
