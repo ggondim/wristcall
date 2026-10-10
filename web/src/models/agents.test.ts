@@ -134,6 +134,30 @@ describe("AgentsModel", () => {
     expect(sent(fetchMock, "GET").filter((call) => call.url.endsWith("/v1/agents"))).toHaveLength(2)
   })
 
+  test("aReadStartedBeforeADeleteDoesNotBringTheAgentBack", async () => {
+    const list = [agent({ id: "ag_a" }), agent({ id: "ag_b", position: 1 })]
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    let slow = false
+    const fetchMock = mockFetch(async (url, init) => {
+      if (init.method === "DELETE") return new Response(null, { status: 204 })
+      if (url.endsWith("/v1/agents")) {
+        const answer = ok({ agents: [...list] }) // the list as it was when the read started
+        if (slow) await gate
+        return answer
+      }
+      return ok({ providers: PROVIDERS, custom_endpoints: false })
+    })
+    const model = new AgentsModel(client(fetchMock))
+    await model.load()
+    slow = true
+    const reading = model.load()
+    await model.remove("ag_a")
+    release()
+    await reading
+    expect(model.state.agents.map((a) => a.id)).toEqual(["ag_b"])
+  })
+
   test("aFailedLoadKeepsTheListAndShowsTheError", async () => {
     let down = false
     const fetchMock = fakeServer([agent()], () => (down ? ok({ error: "x", message: "The server is unavailable." }, 503) : null))
@@ -241,6 +265,21 @@ describe("AgentFormModel", () => {
     expect(patches).toHaveLength(1)
     expect(patches[0]!.url).toBe("https://s.example/v1/agents/ag_a")
     expect(JSON.parse(patches[0]!.init.body as string)).toEqual({ display_name: "Alpha 2", language: "pt-BR", retention_days: 90, vad: { silence_ms: 600 } })
+  })
+
+  test("anAgentWithAnyStoredSilenceCanBeSaved", async () => {
+    const existing = agent({ vad: { silence_ms: 850 } })
+    const fetchMock = fakeServer([existing])
+    const f = form(existing, fetchMock)
+    expect(f.state.silenceMs).toBe(850)
+    expect(f.validate()).toBeNull()
+    f.update({ displayName: "Renamed" })
+    await f.save()
+    // Silence did not change, so it is not sent; 851 is a value too.
+    expect(JSON.parse(sent(fetchMock, "PATCH")[0]!.init.body as string)).toEqual({ display_name: "Renamed" })
+    f.update({ silenceMs: 851 })
+    expect(f.fields).toEqual({ display_name: "Renamed", vad: { silence_ms: 851 } })
+    expect(f.validate()).toBeNull()
   })
 
   test("anEditThatChangedNothingSendsNothing", async () => {

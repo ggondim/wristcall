@@ -60,6 +60,8 @@ export class AgentsModel extends BaseModel<AgentsState> {
       await this.#failed(e)
       return
     }
+    // A read that started before the delete must not put the agent back.
+    this.#loads++
     this.set({ agents: this.state.agents.filter((agent) => agent.id !== ref), error: null })
     this.#emit()
   }

@@ -175,8 +175,10 @@ function FormBody({ form, serverId }: { form: AgentFormModel; serverId: string }
         <Link href={list}>Agents</Link>
       </p>
       <h1>{form.isEditing ? "Edit agent" : "New agent"}</h1>
+      {/* noValidate: the model's own checks are the only ones (the browser's would refuse values the server accepts, such as a silence of 850 ms). */}
       <form
         class="fields"
+        noValidate
         onSubmit={(event) => {
           event.preventDefault()
           void submit()
@@ -245,12 +247,13 @@ function FormBody({ form, serverId }: { form: AgentFormModel; serverId: string }
 export function AgentForm({ model, serverId, agentId }: { model: AgentsModel; serverId: string; agentId: string | null }) {
   const { agents, loaded, providersLoaded, error } = useModel(model)
   const existing = agentId === null ? null : (agents.find((agent) => agent.id === agentId) ?? null)
-  const ready = loaded && (agentId === null ? providersLoaded : existing !== null)
+  // The pickers need the providers for an edit too: a failed read shows its error instead of an empty form.
+  const ready = loaded && providersLoaded && (agentId === null || existing !== null)
   const list = agentsPath(serverId)
   // One form for the visit: a later reading of the list does not replace what the user is typing.
   const form = useMemo(() => (ready ? model.form(existing) : null), [model, agentId, ready])
   if (form !== null) return <FormBody form={form} serverId={serverId} />
-  const missing = loaded && agentId !== null
+  const missing = loaded && providersLoaded && agentId !== null
   return (
     <main class="screen">
       <p>

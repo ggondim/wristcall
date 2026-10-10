@@ -132,6 +132,31 @@ describe("AgentsScreen", () => {
     await screen.findByText("Enter a name of up to 64 characters.")
   })
 
+  test("editFormLetsTheModelDecideSilence", async () => {
+    const { servers, fetchMock } = await setup([agent("ag_a", "Alpha", { vad: { silence_ms: 850 } })])
+    history.replaceState(null, "", "/servers/s1/agents/ag_a")
+    render(<AgentsScreen servers={servers} target={{ serverId: "s1", screen: "edit", agentId: "ag_a" }} />)
+    const name = (await screen.findByLabelText("Name")) as HTMLInputElement
+    // The browser's own checks (silence step of 100, say) are off: the model validates.
+    expect(name.form!.noValidate).toBe(true)
+    fireEvent.input(name, { target: { value: "Alpha 2" } })
+    const save = screen.getByRole("button", { name: "Save" }) as HTMLButtonElement
+    await waitFor(() => expect(save.disabled).toBe(false))
+    fireEvent.submit(save.form!)
+    await waitFor(() => expect(fetchMock.calls.some((c) => c.init.method === "PATCH")).toBe(true))
+    expect(JSON.parse(fetchMock.calls.find((c) => c.init.method === "PATCH")!.init.body as string)).toEqual({ display_name: "Alpha 2" })
+  })
+
+  test("editFormWaitsForTheProvidersAndShowsTheirError", async () => {
+    const failing = new ServersModel(
+      { list: async () => [], get: async () => ({ id: "s1", name: "home", url: "https://home.example.com", token: "t", linked: false, cloudServerId: null, pushKey: null, pushEndpoint: null, addedAt: 1 }), put: async () => {}, remove: async () => {}, update: async () => null },
+      () => new ServerClient(new URL("https://home.example.com"), "t", mockFetch((url) => (url.endsWith("/v1/providers") ? ok({ error: "x", message: "The server is unavailable." }, 503) : ok({ agents: [agent("ag_a", "Alpha")] })))),
+    )
+    render(<AgentsScreen servers={failing} target={{ serverId: "s1", screen: "edit", agentId: "ag_a" }} />)
+    await screen.findByText("The server is unavailable.")
+    expect(screen.queryByLabelText("Name")).toBeNull()
+  })
+
   test("anUnknownAgentSaysSo", async () => {
     const { servers } = await setup([agent("ag_a", "Alpha")])
     render(<AgentsScreen servers={servers} target={{ serverId: "s1", screen: "edit", agentId: "ag_zzz" }} />)
