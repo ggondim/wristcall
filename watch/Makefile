@@ -31,7 +31,7 @@ export WRISTCALL_TEST_CONFIG ?= $(CURDIR)/WristcallKit/Tests/test-server.yaml
 export WRISTCALL_TEST_DATA_DIR ?= $(CURDIR)/build/test-server-data
 export WRISTCALL_TEST_CLI ?= wristcall
 
-.PHONY: generate test-kit test-server test-integration test-account build build-sim-push test-sim build-ios build-ios-push test-ios clean
+.PHONY: generate test-kit test-server test-integration test-account build build-sim-push test-sim build-ios build-ios-push test-ios test-ios-ui clean
 
 generate:
 	xcodegen generate --spec project.yml
@@ -76,6 +76,14 @@ build-ios-push: generate
 
 test-ios: generate
 	$(XCODEBUILD_IOS) test $(URL_SETTINGS)
+
+# UI smoke test (XCUITest, own scheme WristcallPhoneUI, never in CI): needs the test server running
+# (`make test-server`) and a personal token of it, passed with the TEST_RUNNER_ prefix:
+#   TEST_RUNNER_WRISTCALL_UI_TOKEN=wc_pat_... make test-ios-ui
+# TEST_RUNNER_WRISTCALL_UI_SHOTS=<folder> also writes the screenshots there. The test skips without a token.
+test-ios-ui: generate
+	xcodebuild -project $(PROJECT) -scheme WristcallPhoneUI -destination '$(IOS_DESTINATION)' \
+		-derivedDataPath $(DERIVED_DATA) test $(URL_SETTINGS)
 
 clean:
 	rm -rf $(PROJECT) build WristcallKit/.build

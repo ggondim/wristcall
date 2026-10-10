@@ -126,6 +126,22 @@ targets:
         TEST_HOST: $(BUILT_PRODUCTS_DIR)/Wristcall.app/Wristcall
         BUNDLE_LOADER: $(TEST_HOST)
 
+  # XCUITest smoke test (add server, agents, history, settings, with screenshots). Own scheme
+  # (WristcallPhoneUI), so `make test-ios` and CI never run it; `make test-ios-ui` does.
+  WristcallPhoneUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - PhoneUITests
+    dependencies:
+      - target: WristcallPhone
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).wristcall.phone.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TARGETED_DEVICE_FAMILY: "1"
+        TEST_TARGET_NAME: WristcallPhone
   WristcallTests:
     type: bundle.unit-test
     platform: watchOS
@@ -166,3 +182,14 @@ targets:
         CODE_SIGN_ENTITLEMENTS: WristcallWidgets/WristcallWidgets.entitlements
         INFOPLIST_KEY_CFBundleDisplayName: Wristcall
         SKIP_INSTALL: YES
+
+schemes:
+  WristcallPhoneUI:
+    build:
+      targets:
+        WristcallPhone: all
+        WristcallPhoneUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - WristcallPhoneUITests
