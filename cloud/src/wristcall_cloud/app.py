@@ -22,7 +22,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from . import __version__
 from .agenda import AgendaError, parse_agents, parse_new_server, parse_server_patch
 from .audience import AudienceError, is_loopback, normalize_audience
-from .config import CloudConfig, ConfigError, same_url
+from .config import CloudConfig, ConfigError, check_public_url, same_url
 from .oidc import Identity, OidcError, OidcUnavailable, OidcVerifier
 from .signing import SigningKey, server_token_claims
 from .store import Store, open_store, public_server
@@ -332,6 +332,8 @@ def create_app(
         signing_key = SigningKey(config.signing_key_pem)
     if signing_key is not None and not config.public_url:
         raise ConfigError("WRISTCALL_CLOUD_PUBLIC_URL and WRISTCALL_CLOUD_SIGNING_KEY go together")
+    if config.public_url:
+        check_public_url(config.public_url, config.issuer)
     owned_http: httpx.AsyncClient | None = None
     if verifier is None:
         if not config.clients:

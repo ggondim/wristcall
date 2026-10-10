@@ -179,6 +179,20 @@ def test_public_url_differs_from_issuer():
         assert "s3cr3t" not in str(e.value)
 
 
+@pytest.mark.parametrize("public_url", ["HTTPS://Cloud.Example", "https://cloud.example:443", "https://cloud.example/a//b"])
+def test_public_url_must_be_canonical(public_url):
+    # The URL is the `iss` of every per-server token: servers compare it byte for byte.
+    env = {**BASE_ENV, "WRISTCALL_CLOUD_SIGNING_KEY": P256_PEM.decode()}
+    with pytest.raises(ConfigError, match="WRISTCALL_CLOUD_PUBLIC_URL"):
+        config_from_env({**env, "WRISTCALL_CLOUD_PUBLIC_URL": public_url})
+
+
+@pytest.mark.parametrize("public_url", ["https://cloud.example/api", "http://localhost:8081", "http://127.0.0.1:8081"])
+def test_public_url_canonical_forms_are_accepted(public_url):
+    env = {**BASE_ENV, "WRISTCALL_CLOUD_SIGNING_KEY": P256_PEM.decode()}
+    assert config_from_env({**env, "WRISTCALL_CLOUD_PUBLIC_URL": public_url}).public_url == public_url
+
+
 @pytest.mark.parametrize(("raw", "expected"), [("1", True), ("true", True), ("0", False), ("", False)])
 def test_allow_loopback_audience_from_env(raw, expected):
     assert config_from_env({**BASE_ENV, "WRISTCALL_CLOUD_ALLOW_LOOPBACK_AUDIENCE": raw}).allow_loopback_audience is expected

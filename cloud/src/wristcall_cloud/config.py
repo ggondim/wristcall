@@ -102,13 +102,29 @@ def same_url(a: str, b: str) -> bool:
         return a.rstrip("/") == b.rstrip("/")
 
 
+def check_public_url(public_url: str, issuer: str) -> None:
+    """The Cloud's issuer URL is the `iss` of every per-server token and servers compare it byte for byte: it must
+    already be in its canonical (audience) form, and it must not be the account issuer."""
+    try:
+        canonical = normalize_audience(public_url) == public_url
+    except AudienceError:
+        canonical = False
+    if not canonical:
+        raise ConfigError(
+            "WRISTCALL_CLOUD_PUBLIC_URL must be a canonical https URL "
+            "(lowercase host, no default port, no trailing slash)"
+        )
+    if same_url(public_url, issuer):
+        raise ConfigError("WRISTCALL_CLOUD_PUBLIC_URL must differ from WRISTCALL_CLOUD_ISSUER")
+
+
 def _server_tokens(env: Mapping[str, str], issuer: str) -> tuple[str | None, bytes | None]:
     public_url = _https_url(env, "WRISTCALL_CLOUD_PUBLIC_URL", None)
     pem = _secret(env, "WRISTCALL_CLOUD_SIGNING_KEY")
     if (public_url is None) != (pem is None):
         raise ConfigError("WRISTCALL_CLOUD_PUBLIC_URL and WRISTCALL_CLOUD_SIGNING_KEY go together")
-    if public_url is not None and same_url(public_url, issuer):
-        raise ConfigError("WRISTCALL_CLOUD_PUBLIC_URL must differ from WRISTCALL_CLOUD_ISSUER")
+    if public_url is not None:
+        check_public_url(public_url, issuer)
     if pem is not None:
         try:
             SigningKey(pem)

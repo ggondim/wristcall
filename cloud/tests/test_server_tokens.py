@@ -115,6 +115,7 @@ async def test_cloud_tokens_pass_the_server_verifier(app):
 @pytest.mark.parametrize("body", [
     {}, {"audience": 1}, {"audience": "ftp://x"}, {"audience": "https://x?q=1"}, [],
     {"audience": "http://192.168.0.10:8765"}, {"audience": "http://localhost:8765"},   # loopback without the flag
+    {"audience": "https://127.0.0.2"}, {"audience": "https://[::ffff:127.0.0.1]"}, {"audience": "https://127.1"},
     {"audience": "https://cloud.test"}, {"audience": "https://auth.test"},             # the Cloud itself / the issuer
     {"audience": "HTTPS://Cloud.Test:443/"},
 ])
@@ -205,6 +206,16 @@ def test_key_without_public_url_is_a_config_error(mongo_db, fake_verifier, signi
     from wristcall_cloud.config import ConfigError
 
     cfg = CloudConfig(mongo_url=mongo_url(), issuer=ISSUER, clients=dict(CLIENTS))
+    with pytest.raises(ConfigError, match="WRISTCALL_CLOUD_PUBLIC_URL"):
+        create_app(cfg, store=Store(mongo_db), verifier=fake_verifier, signing_key=signing_key)
+
+
+@pytest.mark.parametrize("public_url", [ISSUER, ISSUER + "/", "HTTPS://Cloud.Test", "https://cloud.test:443"])
+def test_bad_public_url_is_a_config_error_in_create_app(mongo_db, fake_verifier, signing_key, public_url):
+    # CloudConfig built in code skips config_from_env: create_app checks again.
+    from wristcall_cloud.config import ConfigError
+
+    cfg = CloudConfig(mongo_url=mongo_url(), issuer=ISSUER, clients=dict(CLIENTS), public_url=public_url)
     with pytest.raises(ConfigError, match="WRISTCALL_CLOUD_PUBLIC_URL"):
         create_app(cfg, store=Store(mongo_db), verifier=fake_verifier, signing_key=signing_key)
 

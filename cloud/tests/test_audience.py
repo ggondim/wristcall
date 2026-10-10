@@ -12,6 +12,10 @@ from wristcall_cloud.audience import AudienceError, is_loopback, normalize_audie
         ("http://localhost:8765", "http://localhost:8765"),
         ("http://127.0.0.1:80", "http://127.0.0.1"),
         ("https://xn--bcher-kva.example", "https://xn--bcher-kva.example"),
+        ("http://127.0.0.2:8765", "http://127.0.0.2:8765"),
+        ("http://[::FFFF:127.0.0.1]", "http://[::ffff:127.0.0.1]"),
+        ("https://[::ffff:7f00:1]:8443", "https://[::ffff:127.0.0.1]:8443"),
+        ("https://10.0.0.1", "https://10.0.0.1"),
     ],
 )
 def test_valid_audiences_are_normalized(url, expected):
@@ -43,6 +47,21 @@ def test_valid_audiences_are_normalized(url, expected):
         "https://x.test/%2e",
         "https://x.test//a",
         " https://x.test",
+        "https://\u212aelvin.test",  # KELVIN SIGN lowercases to an ASCII "k"
+        "https://b\u00fccher.example",
+        "https://x.test/\u00e9",
+        "http://127.1",
+        "https://127.1",
+        "https://0x7f.1",
+        "https://0x7f000001",
+        "https://2130706433",
+        "https://127.0.0.01",
+        "https://1.2.3.256",
+        "https://1.2.3.4.5",
+        "https://x.0x1f",
+        "http://127.0.0.1.example.com",
+        "http://[::ffff:10.0.0.1]",
+        "http://10.0.0.1",
     ],
     ids=lambda url: url if len(url) < 80 else f"{len(url)} characters",
 )
@@ -74,6 +93,13 @@ def test_audience_error_is_a_value_error_without_the_url():
     [
         ("http://localhost:8765", True),
         ("https://127.0.0.1", True),
+        ("https://127.0.0.2", True),
+        ("http://127.0.0.2:8765", True),
+        ("http://[::ffff:127.0.0.1]", True),
+        ("https://[0:0:0:0:0:0:0:1]", True),
+        ("https://[::ffff:10.0.0.1]", False),
+        ("https://10.0.0.1", False),
+        ("https://127.example.com", False),
         ("http://[::1]:8080", True),
         ("https://home.example.com", False),
         ("https://localhost.example.com", False),
@@ -82,3 +108,9 @@ def test_audience_error_is_a_value_error_without_the_url():
 )
 def test_is_loopback(audience, loopback):
     assert is_loopback(normalize_audience(audience)) is loopback
+
+
+def test_mapped_ipv4_is_written_the_same_on_every_python():
+    # Python 3.13 changed how ipaddress prints ::ffff:a.b.c.d; the token audience must not depend on it.
+    assert normalize_audience("https://[::ffff:7f00:1]") == "https://[::ffff:127.0.0.1]"
+    assert normalize_audience("https://[0:0:0:0:0:ffff:a00:1]") == "https://[::ffff:10.0.0.1]"
