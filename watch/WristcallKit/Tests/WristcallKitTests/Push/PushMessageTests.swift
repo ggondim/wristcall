@@ -37,7 +37,31 @@ struct PushMessageTests {
         let info = userInfo(event: "device.approval", data: [
             "request_id": "0042", "device_name": "Ana's Watch", "expires_at": 1_760_000_000.5,
         ])
-        #expect(PushMessage(userInfo: info) == .deviceApproval(tag: "server-1", requestID: "0042", deviceName: "Ana's Watch"))
+        #expect(PushMessage(userInfo: info) == .deviceApproval(
+            tag: "server-1", requestID: "0042", deviceName: "Ana's Watch",
+            expiresAt: Date(timeIntervalSince1970: 1_760_000_000.5)
+        ))
+    }
+
+    @Test func deviceApprovalReadsWholeSecondsAndNSNumbers() {
+        let whole = userInfo(event: "device.approval", data: ["request_id": "0423", "device_name": "W", "expires_at": 1_760_000_000])
+        #expect(PushMessage(userInfo: whole) == .deviceApproval(
+            tag: "server-1", requestID: "0423", deviceName: "W", expiresAt: Date(timeIntervalSince1970: 1_760_000_000)
+        ))
+        let number = userInfo(event: "device.approval", data: ["request_id": "0423", "device_name": "W", "expires_at": NSNumber(value: 42)])
+        #expect(PushMessage(userInfo: number) == .deviceApproval(
+            tag: "server-1", requestID: "0423", deviceName: "W", expiresAt: Date(timeIntervalSince1970: 42)
+        ))
+    }
+
+    @Test func deviceApprovalWithoutAUsableExpiryHasNone() {
+        // The expiry is optional: the app then asks the server before answering.
+        for value: Any in ["1760000000", NSNumber(value: true), -1, 0, Double.nan, Double.infinity, NSNull()] {
+            let info = userInfo(event: "device.approval", data: ["request_id": "0423", "device_name": "W", "expires_at": value])
+            #expect(PushMessage(userInfo: info) == .deviceApproval(tag: "server-1", requestID: "0423", deviceName: "W", expiresAt: nil))
+        }
+        let missing = userInfo(event: "device.approval", data: ["request_id": "0423", "device_name": "W"])
+        #expect(PushMessage(userInfo: missing) == .deviceApproval(tag: "server-1", requestID: "0423", deviceName: "W", expiresAt: nil))
     }
 
     @Test func unknownEventIsOther() {

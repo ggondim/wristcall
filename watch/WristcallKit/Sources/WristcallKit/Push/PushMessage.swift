@@ -5,8 +5,9 @@ import Foundation
 public enum PushMessage: Equatable, Sendable {
     /// A call finished; `state` and `failure` come from `status` and `error` of `GET /v1/calls/{id}`.
     case callFinished(tag: String, callID: String, state: CallState, failure: CallFailure?, agentID: String?)
-    /// A device asked to be paired and waits for approval.
-    case deviceApproval(tag: String, requestID: String, deviceName: String)
+    /// A device asked to be paired and waits for approval. `expiresAt` is `data.expires_at` (unix seconds),
+    /// `nil` when absent or not a positive number. `requestID` is as sent: the app checks it before use.
+    case deviceApproval(tag: String, requestID: String, deviceName: String, expiresAt: Date?)
     /// An event this version does not know (or `test`): nothing to act on.
     case other(event: String)
 
@@ -33,9 +34,18 @@ public enum PushMessage: Equatable, Sendable {
             )
         case "device.approval":
             guard let requestID = data["request_id"] as? String, let name = data["device_name"] as? String else { return nil }
-            self = .deviceApproval(tag: tag, requestID: requestID, deviceName: name)
+            self = .deviceApproval(tag: tag, requestID: requestID, deviceName: name, expiresAt: Self.date(data["expires_at"]))
         default:
             self = .other(event: event)
         }
+    }
+
+    /// Unix seconds from a JSON number (whole or not); a string, a boolean, or a number that is not
+    /// positive and finite is no date.
+    private static func date(_ value: Any?) -> Date? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let seconds = number.doubleValue
+        guard seconds.isFinite, seconds > 0 else { return nil }
+        return Date(timeIntervalSince1970: seconds)
     }
 }

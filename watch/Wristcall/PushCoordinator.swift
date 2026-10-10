@@ -308,22 +308,9 @@ final class PushCoordinator: NSObject, PushHandling, UNUserNotificationCenterDel
         return String(String.UnicodeScalarView(host.unicodeScalars.prefix(64)))
     }
 
-    /// `https://Cloud.example.com:443/` and `https://cloud.example.com` are the same relay: scheme and host
-    /// lowercased, default port dropped, trailing slash removed. The path keeps its case.
+    /// The same relay (`PushRelayClient.sameRelay`, shared with the phone).
     static func sameRelay(_ lhs: URL, _ rhs: URL) -> Bool {
-        func normalized(_ url: URL) -> String? {
-            guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
-                  let scheme = parts.scheme?.lowercased(), let host = parts.host?.lowercased(),
-                  parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil
-            else { return nil }
-            let defaultPort = ["http": 80, "https": 443][scheme]
-            let port = parts.port.flatMap { $0 == defaultPort ? nil : ":\($0)" } ?? ""
-            var path = parts.percentEncodedPath
-            while path.hasSuffix("/") { path.removeLast() }
-            return "\(scheme)://\(host)\(port)\(path)"
-        }
-        guard let left = normalized(lhs), let right = normalized(rhs) else { return false }
-        return left == right
+        PushRelayClient.sameRelay(lhs, rhs)
     }
 
     // MARK: - Private

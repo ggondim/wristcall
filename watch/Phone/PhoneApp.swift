@@ -1,8 +1,14 @@
+import os
 import SwiftUI
+import UIKit
+import UserNotifications
 import WristcallKit
 
 @main
 struct PhoneApp: App {
+    /// The notification center's delegate is set at launch (a notification action may be what launched
+    /// the app), and the APNs token arrives there.
+    @UIApplicationDelegateAdaptor(PhoneAppDelegate.self) private var appDelegate
     @State private var state: AppState
     @State private var approvals: ApprovalsModel
     @State private var history: HistoryModel
@@ -12,12 +18,28 @@ struct PhoneApp: App {
     init() {
         let state = AppState()
         _state = State(initialValue: state)
-        _approvals = State(initialValue: ApprovalsModel(state: state))
+        let approvals = ApprovalsModel(state: state)
+        _approvals = State(initialValue: approvals)
         _history = State(initialValue: HistoryModel(state: state))
         // The Cloud comes from the build only (never from a server); empty: no account at all.
         let cloud = AccountModel.cloudURL(fromInfoValue: Bundle.main.object(forInfoDictionaryKey: "WristcallCloudURL") as? String)
         let session = cloud.map { AccountSession(cloud: $0, kind: .ios, store: KeychainTokenStore()) }
-        _account = State(initialValue: AccountModel(cloudURL: cloud, session: session, web: LiveWebAuthenticator(), state: state))
+        let account = AccountModel(cloudURL: cloud, session: session, web: LiveWebAuthenticator(), state: state)
+        _account = State(initialValue: account)
+        // Read by the app delegate in `didFinishLaunching`, which runs after this.
+        PhoneAppDelegate.notifications = ApprovalNotificationHandler(approvals: approvals)
+        #if WRISTCALL_PUSH
+        if !Self.isUnitTest, let push = PhonePushCoordinator(state: state) {
+            push.install()
+            // R18: deleting the account also undoes this iPhone's push keys.
+            let deleted = account.accountDeleted
+            account.accountDeleted = { [weak push] in
+                await deleted?()
+                await push?.forgetAll()
+            }
+            PhoneAppDelegate.push = push
+        }
+        #endif
     }
 
     var body: some Scene {
@@ -30,12 +52,17 @@ struct PhoneApp: App {
                 .task { await start() }
                 .onChange(of: scenePhase) { _, phase in
                     // Back in the foreground: ask the servers for device approvals waiting for the owner.
-                    if phase == .active, !Self.isUnitTest { Task { await approvals.refresh() } }
+                    guard phase == .active, !Self.isUnitTest else { return }
+                    Task { await approvals.refresh() }
+                    #if WRISTCALL_PUSH
+                    // R20: every activation checks the push keys again.
+                    if let push = PhoneAppDelegate.push { Task { await push.sync() } }
+                    #endif
                 }
         }
     }
 
-    private static var isUnitTest: Bool { ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil }
+    fileprivate static var isUnitTest: Bool { ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil }
 
     private func start() async {
         // The unit tests run hosted in this app: they bring their own state and nothing should hit the network.
@@ -74,7 +101,46 @@ struct RootView: View {
                 SettingsView()
             }
         }
+        // A tapped notification opens the Servers tab (and there, the server's devices).
+        .task(id: approvals.openRequest) {
+            if approvals.openRequest != nil { tab = "servers" }
+        }
     }
+}
+
+/// The UIKit callbacks SwiftUI has no equivalent for: the notification center's delegate, set before a
+/// response that launched the app is delivered, and the APNs device token (push build).
+final class PhoneAppDelegate: NSObject, UIApplicationDelegate {
+    /// Set by `PhoneApp.init`, which runs before `didFinishLaunching`.
+    @MainActor static var notifications: ApprovalNotificationHandler?
+    #if WRISTCALL_PUSH
+    @MainActor static var push: PhonePushCoordinator?
+    #endif
+    private static let log = Logger(subsystem: "io.github.ggondim.wristcall", category: "push")
+
+    func application(
+        _ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        let center = UNUserNotificationCenter.current()
+        // Every build: the category is what gives a device approval its Approve and Deny.
+        ApprovalNotifications.register(on: center)
+        center.delegate = Self.notifications
+        #if WRISTCALL_PUSH
+        if !PhoneApp.isUnitTest { Self.push?.start() }
+        #endif
+        return true
+    }
+
+    #if WRISTCALL_PUSH
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        guard let push = Self.push else { return }
+        Task { await push.didRegister(deviceToken: deviceToken) }
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: any Error) {
+        Self.log.error("push: APNs registration failed: \((error as NSError).code, privacy: .public)")
+    }
+    #endif
 }
 
 struct SettingsView: View {

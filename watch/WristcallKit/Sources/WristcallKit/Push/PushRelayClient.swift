@@ -74,6 +74,26 @@ public struct PushRelayClient: Sendable {
         guard status == 204 || status == 404 else { throw PushHTTP.error(for: status) }
     }
 
+    /// `https://Cloud.example.com:443/` and `https://cloud.example.com` are the same relay: scheme and host
+    /// lowercased, default port dropped, trailing slash removed. The path keeps its case. A URL with user,
+    /// password, query or fragment matches nothing. Apps compare the relay a server announces with their own
+    /// (never trusting the announced one by itself).
+    public static func sameRelay(_ lhs: URL, _ rhs: URL) -> Bool {
+        func normalized(_ url: URL) -> String? {
+            guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                  let scheme = parts.scheme?.lowercased(), let host = parts.host?.lowercased(),
+                  parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil
+            else { return nil }
+            let defaultPort = ["http": 80, "https": 443][scheme]
+            let port = parts.port.flatMap { $0 == defaultPort ? nil : ":\($0)" } ?? ""
+            var path = parts.percentEncodedPath
+            while path.hasSuffix("/") { path.removeLast() }
+            return "\(scheme)://\(host)\(port)\(path)"
+        }
+        guard let left = normalized(lhs), let right = normalized(rhs) else { return false }
+        return left == right
+    }
+
     private var registrations: URL { relayURL.appending(path: "v1/push/registrations") }
     private var current: URL { registrations.appending(path: "current") }
 }

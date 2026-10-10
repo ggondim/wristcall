@@ -4,6 +4,7 @@ import WristcallKit
 struct ServersView: View {
     @Environment(AppState.self) private var state
     @Environment(AccountModel.self) private var account
+    @Environment(ApprovalsModel.self) private var approvals
     @State private var adding = false
     @State private var path: [String] = []
     /// Agenda servers without a token here (signed in only).
@@ -33,6 +34,17 @@ struct ServersView: View {
             .task(id: PendingKey(signedIn: account.state == .signedIn, servers: state.servers.map(\.url))) {
                 await loadPending()
             }
+        // A tapped notification: the server of its tag, among the saved ones only (the list may still be
+        // loading on a cold start, hence the servers in the key). Its detail screen opens the devices.
+        .task(id: OpenKey(request: approvals.openRequest, servers: state.servers.map(\.id))) {
+            guard let request = approvals.openRequest else { return }
+            guard let id = request.serverID, state.servers.contains(where: { $0.id == id }) else {
+                // Nothing to open but the tab (unless the list is not read yet).
+                if !state.servers.isEmpty || state.loadError != nil { approvals.openRequest = nil }
+                return
+            }
+            if path != [id] { path = [id] }
+        }
         #if DEBUG
         .task(id: state.servers.first?.id) {
             if DebugRoute.opensServer, let id = state.servers.first?.id, path.isEmpty { path = [id] }
@@ -77,6 +89,11 @@ struct ServersView: View {
         }
         pending = await agenda.pendingSetup()
     }
+}
+
+private struct OpenKey: Equatable {
+    var request: ApprovalsModel.OpenRequest?
+    var servers: [String]
 }
 
 /// What makes the pending list stale: the sign-in, and the servers saved here.

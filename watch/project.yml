@@ -92,7 +92,12 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         TARGETED_DEVICE_FAMILY: "1"
         ENABLE_PREVIEWS: YES
-      # DebugPush gets the push entitlements and flag in task 9; nothing differs yet.
+      # The push build (approval notifications, decision R9). A target setting wins over the project's
+      # xcconfig in XcodeGen, so these are set here, like the watch app's.
+      configs:
+        DebugPush:
+          CODE_SIGN_ENTITLEMENTS: Phone/WristcallPhone-Push.entitlements
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) DEBUG WRISTCALL_PUSH"
     scheme:
       testTargets:
         - WristcallPhoneTests

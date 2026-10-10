@@ -111,4 +111,29 @@ struct PushRelayClientTests {
         let client = PushRelayClient(relayURL: relay.url, session: .stubbed())
         await #expect(throws: PairingError.unexpectedStatus(500)) { try await client.unregister(pushKey: "k") }
     }
+
+    @Test(arguments: [
+        ("https://cloud.example.com", "https://cloud.example.com/"),
+        ("https://cloud.example.com", "HTTPS://Cloud.Example.com:443"),
+        ("https://cloud.example.com/relay", "https://cloud.example.com:443/relay/"),
+        ("http://localhost", "http://LOCALHOST:80/"),
+        ("http://127.0.0.1:8090", "http://127.0.0.1:8090/"),
+    ])
+    func sameRelayIgnoresCaseDefaultPortAndTrailingSlash(_ lhs: String, _ rhs: String) {
+        #expect(PushRelayClient.sameRelay(URL(string: lhs)!, URL(string: rhs)!))
+    }
+
+    @Test(arguments: [
+        ("https://cloud.example.com", "http://cloud.example.com"),
+        ("https://cloud.example.com", "https://cloud.example.com:8443"),
+        ("http://localhost", "http://localhost:443"),
+        ("https://cloud.example.com", "https://evil.example.com"),
+        ("https://cloud.example.com/relay", "https://cloud.example.com/other"),
+        ("https://cloud.example.com/Relay", "https://cloud.example.com/relay"),
+        ("https://cloud.example.com", "https://user@cloud.example.com"),
+        ("https://cloud.example.com?a=1", "https://cloud.example.com?a=1"),
+    ])
+    func sameRelayTellsDifferentRelaysApart(_ lhs: String, _ rhs: String) {
+        #expect(!PushRelayClient.sameRelay(URL(string: lhs)!, URL(string: rhs)!))
+    }
 }

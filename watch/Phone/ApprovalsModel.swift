@@ -29,6 +29,20 @@ final class ApprovalsModel {
     /// Ids of the requests being sent right now (the buttons turn off).
     private(set) var busy: Set<String> = []
 
+    /// A notification asked to show the devices of a server: the Servers tab, then that server's devices
+    /// (`serverID` is the push's tag, looked up among the saved servers only). Each tap is a new value.
+    struct OpenRequest: Equatable {
+        let id = UUID()
+        let serverID: String?
+    }
+
+    /// Set by a tapped notification; the screen that shows it sets it back to `nil`.
+    var openRequest: OpenRequest?
+
+    func open(serverID: String?) {
+        openRequest = OpenRequest(serverID: serverID)
+    }
+
     @ObservationIgnored private let state: AppState
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private var refreshesRunning = 0

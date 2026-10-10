@@ -15,6 +15,8 @@ struct ServerDetailView: View {
     @State private var debugDevices = false
     #endif
     @FocusState private var nameFocused: Bool
+    /// A tapped notification for this server: its devices open.
+    @State private var notificationDevices = false
 
     private var server: ManagedServer? { state.servers.first { $0.id == serverID } }
 
@@ -76,6 +78,12 @@ struct ServerDetailView: View {
             }
         }
         .onAppear { name = server.name }
+        .task(id: approvals.openRequest) {
+            guard let request = approvals.openRequest, request.serverID == serverID else { return }
+            approvals.openRequest = nil
+            notificationDevices = true
+        }
+        .navigationDestination(isPresented: $notificationDevices) { DevicesView(server: server) }
         #if DEBUG
         .task {
             debugAgents = DebugRoute.opensAgents
