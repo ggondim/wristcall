@@ -12,12 +12,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
   organization is left alone. If Zitadel fails, the agenda is already deleted and the call answers
   `503 account_unavailable`; the app shows the error and a retry finishes. Without the variables only the agenda is
   deleted, as before.
+- CORS for listed browser origins (`WRISTCALL_CLOUD_CORS_ORIGINS`, a comma separated list of exact origins; empty:
+  no CORS, as before), so the wristcall PWA can call the API. Methods `GET`, `POST`, `PUT`, `PATCH`, `DELETE`; request
+  headers `Authorization` and `Content-Type`; no credentials; `Retry-After` is exposed. See "Browsers (CORS)" in
+  [cloud/README.md](cloud/README.md).
 
 ### Changed
 
 - iPhone app (next release): the "Delete account" confirmation says the sign-in is deleted too.
 - The end-to-end browser helper (`tools/e2e/zitadel_browser.py`) drives Zitadel's login v2: the iPhone sign-in
   (PKCE) is now verified against the real identity provider by the account e2e.
+
+## [0.7.0] - Unreleased
+
+### Added
+
+- CORS for listed browser origins: `server.cors_origins` in `wristcall.yaml` (exact origins, `https` or `http` on
+  loopback; empty by default: no CORS, as before), so the wristcall PWA can call the management API. Methods `GET`,
+  `POST`, `PUT`, `PATCH`, `DELETE`; request headers `Authorization` and `Content-Type`; no credentials;
+  `Content-Disposition` is exposed (the export's file name). A server on plain `http` outside localhost cannot be
+  used from a PWA served over `https` (mixed content). See "Browsers (CORS)" in [docs/protocol.md](docs/protocol.md).
 
 ## [ios-0.1.0] - 2026-10-10
 

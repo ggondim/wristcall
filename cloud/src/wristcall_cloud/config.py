@@ -63,6 +63,8 @@ class CloudConfig:
     zitadel_org_id: str | None = None
     zitadel_client_id: str | None = None
     zitadel_client_secret: str | None = field(default=None, repr=False)
+    # Browser origins allowed to call the API (the wristcall PWA); empty: no CORS headers at all.
+    cors_origins: tuple[str, ...] = ()
 
 
 class ConfigError(Exception):
@@ -263,6 +265,41 @@ def _zitadel(env: Mapping[str, str]) -> tuple[str | None, str | None, str | None
     return values
 
 
+def _cors_origins(env: Mapping[str, str]) -> tuple[str, ...]:
+    """Comma-separated exact origins (`scheme://host[:port]`); https, or http only on loopback. Never `*`."""
+    name = "WRISTCALL_CLOUD_CORS_ORIGINS"
+    origins: list[str] = []
+    for raw in (_get(env, name) or "").split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            parts = urlsplit(raw)
+            host, port = parts.hostname, parts.port
+        except ValueError:
+            raise ConfigError(f"{name} must be a comma-separated list of origins") from None
+        valid = (
+            parts.scheme in ("http", "https")
+            and host
+            and not parts.path
+            and not parts.username
+            and not parts.password
+            and not any(c in raw for c in "*?#@\\ ")
+            and (parts.scheme == "https" or host in LOCAL_HOSTS)
+        )
+        if not valid:
+            raise ConfigError(
+                f"{name} must be a comma-separated list of origins (https://host[:port], no path; "
+                "http only for localhost)"
+            )
+        shown = f"[{host}]" if ":" in host else host
+        default_port = 443 if parts.scheme == "https" else 80
+        origin = f"{parts.scheme}://{shown}" + (f":{port}" if port not in (None, default_port) else "")
+        if origin not in origins:
+            origins.append(origin)
+    return tuple(origins)
+
+
 def config_from_env(env: Mapping[str, str]) -> CloudConfig:
     mongo_url = _get(env, "WRISTCALL_CLOUD_MONGO_URL")
     if mongo_url is None:
@@ -316,4 +353,5 @@ def config_from_env(env: Mapping[str, str]) -> CloudConfig:
         zitadel_org_id=zitadel_org_id,
         zitadel_client_id=zitadel_client_id,
         zitadel_client_secret=zitadel_client_secret,
+        cors_origins=_cors_origins(env),
     )

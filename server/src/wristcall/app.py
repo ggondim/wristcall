@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, Header, Request, Response, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -464,4 +465,16 @@ def create_app(
                 await ws.close(code=protocol.CLOSE_NORMAL)
             log.info("call %s ended", record.id)
 
+    if config.server.cors_origins:
+        # Bearer tokens in a header, no cookies: no credentials. The outermost layer, so errors answered by the
+        # routes (401, 404, 422) carry the headers too; a 500 is answered outside every middleware and does not.
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=config.server.cors_origins,
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+            allow_headers=["Authorization", "Content-Type"],
+            allow_credentials=False,
+            expose_headers=["Content-Disposition"],
+            max_age=600,
+        )
     return app

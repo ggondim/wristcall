@@ -12,11 +12,34 @@ or any other) and a wristcall server. Version: **1**.
   (libraries do this on their own). This keeps the call alive behind proxies
   that drop idle connections.
 
+### Browsers (CORS)
+
+Since server 0.7.0 a browser app (the wristcall PWA) can call the REST routes from a listed origin. By default the
+server sends no `Access-Control-*` header, so browsers refuse every cross origin call, as before. The owner lists the
+origins in `wristcall.yaml`:
+
+```yaml
+server:
+  cors_origins: [https://app.wristcall.trigram.com.br]
+```
+
+Each entry is an exact origin, `scheme://host[:port]`: `https`, or `http` only for `localhost`, `127.0.0.1` and
+`[::1]`; no path, trailing slash, `*` or user (the server does not start otherwise). For a listed origin the server
+answers the preflight for the methods `GET`, `POST`, `PUT`, `PATCH` and `DELETE` and the request headers
+`Authorization` and `Content-Type` (cached for 10 minutes), and exposes `Content-Disposition` (the file name of
+`GET /v1/calls/export`) to the page. Credentials are not allowed: the token travels in the `Authorization` header and
+the server sets no cookies. Error answers (`401`, `404`, `422`) carry the headers too; a `500` does not (the framework
+answers it outside every middleware), so the browser reports it as a network failure: a page that sees a network error
+from a server whose `GET /v1/health` answers can treat it as a server failure.
+
+A page served over `https` cannot call a server on plain `http` (mixed content), unless the server is on `localhost`:
+a server reached from a browser app needs `https`, like any server behind TLS.
+
 ## Pairing (REST, JSON)
 
 | Route | Body | Responses |
 |---|---|---|
-| `GET /v1/health` | | `200 {"status":"ok","version":"0.6.0","protocol":1,"account":null,"push":null}`. `account` is `{"issuer","device_credential"}` when the server accepts a [central account](#central-account-optional), `null` otherwise; `push` is `{"relay"}` when the server sends [push notifications](#push-notifications-optional), `null` otherwise (older servers omit either) |
+| `GET /v1/health` | | `200 {"status":"ok","version":"0.7.0","protocol":1,"account":null,"push":null}`. `account` is `{"issuer","device_credential"}` when the server accepts a [central account](#central-account-optional), `null` otherwise; `push` is `{"relay"}` when the server sends [push notifications](#push-notifications-optional), `null` otherwise (older servers omit either) |
 | `POST /v1/pair` | `{"code": "12345678" \| null, "device_name": "Apple Watch"}` | `200 {"device_id","token"}`: paired (flow A). `202 {"request_id","poll_token","expires_at"}`: waiting for the owner's approval (flow B). `401 {"error":"invalid_code"}`. `429 {"error":"rate_limited"}` |
 | `POST /v1/pair/poll` | `{"poll_token": "..."}` | `202 {"request_id","expires_at"}`: pending. `200 {"device_id","token"}`: approved (delivered only once). `403 {"error":"limit"}`: approved, but the user is at the device limit, so the device cannot be collected yet (the request stays valid; try again after a device is revoked). `410 {"error":"gone"}`: expired, denied or already delivered. `422`: body without `poll_token` or with more than 128 characters |
 | `GET /v1/calls/{call_id}` | | `200 call` (see [One-way calls](#one-way-calls-one-shot-monologue)): a call of this token's user, with a device or an API token; a device token reads only the calls made from that device. `404 {"error":"not_found"}` (also for a call made from another device). `401` |
