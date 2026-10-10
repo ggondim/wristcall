@@ -85,8 +85,8 @@ export class CloudClient {
     }
   }
 
-  updateServer(accessToken: string, id: string, patch: { name?: string; linked?: boolean }): Promise<CloudServer> {
-    return json(this.#url(`v1/servers/${segment(id)}`), { method: "PATCH", bearer: accessToken, json: patch }, this.#fetch)
+  async updateServer(accessToken: string, id: string, patch: { name?: string; linked?: boolean }): Promise<CloudServer> {
+    return await json(this.#url(`v1/servers/${segment(id)}`), { method: "PATCH", bearer: accessToken, json: patch }, this.#fetch)
   }
 
   /** `404` counts as done. */

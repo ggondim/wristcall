@@ -425,6 +425,99 @@ describe("signOut", () => {
   })
 })
 
+const tab = (w: World) => new AccountSession(new CloudClient(CLOUD, w.fetch), w.store, { fetchImpl: w.fetch, now: () => w.clock.now, origin: ORIGIN })
+
+/** A Web Locks stand-in: requests for one name run one after the other. */
+function stubLocks(): string[] {
+  const names: string[] = []
+  let tail: Promise<unknown> = Promise.resolve()
+  vi.stubGlobal("navigator", {
+    ...globalThis.navigator,
+    locks: {
+      request: (name: string, callback: () => Promise<unknown>) => {
+        names.push(name)
+        const run = tail.then(callback, callback)
+        tail = run.catch(() => {})
+        return run
+      },
+    },
+  })
+  return names
+}
+
+describe("two tabs", () => {
+  test("signOutInOtherTabWinsOverRenewal: a renewal that returns after another tab signed out does not save its token", async () => {
+    const a = await signedInSession({ accessExpiresIn: 0 })
+    const b = tab(a)
+    await b.load()
+    let release: () => void = () => {}
+    a.answer = () => new Promise<Response>((resolve) => (release = () => resolve(reply({ access_token: "b-at", refresh_token: "rt-2", expires_in: 3600 }))))
+    const renewing = b.accessToken()
+    renewing.catch(() => {})
+    await vi.waitFor(() => expect(a.tokenForms).toHaveLength(1))
+    await a.session.signOut() // tab A: deletes and revokes rt-0
+    release()
+    await expect(renewing).rejects.toMatchObject({ kind: "signed_out" })
+    expect(await a.store.getKV("account.refresh")).toBeNull()
+    expect(b.state).toBe("signedOut")
+    const fresh = tab(a)
+    await fresh.load()
+    expect(fresh.state).toBe("signedOut")
+    await vi.waitFor(() => expect(a.revokes.map((r) => r.get("token"))).toEqual(["rt-0", "rt-2"]))
+  })
+
+  test("with Web Locks the sign-out waits for the renewal and revokes the token it stored", async () => {
+    const names = stubLocks()
+    const a = await signedInSession({ accessExpiresIn: 0 })
+    const b = tab(a)
+    await b.load()
+    let release: () => void = () => {}
+    a.answer = () => new Promise<Response>((resolve) => (release = () => resolve(reply({ access_token: "b-at", refresh_token: "rt-2", expires_in: 3600 }))))
+    const renewing = b.accessToken()
+    await vi.waitFor(() => expect(a.tokenForms).toHaveLength(1))
+    const signingOut = a.session.signOut()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(a.revokes).toHaveLength(0) // still waiting for the lock
+    release()
+    expect(await renewing).toBe("b-at")
+    await signingOut
+    expect(a.revokes.map((r) => r.get("token"))).toEqual(["rt-2"])
+    expect(await a.store.getKV("account.refresh")).toBeNull()
+    expect(names).toContain("wc.refresh")
+  })
+
+  test("a renewal superseded by a sign-out in the same tab revokes the rotated token", async () => {
+    const w = await signedInSession({ accessExpiresIn: 0 })
+    let release: () => void = () => {}
+    w.answer = () => new Promise<Response>((resolve) => (release = () => resolve(reply({ access_token: "late", refresh_token: "rt-late", expires_in: 3600 }))))
+    const renewing = w.session.accessToken()
+    renewing.catch(() => {})
+    await vi.waitFor(() => expect(w.tokenForms).toHaveLength(1))
+    await w.session.signOut()
+    release()
+    await expect(renewing).rejects.toMatchObject({ kind: "signed_out" })
+    await vi.waitFor(() => expect(w.revokes.map((r) => r.get("token"))).toContain("rt-late"))
+  })
+
+  test("concurrent first calls fetch discovery once, and a failed discovery is not cached", async () => {
+    const w = await world()
+    let fail = true
+    const inner = w.fetch
+    const flaky = mockFetch((url, init) => {
+      if (url.endsWith("/.well-known/openid-configuration") && fail) return Promise.reject(new TypeError("offline"))
+      return inner(url, init)
+    })
+    const session = new AccountSession(new CloudClient(CLOUD, flaky), w.store, { fetchImpl: flaky, now: () => w.clock.now, origin: ORIGIN })
+    const first = await Promise.allSettled([session.beginSignIn(), session.beginSignIn()])
+    expect(first.map((r) => r.status)).toEqual(["rejected", "rejected"])
+    expect(flaky.calls.filter((c) => c.url.endsWith("/.well-known/openid-configuration"))).toHaveLength(1)
+    fail = false
+    await Promise.all([session.beginSignIn(), session.beginSignIn()])
+    expect(flaky.calls.filter((c) => c.url.endsWith("/.well-known/openid-configuration"))).toHaveLength(2)
+    expect(flaky.calls.filter((c) => c.url === `${CLOUD}/v1/config`)).toHaveLength(1)
+  })
+})
+
 describe("secrets", () => {
   beforeEach(() => {
     vi.spyOn(console, "log")

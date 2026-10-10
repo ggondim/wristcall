@@ -76,7 +76,7 @@ describe("CloudClient", () => {
     expect(JSON.parse(String(f.lastInit().body))).toEqual({ agents })
     await cloud.removeServer("at", "s1")
     expect(f.lastInit().method).toBe("DELETE")
-    expect(() => cloud.updateServer("at", "..", {})).toThrow()
+    await expect(cloud.updateServer("at", "..", {})).rejects.toThrow("Invalid identifier.")
   })
 
   test("removeServer: 404 counts as done", async () => {
