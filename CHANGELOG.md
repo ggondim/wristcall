@@ -2,6 +2,18 @@
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each component follows [SemVer](https://semver.org/) on its own: the server is published by the `server-vX.Y.Z` tag (Docker image); the watch app is marked by the `watch-vX.Y.Z` tag and has no published binary (build it with Xcode, see [watch/README.md](watch/README.md)).
 
+## [Unreleased]
+
+### Changed
+
+- **Breaking for `central_account`:** the server accepts only per-server tokens signed by the wristcall Cloud
+  (`typ` `wc-server+jwt`, `aud` = this server's URL). `central_account.issuer` is now the Cloud URL and the new
+  `central_account.audience` (this server's URL(s), as apps reach it) is required: a 0.5.0 `central_account`
+  without it stops the server at startup (`central_account.audience: Field required`). `clients` is optional.
+  Links made with 0.5.0 (account key named the account issuer) must be made again. Without `central_account`
+  nothing changes.
+- Reference client: `pair-account` takes `--cloud` and asks the Cloud for a token made for the server it pairs with.
+
 ## [watch-0.2.0] - 2026-10-09
 
 Needs server 0.3.0 or later for agents and turn modes and 0.4.0 or later for one-way agents. With 0.2.x servers it works as one conversation agent per profile.

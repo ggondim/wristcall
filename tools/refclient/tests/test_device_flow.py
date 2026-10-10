@@ -175,6 +175,9 @@ def test_cli_login_then_pair_account(tmp_path, monkeypatch, capsys):
         200, json={"device_code": "d", "user_code": "ABCD", "verification_uri": f"{ISSUER}/device", "expires_in": 60, "interval": 1}
     )
     respx.post(TOKEN_EP).respond(200, json={"access_token": "secret-at", "refresh_token": "secret-rt", "expires_in": 3600})
+    cloud = "https://cloud.example.com"
+    respx.get(f"{SERVER}/v1/health").respond(200, json={"account": {"issuer": cloud}})
+    respx.post(f"{cloud}/v1/server-tokens").respond(200, json={"token": "secret-st"})
     respx.post(f"{SERVER}/v1/pair/account").respond(200, json={"device_id": "d1", "token": "secret-wct"})
 
     assert cli.cmd_login(argparse.Namespace(issuer=ISSUER, client_id="cid", scope="openid")) == 0
@@ -183,12 +186,12 @@ def test_cli_login_then_pair_account(tmp_path, monkeypatch, capsys):
     assert saved["expires_at"] > 0
     assert stat.S_IMODE((tmp_path / "account.json").stat().st_mode) == 0o600
 
-    assert cli.cmd_pair_account(argparse.Namespace(server=SERVER, name="Mac")) == 0
+    assert cli.cmd_pair_account(argparse.Namespace(server=SERVER, cloud=cloud, name="Mac")) == 0
     assert json.loads((tmp_path / "refclient.json").read_text()) == {"server": SERVER, "token": "secret-wct"}
     assert stat.S_IMODE((tmp_path / "refclient.json").stat().st_mode) == 0o600
     out = capsys.readouterr()
     assert "ABCD" in out.out
-    for secret in ("secret-at", "secret-rt", "secret-wct"):
+    for secret in ("secret-at", "secret-rt", "secret-st", "secret-wct"):
         assert secret not in out.out + out.err
 
 
@@ -198,5 +201,5 @@ def test_cli_pair_account_requires_login(tmp_path, monkeypatch, capsys):
     from refclient import __main__ as cli
 
     monkeypatch.setattr(cli, "ACCOUNT", tmp_path / "missing.json")
-    assert cli.cmd_pair_account(argparse.Namespace(server=SERVER, name="Mac")) == 1
+    assert cli.cmd_pair_account(argparse.Namespace(server=SERVER, cloud="https://cloud.example.com", name="Mac")) == 1
     assert "login" in capsys.readouterr().err

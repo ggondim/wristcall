@@ -12,6 +12,8 @@ import httpx
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
+from .device_flow import USER_AGENT
+
 FRAME_BYTES = 640
 CLOSE_UNAUTHORIZED = 4401
 START = {"type": "session.start", "protocol": 1, "audio_in": {"codec": "pcm16", "sample_rate": 16000, "channels": 1}}
@@ -19,11 +21,15 @@ START = {"type": "session.start", "protocol": 1, "audio_in": {"codec": "pcm16", 
 ONE_WAY = ("one-shot", "monologue")
 
 
-class PairError(Exception):
+class RefclientError(Exception):
+    """A failure to show the user. Never carries a token."""
+
+
+class PairError(RefclientError):
     pass
 
 
-class CallError(Exception):
+class CallError(RefclientError):
     pass
 
 
@@ -77,6 +83,58 @@ def _error_name(r: httpx.Response) -> str:
     except ValueError:
         return "unknown"
     return str(body.get("error", "unknown")) if isinstance(body, dict) else "unknown"
+
+
+def _same_url(a: str, b: str) -> bool:
+    """Compared in normalized form: httpx lowercases scheme and host; default ports and trailing slash dropped."""
+    try:
+        x, y = httpx.URL(a), httpx.URL(b)
+    except httpx.InvalidURL:
+        return False
+
+    def key(url: httpx.URL) -> tuple:
+        return url.scheme, url.host, url.port or {"https": 443, "http": 80}.get(url.scheme), url.path.rstrip("/")
+
+    return key(x) == key(y)
+
+
+def require_cloud(server: str, cloud: str, *, http: httpx.Client | None = None) -> None:
+    """Refuses a server whose central account is not `cloud` (the Cloud the user chose, never one the server names).
+
+    A server announcing a Cloud of its own would get the login token, which is good at the real Cloud."""
+    client = http or httpx.Client(timeout=10.0)
+    r = client.get(f"{server.rstrip('/')}/v1/health", headers={"User-Agent": USER_AGENT})
+    try:
+        account = r.json().get("account") if r.status_code == 200 else None
+    except (ValueError, AttributeError):
+        account = None
+    if r.status_code != 200 or not isinstance(account, dict):
+        raise RefclientError("this server has no central account" if r.status_code == 200 else (
+            f"cannot read the server's health ({r.status_code})"
+        ))
+    issuer = account.get("issuer")
+    if not isinstance(issuer, str) or not _same_url(issuer, cloud):
+        raise RefclientError(f"this server trusts another central account: {issuer}")
+
+
+def server_token(cloud: str, account_token: str, audience: str, *, http: httpx.Client | None = None) -> str:
+    """A token the Cloud makes for one server only (`audience`, its URL as the user typed it) from the central
+    account login. The login token itself never goes to a server."""
+    client = http or httpx.Client(timeout=10.0)
+    r = client.post(
+        f"{cloud.rstrip('/')}/v1/server-tokens",
+        json={"audience": audience},
+        headers={"Authorization": f"Bearer {account_token}", "User-Agent": USER_AGENT},
+    )
+    if r.status_code != 200:
+        raise RefclientError(f"the cloud refused a token for this server ({r.status_code}): {_error_name(r)}")
+    try:
+        token = r.json().get("token")
+    except (ValueError, AttributeError):
+        token = None
+    if not isinstance(token, str) or not token:
+        raise RefclientError("the cloud answered without a token")
+    return token
 
 
 def pair_account(

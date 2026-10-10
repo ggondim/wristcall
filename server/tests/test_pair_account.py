@@ -6,18 +6,21 @@ import httpx
 import pytest
 import respx
 
-from oidc_fixtures import AUDIENCE, ISSUER, FakeIssuer
+from oidc_fixtures import AUDIENCE, ISSUER, SERVER_AUDIENCE, SERVER_TOKEN_TYPE, FakeIssuer
 from test_api import api_token, device_token, h, make_client, run
 from conftest import fake_config
 from wristcall.config import CentralAccountConfig
 
 
-def account_config(device_credential: str, **server):
+def account_config(device_credential: str, *, audience=(SERVER_AUDIENCE,), clients=(AUDIENCE,), **server):
     cfg = fake_config()
-    return cfg.model_copy(update={
-        "central_account": CentralAccountConfig(issuer=ISSUER, clients=[AUDIENCE], device_credential=device_credential),
-        "server": cfg.server.model_copy(update=server),
-    })
+    central = CentralAccountConfig(
+        issuer=ISSUER,
+        audience=list(audience),
+        clients=list(clients) if clients is not None else None,
+        device_credential=device_credential,
+    )
+    return cfg.model_copy(update={"central_account": central, "server": cfg.server.model_copy(update=server)})
 
 
 @pytest.fixture
@@ -28,7 +31,8 @@ def router():
 
 @pytest.fixture
 def issuer(router):
-    return FakeIssuer(router)
+    # Plays the Cloud: per-server tokens for this server.
+    return FakeIssuer(router, aud=[SERVER_AUDIENCE], typ=SERVER_TOKEN_TYPE)
 
 
 @pytest.fixture
@@ -303,3 +307,73 @@ def test_pair_account_never_echoes_or_logs_tokens(appr_client, issuer, caplog):
     for t in [*tokens, good, pending.json()["poll_token"]]:
         assert t not in caplog.text
     assert f"pairing request for user {run(appr_client.app.state.storage.users.by_handle('owner')).id}" in caplog.text
+
+
+# --- 0.6.0: only per-server tokens from the Cloud, made for this server's URL ---
+
+
+@pytest.fixture
+def client(att_client, issuer):
+    # Linked first, so a token that passes pairs right away (200) and one that does not is a 401.
+    link(att_client, issuer.token(), api_token(att_client))
+    return att_client
+
+
+def test_token_for_another_server_is_rejected(client, issuer):
+    token = issuer.token(aud=["https://other.example.com"])
+    r = client.post("/v1/pair/account", json={"token": token, "device_name": "watch"})
+    assert r.status_code == 401 and r.json()["error"] == "invalid_account_token"
+
+
+def test_zitadel_token_is_rejected_by_server(client, issuer, router):
+    # What a 0.5.0 app sent: the audience is the app's client id, not this server.
+    token = issuer.token(aud=["client-watch"])
+    r = client.post("/v1/pair/account", json={"token": token, "device_name": "watch"})
+    assert r.status_code == 401
+    # And the real attack: a token from another issuer (the Zitadel itself) naming this server.
+    zitadel = FakeIssuer(router, "https://zitadel.test")
+    token = zitadel.token(aud=[SERVER_AUDIENCE])
+    r = client.post("/v1/pair/account", json={"token": token, "device_name": "watch"})
+    assert r.status_code == 401
+    assert run(client.app.state.pairing.list_devices()) == []
+
+
+def test_token_without_server_type_is_rejected(client, issuer):
+    for headers in ({"typ": "JWT"}, {"typ": "at+jwt"}, {"typ": None}):
+        r = pair_account(client, issuer.token(headers=headers))
+        assert r.status_code == 401 and r.json()["error"] == "invalid_account_token"
+    assert pair_account(client, issuer.token()).status_code == 200
+
+
+def test_audience_matches_after_normalization(router, issuer):
+    with make_client(account_config("attestation", audience=["HTTPS://TestServer:443/"])) as c:
+        link(c, issuer.token(), api_token(c))
+        assert pair_account(c, issuer.token(aud=[SERVER_AUDIENCE])).status_code == 200
+
+
+def test_clients_are_optional(router, issuer):
+    with make_client(account_config("attestation", clients=None)) as c:
+        link(c, issuer.token(client_id="client-anything"), api_token(c))
+        assert pair_account(c, issuer.token(client_id="client-something-else")).status_code == 200
+
+
+def test_clients_still_restrict_when_set(router, issuer):
+    with make_client(account_config("attestation", clients=["client-ios"])) as c:
+        pat = api_token(c)
+        r = c.post("/v1/account/link", json={"token": issuer.token(client_id="client-watch")}, headers=h(pat))
+        assert r.status_code == 401
+        link(c, issuer.token(client_id="client-ios"), pat)
+        r = pair_account(c, issuer.token(client_id="client-watch"))
+        assert r.status_code == 401 and r.json()["error"] == "invalid_account_token"
+        assert pair_account(c, issuer.token(client_id="client-ios")).status_code == 200
+
+
+def test_public_url_outside_audience_is_a_warning(router, caplog):
+    caplog.set_level(logging.WARNING, logger="wristcall")
+    with make_client(account_config("attestation", public_url="https://elsewhere.example.com")):
+        pass
+    assert "server.public_url is not in central_account.audience" in caplog.text
+    caplog.clear()
+    with make_client(account_config("attestation", public_url="HTTPS://TestServer/")):
+        pass
+    assert "central_account.audience" not in caplog.text

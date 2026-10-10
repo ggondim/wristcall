@@ -11,6 +11,9 @@ from cryptography.hazmat.primitives.asymmetric import ec, rsa
 ISSUER = "https://issuer.test"
 JWKS_URI = f"{ISSUER}/oauth/v2/keys"
 AUDIENCE = "client-watch"
+# What the server tests use as their own URL: a per-server token from the Cloud names it in `aud`.
+SERVER_AUDIENCE = "https://testserver"
+SERVER_TOKEN_TYPE = "wc-server+jwt"
 
 
 def rsa_key():
@@ -33,8 +36,18 @@ def ec_key():
 class FakeIssuer:
     """Holds the signing keys and serves them through respx routes."""
 
-    def __init__(self, router: respx.Router, issuer: str = ISSUER) -> None:
+    def __init__(
+        self,
+        router: respx.Router,
+        issuer: str = ISSUER,
+        *,
+        aud: list[str] | None = None,
+        typ: str | None = None,
+    ) -> None:
         self.issuer = issuer
+        # Defaults for every token: an issuer playing the Cloud signs for a server URL with typ wc-server+jwt.
+        self.aud = aud or [AUDIENCE]
+        self.typ = typ
         self.keys: dict[str, tuple[Any, str]] = {"k1": (rsa_key(), "RS256")}
         self.discovery = router.get(f"{issuer}/.well-known/openid-configuration").mock(
             side_effect=lambda request: httpx.Response(200, json={"issuer": issuer, "jwks_uri": f"{issuer}/oauth/v2/keys"})
@@ -50,7 +63,7 @@ class FakeIssuer:
         claims: dict[str, Any] = {
             "iss": self.issuer,
             "sub": "central-user-1",
-            "aud": [AUDIENCE],
+            "aud": list(self.aud),
             "iat": now,
             "exp": now + 600,
             "client_id": AUDIENCE,
@@ -58,4 +71,5 @@ class FakeIssuer:
         claims.update(overrides)
         claims = {k: v for k, v in claims.items() if v is not None}
         key, key_alg = self.keys[kid]
-        return jwt.encode(claims, key, algorithm=alg or key_alg, headers={"kid": kid, **(headers or {})})
+        header = {"kid": kid, **({"typ": self.typ} if self.typ else {}), **(headers or {})}
+        return jwt.encode(claims, key, algorithm=alg or key_alg, headers=header)

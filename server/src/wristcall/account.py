@@ -32,6 +32,9 @@ class AccountError(Exception):
 
 
 def account_key(issuer: str, subject: str) -> str:
+    """The user's central account here: `"<Cloud URL>#<sub>"`. The Cloud's `sub` is already
+    `"<account issuer>#<account sub>"`, so the key reads `"<Cloud URL>#<account issuer>#<account sub>"`. Links made
+    while the issuer was the account issuer itself (0.5.0) no longer match, and changing the Cloud URL undoes them."""
     return f"{normalize_issuer(issuer)}#{subject}"
 
 
@@ -48,7 +51,9 @@ class AccountService:
     ) -> None:
         self.config = config
         self._st = storage
-        self._verifier = verifier or OidcVerifier(config.issuer, config.clients, http, clients=config.clients)
+        self._verifier = verifier or OidcVerifier(
+            config.issuer, config.audience, http, clients=config.clients, typ="wc-server+jwt"
+        )
         self._now = now
         self._max_attempts = max_attempts
 

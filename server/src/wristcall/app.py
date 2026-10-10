@@ -21,6 +21,7 @@ from .agents import (
     build_one_way_providers,
 )
 from .api import management_router
+from .audience import AudienceError, normalize_audience
 from .auth import Authenticator, Principal
 from .bootstrap import bootstrap, log_report
 from .config import AppConfig
@@ -81,6 +82,20 @@ class _WsTransport:
             await self._ws.send_bytes(data)
 
 
+def _check_audience(config: AppConfig) -> None:
+    """Not an error (the server may have another public name), but apps that reach it at `public_url` would
+    ask the Cloud for tokens this server refuses."""
+    try:
+        public = normalize_audience(config.server.public_url)
+    except AudienceError:
+        public = None
+    if public not in config.central_account.audience:
+        log.warning(
+            "server.public_url is not in central_account.audience: apps reaching the server there cannot pair "
+            "with the central account"
+        )
+
+
 def create_app(
     config: AppConfig,
     *,
@@ -100,6 +115,8 @@ def create_app(
     auth = Authenticator(store)
     limiter = RateLimiter(limit=10, window_s=60)
     account = AccountService(store, config.central_account, http_client) if config.central_account else None
+    if config.central_account:
+        _check_audience(config)
     history = History(store, HistoryCodec(config.history.key()), config.history)
     targets = warmup_targets(config, http_client)
     call_targets = [t for t in targets if t.config.on_call]

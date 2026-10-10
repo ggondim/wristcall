@@ -6,10 +6,12 @@ server:
   pairing_approval: code        # code: only the code from `wristcall pair` | manual: accepts requests and approves them in the CLI
   data_dir: /data
 
-# Central account (wristcall cloud account, OIDC). Optional: without it the server works on its own.
+# Central account (wristcall Cloud, OIDC). Optional: without it the server works on its own.
+# Apps exchange their login for a token made for this server only (its URL below), signed by the Cloud.
 # central_account:
-#   issuer: https://auth.trigram.com.br
-#   clients: ["<watch client id>", "<iOS client id>", "<PWA client id>"]  # app client ids, not the project id
+#   issuer: https://cloud.wristcall.example        # the wristcall Cloud API
+#   audience: ["https://wristcall.example.com"]    # this server's URL(s), exactly as apps reach it
+#   clients: ["<watch client id>", "<iOS client id>", "<PWA client id>"]   # optional
 #   device_credential: approval   # approval (you approve each new device) | attestation (any linked login pairs)
 
 # Call history (optional): how long calls stay and whether their text is encrypted at rest.

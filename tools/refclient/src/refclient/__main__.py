@@ -12,7 +12,18 @@ from pathlib import Path
 import httpx
 
 from . import device_flow
-from .client import CallError, PairError, pair, pair_account, run_call, wait_for_call, wav_source
+from .client import (
+    CallError,
+    PairError,
+    RefclientError,
+    pair,
+    pair_account,
+    require_cloud,
+    run_call,
+    server_token,
+    wait_for_call,
+    wav_source,
+)
 
 CONFIG = Path(os.environ.get("WRISTCALL_REFCLIENT_CONFIG", Path.home() / ".config" / "wristcall" / "refclient.json"))
 
@@ -95,9 +106,16 @@ def cmd_pair_account(args: argparse.Namespace) -> int:
         print("the account login expired: run `wristcall-refclient login` again", file=sys.stderr)
         return 1
     try:
-        creds = pair_account(args.server, token, args.name)
-    except PairError as e:
+        with httpx.Client(timeout=10.0) as http:
+            # The Cloud comes from the user, never from the server; the token is asked for the URL as typed.
+            require_cloud(args.server, args.cloud, http=http)
+            server_tok = server_token(args.cloud, token, args.server, http=http)
+            creds = pair_account(args.server, server_tok, args.name, http=http)
+    except RefclientError as e:
         print(e, file=sys.stderr)
+        return 1
+    except httpx.HTTPError as e:
+        print(f"request failed: {type(e).__name__}", file=sys.stderr)
         return 1
     _save_credentials(args.server, creds)
     return 0
@@ -193,6 +211,7 @@ def main() -> None:
     lg.set_defaults(func=cmd_login)
     pa = sub.add_parser("pair-account", help="pair with a server using the central account login")
     pa.add_argument("--server", required=True, help="server URL, e.g. https://wristcall.yourdomain.com")
+    pa.add_argument("--cloud", required=True, help="wristcall Cloud URL the server trusts (its central_account.issuer)")
     pa.add_argument("--name", default="refclient", help="name of this device")
     pa.set_defaults(func=cmd_pair_account)
     c = sub.add_parser("call", help="call the agent")

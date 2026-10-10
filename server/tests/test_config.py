@@ -179,8 +179,12 @@ def test_production_values_are_within_bounds():
     assert parse_config(data, ENV).profiles["default"].vad.silence_ms == 2000
 
 
+SERVER_AUD = "https://wc.example.com"
+
+
 def _with_central(**central):
-    return {**base(), "central_account": central}
+    # `audience` is required (0.6.0); the tests that are not about it get the server's URL.
+    return {**base(), "central_account": {"audience": [SERVER_AUD], **central}}
 
 
 def test_central_account_is_optional():
@@ -211,11 +215,45 @@ def test_central_account_parses_and_normalizes_issuer():
         {"issuer": "https://user:pass@auth.example.com", "clients": ["a"]},
         {"issuer": "https://user@auth.example.com", "clients": ["a"]},
         {"issuer": "https://:pass@auth.example.com", "clients": ["a"]},
+        {"issuer": "https://cloud.example.com", "audience": []},
+        {"issuer": "https://cloud.example.com", "audience": "https://wc.example.com"},
+        {"issuer": "https://cloud.example.com", "audience": ["ftp://wc.example.com"]},
+        {"issuer": "https://cloud.example.com", "audience": ["https://wc.example.com?x=1"]},
+        {"issuer": "https://cloud.example.com", "audience": ["http://wc.example.com"]},
+        {"issuer": "https://cloud.example.com", "audience": ["https://wc.example.com", "http://localhost:8765"]},
     ],
 )
 def test_bad_central_account_is_rejected(central):
     with pytest.raises(ConfigError):
         parse_config(_with_central(**central), ENV)
+
+
+def test_central_account_without_audience_says_so():
+    # E5 configs (issuer = the account issuer, no audience) must not start: the server would never accept a token.
+    data = {**base(), "central_account": {"issuer": "https://auth.example.com", "clients": ["a"]}}
+    with pytest.raises(ConfigError, match="central_account.audience: Field required"):
+        parse_config(data, ENV)
+
+
+def test_central_account_audience_is_normalized():
+    cfg = parse_config(
+        _with_central(issuer="https://cloud.example.com", audience=["HTTPS://WC.Example.com:443/", "https://x.test/wc/"]),
+        ENV,
+    )
+    assert cfg.central_account.audience == ["https://wc.example.com", "https://x.test/wc"]
+
+
+def test_central_account_loopback_audiences_go_alone():
+    cfg = parse_config(
+        _with_central(issuer="https://cloud.example.com", audience=["http://localhost:8765", "http://127.0.0.1:8765"]),
+        ENV,
+    )
+    assert cfg.central_account.audience == ["http://localhost:8765", "http://127.0.0.1:8765"]
+
+
+def test_central_account_clients_are_optional():
+    cfg = parse_config(_with_central(issuer="https://cloud.example.com"), ENV)
+    assert cfg.central_account.clients is None
 
 
 def test_central_account_issuer_is_stripped():

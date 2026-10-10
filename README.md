@@ -52,11 +52,12 @@ python3 -m venv .venv && .venv/bin/pip install -e 'tools/refclient[mic]'
 
 With a central account (the server needs `central_account` configured), sign in once with the
 device flow and pair without a code. The issuer and client id are the ones your operator registered
-(for example `https://auth.trigram.com.br` and the watch app's public client):
+(for example `https://auth.trigram.com.br` and the watch app's public client); `--cloud` is the wristcall
+Cloud the server trusts (its `central_account.issuer`), which turns the login into a token for that server only:
 
 ```bash
 .venv/bin/wristcall-refclient login --issuer https://auth.trigram.com.br --client-id <client-id>
-.venv/bin/wristcall-refclient pair-account --server https://wristcall.yourdomain.com
+.venv/bin/wristcall-refclient pair-account --server https://wristcall.yourdomain.com --cloud <cloud-url>
 ```
 
 Use headphones. Enter toggles mute.
@@ -140,15 +141,21 @@ instead of an 8 digit code. Without it the server works as before and the routes
 
 ```yaml
 central_account:
-  issuer: https://auth.trigram.com.br      # https; http only for localhost
-  clients: ["<watch client id>", "<iOS client id>"]   # app client ids
-  device_credential: approval              # or attestation
+  issuer: https://cloud.wristcall.example        # the wristcall Cloud; https, http only for localhost
+  audience: ["https://wristcall.example.com"]    # this server's URL(s), exactly as apps reach it
+  clients: ["<watch client id>", "<iOS client id>"]   # optional: app client ids
+  device_credential: approval                    # or attestation
 ```
 
-- `issuer`: where the login happens. The server reads its public keys (`/.well-known/openid-configuration`) and never calls it with a user token.
-- `clients`: the client ids of the apps whose logins you accept. Use the apps' client ids, never
-  the id of the project: that would accept every app of the project. A token must be an access token
-  of one of these clients; ID tokens are refused.
+- `issuer`: the wristcall Cloud. Apps sign in to the central account and exchange that login at the Cloud
+  for a short token made for this server only; the server reads the Cloud's public keys
+  (`/.well-known/openid-configuration`) and never calls it with a user token.
+- `audience` (required): the URL(s) apps use to reach this server (`https`; `http` only for localhost, and then
+  every item must be a loopback URL). A token made for another server, or the central account's own login token,
+  is refused. Starting with 0.6.0 a `central_account` without `audience` does not start: point `issuer` at the
+  Cloud, add `audience`, and link users again (links made with 0.5.0 named the account issuer).
+- `clients` (optional): the client ids of the apps whose logins you accept. Use the apps' client ids, never
+  the id of the project: that would accept every app of the project. Absent: any app of the central account.
 - `device_credential` decides what a login can do on this server:
   - `approval` (default): the linked user approves each new device (`wristcall devices approve <id>`
     or `POST /v1/pairing-requests/{id}/approve`).

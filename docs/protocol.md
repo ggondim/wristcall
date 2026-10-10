@@ -71,13 +71,19 @@ behaves like 0.4.0 and every route below answers `404 {"error":"not_configured"}
 
 Clients read `account` in `GET /v1/health`: `{"issuer","device_credential"}` or `null`.
 `device_credential` is `"approval"` or `"attestation"` (see [Configuration](../README.md#central-account-optional)).
-The client logs in at `issuer`, with its own `client_id` (one of the server's `clients`), and gets an
-**access token**. On a watch, use the device authorization grant (RFC 8628).
+`issuer` is the wristcall Cloud the server trusts (0.6.0+). The client logs in at the central account with its
+own `client_id` (on a watch, with the device authorization grant, RFC 8628), then asks the Cloud for a token
+made for this server only: `POST {cloud}/v1/server-tokens {"audience": "<server URL>"}` with the login token.
+The audience is the URL the client itself uses to reach the server, never one the server announces, and the
+client knows the Cloud URL from its own configuration: if `account.issuer` names another Cloud, the client
+refuses the server (a server could otherwise collect login tokens that are good at the real Cloud).
 
-The central account's access token is **not** a credential of this server. It does not authenticate the
-management API, calls or `GET /v1/me`; it only works as proof of who the person is, in
-`POST /v1/pair/account` and `POST /v1/account/link`. Only access tokens are accepted (an ID token is
-refused), and its `client_id` or `azp` must be in the server's `clients`.
+The server accepts only these per-server tokens: header `typ` `wc-server+jwt`, `iss` = its `issuer`, `aud` =
+one of its `audience` URLs. A token made for another server, or the central account's own access token, is a
+`401`. The token is **not** a credential of this server either: it does not authenticate the management API,
+calls or `GET /v1/me`; it only works as proof of who the person is, in `POST /v1/pair/account` and
+`POST /v1/account/link`. ID tokens are refused, and when the server sets `clients`, the token's `client_id`
+or `azp` (the app the person logged in with) must be one of them.
 
 Why: the same login works on every server that trusts the issuer. If the token were enough to
 manage a server, a token handed to one server's operator would manage all of them. A local user

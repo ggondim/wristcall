@@ -6,7 +6,7 @@ import httpx
 import pytest
 import respx
 
-from oidc_fixtures import AUDIENCE, ISSUER, FakeIssuer
+from oidc_fixtures import AUDIENCE, ISSUER, SERVER_AUDIENCE, SERVER_TOKEN_TYPE, FakeIssuer
 from test_api import api_token, device_token, h, make_client, run
 from conftest import fake_config
 from wristcall.config import CentralAccountConfig
@@ -16,7 +16,7 @@ KEY = f"{ISSUER}#central-user-1"
 
 def central_config():
     return fake_config().model_copy(
-        update={"central_account": CentralAccountConfig(issuer=ISSUER, clients=[AUDIENCE])}
+        update={"central_account": CentralAccountConfig(issuer=ISSUER, audience=[SERVER_AUDIENCE], clients=[AUDIENCE])}
     )
 
 
@@ -28,7 +28,8 @@ def router():
 
 @pytest.fixture
 def issuer(router):
-    return FakeIssuer(router)
+    # Plays the Cloud: per-server tokens for this server.
+    return FakeIssuer(router, aud=[SERVER_AUDIENCE], typ=SERVER_TOKEN_TYPE)
 
 
 @pytest.fixture

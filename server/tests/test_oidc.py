@@ -74,6 +74,22 @@ async def test_small_clock_skew_is_tolerated(issuer):
     assert await verifier().verify(issuer.token(exp=time.time() - 30))
 
 
+async def test_typ_is_enforced_when_set(issuer):
+    typed = OidcVerifier(ISSUER, [AUDIENCE], httpx.AsyncClient(), typ="wc-server+jwt")
+    assert (await typed.verify(issuer.token(headers={"typ": "wc-server+jwt"}))).subject == "central-user-1"
+    for headers in ({"typ": "JWT"}, {"typ": "at+jwt"}, {"typ": "WC-SERVER+JWT"}, {"typ": None}):
+        with pytest.raises(OidcError, match="unexpected token type"):
+            await typed.verify(issuer.token(headers=headers))
+    # Without `typ` the header is not looked at (the Cloud verifying the issuer's own access tokens).
+    assert (await verifier().verify(issuer.token(headers={"typ": "at+jwt"}))).subject == "central-user-1"
+
+
+@pytest.mark.parametrize("overrides", [{"iat": time.time() + 3600}, {"nbf": time.time() + 3600}])
+async def test_token_from_the_future_points_at_the_clock(issuer, overrides):
+    with pytest.raises(OidcError, match="token not valid yet; check server clock"):
+        await verifier().verify(issuer.token(**overrides))
+
+
 async def test_signature_from_another_key_is_rejected(issuer):
     token = issuer.token()
     other = jwt.encode(jwt.decode(token, options={"verify_signature": False}), rsa_key(), "RS256", headers={"kid": "k1"})

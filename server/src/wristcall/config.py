@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator, model_validator
 
+from .audience import is_loopback, normalize_audience
 from .history_codec import HistoryKeyError, parse_key
 
 
@@ -177,15 +178,20 @@ class HistoryConfig(BaseModel):
 
 
 _LOCAL_HOSTS = ("localhost", "127.0.0.1")
+ClientId = Annotated[str, StringConstraints(pattern=r"^\S{1,255}$")]
 
 
 class CentralAccountConfig(BaseModel):
     """Optional link to the wristcall cloud account (OIDC). Without it the server works on its own."""
 
     model_config = ConfigDict(extra="forbid")
-    issuer: str  # https://...; http only for localhost/127.0.0.1; the trailing slash is dropped
-    # Accepted OIDC client_ids (the apps' client ids, not the project id).
-    clients: list[Annotated[str, StringConstraints(pattern=r"^\S{1,255}$")]] = Field(min_length=1)
+    # The wristcall Cloud URL: it signs the per-server tokens. https://...; http only for localhost/127.0.0.1;
+    # the trailing slash is dropped.
+    issuer: str
+    # The server's URL(s), exactly as apps reach it: a token is accepted only if it was made for one of them.
+    audience: list[str] = Field(min_length=1)
+    # Optional: the app client ids the token must come from (absent: any app of the central account).
+    clients: Annotated[list[ClientId], Field(min_length=1)] | None = None
     # approval: the owner approves each new device; attestation: any linked login pairs.
     device_credential: Literal["approval", "attestation"] = "approval"
 
@@ -203,6 +209,16 @@ class CentralAccountConfig(BaseModel):
         if url.scheme != "https" and not (url.scheme == "http" and url.hostname in _LOCAL_HOSTS):
             raise ValueError("issuer must be an https URL (http only for localhost)")
         return value.rstrip("/")
+
+    @field_validator("audience")
+    @classmethod
+    def _check_audience(cls, value: list[str]) -> list[str]:
+        audience = [normalize_audience(url) for url in value]
+        # http is only for loopback, and a server reached on loopback is a development one: mixing both would
+        # let a token made for someone's localhost be good on this public server.
+        if len({is_loopback(url) for url in audience}) > 1:
+            raise ValueError("audience must be all loopback URLs or none")
+        return audience
 
 
 class AppConfig(BaseModel):
