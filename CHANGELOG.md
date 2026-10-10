@@ -41,6 +41,8 @@ push relay of epic E6. Configuration, routes and deployment notes: [cloud/README
 - Central account (OIDC, `WRISTCALL_CLOUD_ISSUER`, app client ids): `GET /v1/account`, `DELETE /v1/account` (iOS and
   PWA clients only), the user's servers (`/v1/servers`) and their agent lists (`PUT /v1/servers/{id}/agents`,
   `GET /v1/agents`), in MongoDB. Public `GET /v1/config` tells apps how to sign in.
+- Account tokens: `aud` may be an app client id or, with `WRISTCALL_CLOUD_PROJECT_ID`, the project id (what Zitadel
+  puts in app tokens asked with the project audience scope); `client_id`/`azp` must always be an app client id.
 - Per-server tokens: `POST /v1/server-tokens {"audience"}` turns a central account login into an ES256 token
   (`typ` `wc-server+jwt`, 300 seconds) made for one server URL, signed with `WRISTCALL_CLOUD_SIGNING_KEY` under
   `WRISTCALL_CLOUD_PUBLIC_URL`; `/.well-known/openid-configuration` and `/v1/jwks` publish the key.

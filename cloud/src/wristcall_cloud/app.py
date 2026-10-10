@@ -404,7 +404,10 @@ def create_app(
         if http is None:
             http = owned_http = httpx.AsyncClient()
         client_ids = list(config.clients.values())
-        verifier = OidcVerifier(config.issuer, client_ids, http, clients=client_ids)
+        # Zitadel names the project in `aud` (not the client) when the app asks for the project audience scope, as
+        # /v1/config tells it to; the token must still be issued to one of the app clients.
+        audiences = client_ids + ([config.project_id] if config.project_id else [])
+        verifier = OidcVerifier(config.issuer, audiences, http, clients=client_ids)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

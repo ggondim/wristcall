@@ -72,9 +72,11 @@ The APNs key is the `.p8` file from the Apple developer account, used as it is.
 ## Authentication
 
 Requests carry the central account access token: `Authorization: Bearer <token>`. The token is verified locally
-against the issuer's published keys (signature, issuer, time claims); its audience and the client it was issued
-to must be one of the configured client ids. The account is identified as `<issuer>#<subject>`. A missing or bad
-token is `401 unauthorized`; the issuer being unreachable with no cached keys is `503 account_unavailable`.
+against the issuer's published keys (signature, issuer, time claims); its audience must be one of the configured
+client ids or the project id (`WRISTCALL_CLOUD_PROJECT_ID`, which Zitadel puts in `aud` when the app asks for the
+project audience scope), and the client it was issued to must be one of the configured client ids. The account is
+identified as `<issuer>#<subject>`. A missing or bad token is `401 unauthorized`; the issuer being unreachable with
+no cached keys is `503 account_unavailable`.
 
 **Security: the Zitadel token is not bound to this API.** The Cloud accepts the same watch, iOS and PWA client ids
 that wristcall servers 0.5.0 accept. A central access token given to a server operator (when the user pairs or links

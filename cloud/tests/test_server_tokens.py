@@ -98,6 +98,43 @@ def test_cloud_with_the_real_verifier_refuses_its_own_tokens(config, mongo_db, s
         c.portal.call(http.aclose)
 
 
+def _account_status(config, mongo_db, signing_key, claims: dict) -> int:
+    """GET /v1/account through the real verifier, with a token the account issuer signed with `claims`."""
+    issuer_key = new_key()
+
+    def issuer(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/.well-known/openid-configuration":
+            return httpx.Response(200, json={"issuer": ISSUER, "jwks_uri": f"{ISSUER}/keys"})
+        return httpx.Response(200, json={"keys": [issuer_key.jwk()]})
+
+    now = time.time()
+    token = issuer_key.sign({"iss": ISSUER, "sub": "a", "iat": now, "exp": now + 600, **claims})
+    http = httpx.AsyncClient(transport=httpx.MockTransport(issuer))
+    app = create_app(config, store=Store(mongo_db), http=http, signing_key=signing_key)
+    for c in serve(app, mongo_db):
+        status = c.get("/v1/account", headers={"Authorization": f"Bearer {token}"}).status_code
+        c.portal.call(http.aclose)
+    return status
+
+
+def test_project_audience_is_accepted_when_configured(config, mongo_db, signing_key):
+    # Zitadel puts the project id in `aud` when the app asks for the project audience scope (what /v1/config tells
+    # apps to ask for); the token is still issued to one of the app clients.
+    cfg = dataclasses.replace(config, project_id="1234")
+    assert _account_status(cfg, mongo_db, signing_key, {"aud": ["1234"], "client_id": "client-ios"}) == 200
+
+
+def test_project_audience_is_refused_without_project_id(config, mongo_db, signing_key):
+    assert config.project_id is None
+    assert _account_status(config, mongo_db, signing_key, {"aud": ["1234"], "client_id": "client-ios"}) == 401
+
+
+def test_project_audience_with_an_unknown_client_is_refused(config, mongo_db, signing_key):
+    # The project audience would accept every app of the project: the client check still applies.
+    cfg = dataclasses.replace(config, project_id="1234")
+    assert _account_status(cfg, mongo_db, signing_key, {"aud": ["1234"], "client_id": "other-app"}) == 401
+
+
 async def test_cloud_tokens_pass_the_server_verifier(app):
     # Interop: the verifier the server uses (cloud keeps a byte-identical copy) accepts what the Cloud signs,
     # through the Cloud's own discovery and JWKS.
