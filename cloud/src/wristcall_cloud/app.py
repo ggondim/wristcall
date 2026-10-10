@@ -178,7 +178,7 @@ def public_config(
             "apns": "apns" in (channels or {}),
             "webpush": "webpush" in (channels or {}),
             "vapid_public_key": vapid_public_key if "webpush" in (channels or {}) else None,
-            "apns_topics": list(config.apns_topics),
+            "apns_topics": list(config.apns_topics) if "apns" in (channels or {}) else [],
         },
     }
 

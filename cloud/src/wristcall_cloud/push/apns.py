@@ -147,11 +147,12 @@ class ApnsChannel:
             if status == 410 or (status == 400 and reason in GONE_REASONS):
                 log.info("apns device token gone (status %d, reason %s)", status, reason)
                 raise ChannelGone("device token gone")
-            if status == 403 and reason in TOKEN_REASONS:
+            if status == 403 and reason in TOKEN_REASONS and attempt == 1:
+                # Only the first refusal drops the token: one refused again on the retry is kept, or every send
+                # would ask for a new one (APNs refuses renewals too close together).
                 self.token.invalidate(jwt_token)
-                if attempt == 1:
-                    log.info("apns provider token refused (reason %s), trying a new one", reason)
-                    continue
+                log.info("apns provider token refused (reason %s), trying a new one", reason)
+                continue
             log.warning("apns unavailable (status %d, reason %s)", status, reason)
             raise ChannelUnavailable(f"apns answered {status}")
         raise AssertionError("unreachable")  # pragma: no cover

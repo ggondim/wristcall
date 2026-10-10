@@ -489,7 +489,7 @@ def test_no_channels_means_not_configured(mongo_db, fake_verifier):
             r = c.post("/v1/push/registrations", json=body)
             assert r.status_code == 404 and r.json()["error"] == "not_configured"
         assert c.get("/v1/config").json()["push"] == {"apns": False, "webpush": False, "vapid_public_key": None,
-                                                      "apns_topics": [TOPIC]}
+                                                      "apns_topics": []}
 
 
 def test_config_reports_push(client):

@@ -149,6 +149,23 @@ async def test_expired_provider_token_is_refreshed_once(why):
             assert route.call_count == 4
 
 
+@pytest.mark.parametrize("why", ["ExpiredProviderToken", "InvalidProviderToken"])
+async def test_provider_token_dropped_only_on_the_first_refusal(why):
+    clock = Clock()
+    token = ProviderToken(KEY_PEM, "KEY123", "TEAM456", now=clock)
+    async with httpx.AsyncClient() as http:
+        channel = ApnsChannel(token, http, hosts={"sandbox": HOST})
+        with respx.mock() as router:
+            route = router.post(URL).mock(side_effect=[refused(403, why), refused(403, why)])
+            with pytest.raises(ChannelUnavailable):
+                await channel.send(REG, MSG)
+            first, second = (c.request.headers["authorization"].partition(" ")[2] for c in route.calls)
+            assert first != second
+            # The renewed token was refused on the retry, but it is not discarded: sends that follow reuse it
+            # instead of asking for yet another one (APNs: TooManyProviderTokenUpdates).
+            assert token.get() == second
+
+
 async def test_apns_throttled_is_unavailable(apns):
     channel, _ = apns
     with respx.mock() as router:
@@ -293,7 +310,9 @@ def test_no_apns_without_configuration(mongo_db, fake_verifier):
     app = create_app(cfg, store=Store(mongo_db), verifier=fake_verifier)
     assert "apns" not in app.state.channels
     for c in serve(app, mongo_db):
-        assert c.get("/v1/config").json()["push"]["apns"] is False
+        push = c.get("/v1/config").json()["push"]
+        # No channel, no topics: an app must not offer a registration this Cloud would answer with 404.
+        assert push["apns"] is False and push["apns_topics"] == []
         r = c.post("/v1/push/registrations", json={"platform": "apns", "token": DEVICE, "topic": TOPIC,
                                                     "environment": "sandbox", "label": "Home",
                                                     "events": ["call.finished"]})
