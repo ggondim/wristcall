@@ -27,10 +27,10 @@ Exit codes: 0 done, 1 unexpected error (only its type is printed), 2 usage or co
 login page is unavailable (e.g. a 404 on the hosted login), 4 the login did not go through (error shown, or a page
 this helper does not know), 5 timeout.
 
-Tested on Zitadel's login v1 (`/ui/login/...`, the device flow). The login v2 path (`/ui/v2/login/...`, what the
-authorization code flow lands on) is UNTESTED: login v2 was down when this was written (404). Its handling uses
-generic selectors (`input[name=loginName]`, `autocomplete=username`, `input[type=password]`, Skip buttons);
-check it, and its error detection, the first time login v2 is up.
+Tested on Zitadel's login v1 (`/ui/login/...`, the device flow) and login v2 (`/ui/v2/login/...`, what the
+authorization code flow lands on: login name, password, then a client-side redirect to the app). Login v2 is a
+Next.js app, so waits are timed (a submitted field still shown after ANSWER_WITHIN seconds was refused), not
+counted in page loads. Its 2FA-setup and consent pages were not seen with the test user.
 
 Secrets: Playwright writes filled values into its error call logs, so no exception text ever reaches the output:
 a failed fill becomes a fixed message, and any other exception prints only its type.
@@ -48,9 +48,14 @@ import urllib.parse
 SKIP_LABELS = ("Skip", "Überspringen", "Not now", "Later", "Pular", "Agora não")
 # Device approval and consent buttons. Not "Continue"/"Next": on login v2 those are the login steps themselves.
 ALLOW_LABELS = ("Allow", "Erlauben", "Permitir", "Accept", "Akzeptieren", "Aceitar")
-# Where a login error shows: v1's `.lgn-error`; on v2 (untested) an alert inside the page's form. Never a bare
+# Where a login error shows: v1's `.lgn-error`; v2's `[data-testid=error]` inside the form. Never a bare
 # `[role=alert]`: Next.js's route announcer (`next-route-announcer`, aria-live) has that role and says the page title.
-ERROR_SELECTOR = ".lgn-error, form [role=alert], form .error, form [data-error]"
+ERROR_SELECTOR = ".lgn-error, form [data-testid=error], form [role=alert], form .error, form [data-error]"
+
+
+# A submitted field still on screen after this many seconds was refused; a page unchanged this long is stuck.
+ANSWER_WITHIN = 10.0
+STUCK_AFTER = 30.0
 
 
 class Stop(Exception):
@@ -104,6 +109,23 @@ def submit(page, field) -> None:
         target.click()
     else:
         field.press("Enter")
+
+
+def busy(page) -> bool:
+    """True while a form is submitting: login v2 disables its submit button until the server action answers.
+    A disabled button over an empty field only means "type something" (v2 does that too), so it is not busy."""
+    target = visible(page, "button[type=submit]:not([name=skip])")
+    if target is None:
+        return False
+    try:
+        return target.evaluate(
+            "b => b.disabled && !!b.form && [...b.form.querySelectorAll('input')]"
+            ".filter(i => i.type !== 'hidden' && i.offsetParent !== null)"
+            ".every(i => (i.type === 'checkbox' || i.type === 'radio') ? i.checked : !!i.value)",
+            timeout=2_000,
+        )
+    except Exception:  # noqa: BLE001 - the page changed under us; the next round looks again
+        return False
 
 
 def fill_secret(field, secret: str) -> None:
@@ -162,9 +184,11 @@ def run(mode: str, argument: str) -> str:
             except PlaywrightError:
                 if not caught:
                     raise
-            filled_user = filled_password = False
+            # Login v2 is a Next.js app: a submit runs a server action, keeps the old page (and URL) on screen while it
+            # runs and may never load a new document, so progress is judged by time, not by loop rounds.
+            sent_user = sent_password = 0.0  # when each field was last submitted
             last = ""
-            same = 0
+            since = time.monotonic()
             while True:
                 if caught:
                     return caught[0]
@@ -177,13 +201,12 @@ def run(mode: str, argument: str) -> str:
                 if caught:
                     return caught[0]
                 here = path_of(page.url)
+                now = time.monotonic()
                 if here != last:
                     note(f"page {here}")
-                    last, same = here, 0
-                else:
-                    same += 1
-                    if same > 6:
-                        raise Stop(4, f"stuck on {here}")
+                    last, since = here, now
+                elif now - since > STUCK_AFTER:
+                    raise Stop(4, f"stuck on {here}")
 
                 body = page.locator("body").inner_text(timeout=5_000) if page.locator("body").count() else ""
                 if '"code":5' in body.replace(" ", "") and "Not Found" in body:
@@ -197,20 +220,33 @@ def run(mode: str, argument: str) -> str:
                 if mode == "device" and (here.endswith("/denied")):
                     raise Stop(4, "the device request was denied")
 
+                if busy(page):
+                    # The answer window counts from when the form goes idle, not from the submit.
+                    sent_user = sent_user and now
+                    sent_password = sent_password and now
+                    page.wait_for_timeout(500)  # not time.sleep: Playwright delivers events (the callback) only here
+                    continue
+
                 field = visible(page, "input[type=password]")
                 if field is not None:
-                    if filled_password and same > 1:
+                    if now - sent_password < ANSWER_WITHIN:
+                        page.wait_for_timeout(500)
+                        continue
+                    if sent_password:
                         raise Stop(4, f"password not accepted on {here}")
                     fill_secret(field, secret)
-                    filled_password = True
+                    sent_password = time.monotonic()
                     submit(page, field)
                     continue
                 field = visible(page, "#loginName, input[name=loginName], input[autocomplete=username]")
                 if field is not None:
-                    if filled_user and same > 1:
+                    if now - sent_user < ANSWER_WITHIN:
+                        page.wait_for_timeout(500)
+                        continue
+                    if sent_user:
                         raise Stop(4, f"login name not accepted on {here}")
                     field.fill(user)
-                    filled_user = True
+                    sent_user = time.monotonic()
                     submit(page, field)
                     continue
                 field = visible(page, "input[name=code], #code")
@@ -228,7 +264,7 @@ def run(mode: str, argument: str) -> str:
                     note("allow" if mode == "device" else "consent")
                     allow.click()
                     continue
-                time.sleep(1)
+                page.wait_for_timeout(1_000)
         finally:
             browser.close()
 
