@@ -9,6 +9,9 @@ struct ServerDetailView: View {
     @State private var name = ""
     @State private var renameError: String?
     @State private var confirmingRemoval = false
+    #if DEBUG
+    @State private var debugAgents = false
+    #endif
     @FocusState private var nameFocused: Bool
 
     private var server: ManagedServer? { state.servers.first { $0.id == serverID } }
@@ -48,8 +51,15 @@ struct ServerDetailView: View {
             }
 
             Section {
-                // Agents (task 5) and devices (task 6) land here.
-                Label("Agents", systemImage: "person.2").foregroundStyle(.secondary)
+                NavigationLink {
+                    AgentListView(server: server)
+                } label: {
+                    Label("Agents", systemImage: "person.2")
+                }
+            }
+
+            Section {
+                // Devices (task 6) land here.
                 Label("Devices", systemImage: "applewatch").foregroundStyle(.secondary)
             } footer: {
                 Text("Coming soon.")
@@ -60,6 +70,10 @@ struct ServerDetailView: View {
             }
         }
         .onAppear { name = server.name }
+        #if DEBUG
+        .task { debugAgents = DebugRoute.opensAgents }
+        .navigationDestination(isPresented: $debugAgents) { AgentListView(server: server) }
+        #endif
         .confirmationDialog("Remove \(server.name)?", isPresented: $confirmingRemoval, titleVisibility: .visible) {
             Button("Remove server", role: .destructive) {
                 Task {

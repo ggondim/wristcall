@@ -4,9 +4,10 @@ import WristcallKit
 struct ServersView: View {
     @Environment(AppState.self) private var state
     @State private var adding = false
+    @State private var path: [String] = []
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Group {
                 if state.servers.isEmpty {
                     EmptyServersView(loadError: state.loadError)
@@ -24,6 +25,11 @@ struct ServersView: View {
                 ServerDetailView(serverID: id)
             }
             .sheet(isPresented: $adding) { AddServerView() }
+        #if DEBUG
+        .task(id: state.servers.first?.id) {
+            if DebugRoute.opensServer, let id = state.servers.first?.id, path.isEmpty { path = [id] }
+        }
+        #endif
         }
     }
 

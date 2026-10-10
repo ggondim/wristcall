@@ -106,7 +106,10 @@ make -C watch build-ios CLOUD_URL=http://127.0.0.1:8090   # point the build at a
 The default `IOS_DESTINATION` is an "iPhone 17" simulator. `CLOUD_URL` and `RELAY_URL` set
 `WRISTCALL_CLOUD_URL` and `WRISTCALL_RELAY_URL` for every build target of the Makefile (they can also go in
 `Config/Local.xcconfig`); left empty, the apps have no account and no push. In Debug builds
-`-addServer <URL> -addServerToken <token> [-addServerName <name>]` adds a server at launch.
+`-addServer <URL> -addServerToken <token> [-addServerName <name>]` adds a server at launch, and
+`-debugOpen server|agents|form-new|form-edit` opens that screen (simulator smoke tests, which cannot tap).
+`AgentsLiveTests` run against a test server when `TEST_RUNNER_WRISTCALL_TEST_SERVER` and
+`TEST_RUNNER_WRISTCALL_TEST_TOKEN` are set for `make test-ios`.
 
 The watch app's bundle id (and so its APNs topic) is now `<BUNDLE_ID_PREFIX>.wristcall.watchkitapp`, no longer
 `<BUNDLE_ID_PREFIX>.wristcall`: a Cloud that pushes to both apps lists both in `WRISTCALL_CLOUD_APNS_TOPICS`.

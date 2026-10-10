@@ -84,3 +84,18 @@ enum DebugLaunch {
     }
 }
 #endif
+
+#if DEBUG
+/// `-debugOpen server|agents|form-new|form-edit` opens that screen at launch (simulator smoke tests have no
+/// way to tap): the first server, its agents, the form for a new agent, or the form of the last agent.
+enum DebugRoute {
+    static let value: String? = {
+        let args = ProcessInfo.processInfo.arguments
+        guard let index = args.firstIndex(of: "-debugOpen"), args.indices.contains(index + 1) else { return nil }
+        return args[index + 1]
+    }()
+
+    static var opensServer: Bool { value != nil }
+    static var opensAgents: Bool { ["agents", "form-new", "form-edit"].contains(value ?? "") }
+}
+#endif
