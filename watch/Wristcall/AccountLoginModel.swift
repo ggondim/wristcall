@@ -217,6 +217,11 @@ final class AccountLoginModel {
             try Task.checkCancellation()
             phase = .syncing(done: index, total: candidates.count)
             let host = Self.host(server)
+            // A call or another pairing is on: ask nothing (a device made now could not wait for its approval).
+            guard model.canPairWithAccount else {
+                lines.append("\(host): \(Message.busy)")
+                continue
+            }
             let outcome = await backend.pair(server, deviceName: model.deviceName)
             switch outcome {
             case .paired(_, let device):
@@ -244,13 +249,11 @@ final class AccountLoginModel {
     }
 
     /// Adds a device the server already issued. Its token exists there from now on, so this runs even when the
-    /// sync was cancelled meanwhile.
+    /// sync was cancelled meanwhile, or a call started.
     private func add(_ device: PairedDevice, server: URL) async -> String {
         do {
             try await model.addPaired(device, server: server)
             return Message.added
-        } catch AppModel.LinkPairingError.busy {
-            return Message.busy
         } catch {
             return AppModel.text(for: error)
         }

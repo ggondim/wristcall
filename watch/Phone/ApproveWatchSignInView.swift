@@ -22,11 +22,14 @@ enum DeviceVerification {
     }
 }
 
-/// When the approval sheet comes up by itself: the watch sent a login code (still valid), the account is
-/// signed in here, and the user did not close the sheet for that very code.
+/// When the approval sheet is up: the watch sent a login code (still valid), the account is signed in here,
+/// and the user did not close the sheet for that very code. While a device page opened from it is up, the
+/// sheet stays (even once the code expired or the watch signed in): the page is never left without the
+/// screen that waits for it.
 enum WatchSignInSheet {
     @MainActor
     static func code(link: WatchLink, account: AccountModel, dismissed: String?) -> String? {
+        if account.watchApproval == .open, let code = account.approvingCode { return code }
         guard account.state == .signedIn, let code = link.incomingDeviceCode, code != dismissed else { return nil }
         return code
     }
@@ -85,6 +88,8 @@ struct ApproveWatchSignInView: View {
             }
         }
         .navigationTitle("Approve watch sign-in")
+        // Not swiped away while its page is up (the page closes first, then the sheet).
+        .interactiveDismissDisabled(account.watchApproval == .open)
         .toolbar {
             if isSheet {
                 ToolbarItem(placement: .cancellationAction) {

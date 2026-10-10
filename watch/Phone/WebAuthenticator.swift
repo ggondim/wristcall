@@ -14,14 +14,39 @@ enum WebAuthenticatorError: Error, Equatable {
     case couldNotStart
 }
 
+/// The system page `LiveWebAuthenticator` drives: `ASWebAuthenticationSession`, a fake in tests.
+@MainActor
+protocol WebSession: AnyObject {
+    func start() -> Bool
+    func cancel()
+}
+
+extension ASWebAuthenticationSession: WebSession {}
+
 /// `ASWebAuthenticationSession`, not ephemeral: the provider's cookie stays, so approving the watch's login
 /// (device flow) later in the same browser needs no new sign-in. One page at a time; a new one cancels the
 /// last. The session is held strongly until it ends, and cancelling the task closes the page.
+///
+/// Cancelling (the task, or a new page) ends the wait itself with `CancellationError`: Apple does not document
+/// a completion callback for `cancel()`, and the device page (which never redirects back) must not leave its
+/// caller waiting forever. A late system callback then finds the wait already over (`ResumeOnce`).
 @MainActor
 final class LiveWebAuthenticator: NSObject, WebAuthenticator, ASWebAuthenticationPresentationContextProviding {
-    private var current: ASWebAuthenticationSession?
+    typealias Completion = @Sendable (URL?, (any Error)?) -> Void
+    typealias MakeSession = @MainActor (URL, String, @escaping Completion) -> any WebSession
+
+    private var current: (session: any WebSession, wait: ResumeOnce)?
     /// Counts the pages started, so a page that ended never clears (or cancels) a newer one.
     private var started = 0
+    private let makeSession: MakeSession
+
+    /// `makeSession` builds the system page (tests pass one that never calls back).
+    init(makeSession: MakeSession? = nil) {
+        self.makeSession = makeSession ?? { url, scheme, completion in
+            ASWebAuthenticationSession(url: url, callback: .customScheme(scheme), completionHandler: completion)
+        }
+        super.init()
+    }
 
     func authenticate(url: URL, callbackScheme: String) async throws -> URL {
         cancelCurrent()
@@ -32,7 +57,7 @@ final class LiveWebAuthenticator: NSObject, WebAuthenticator, ASWebAuthenticatio
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (checked: CheckedContinuation<URL, any Error>) in
                 let continuation = ResumeOnce(checked)
-                let session = ASWebAuthenticationSession(url: url, callback: .customScheme(callbackScheme)) { callback, error in
+                let session = makeSession(url, callbackScheme) { callback, error in
                     // Never log `callback` or `error`: the callback carries the authorization code.
                     if let callback {
                         continuation.resume(returning: callback)
@@ -42,9 +67,11 @@ final class LiveWebAuthenticator: NSObject, WebAuthenticator, ASWebAuthenticatio
                         continuation.resume(throwing: error ?? WebAuthenticatorError.couldNotStart)
                     }
                 }
-                session.prefersEphemeralWebBrowserSession = false
-                session.presentationContextProvider = self
-                current = session
+                if let system = session as? ASWebAuthenticationSession {
+                    system.prefersEphemeralWebBrowserSession = false
+                    system.presentationContextProvider = self
+                }
+                current = (session, continuation)
                 if !session.start() {
                     current = nil
                     continuation.resume(throwing: WebAuthenticatorError.couldNotStart)
@@ -57,9 +84,12 @@ final class LiveWebAuthenticator: NSObject, WebAuthenticator, ASWebAuthenticatio
         }
     }
 
+    /// Closes the page and ends its wait (whether or not the system calls back afterwards).
     private func cancelCurrent() {
-        current?.cancel()
-        current = nil
+        guard let current else { return }
+        self.current = nil
+        current.session.cancel()
+        current.wait.resume(throwing: CancellationError())
     }
 
     nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {

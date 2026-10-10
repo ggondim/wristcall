@@ -324,6 +324,43 @@ struct AccountLoginModelTests {
         let login = makeLogin(model: model)
         await login.sync()
         #expect(login.phase == .finished(["b.example.com: \(AccountLoginModel.Message.busy)"]))
+        // Checked before the server: no device is made there that the watch could not keep.
+        #expect(!backend.calls.contains { $0.hasPrefix("pair ") })
+        model.cancelPairing()
+        _ = await other.value
+    }
+
+    @Test func busyDuringACallAsksNoServer() async throws {
+        let server = URL(string: "https://b.example.com")!
+        try store.save([Credentials(serverURL: URL(string: "https://agent.example.com")!, device: PairedDevice(deviceId: "dev-1", token: "t"))])
+        pairing.meResults = [.success(DeviceInfo(deviceId: "dev-1", deviceName: "Apple Watch", user: nil, agents: [Agent(id: "ag_1", slug: "default", displayName: "Agent")]))]
+        backend.signedIn = true
+        backend.script(servers: [server], outcomes: [server: .paired(server, PairedDevice(deviceId: "dev-b", token: "token-b"))])
+        let model = await makeAppModel()
+        let target = try #require(model.agents.first)
+        model.startCall(target)
+        try #require(model.isInCallOrResult)
+        let login = makeLogin(model: model)
+        await login.sync()
+        #expect(login.phase == .finished(["b.example.com: \(AccountLoginModel.Message.busy)"]))
+        #expect(!backend.calls.contains { $0.hasPrefix("pair ") })
+    }
+
+    @Test func addPairedWhileAnotherPairingRunsKeepsTheDevice() async throws {
+        // The server made the device: the watch keeps it even if a pairing started meanwhile, without taking
+        // that pairing's screen away.
+        let server = URL(string: "https://b.example.com")!
+        pairing.setMeResults([.success(info("dev-b", user: "usr_2"))], for: server)
+        pairing.pairResults = [.success(.pending(PairingRequest(requestId: "1111", pollToken: "other", expiresAt: Self.clock)))]
+        pairing.pollResults = Array(repeating: .success(.pending(requestId: "1111")), count: 10_000)
+        let model = await makeAppModel(sleep: { _ in try await Task.sleep(for: .milliseconds(5)) })
+        let other = Task { await model.pair(server: URL(string: "https://x.example.com")!, code: PairingCode("12345678")!) }
+        await waitUntil { model.phase == .pairing(requestId: "1111") }
+        try await model.addPaired(PairedDevice(deviceId: "dev-b", token: "token-b"), server: server)
+        #expect(model.servers.map(\.credentials.token) == ["token-b"])
+        #expect(try store.load().count == 1)
+        #expect(model.phase == .pairing(requestId: "1111"))
+        #expect(model.isBusy)
         model.cancelPairing()
         _ = await other.value
     }

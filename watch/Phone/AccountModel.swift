@@ -50,6 +50,8 @@ final class AccountModel {
     }
 
     private(set) var watchApproval: WatchApproval = .idle
+    /// The code whose device page is open (the approval sheet stays up for it until the page closes).
+    private(set) var approvingCode: String?
     /// The device page's task; cancelling it closes the page (M13).
     @ObservationIgnored private var approvalTask: Task<(any Error)?, Never>?
 
@@ -174,6 +176,8 @@ final class AccountModel {
             return
         }
         watchApproval = .open
+        approvingCode = DeviceVerification.normalized(userCode)
+        defer { approvingCode = nil }
         let web = web
         let task = Task { () -> (any Error)? in
             do {

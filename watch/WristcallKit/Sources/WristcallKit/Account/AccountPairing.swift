@@ -16,6 +16,8 @@ public struct AccountPairing: Sendable {
     /// Short reasons of `.skipped`, shown after the server's host ("y.test: not linked to your account").
     public enum Reason {
         public static let oldServer = "server needs 0.6.0"
+        /// `401` from a server that passed the version check: it did not accept the per-server token.
+        public static let tokenRefused = "the server refused the account token"
         public static let noAccount = "no account on this server"
         public static let foreignAccount = "uses another account service"
         public static let notLinked = "not linked to your account"
@@ -116,8 +118,8 @@ public struct AccountPairing: Sendable {
 
     static func reason(for error: PairingError) -> String {
         switch error {
-        // A server before 0.6.0 refuses the per-server token: the version check above missed it.
-        case .accountRejected: Reason.oldServer
+        // Servers before 0.6.0 are skipped by the version check: this one is new enough and still refused it.
+        case .accountRejected: Reason.tokenRefused
         case .notLinked: Reason.notLinked
         case .limit: Reason.limit
         case .accountNotConfigured: Reason.noAccount

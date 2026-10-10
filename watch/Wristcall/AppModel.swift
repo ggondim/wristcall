@@ -488,7 +488,7 @@ final class AppModel {
     /// Decision W2: the same URL and user as a listed server replaces it under the same local id
     /// (complications keep pointing to it) and revokes the old token without waiting. Another user
     /// on the same server is another entry. A server that does not answer is kept, with "Retry".
-    private func add(_ credentials: Credentials, info: Result<DeviceInfo, any Error>) throws {
+    private func add(_ credentials: Credentials, info: Result<DeviceInfo, any Error>, leavesScreen: Bool = false) throws {
         var list = servers
         var replaced: Credentials?
         var added = credentials
@@ -512,12 +512,14 @@ final class AppModel {
             let pairing = pairing
             Task { try? await pairing.unpair(server: replaced.serverURL, token: replaced.token) }
         }
-        customServerURL = nil
-        isAddingServer = false
-        message = nil
-        switch phase {
-        case .unpaired, .pairing: phase = .home
-        default: break
+        if !leavesScreen {
+            customServerURL = nil
+            isAddingServer = false
+            message = nil
+            switch phase {
+            case .unpaired, .pairing: phase = .home
+            default: break
+            }
         }
         publishCatalog()
         publishServers()
@@ -549,16 +551,21 @@ final class AppModel {
 
     // MARK: - Account login (I15)
 
+    /// Whether the account login may ask a server for a device now: Home or the pairing screen, no pairing
+    /// running. Checked before `POST /v1/pair/account`, so no device is made that the watch then drops.
+    var canPairWithAccount: Bool {
+        pairingTask == nil && (phase == .home || phase == .unpaired)
+    }
+
     /// A device the account login paired (`POST /v1/pair/account`): asks `/v1/me` and adds it like any
-    /// pairing (W2's replacement included). Only on Home or the pairing screen, with no pairing running:
-    /// otherwise `LinkPairingError.busy` and nothing changes.
+    /// pairing (W2's replacement included). The device exists on the server, so it is always kept: when a call
+    /// or another pairing took the screen meanwhile, it is added without touching that screen.
     func addPaired(_ device: PairedDevice, server: URL) async throws {
-        guard pairingTask == nil, phase == .home || phase == .unpaired else { throw LinkPairingError.busy }
         let credentials = Credentials(serverURL: server, device: device)
         // The device exists on the server: a cancelled login must not lose its token (as in `complete`).
         let pairing = pairing
         let info = await Task { await Self.me(credentials, pairing: pairing) }.value
-        try add(credentials, info: info)
+        try add(credentials, info: info, leavesScreen: !canPairWithAccount)
     }
 
     /// Waits for the owner's approval of an account login's request (polled every

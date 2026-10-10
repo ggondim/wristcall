@@ -122,6 +122,46 @@ struct ApproveWatchSignInTests {
         #expect(link.incomingDeviceCode == nil)
     }
 
+    @Test func watchSignedInClosesALivePageThatNeverCallsBack() async throws {
+        // The real authenticator over a system session that never calls back: the M13 close still ends the
+        // wait, and a second approval can start.
+        let sessions = SessionBox()
+        let web = LiveWebAuthenticator { _, _, _ in
+            let session = SilentWebSession()
+            sessions.all.append(session)
+            return session
+        }
+        let model = await account(signedIn: true, web: web)
+        let running = Task { await model.approveWatchSignIn(userCode: "ZXSG-KCPN") }
+        await waitFor { sessions.all.count == 1 && model.watchApproval == .open }
+        model.watchSignInFinished()
+        await running.value
+        #expect(model.watchApproval == .done)
+        #expect(sessions.all.first?.cancelled == 1)
+        let again = Task { await model.approveWatchSignIn(userCode: "ZXSG-KCPN") }
+        await waitFor { sessions.all.count == 2 }
+        #expect(model.watchApproval == .open)
+        model.watchSignInFinished()
+        await again.value
+    }
+
+    @Test func sheetStaysWhileThePageIsOpen() async throws {
+        // The code expires (or the watch signs in) while the page is up: the sheet it was opened from stays
+        // until the page closes, so the page is never left without its sheet.
+        let web = HangingWeb()
+        let model = await account(signedIn: true, web: web)
+        let link = link()
+        link.receive(.deviceCode(userCode: "ZXSG-KCPN", expiresAt: Self.clock.timeIntervalSince1970 + 600))
+        let running = Task { await model.approveWatchSignIn(userCode: "ZXSG-KCPN") }
+        await waitFor { model.watchApproval == .open }
+        link.receive(.signedIn)
+        #expect(link.incomingDeviceCode == nil)
+        #expect(WatchSignInSheet.code(link: link, account: model, dismissed: "ZXSG-KCPN") == "ZXSG-KCPN")
+        model.watchSignInFinished()
+        await running.value
+        #expect(WatchSignInSheet.code(link: link, account: model, dismissed: nil) == nil)
+    }
+
     @Test func watchSignedInWithoutAPageDoesNothing() async {
         let model = await account(signedIn: true)
         model.watchSignInFinished()

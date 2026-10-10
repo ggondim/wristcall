@@ -107,11 +107,13 @@ struct AccountPairingTests {
         #expect(!srv.requests.contains { $0.path == "/v1/pair/account" })
     }
 
-    @Test func rejectedTokenSkipsAsOldServer() async throws {
-        // A server that still refuses the per-server token (`401`) is treated as one before 0.6.0.
+    @Test func rejectedTokenHasItsOwnReason() async throws {
+        // A 0.6 server that refuses the per-server token (`401`): not "needs 0.6.0".
         let srv = server(pair: 401, #"{"error":"invalid_token","message":"bad"}"#)
         let outcome = await accountPairing.pair(srv.url, deviceName: "Apple Watch")
-        #expect(outcome == .skipped(srv.url, AccountPairing.Reason.oldServer))
+        #expect(outcome == .skipped(srv.url, AccountPairing.Reason.tokenRefused))
+        #expect(AccountPairing.Reason.tokenRefused == "the server refused the account token")
+        #expect(AccountPairing.Reason.tokenRefused != AccountPairing.Reason.oldServer)
     }
 
     @Test func skipsServerWithForeignIssuer() async {
