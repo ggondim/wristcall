@@ -49,7 +49,7 @@ describe("ServersView", () => {
 
   test("serversViewShowsProblemAndAccountServers", async () => {
     const down = new ServersModel(
-      { list: async () => [server()], get: async () => null, remove: async () => {}, update: async () => null },
+      { list: async () => [server()], get: async () => null, put: async () => {}, remove: async () => {}, update: async () => null },
       () => new ServerClient(new URL("https://home.example.com"), "t", mockFetch(() => { throw new TypeError("offline") })),
     )
     render(<ServersView model={down} />)

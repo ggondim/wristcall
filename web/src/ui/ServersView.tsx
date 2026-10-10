@@ -54,7 +54,7 @@ function Empty({ loadError }: { loadError: string | null }) {
     <section class="empty">
       <h2>Add your wristcall server</h2>
       {loadError !== null ? <p class="problem">{loadError}</p> : null}
-      <p>Create a personal token on the server, then add the server here with its address and the token:</p>
+      <p>Create a personal token on the server, then add the server here with its address and the token. Create one token per browser:</p>
       <code class="command">wristcall users tokens add --name browser</code>
     </section>
   )

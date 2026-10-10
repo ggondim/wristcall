@@ -14,7 +14,7 @@ class FakeBadge extends BaseModel<{ count: number }> {
 }
 
 const config = { cloudUrl: null }
-const emptyStore = { list: async () => [], get: async () => null, remove: async () => {}, update: async () => null }
+const emptyStore = { list: async () => [], get: async () => null, put: async () => {}, remove: async () => {}, update: async () => null }
 const servers = new ServersModel(emptyStore)
 
 beforeEach(() => history.replaceState(null, "", "/"))

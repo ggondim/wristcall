@@ -537,3 +537,21 @@ describe("secrets", () => {
     vi.restoreAllMocks()
   })
 })
+
+describe("server tokens", () => {
+  test("serverTokenAsksTheCloudWithTheAccessToken", async () => {
+    const w = await signedInSession()
+    const asked = mockFetch((url) =>
+      url === `${CLOUD}/v1/config` ? reply(w.config) : url === `${CLOUD}/v1/server-tokens` ? reply({ token: "per-server", audience: "https://home.example.com", expires_at: 99 }) : new Response("no", { status: 404 }),
+    )
+    const session = new AccountSession(new CloudClient(`${CLOUD}/`, asked), w.store, { fetchImpl: w.fetch, now: () => w.clock.now, origin: ORIGIN })
+    await session.load()
+    expect(session.cloudUrl).toBe(CLOUD)
+    const result = await session.serverToken("https://Home.Example.com:443/")
+    expect(result.token).toBe("per-server")
+    const call = asked.calls.find((c) => c.url.endsWith("/v1/server-tokens"))!
+    expect((call.init.headers as Record<string, string>).Authorization).toMatch(/^Bearer .+/)
+    expect(JSON.parse(call.init.body as string)).toEqual({ audience: "https://home.example.com" })
+  })
+})
+

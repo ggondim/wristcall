@@ -60,6 +60,16 @@ export class AccountSession {
     return this.#state
   }
 
+  /** The Cloud's address: what a linked server names as its account service (`health.account.issuer`). */
+  get cloudUrl(): string {
+    return this.#cloud.url
+  }
+
+  /** A token that proves the account to one server (`audience`: its address). Needs a fresh access token. */
+  async serverToken(audience: string): Promise<{ token: string; audience: string; expires_at: number }> {
+    return this.#cloud.serverToken(await this.accessToken(), audience)
+  }
+
   /** Reads the refresh token from the database: signed in when there is one. */
   async load(): Promise<void> {
     this.#state = (await this.#store.getKV<string>(KEY_REFRESH)) ? "signedIn" : "signedOut"

@@ -160,6 +160,7 @@ describe("ServersModel", () => {
         return snapshot
       },
       get: (id: string) => real.get(id),
+      put: (server: SavedServer) => real.put(server),
       remove: (id: string) => real.remove(id),
       update: (id: string, patch: Partial<SavedServer>) => real.update(id, patch),
     }
@@ -187,6 +188,7 @@ describe("ServersModel", () => {
         return snapshot
       },
       get: (id: string) => real.get(id),
+      put: (server: SavedServer) => real.put(server),
       remove: (id: string) => real.remove(id),
       update: (id: string, patch: Partial<SavedServer>) => real.update(id, patch),
     }

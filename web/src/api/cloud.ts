@@ -55,6 +55,11 @@ export class CloudClient {
     this.#fetch = fetchImpl
   }
 
+  /** The Cloud's address, without a trailing slash. */
+  get url(): string {
+    return this.#base
+  }
+
   config(): Promise<CloudConfig> {
     return json<CloudConfig>(this.#url("v1/config"), {}, this.#fetch)
   }
