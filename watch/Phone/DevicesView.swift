@@ -23,6 +23,10 @@ struct DevicesView: View {
         .task {
             if model == nil { model = DevicesModel(api: state.api(for: server)) }
         }
+        #if WRISTCALL_PUSH
+        // Approvals are what this screen is about: ask for notifications if never asked (push build).
+        .task { await PhoneAppDelegate.push?.devicesAppeared(server) }
+        #endif
     }
 }
 

@@ -1,6 +1,7 @@
 import Foundation
 import Synchronization
 import Testing
+import UserNotifications
 import WristcallKit
 @testable import WristcallPhone
 
@@ -204,6 +205,71 @@ struct PhonePushCoordinatorTests {
         await world.push.serverChanged(linked)
         await world.push.idle()
         #expect(asked.count == 1)
+    }
+
+    @Test(arguments: [
+        (UNAuthorizationStatus.notDetermined, true, true),
+        (.notDetermined, false, false),
+        (.denied, true, false),
+        (.authorized, true, false),
+        (.provisional, true, false),
+        (.ephemeral, true, false),
+        (.denied, false, false),
+    ])
+    func askDecision(_ status: UNAuthorizationStatus, _ hasAccount: Bool, _ ask: Bool) {
+        #expect(PhonePushCoordinator.shouldAskForNotifications(status: status, serverHasAccount: hasAccount) == ask)
+    }
+
+    /// A coordinator whose permission status is `status`, for the Devices screen.
+    func devicesWorld(_ servers: [(ManagedServer, ServerHealth?)], status: UNAuthorizationStatus) -> World {
+        let base = world(servers)
+        let asked = asked
+        let push = PhonePushCoordinator(
+            state: base.state, relayURL: relayURL, relay: relay, environment: .sandbox,
+            topic: "io.github.ggondim.wristcall", keys: keys,
+            requestAuthorization: { asked.count += 1 },
+            authorizationStatus: { status }
+        )
+        return World(state: base.state, push: push, fakes: base.fakes)
+    }
+
+    @Test func devicesOfAnAccountServerAskWhenUndetermined() async {
+        // Servers with an account from before the push build: nothing was added, so nothing asked yet.
+        let world = devicesWorld([(home, nil)], status: .notDetermined)
+        await world.state.load()
+        await world.push.devicesAppeared(home)
+        await world.push.idle()
+        #expect(asked.count == 1)
+        // Once per launch.
+        await world.push.devicesAppeared(home)
+        await world.push.idle()
+        #expect(asked.count == 1)
+    }
+
+    @Test func devicesOfALinkedServerAskEvenBeforeItsHealth() async {
+        var linked = lab
+        linked.linked = true
+        let world = devicesWorld([(linked, ServerHealth(version: "0.6.0", relay: relayURL, account: nil))], status: .notDetermined)
+        await world.push.devicesAppeared(linked)
+        await world.push.idle()
+        #expect(asked.count == 1)
+    }
+
+    @Test(arguments: [UNAuthorizationStatus.denied, .authorized, .provisional])
+    func devicesDoNotAskOnceDecided(_ status: UNAuthorizationStatus) async {
+        let world = devicesWorld([(home, nil)], status: status)
+        await world.state.load()
+        await world.push.devicesAppeared(home)
+        await world.push.idle()
+        #expect(asked.count == 0)
+    }
+
+    @Test func devicesOfAServerWithoutAnAccountDoNotAsk() async {
+        let world = devicesWorld([(lab, ServerHealth(version: "0.6.0", relay: relayURL, account: nil))], status: .notDetermined)
+        await world.state.load()
+        await world.push.devicesAppeared(lab)
+        await world.push.idle()
+        #expect(asked.count == 0)
     }
 
     @Test func hooksAreChainedAndKeepTheOthers() async throws {

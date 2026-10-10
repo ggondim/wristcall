@@ -35,6 +35,7 @@ final class PhonePushCoordinator {
     private let topic: String
     private let keys: any PushKeyStore
     private let requestAuthorization: @MainActor () async -> Void
+    private let authorizationStatus: @MainActor () async -> UNAuthorizationStatus
     /// The APNs device token of this launch; nothing is registered before it arrives.
     private(set) var deviceToken: Data?
     private var askedForAuthorization = false
@@ -53,7 +54,8 @@ final class PhonePushCoordinator {
         environment: PushEnvironment,
         topic: String,
         keys: any PushKeyStore = KeychainPushKeyStore(service: KeychainManagedServerStore.defaultService),
-        requestAuthorization: @escaping @MainActor () async -> Void = PhonePushCoordinator.requestNotificationAuthorization
+        requestAuthorization: @escaping @MainActor () async -> Void = PhonePushCoordinator.requestNotificationAuthorization,
+        authorizationStatus: @escaping @MainActor () async -> UNAuthorizationStatus = PhonePushCoordinator.notificationAuthorizationStatus
     ) {
         self.state = state
         self.relayURL = relayURL
@@ -62,6 +64,7 @@ final class PhonePushCoordinator {
         self.topic = topic
         self.keys = keys
         self.requestAuthorization = requestAuthorization
+        self.authorizationStatus = authorizationStatus
     }
 
     /// The relay and APNs environment of this build, from `Info.plist` (set by `Config/Push.xcconfig`);
@@ -282,6 +285,27 @@ final class PhonePushCoordinator {
         askedForAuthorization = true
         let requestAuthorization = requestAuthorization
         authorization = Task { await requestAuthorization() }
+    }
+
+    /// The Devices screen of a server appeared. Servers with an account saved before the push build first
+    /// ran were never added or linked in it, so the question is also asked here, where approvals are seen:
+    /// once per launch, and only while the user has not answered it.
+    func devicesAppeared(_ server: ManagedServer) async {
+        guard !askedForAuthorization else { return }
+        let hasAccount = server.linked || state.healths[server.id]?.account != nil
+        guard hasAccount else { return }
+        let status = await authorizationStatus()
+        guard Self.shouldAskForNotifications(status: status, serverHasAccount: hasAccount) else { return }
+        askForAuthorizationOnce()
+    }
+
+    /// Ask only a question not answered yet, and only for a server that can send approvals.
+    nonisolated static func shouldAskForNotifications(status: UNAuthorizationStatus, serverHasAccount: Bool) -> Bool {
+        serverHasAccount && status == .notDetermined
+    }
+
+    static func notificationAuthorizationStatus() async -> UNAuthorizationStatus {
+        await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
     }
 
     static func requestNotificationAuthorization() async {
