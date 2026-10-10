@@ -47,6 +47,9 @@ struct AccountSection: View {
             if let error = account.error {
                 Text(error).foregroundStyle(.red)
             }
+            NavigationLink("Approve watch sign-in") {
+                ApproveWatchSignInView()
+            }
             Button("Sign out") { run { await account.signOut() } }
                 .disabled(busy)
             Button("Delete account", role: .destructive) { confirmingDelete = true }

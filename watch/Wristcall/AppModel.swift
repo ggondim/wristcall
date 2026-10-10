@@ -163,7 +163,8 @@ final class AppModel {
     private let pairing: any PairingService
     private let store: any ServerStore
     private let defaults: UserDefaults
-    private let deviceName: String
+    /// Sent as `device_name` (also by the account login's `POST /v1/pair/account`).
+    let deviceName: String
     private let sleep: PairingClient.Sleep
     /// Asked before every call; `nil` (tests, previews) never blocks one.
     private let reachability: (any NetworkReachability)?
@@ -227,6 +228,13 @@ final class AppModel {
     }
     /// A pairing request is running.
     var isBusy: Bool { pairingTask != nil }
+    /// A call, or the result of the last one-way call, is on screen.
+    var isInCallOrResult: Bool {
+        switch phase {
+        case .inCall, .callResult: true
+        default: false
+        }
+    }
 
     // MARK: - Launch
 
@@ -520,6 +528,11 @@ final class AppModel {
     /// client secret and never leaves this function except in the request body.
     private func waitForApproval(_ request: PairingRequest, server: URL) async throws -> PairedDevice {
         phase = .pairing(requestId: request.requestId)
+        return try await pollApproval(request, server: server)
+    }
+
+    /// The poll of `waitForApproval`, without touching the screen.
+    private func pollApproval(_ request: PairingRequest, server: URL) async throws -> PairedDevice {
         while true {
             try await sleep(PairingClient.pollInterval)
             try Task.checkCancellation()
@@ -532,6 +545,45 @@ final class AppModel {
                 throw LocalFailure.expired
             }
         }
+    }
+
+    // MARK: - Account login (I15)
+
+    /// A device the account login paired (`POST /v1/pair/account`): asks `/v1/me` and adds it like any
+    /// pairing (W2's replacement included). Only on Home or the pairing screen, with no pairing running:
+    /// otherwise `LinkPairingError.busy` and nothing changes.
+    func addPaired(_ device: PairedDevice, server: URL) async throws {
+        guard pairingTask == nil, phase == .home || phase == .unpaired else { throw LinkPairingError.busy }
+        let credentials = Credentials(serverURL: server, device: device)
+        // The device exists on the server: a cancelled login must not lose its token (as in `complete`).
+        let pairing = pairing
+        let info = await Task { await Self.me(credentials, pairing: pairing) }.value
+        try add(credentials, info: info)
+    }
+
+    /// Waits for the owner's approval of an account login's request (polled every
+    /// `PairingClient.pollInterval`, as in flow B) as the running pairing: `cancelPairing()`, or cancelling
+    /// the caller, stops it; other pairings meanwhile get `LinkPairingError.busy`. The screen stays where it
+    /// is (the login screen shows the request id). `.gone` throws the "expired" failure (`text(for:)`).
+    func awaitApproval(_ request: PairingRequest, server: URL) async throws -> PairedDevice {
+        guard pairingTask == nil, phase == .home || phase == .unpaired else { throw LinkPairingError.busy }
+        let outcome = ApprovalOutcome()
+        let task = Task { [self] in
+            do {
+                outcome.result = .success(try await pollApproval(request, server: server))
+            } catch {
+                outcome.result = .failure(error)
+            }
+        }
+        pairingTask = task
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        pairingTask = nil
+        guard let result = outcome.result else { throw CancellationError() }
+        return try result.get()
     }
 
     // MARK: - Adding and removing servers
@@ -912,6 +964,12 @@ final class AppModel {
     @MainActor
     private final class PairingOutcome {
         var error: (any Error)?
+    }
+
+    /// The outcome of one `awaitApproval`, kept by that call only.
+    @MainActor
+    private final class ApprovalOutcome {
+        var result: Result<PairedDevice, any Error>?
     }
 
     /// Why `pair(server:code:)` did not start.

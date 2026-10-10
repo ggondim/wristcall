@@ -4,8 +4,22 @@ import SwiftUI
 /// change (unpair from Settings, for example) also drops whatever was pushed.
 struct RootView: View {
     let model: AppModel
+    @Environment(AccountLoginModel.self) private var login
 
     var body: some View {
+        // The account login stays up while it adds servers underneath (the phase moves to Home), but a call
+        // and its result come first.
+        if login.isPresented, !model.isInCallOrResult {
+            NavigationStack {
+                AccountLoginView(login: login)
+            }
+        } else {
+            screen
+        }
+    }
+
+    @ViewBuilder
+    private var screen: some View {
         switch model.phase {
         case .launching:
             ProgressView()

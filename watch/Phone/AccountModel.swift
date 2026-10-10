@@ -39,6 +39,23 @@ final class AccountModel {
     @ObservationIgnored private let session: AccountSession?
     @ObservationIgnored private let web: any WebAuthenticator
 
+    /// Approving the watch's login (R11): the provider's device page, open or closed again.
+    enum WatchApproval: Equatable {
+        case idle
+        /// The page is up (in the login's web session).
+        case open
+        /// The page was closed (by the user, or because the watch said it is signed in): the watch has the outcome.
+        case done
+        case failed(String)
+    }
+
+    private(set) var watchApproval: WatchApproval = .idle
+    /// The device page's task; cancelling it closes the page (M13).
+    @ObservationIgnored private var approvalTask: Task<(any Error)?, Never>?
+
+    static let checkWatch = "Check your watch."
+    static let badUserCode = "Enter the 8-character code the watch shows."
+
     init(cloudURL: URL?, session: AccountSession?, web: any WebAuthenticator, state appState: AppState) {
         let session = cloudURL == nil ? nil : session
         self.cloudURL = session == nil ? nil : cloudURL
@@ -132,6 +149,60 @@ final class AccountModel {
         }
         await accountDeleted?()
         await signOut()
+    }
+
+    // MARK: - Watch sign-in (R11)
+
+    /// Opens `{issuer}/device?user_code=…` (issuer from the build's Cloud, never from the watch) in the same
+    /// non-ephemeral web session as the login, so the provider's cookie approves without a new sign-in. The
+    /// page never redirects back: closing it (or `watchSignInFinished()`) ends the step with "Check your watch.".
+    func approveWatchSignIn(userCode: String) async {
+        guard let session, state == .signedIn, approvalTask == nil else { return }
+        guard DeviceVerification.normalized(userCode) != nil else {
+            watchApproval = .failed(Self.badUserCode)
+            return
+        }
+        let issuer: URL
+        do {
+            issuer = try await session.config().issuer
+        } catch {
+            watchApproval = .failed(Self.message(for: error))
+            return
+        }
+        guard let url = DeviceVerification.url(issuer: issuer, userCode: userCode) else {
+            watchApproval = .failed(Self.message(for: AccountError.notConfigured))
+            return
+        }
+        watchApproval = .open
+        let web = web
+        let task = Task { () -> (any Error)? in
+            do {
+                _ = try await web.authenticate(url: url, callbackScheme: Self.callbackScheme)
+                return nil
+            } catch {
+                return error
+            }
+        }
+        approvalTask = task
+        let error = await task.value
+        approvalTask = nil
+        switch error {
+        case nil, is CancellationError:
+            watchApproval = .done
+        default:
+            watchApproval = .failed("Can't open the sign-in page.")
+        }
+    }
+
+    /// M13: the watch said its login is done: the device page (which never comes back on its own) closes.
+    func watchSignInFinished() {
+        approvalTask?.cancel()
+    }
+
+    /// A new approval screen starts clean (unless a page is up).
+    func resetWatchApproval() {
+        guard approvalTask == nil else { return }
+        watchApproval = .idle
     }
 
     // MARK: - Link

@@ -27,6 +27,8 @@ public actor AccountSession {
     private let store: any TokenStore
     private let session: URLSession
     private let now: @Sendable () -> Date
+    /// The waits of the device flow's poll (tests pass one that returns at once).
+    private let sleep: OIDCClient.Sleep
 
     private var cachedConfig: CloudConfig?
     private var cachedOIDC: (client: OIDCClient, provider: OIDCProvider)?
@@ -45,13 +47,15 @@ public actor AccountSession {
         kind: AccountClientKind,
         store: any TokenStore,
         session: URLSession = .shared,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        sleep: @escaping OIDCClient.Sleep = { try await Task.sleep(for: $0) }
     ) {
         self.cloud = cloud
         self.kind = kind
         self.store = store
         self.session = session
         self.now = now
+        self.sleep = sleep
         self.cloudClient = CloudClient(cloud: cloud, session: session)
     }
 
@@ -76,7 +80,7 @@ public actor AccountSession {
         case .watch: config.clients.watch
         }
         guard let clientID, !clientID.isEmpty, OIDCClient.isSecure(config.issuer) else { throw AccountError.notConfigured }
-        let client = OIDCClient(issuer: config.issuer, clientID: clientID, session: session, now: now)
+        let client = OIDCClient(issuer: config.issuer, clientID: clientID, session: session, sleep: sleep, now: now)
         let provider = try await client.discover()
         cachedOIDC = (client, provider)
         return (client, provider)
@@ -89,6 +93,23 @@ public actor AccountSession {
         refreshing = nil
         unsaved = nil
         try store.save(tokens)
+    }
+
+    /// The watch's login (RFC 8628): a device code for this app's client with the Cloud's scopes. Show its
+    /// `userCode`; keep the authorization (its device code is the poll's secret) for `completeDeviceAuthorization`.
+    public func startDeviceAuthorization() async throws -> DeviceAuthorization {
+        let config = try await config()
+        let (client, provider) = try await oidc()
+        return try await client.startDeviceAuthorization(provider, scopes: config.scopes)
+    }
+
+    /// Polls until the user approves `authorization` (`OIDCClient.pollDeviceToken`: `.expiredToken`,
+    /// `.accessDenied`, cancellation), then stores the tokens as `signIn` does.
+    public func completeDeviceAuthorization(_ authorization: DeviceAuthorization) async throws {
+        let (client, provider) = try await oidc()
+        let tokens = try await client.pollDeviceToken(authorization, provider)
+        try Task.checkCancellation()
+        try signIn(tokens)
     }
 
     /// An access token with at least 60 s to live. Refreshes when needed, one refresh at a time (parallel

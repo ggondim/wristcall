@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 import WristcallKit
 import WristcallKitTesting
@@ -240,6 +241,66 @@ struct AccountSessionTests {
         #expect(try await session.config().issuer == URL(string: "https://auth.test")!)
         #expect(try await session.config().clients.ios == "wristcall-ios")
         #expect(cloud.requests.count == 2)
+    }
+
+    // MARK: - Device login (the watch)
+
+    /// A provider whose device endpoint gives `zxsgkcpn` and whose token endpoint answers `polls` in order.
+    func deviceWorld(expiresIn: Int = 600, polls: [StubHost.Reply]) -> StubAccountWorld {
+        let count = Mutex(0)
+        return StubAccountWorld(token: { request in
+            if request.path.hasSuffix("/device_authorization") {
+                return StubHost.Reply(200, """
+                    {"device_code":"device-secret","user_code":"zxsgkcpn","verification_uri":"https://auth.test/device",
+                     "expires_in":\(expiresIn),"interval":5}
+                    """)
+            }
+            let index = count.withLock { value in
+                defer { value += 1 }
+                return value
+            }
+            return polls[min(index, polls.count - 1)]
+        })
+    }
+
+    @Test func deviceLoginStoresTheTokens() async throws {
+        let world = deviceWorld(polls: [
+            StubHost.Reply(400, #"{"error":"authorization_pending"}"#),
+            StubHost.Reply(200, #"{"access_token":"at-1","refresh_token":"rt-1","expires_in":3600,"token_type":"Bearer"}"#),
+        ])
+        let store = InMemoryTokenStore()
+        let sleeper = SleepRecorder()
+        let now = now
+        let session = AccountSession(
+            cloud: world.cloud.url, kind: .watch, store: store, session: .stubbed(), now: { now }, sleep: sleeper.sleep)
+        let authorization = try await session.startDeviceAuthorization()
+        #expect(authorization.userCode == "ZXSG-KCPN")
+        #expect(authorization.expiresAt == now.addingTimeInterval(600))
+        let start = try #require(world.endpoints.requests.first { $0.path.hasSuffix("/device_authorization") }).form()
+        #expect(start["client_id"] == "wristcall-watch")
+        // The Cloud's scopes (offline_access: the refresh token "Sync with account" needs later).
+        #expect(start["scope"]?.contains("offline_access") == true)
+        #expect(await !session.isSignedIn)
+
+        try await session.completeDeviceAuthorization(authorization)
+        #expect(try store.load()?.accessToken == "at-1")
+        #expect(try store.load()?.refreshToken == "rt-1")
+        #expect(sleeper.delays == [.seconds(5), .seconds(5)])
+        let polls = world.tokenRequests
+        #expect(polls.count == 2)
+        #expect(try polls[0].form()["device_code"] == "device-secret")
+    }
+
+    @Test func deviceLoginExpiredStoresNothing() async throws {
+        let world = deviceWorld(expiresIn: 3, polls: [StubHost.Reply(400, #"{"error":"authorization_pending"}"#)])
+        let store = InMemoryTokenStore()
+        let session = AccountSession(
+            cloud: world.cloud.url, kind: .watch, store: store, session: .stubbed(), now: { [now] in now }, sleep: SleepRecorder().sleep)
+        let authorization = try await session.startDeviceAuthorization()
+        await #expect(throws: OIDCError.expiredToken) {
+            try await session.completeDeviceAuthorization(authorization)
+        }
+        #expect(try store.load() == nil)
     }
 
     // MARK: - Per-server token

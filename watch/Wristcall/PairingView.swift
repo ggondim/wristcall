@@ -4,6 +4,7 @@ import WristcallKit
 /// Pairing: 8 digit code (flow A, or A' after "Use server URL") and approval request (flow B).
 struct PairingView: View {
     let model: AppModel
+    @Environment(AccountLoginModel.self) private var login
     @State private var pad = DigitPadModel()
     @State private var isEnteringURL = false
 
@@ -38,6 +39,17 @@ struct PairingView: View {
                         } else {
                             Button("Request approval") { model.requestApproval() }
                             Button("Use pairing directory") { model.useDirectory() }
+                        }
+                    }
+                    if login.isAvailable, !model.isBusy {
+                        Button("Sign in with account") {
+                            Task {
+                                if login.isSignedIn {
+                                    await login.sync()
+                                } else {
+                                    await login.signIn()
+                                }
+                            }
                         }
                     }
                     if model.hasServers {

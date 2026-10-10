@@ -96,6 +96,14 @@ struct WatchLinkMessageTests {
     }
 
     /// Review Focus I4: the poll secret of the device flow never crosses WatchConnectivity.
+    @Test func signedInRoundTrip() {
+        let dictionary = WatchLinkMessage.signedIn.dictionary
+        #expect(dictionary["type"] as? String == "signed_in")
+        #expect(dictionary.count == 2)
+        #expect(WatchLinkMessage(dictionary) == .signedIn)
+        #expect(WatchLinkMessage.signedIn != .refresh)
+    }
+
     @Test func deviceCodeNeverLeavesWatch() {
         let dictionary = WatchLinkMessage.deviceCode(userCode: "ZXSG-KCPN", expiresAt: 1_800_000_000).dictionary
         #expect(dictionary["device_code"] == nil)

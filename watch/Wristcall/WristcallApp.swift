@@ -18,6 +18,8 @@ struct WristcallApp: App {
     /// WatchConnectivity with the iPhone app (decision R10): pairing it sends, "Refresh watch", and
     /// the servers this watch is paired with.
     private let link: WatchLinkReceiver
+    /// The login with the central account (decision R11); unavailable when the build has no Cloud.
+    @State private var login: AccountLoginModel
     #if WRISTCALL_PUSH
     @WKApplicationDelegateAdaptor private var appDelegate: AppDelegate
     #endif
@@ -46,7 +48,16 @@ struct WristcallApp: App {
         self.coordinator = coordinator
         shortcuts = ShortcutCalls(store: PendingCallStore(), model: model)
         push = Self.makePush(model)
-        link = WatchLinkReceiver(model: model)
+        let link = WatchLinkReceiver(model: model)
+        self.link = link
+        // The Cloud comes from the build only (never from a server or the iPhone); empty: no account login.
+        let cloud = AccountLoginModel.cloudURL(
+            fromInfoValue: Bundle.main.object(forInfoDictionaryKey: "WristcallCloudURL") as? String)
+        let session = cloud.map {
+            AccountSession(cloud: $0, kind: .watch, store: KeychainTokenStore(service: KeychainTokenStore.defaultService))
+        }
+        _login = State(initialValue: AccountLoginModel(
+            cloudURL: cloud, session: session, model: model, sendToPhone: { [weak link] in link?.send($0) }))
         // Unit tests run inside this app: they talk to their own receiver, never to WatchConnectivity.
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
             link.activate()
@@ -56,9 +67,11 @@ struct WristcallApp: App {
     var body: some Scene {
         WindowGroup {
             RootView(model: model)
+                .environment(login)
                 .task {
                     // A message from the iPhone may have started it already (WatchLinkReceiver).
                     await model.launchIfNeeded()
+                    await login.restore()
                     // Once the servers are read: every one of them gets its push key.
                     push?.start()
                     // On a cold start the intent may record its request before `onReceive`

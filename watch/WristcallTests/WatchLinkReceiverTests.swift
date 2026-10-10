@@ -227,6 +227,8 @@ struct WatchLinkReceiverTests {
         let receiver = WatchLinkReceiver(model: model)
         let reply = await receiver.handle(.deviceCode(userCode: "ZXSG-KCPN", expiresAt: 1_800_000_000))
         #expect(reply == WatchLinkReply(ok: false, error: WatchLinkReply.Reason.unsupported))
+        // M13's "signed in" goes watch → iPhone only too.
+        #expect(await receiver.handle(.signedIn) == WatchLinkReply(ok: false, error: WatchLinkReply.Reason.unsupported))
     }
 
     @Test func contextListsCanonicalURLs() async throws {

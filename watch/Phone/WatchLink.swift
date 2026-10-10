@@ -70,6 +70,8 @@ final class WatchLink {
     /// A paired Apple Watch with Wristcall installed.
     private(set) var canReachWatch = false
 
+    /// M13: the watch says its account login is done (the iPhone closes the approval page).
+    @ObservationIgnored var onWatchSignedIn: (@MainActor () -> Void)?
     @ObservationIgnored private let session: (any WatchSessionProtocol)?
     @ObservationIgnored private let timeout: Duration
     @ObservationIgnored private let now: () -> Date
@@ -191,8 +193,16 @@ final class WatchLink {
         if reach != canReachWatch { canReachWatch = reach }
     }
 
-    /// A message from the watch. M7: an expired login code is dropped, a shown one goes at expiry.
+    /// A message from the watch. M7: an expired login code is dropped, a shown one goes at expiry. M13: the
+    /// watch's "signed in" drops the code and tells `onWatchSignedIn`.
     func receive(_ message: WatchLinkMessage) {
+        if case .signedIn = message {
+            deviceCodeTask?.cancel()
+            deviceCodeTask = nil
+            deviceCodeOffer = nil
+            onWatchSignedIn?()
+            return
+        }
         guard case .deviceCode(let userCode, let expiresAt) = message else { return }
         let left = expiresAt - now().timeIntervalSince1970
         guard left > 0 else { return }

@@ -16,6 +16,8 @@ struct PhoneApp: App {
     @State private var account: AccountModel
     @State private var watchLink: WatchLink
     @Environment(\.scenePhase) private var scenePhase
+    /// The watch login code whose approval sheet the user closed (it does not come back for that code).
+    @State private var dismissedWatchCode: String?
 
     init() {
         let state = AppState()
@@ -28,7 +30,10 @@ struct PhoneApp: App {
         let session = cloud.map { AccountSession(cloud: $0, kind: .ios, store: KeychainTokenStore()) }
         let account = AccountModel(cloudURL: cloud, session: session, web: LiveWebAuthenticator(), state: state)
         _account = State(initialValue: account)
-        _watchLink = State(initialValue: Self.makeWatchLink())
+        let watchLink = Self.makeWatchLink()
+        _watchLink = State(initialValue: watchLink)
+        // M13: the watch's login is done: the device page it was approved on closes.
+        watchLink.onWatchSignedIn = { [weak account] in account?.watchSignInFinished() }
         // Read by the app delegate in `didFinishLaunching`, which runs after this.
         PhoneAppDelegate.notifications = ApprovalNotificationHandler(approvals: approvals)
         #if WRISTCALL_PUSH
@@ -53,6 +58,21 @@ struct PhoneApp: App {
                 .environment(history)
                 .environment(account)
                 .environment(watchLink)
+                // R11: the watch sent its login code and the account is signed in here: approve it.
+                .sheet(item: Binding(
+                    get: {
+                        WatchSignInSheet.code(link: watchLink, account: account, dismissed: dismissedWatchCode)
+                            .map(WatchSignInCode.init)
+                    },
+                    set: { value in
+                        if value == nil { dismissedWatchCode = watchLink.incomingDeviceCode ?? dismissedWatchCode }
+                    }
+                )) { code in
+                    NavigationStack {
+                        ApproveWatchSignInView(code: code.value, isSheet: true)
+                    }
+                    .environment(account)
+                }
                 .task { await start() }
                 .onChange(of: scenePhase) { _, phase in
                     // Back in the foreground: ask the servers for device approvals waiting for the owner.

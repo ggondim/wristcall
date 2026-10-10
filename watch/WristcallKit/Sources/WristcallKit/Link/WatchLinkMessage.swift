@@ -15,6 +15,9 @@ public enum WatchLinkMessage: Sendable, Equatable {
     /// seconds). Never the `device_code`: that one is the secret of the watch's poll. Case does not
     /// matter: it is sent and compared uppercased.
     case deviceCode(userCode: String, expiresAt: Double)
+    /// Watch → iPhone: the account login on the watch is done (M13): the iPhone closes the approval page it
+    /// opened, which never comes back to the app on its own. Carries nothing.
+    case signedIn
 
     /// Protocol version, the `"v"` of every dictionary. Any other value is ignored.
     public static let version = 1
@@ -45,6 +48,8 @@ public enum WatchLinkMessage: Sendable, Equatable {
                   let expiresAt = Self.number(dictionary["expires_at"])
             else { return nil }
             self = .deviceCode(userCode: userCode, expiresAt: expiresAt)
+        case "signed_in":
+            self = .signedIn
         default:
             return nil
         }
@@ -61,6 +66,8 @@ public enum WatchLinkMessage: Sendable, Equatable {
             ["v": Self.version, "type": "refresh"]
         case .deviceCode(let userCode, let expiresAt):
             ["v": Self.version, "type": "device_code", "user_code": userCode.uppercased(), "expires_at": expiresAt]
+        case .signedIn:
+            ["v": Self.version, "type": "signed_in"]
         }
     }
 
@@ -68,7 +75,7 @@ public enum WatchLinkMessage: Sendable, Equatable {
         switch (lhs, rhs) {
         case let (.pair(a, b, c, d), .pair(e, f, g, h)):
             a == e && b == f && c == g && d == h
-        case (.refresh, .refresh):
+        case (.refresh, .refresh), (.signedIn, .signedIn):
             true
         case let (.deviceCode(a, b), .deviceCode(c, d)):
             a.uppercased() == c.uppercased() && b == d
@@ -125,7 +132,7 @@ public struct WatchLinkReply: Sendable, Equatable {
         public static let busy = "busy"
         /// The message was malformed (`WatchLinkMessage.init` returned `nil`).
         public static let invalid = "invalid"
-        /// A valid message this side does not take (a `device_code` sent to the watch).
+        /// A valid message this side does not take (a `device_code` or `signed_in` sent to the watch).
         public static let unsupported = "unsupported"
         /// The pairing code expired before the watch got it.
         public static let expired = "expired"

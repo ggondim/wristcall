@@ -101,7 +101,7 @@ final class WatchLinkReceiver: NSObject {
         case .refresh:
             await model.reloadAgents()
             answer(WatchLinkReply(ok: true))
-        case .deviceCode:
+        case .deviceCode, .signedIn:
             // Watch → iPhone only.
             answer(WatchLinkReply(ok: false, error: WatchLinkReply.Reason.unsupported))
         }
@@ -114,6 +114,20 @@ final class WatchLinkReceiver: NSObject {
         let context = WatchLinkContext(servers: addresses)
         lastContext = context
         sendContext()
+    }
+
+    /// Watch → iPhone (the account login's user code, then `signed_in`): `sendMessage` while the iPhone is
+    /// reachable, `transferUserInfo` otherwise or when that fails. Nothing without an active session.
+    func send(_ message: WatchLinkMessage) {
+        guard let session, session.activationState == .activated else { return }
+        let payload = Payload(message.dictionary)
+        guard session.isReachable else {
+            session.transferUserInfo(payload.value)
+            return
+        }
+        session.sendMessage(payload.value, replyHandler: nil) { _ in
+            WCSession.default.transferUserInfo(payload.value)
+        }
     }
 
     private func sendContext() {
@@ -187,5 +201,14 @@ private final class FirstReply {
 
     func set(_ reply: WatchLinkReply) {
         if value == nil { value = reply }
+    }
+}
+
+/// A plist dictionary handed to WatchConnectivity's error handler (it holds plist values only).
+private struct Payload: @unchecked Sendable {
+    let value: [String: Any]
+
+    init(_ value: [String: Any]) {
+        self.value = value
     }
 }

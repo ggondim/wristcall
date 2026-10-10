@@ -337,4 +337,52 @@ struct PairingClientTests {
             #expect(text.contains("dev-1"))
         }
     }
+
+    // MARK: - Account (POST /v1/pair/account)
+
+    @Test func pairWithAccountSendsNoAuthorization() async throws {
+        let server = StubHost(replies: [(200, #"{"device_id":"dev-1","token":"device-token"}"#)])
+        let result = try await client().pairWithAccount(server: server.url, serverToken: "per-server", deviceName: "Apple Watch")
+        #expect(result == .paired(PairedDevice(deviceId: "dev-1", token: "device-token")))
+        let request = try #require(server.requests.first)
+        #expect(request.method == "POST")
+        #expect(request.path == "/v1/pair/account")
+        #expect(request.headers["Authorization"] == nil)
+        let body = try request.json()
+        #expect(body["token"] as? String == "per-server")
+        #expect(body["device_name"] as? String == "Apple Watch")
+        #expect(body.count == 2)
+    }
+
+    @Test func pairWithAccountPending() async throws {
+        let server = StubHost(replies: [(202, #"{"request_id":"0423","poll_token":"poll-secret","expires_at":1800000600}"#)])
+        let result = try await client().pairWithAccount(server: server.url, serverToken: "per-server", deviceName: "Apple Watch")
+        #expect(result == .pending(PairingRequest(
+            requestId: "0423", pollToken: "poll-secret", expiresAt: Date(timeIntervalSince1970: 1_800_000_600))))
+    }
+
+    @Test func pairWithAccountPendingNeedsPollToken() async throws {
+        let server = StubHost(replies: [(202, #"{"request_id":"0423","expires_at":1800000600}"#)])
+        await #expect(throws: PairingError.malformedResponse) {
+            try await client().pairWithAccount(server: server.url, serverToken: "per-server", deviceName: "Apple Watch")
+        }
+    }
+
+    @Test(arguments: [
+        (401, #"{"error":"invalid_token","message":"bad"}"#, PairingError.accountRejected),
+        (403, #"{"error":"not_linked","message":"link first"}"#, PairingError.notLinked),
+        (403, #"{"error":"limit","message":"too many devices"}"#, PairingError.limit),
+        (403, #"{"error":"other"}"#, PairingError.unexpectedStatus(403)),
+        (404, #"{"error":"not_configured"}"#, PairingError.accountNotConfigured),
+        (429, #"{"error":"rate_limited"}"#, PairingError.rateLimited),
+        (429, #"{"error":"too_many_requests","message":"pending"}"#, PairingError.tooManyRequests),
+        (503, #"{"error":"account_unavailable"}"#, PairingError.accountUnavailable),
+        (500, "", PairingError.unexpectedStatus(500)),
+    ])
+    func pairWithAccountErrors(status: Int, body: String, expected: PairingError) async throws {
+        let server = StubHost(replies: [(status, body)])
+        await #expect(throws: expected) {
+            try await client().pairWithAccount(server: server.url, serverToken: "per-server", deviceName: "Apple Watch")
+        }
+    }
 }
