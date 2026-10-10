@@ -2,9 +2,10 @@ import type { AppConfig } from "../config"
 import { AddServerModel } from "../models/addServer"
 import type { AccountLink, ServersModel } from "../models/servers"
 import { AddServerView } from "./AddServerView"
+import { AgentsScreen } from "./AgentsView"
 import { ServerDetailView } from "./ServerDetailView"
 import { ServersView } from "./ServersView"
-import { onNavigate, parseRoute, type Route } from "./route"
+import { onNavigate, parseAgentsTarget, parseRoute, type Route } from "./route"
 import { Tabs } from "./Tabs"
 import { useEffect, useMemo, useState } from "preact/hooks"
 import type { Model } from "./useModel"
@@ -51,6 +52,8 @@ function Screen({
   if (route.tab === "servers") {
     if (route.path === "/" || route.path === "/servers") return <ServersView model={servers} />
     if (route.path === "/servers/add") return <AddServerView model={addServer} />
+    const agents = parseAgentsTarget(route.path)
+    if (agents !== null) return <AgentsScreen servers={servers} target={agents} />
     return <ServerDetailView model={servers} id={decodeId(route.path.slice("/servers/".length))} account={session} />
   }
   return (

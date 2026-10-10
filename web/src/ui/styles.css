@@ -111,3 +111,24 @@ button.button.danger { background: var(--warn); }
 button.button.quiet { background: var(--line); color: var(--fg); }
 .actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem; }
 .confirm { padding: 1rem; border: 1px solid var(--line); border-radius: 0.5rem; margin-bottom: 1rem; }
+.field select, .field textarea { min-height: 44px; padding: 0.5rem 0.75rem; border: 1px solid var(--line); border-radius: 0.5rem; background: var(--bg); color: var(--fg); font: inherit; }
+.field textarea { resize: vertical; }
+.advanced { margin-bottom: 1rem; }
+.advanced summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; font-weight: 600; }
+.stage { margin-bottom: 0.25rem; }
+a.button.quiet { background: var(--line); color: var(--fg); }
+.agent-icon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 36px; height: 36px; border-radius: 9px; background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+.agent-icon svg { width: 20px; height: 20px; }
+.agent-icon.lg { width: 56px; height: 56px; border-radius: 14px; }
+.agent-icon.lg svg { width: 30px; height: 30px; }
+.agent-item { display: flex; align-items: center; }
+.agent-row { flex: 1; flex-direction: row; align-items: center; gap: 0.75rem; min-width: 0; }
+.agent-text { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+.agent-actions { display: flex; gap: 0.25rem; padding-right: 0.5rem; }
+.icon-button { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border: 0; border-radius: 0.5rem; background: transparent; color: var(--muted); cursor: pointer; }
+.icon-button svg { width: 22px; height: 22px; }
+.icon-button:disabled { opacity: 0.35; cursor: default; }
+.icon-picker { display: flex; flex-direction: column; align-items: center; gap: 0.75rem; margin-bottom: 1rem; }
+.icon-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.5rem; width: 100%; }
+.icon-choice { display: flex; align-items: center; justify-content: center; min-height: 52px; border: 1px solid var(--line); border-radius: 0.625rem; background: transparent; cursor: pointer; }
+.icon-choice[aria-checked="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 20%, transparent); }
