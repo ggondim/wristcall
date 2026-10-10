@@ -11,9 +11,24 @@ public struct ServerPushClient: Sendable {
         self.http = PushHTTP(session: session)
     }
 
+    /// Pushes with a personal token, as the iPhone does (its own token, not a device's). The `deviceId`
+    /// is not used by any push route.
+    public init(server: URL, token: String, session: URLSession = .shared) {
+        self.init(credentials: Credentials(serverURL: server, deviceId: "", token: token), session: session)
+    }
+
     /// `GET {server}/v1/health`, which needs no token.
     public func health() async throws -> ServerHealth {
-        let request = try http.request(url("v1/health"), method: "GET")
+        try await Self.health(of: credentials.serverURL, http: http)
+    }
+
+    /// `GET {server}/v1/health` before there is any credential (the watch's account login reads it first).
+    public static func health(of server: URL, session: URLSession = .shared) async throws -> ServerHealth {
+        try await health(of: server, http: PushHTTP(session: session))
+    }
+
+    private static func health(of server: URL, http: PushHTTP) async throws -> ServerHealth {
+        let request = try http.request(server.appending(path: "v1/health"), method: "GET")
         let (status, data) = try await http.send(request)
         guard status == 200 else { throw PushHTTP.error(for: status) }
         return try http.decode(data)

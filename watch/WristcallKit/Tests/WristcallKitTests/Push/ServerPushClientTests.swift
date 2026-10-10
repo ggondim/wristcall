@@ -31,6 +31,42 @@ struct ServerPushClientTests {
         #expect(try await client(server).health() == ServerHealth(version: "0.5.0", relay: nil))
     }
 
+    @Test func healthDecodesAccount() async throws {
+        let server = StubHost(replies: [(200, #"{"status":"ok","version":"0.6.0","protocol":1,"account":{"issuer":"https://c","device_credential":"approval"},"push":null}"#)])
+        let health = try await client(server).health()
+        #expect(health.account == ServerHealth.AccountInfo(issuer: "https://c", deviceCredential: "approval"))
+        #expect(health == ServerHealth(version: "0.6.0", account: ServerHealth.AccountInfo(issuer: "https://c", deviceCredential: "approval")))
+    }
+
+    @Test func healthWithoutAccount() async throws {
+        let server = StubHost(replies: [(200, #"{"status":"ok","version":"0.5.0","protocol":1}"#)])
+        let health = try await client(server).health()
+        #expect(health.account == nil)
+        #expect(health.relay == nil)
+    }
+
+    @Test func healthWithAMalformedAccountHasNoAccount() async throws {
+        let server = StubHost(replies: [(200, #"{"version":"0.6.0","account":{"issuer":1}}"#)])
+        #expect(try await client(server).health().account == nil)
+    }
+
+    @Test func healthNeedsNoCredentials() async throws {
+        let server = StubHost(replies: [(200, #"{"version":"0.6.0","account":null}"#)])
+        let health = try await ServerPushClient.health(of: server.url, session: .stubbed())
+        #expect(health.version == "0.6.0")
+        let request = try #require(server.requests.first)
+        #expect(request.path == "/v1/health")
+        #expect(request.headers["Authorization"] == nil)
+    }
+
+    @Test func aPersonalTokenAuthenticatesPushRoutes() async throws {
+        let server = StubHost(replies: [(204, "")])
+        let client = ServerPushClient(server: server.url, token: "wc_pat_x", session: .stubbed())
+        try await client.setPushKey("wc_push_abc")
+        #expect(server.requests.first?.headers["Authorization"] == "Bearer wc_pat_x")
+        #expect(server.requests.first?.path == "/v1/push")
+    }
+
     @Test func healthKeepsTheServerPathPrefix() async throws {
         let server = StubHost(path: "/wristcall", replies: [(200, #"{"version":"0.6.0"}"#)])
         _ = try await client(server).health()
