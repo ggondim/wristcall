@@ -96,6 +96,8 @@ final class AppModel {
         static let agentNotFound = "Agent not found."
         static let unsupportedAgent = "Update Wristcall to call this agent."
         static let nothingSent = "Nothing was sent."
+        /// Name on the result screen of a call whose agent the server no longer lists.
+        static let unknownAgent = "Last call"
 
         static func removed(_ host: String) -> String { "\(host): this watch was removed on the server." }
         static func cantReach(_ host: String) -> String { "Can't reach \(host)." }
@@ -144,6 +146,11 @@ final class AppModel {
     private let reachability: (any NetworkReachability)?
     /// Asks for the result of each one-way call.
     private let resultPoller: CallStatusPoller
+    /// One-way calls without a final status, kept across launches.
+    private let pendingResults: PendingResultStore
+    /// Results the user closed with "Done" while still waiting: not reopened when the app comes
+    /// back to the foreground, only by the next launch.
+    private var dismissedResultIDs: Set<String> = []
 
     init(
         pairing: any PairingService = PairingClient(),
@@ -153,7 +160,8 @@ final class AppModel {
         reachability: (any NetworkReachability)? = nil,
         sleep: @escaping PairingClient.Sleep = { try await Task.sleep(for: $0) },
         savedCatalog: [CatalogAgent] = [],
-        resultPoller: CallStatusPoller = CallStatusPoller()
+        resultPoller: CallStatusPoller = CallStatusPoller(),
+        pendingResults: PendingResultStore? = nil
     ) {
         self.pairing = pairing
         self.store = store
@@ -162,6 +170,7 @@ final class AppModel {
         self.sleep = sleep
         self.reachability = reachability
         self.resultPoller = resultPoller
+        self.pendingResults = pendingResults ?? PendingResultStore(defaults: defaults)
         catalog = savedCatalog
         directoryURL = defaults.string(forKey: Self.directoryDefaultsKey).flatMap(ServerAddress.parse)
             ?? PairingClient.defaultDirectory
@@ -229,6 +238,7 @@ final class AppModel {
         }
         phase = .home
         await load(stored)
+        resumePendingResult()
     }
 
     /// "Retry": reads the Keychain again after it failed, or asks again every server that is down.
@@ -701,33 +711,70 @@ final class AppModel {
 
     /// "Done" on the result screen: stops asking and goes back to the grid. A message set while the
     /// screen was up (the server was removed by a `401`) stays: it says why the grid changed.
+    /// A result still unknown stays pending: the next launch picks it up.
     func dismissResult() {
         guard phase == .callResult else { return }
+        if let callResult, !callResult.isOver {
+            dismissedResultIDs.insert(callResult.callID)
+        }
         callResult?.stop()
         callResult = nil
         returnHome()
     }
 
-    /// The app came to the foreground: a result still waiting asks again (Review Focus 3).
+    /// The app came to the foreground: a result still waiting asks again (Review Focus 3); with
+    /// none open, a pending one from an earlier launch comes back.
     func sceneDidBecomeActive() {
         callResult?.appBecameActive()
+        resumePendingResult()
     }
 
     private func showResult(of call: CallRequest, callID: String) {
-        let result = CallResultModel(
-            target: call.target, callID: callID, credentials: call.credentials, pairing: pairing,
-            poller: resultPoller)
-        result.onFinished = { [weak self] delivered in
-            self?.onCallResultFinished?(delivered)
+        pendingResults.add(PendingResult(
+            callID: callID, serverID: call.credentials.id, agentID: call.target.agent.id, startedAt: Date()))
+        activeCall = nil
+        message = nil
+        present(
+            CallResultModel(
+                target: call.target, callID: callID, credentials: call.credentials, pairing: pairing,
+                poller: resultPoller),
+            credentials: call.credentials)
+    }
+
+    /// Opens the newest pending result, when the app is at Home with no result open. An entry of a
+    /// server that is no longer paired is dropped. A server that has not answered yet waits:
+    /// `launch()` tries again once every server did.
+    private func resumePendingResult() {
+        while phase == .home, callResult == nil, let pending = pendingResults.latest() {
+            guard !dismissedResultIDs.contains(pending.callID) else { return }
+            guard let entry = servers.first(where: { $0.id == pending.serverID }) else {
+                pendingResults.remove(callID: pending.callID)
+                continue
+            }
+            guard entry.status != .loading else { return }
+            let agent = entry.agents.first { $0.agent.id == pending.agentID }?.agent
+                ?? Agent(id: pending.agentID ?? "", slug: "", displayName: Message.unknownAgent, callType: .oneShot)
+            present(
+                CallResultModel(
+                    target: AgentTarget(serverID: entry.id, serverHost: entry.host, agent: agent),
+                    callID: pending.callID, credentials: entry.credentials, pairing: pairing,
+                    poller: resultPoller),
+                credentials: entry.credentials)
+            return
         }
+    }
+
+    private func present(_ result: CallResultModel, credentials: Credentials) {
+        let callID = result.callID
+        let host = result.target.serverHost
+        result.onFinished = { [weak self] delivered in self?.onCallResultFinished?(delivered) }
+        result.onSettled = { [weak self] in self?.pendingResults.remove(callID: callID) }
         // The screen stays (it says "Result unavailable"); "Done" then finds the server gone.
         result.onUnauthorized = { [weak self] in
             guard let self else { return }
-            forget(call.credentials)
-            message = Message.removed(call.target.serverHost)
+            forget(credentials)
+            message = Message.removed(host)
         }
-        activeCall = nil
-        message = nil
         callResult = result
         phase = .callResult
         result.start()
