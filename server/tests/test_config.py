@@ -328,3 +328,38 @@ def test_effective_retention(default, ceiling, agent_days, expected):
     data = base()
     data["history"] = {"default_retention_days": default, "max_retention_days": ceiling}
     assert parse_config(data, ENV).history.effective_days(agent_days) == expected
+
+
+def _with_push(**push):
+    return {**base(), "push": push}
+
+
+def test_push_is_optional():
+    assert fake_config().push is None
+
+
+def test_push_parses_and_normalizes_relay_url():
+    cfg = parse_config(_with_push(relay_url="https://cloud.example.com/"), ENV)
+    assert cfg.push.relay_url == "https://cloud.example.com"
+    assert cfg.push.timeout_s == 10.0
+    assert parse_config(_with_push(relay_url="http://localhost:8800"), ENV).push.relay_url == "http://localhost:8800"
+
+
+@pytest.mark.parametrize(
+    "push",
+    [
+        {"relay_url": "http://cloud.example.com"},
+        {"relay_url": "ftp://cloud.example.com"},
+        {"relay_url": "https://cloud.example.com?x=1"},
+        {"relay_url": "https://cloud.example.com#frag"},
+        {"relay_url": "https://user:pass@cloud.example.com"},
+        {"relay_url": "https:///path"},
+        {"relay_url": "https://cloud.example.com", "timeout_s": 0},
+        {"relay_url": "https://cloud.example.com", "timeout_s": 31},
+        {"relay_url": "https://cloud.example.com", "extra": 1},
+        {},
+    ],
+)
+def test_bad_push_is_rejected(push):
+    with pytest.raises(ConfigError):
+        parse_config(_with_push(**push), ENV)

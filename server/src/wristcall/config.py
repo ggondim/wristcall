@@ -181,6 +181,21 @@ _LOCAL_HOSTS = ("localhost", "127.0.0.1")
 ClientId = Annotated[str, StringConstraints(pattern=r"^\S{1,255}$")]
 
 
+def _check_base_url(value: str, what: str) -> str:
+    """An https URL (http only for localhost/127.0.0.1) without query, fragment or credentials; no trailing slash."""
+    value = value.strip()
+    url = urlsplit(value)
+    if url.query or url.fragment or "?" in value or "#" in value:
+        raise ValueError(f"{what} must not have a query or fragment")
+    if not url.hostname:
+        raise ValueError(f"{what} must have a host")
+    if url.username is not None or url.password is not None:
+        raise ValueError(f"{what} must not have credentials")
+    if url.scheme != "https" and not (url.scheme == "http" and url.hostname in _LOCAL_HOSTS):
+        raise ValueError(f"{what} must be an https URL (http only for localhost)")
+    return value.rstrip("/")
+
+
 class CentralAccountConfig(BaseModel):
     """Optional link to the wristcall cloud account (OIDC). Without it the server works on its own."""
 
@@ -198,17 +213,7 @@ class CentralAccountConfig(BaseModel):
     @field_validator("issuer")
     @classmethod
     def _check_issuer(cls, value: str) -> str:
-        value = value.strip()
-        url = urlsplit(value)
-        if url.query or url.fragment or "?" in value or "#" in value:
-            raise ValueError("issuer must not have a query or fragment")
-        if not url.hostname:
-            raise ValueError("issuer must have a host")
-        if url.username is not None or url.password is not None:
-            raise ValueError("issuer must not have credentials")
-        if url.scheme != "https" and not (url.scheme == "http" and url.hostname in _LOCAL_HOSTS):
-            raise ValueError("issuer must be an https URL (http only for localhost)")
-        return value.rstrip("/")
+        return _check_base_url(value, "issuer")
 
     @field_validator("audience")
     @classmethod
@@ -221,6 +226,20 @@ class CentralAccountConfig(BaseModel):
         return audience
 
 
+class PushConfig(BaseModel):
+    """Push through the wristcall Cloud relay (E6). Devices and apps register their own relay key; nothing else here."""
+
+    model_config = ConfigDict(extra="forbid")
+    # The Cloud URL: https://...; http only for localhost/127.0.0.1; the trailing slash is dropped.
+    relay_url: str
+    timeout_s: float = Field(default=10.0, gt=0, le=30)
+
+    @field_validator("relay_url")
+    @classmethod
+    def _check_relay_url(cls, value: str) -> str:
+        return _check_base_url(value, "relay_url")
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     server: ServerConfig
@@ -229,6 +248,7 @@ class AppConfig(BaseModel):
     profiles: dict[str, ProfileConfig] = Field(default_factory=dict)
     central_account: CentralAccountConfig | None = None
     history: HistoryConfig = Field(default_factory=HistoryConfig)
+    push: PushConfig | None = None
 
     @model_validator(mode="after")
     def _check_references(self) -> "AppConfig":

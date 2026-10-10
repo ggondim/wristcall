@@ -32,6 +32,7 @@ from .history_codec import HistoryCodec
 from .oneway import Background, OneWayCall
 from .pairing import DeviceLimit, Paired, PairingDenied, PairingGone, PairingService
 from .providers import ProviderError, check_providers
+from .push import push_router
 from .ratelimit import RateLimiter
 from .redelivery import Redelivery
 from .session import CallSession
@@ -161,6 +162,8 @@ def create_app(
     app.include_router(
         management_router(config, auth, agents, pairing_svc, account, limiter=limiter, client_ip=client_ip)
     )
+    app.include_router(push_router(store, auth, config))
+
     redelivery = Redelivery(history, agents, config, http_client, policy=delivery_policy, background=after_calls)
     app.include_router(calls_router(auth, agents, history, redelivery.start))
 
@@ -176,6 +179,7 @@ def create_app(
             "version": __version__,
             "protocol": protocol.PROTOCOL_VERSION,
             "account": {"issuer": central.issuer, "device_credential": central.device_credential} if central else None,
+            "push": {"relay": config.push.relay_url} if config.push else None,
         }
 
     @app.post("/v1/pair")

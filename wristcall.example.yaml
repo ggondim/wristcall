@@ -14,6 +14,11 @@ server:
 #   clients: ["<watch client id>", "<iOS client id>", "<PWA client id>"]   # optional
 #   device_credential: approval   # approval (you approve each new device) | attestation (any linked login pairs)
 
+# Push through the wristcall Cloud relay: the watch gets a check failure when a one-way call ends, management apps
+# get device approval requests. Devices and apps register their own relay key; nothing else is set here.
+# push:
+#   relay_url: https://cloud.wristcall.example
+
 # Call history (optional): how long calls stay and whether their text is encrypted at rest.
 # history:
 #   default_retention_days: 90     # agents without their own retention_days; absent = keep until deleted
