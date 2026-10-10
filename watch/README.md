@@ -55,6 +55,12 @@ WRISTCALL_TEST_SERVER=http://127.0.0.1:8765 make -C watch test-integration
 A plain `swift test` in `WristcallKit/` skips the integration suites when `WRISTCALL_TEST_SERVER`
 is not set; `make -C watch test-integration` requires it and stops with an error without it.
 
+`AccountIntegrationTests` (the central account end to end: iPhone login with PKCE, the agenda, the watch's
+device-code login with approval, the approval push) needs a local wristcall Cloud, a server whose
+`central_account` is that Cloud, and a real OIDC provider with a human test user. A browser helper,
+`tools/e2e/zitadel_browser.py` (Playwright for Python; usage in its docstring), signs that user in. A script
+starts everything and runs `make -C watch test-account`; without `WRISTCALL_TEST_CLOUD` the suite is skipped.
+
 ## Run in the simulator
 
 Open `watch/Wristcall.xcodeproj`, pick the `Wristcall` scheme and a watch simulator, and press Run.

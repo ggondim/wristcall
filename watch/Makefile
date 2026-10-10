@@ -31,7 +31,7 @@ export WRISTCALL_TEST_CONFIG ?= $(CURDIR)/WristcallKit/Tests/test-server.yaml
 export WRISTCALL_TEST_DATA_DIR ?= $(CURDIR)/build/test-server-data
 export WRISTCALL_TEST_CLI ?= wristcall
 
-.PHONY: generate test-kit test-server test-integration build build-sim-push test-sim build-ios build-ios-push test-ios clean
+.PHONY: generate test-kit test-server test-integration test-account build build-sim-push test-sim build-ios build-ios-push test-ios clean
 
 generate:
 	xcodegen generate --spec project.yml
@@ -48,6 +48,13 @@ test-server:
 test-integration:
 	@test -n "$(WRISTCALL_TEST_SERVER)" || { echo "error: set WRISTCALL_TEST_SERVER, e.g. http://127.0.0.1:$(TEST_SERVER_PORT) (see README.md)"; exit 1; }
 	cd WristcallKit && swift test --filter WristcallKitIntegrationTests
+
+# Account flows end to end (AccountIntegrationTests): a local Cloud, a server linked to it and a real OIDC provider
+# with a browser helper (tools/e2e/zitadel_browser.py). Starts nothing; a script sets WRISTCALL_TEST_CLOUD,
+# WRISTCALL_TEST_SERVER, WRISTCALL_TEST_CONFIG, WRISTCALL_TEST_BROWSER and WRISTCALL_TEST_FAKE_APNS_LOG.
+test-account:
+	@test -n "$(WRISTCALL_TEST_CLOUD)" || { echo "error: set WRISTCALL_TEST_CLOUD and the other account settings (see README.md)"; exit 1; }
+	cd WristcallKit && swift test --filter AccountIntegrationTests
 
 build: generate
 	$(XCODEBUILD) build $(URL_SETTINGS)
