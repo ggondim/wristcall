@@ -66,3 +66,25 @@ jobs:
           node-version: "24"
       - run: npm ci
       - run: npm test
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm run check:dist
+      - run: docker build -t wristcall-web .
+      # Headers on every kind of response, the routes, and the refusal of a bad WRISTCALL_WEB_CLOUD_URL.
+      - name: Image smoke test
+        run: ./scripts/smoke-image.sh wristcall-web

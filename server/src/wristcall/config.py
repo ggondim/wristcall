@@ -110,6 +110,36 @@ class ProfileConfig(BaseModel):
     timeouts: LegacyTimeouts = Field(default_factory=LegacyTimeouts)
 
 
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _cors_origin(raw: str) -> str:
+    """An exact origin (`scheme://host[:port]`) in lowercase: https, or http only on loopback. Never `*`.
+
+    The error does not repeat the value.
+    """
+    msg = "each origin must be scheme://host[:port] with no path (https; http only for localhost)"
+    try:
+        parts = urlsplit(raw)
+        host, port = parts.hostname, parts.port
+    except ValueError:
+        raise ValueError(msg) from None
+    valid = (
+        parts.scheme in ("http", "https")
+        and host
+        and not parts.path
+        and not parts.username
+        and not parts.password
+        and not any(c in raw for c in "*?#@\\ ")
+        and (parts.scheme == "https" or host in _LOOPBACK_HOSTS)
+    )
+    if not valid:
+        raise ValueError(msg)
+    shown = f"[{host}]" if ":" in host else host
+    default_port = 443 if parts.scheme == "https" else 80
+    return f"{parts.scheme}://{shown}" + (f":{port}" if port not in (None, default_port) else "")
+
+
 class ServerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     public_url: str
@@ -117,6 +147,18 @@ class ServerConfig(BaseModel):
     pairing_approval: Literal["code", "manual"] = "code"
     data_dir: Path = Path("/data")
     client_ip_header: str | None = None
+    # Browser origins allowed to call the management API (the wristcall PWA); empty: no CORS headers at all.
+    cors_origins: list[str] = Field(default_factory=list)
+
+    @field_validator("cors_origins")
+    @classmethod
+    def _check_cors_origins(cls, value: list[str]) -> list[str]:
+        origins: list[str] = []
+        for raw in value:
+            origin = _cors_origin(raw.strip())
+            if origin not in origins:
+                origins.append(origin)
+        return origins
 
 
 class LimitsConfig(BaseModel):

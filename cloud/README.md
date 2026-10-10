@@ -47,6 +47,7 @@ Push relay (all optional; a channel exists only when its credentials are set):
 | `WRISTCALL_CLOUD_CLIENT_IP_HEADER` | | header the reverse proxy puts the client address in (for example `X-Forwarded-For`); its last value counts. Without it, the address of the connection is used |
 | `WRISTCALL_CLOUD_PUSH_IDLE_DAYS` | `180` | registrations without a send for this long are deleted (checked every 6 hours) |
 | `WRISTCALL_CLOUD_PUSH_FAKE` | `0` | `1` replaces both channels by one that delivers nothing, for end to end tests on one machine. It is refused unless `WRISTCALL_CLOUD_PUBLIC_URL` is a loopback URL, and when VAPID or APNs credentials are set as well, the fake channel is the one used |
+| `WRISTCALL_CLOUD_CORS_ORIGINS` | | comma separated browser origins allowed to call the API (the wristcall PWA's, for example `https://app.wristcall.trigram.com.br`). Exact `scheme://host[:port]`: `https`, or `http` only for `localhost`, `127.0.0.1` and `[::1]`; no path, trailing slash, `*` or user. Empty: no CORS, as before. See [Browsers (CORS)](#browsers-cors) |
 
 Account deletion at the identity provider (the three go together; without them `DELETE /v1/account` deletes only the
 agenda):
@@ -198,6 +199,21 @@ browser needs to subscribe) and `apns_topics` (empty when the APNs channel is no
 push service (a Web Push payload is encrypted for the browser, but the push service still sees that a message was sent; Apple
 sees the alert of an APNs message). The transcript of a call never does: only what a server puts in the notification is sent. The Cloud does not
 log titles, bodies, labels, keys, device tokens or endpoints.
+
+## Browsers (CORS)
+
+A browser app (the wristcall PWA) can call the Cloud only from an origin listed in `WRISTCALL_CLOUD_CORS_ORIGINS`.
+With the variable empty the Cloud sends no `Access-Control-*` header and browsers refuse every cross origin call, as
+before. For a listed origin the Cloud allows the methods `GET`, `POST`, `PUT`, `PATCH` and `DELETE`, the request
+headers `Authorization` and `Content-Type`, caches the preflight answer for 10 minutes and exposes `Retry-After` (the
+`429` of the push registration) to the page.
+
+Credentials are not allowed (`Access-Control-Allow-Credentials` is never sent): the API takes a bearer token in a
+header and sets no cookies, so listing known origins is all it needs, and a page on another site cannot ride on a
+signed in browser. List the PWA's own origin (the address the PWA is served from), not `*`: wildcards, paths and
+`http` outside localhost are refused at start. Error answers (`401`, `404`, `413`, `422`, `503`) carry the headers too;
+a `500` does not (Starlette's last resort layer answers outside every middleware), so a browser sees it as a network
+failure.
 
 ## Rate limiting
 

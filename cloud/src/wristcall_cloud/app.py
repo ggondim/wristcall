@@ -16,6 +16,7 @@ from typing import Any, Protocol
 import httpx
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pymongo.errors import DuplicateKeyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -465,6 +466,19 @@ def create_app(
     if config.push_fake:
         log.warning("push: fake channel, nothing is delivered (WRISTCALL_CLOUD_PUSH_FAKE)")
     app.add_middleware(BodyLimit, limit=MAX_BODY)
+    if config.cors_origins:
+        # Added last, so the outermost layer: errors raised by the layers inside (401, 413, 422) carry the headers
+        # too. Bearer tokens in a header, no cookies: no credentials. A 500 is answered outside every middleware
+        # and reaches the browser without them.
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(config.cors_origins),
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+            allow_headers=["Authorization", "Content-Type"],
+            allow_credentials=False,
+            expose_headers=["Retry-After"],
+            max_age=600,
+        )
 
     @app.exception_handler(ApiError)
     async def api_error(_request: Request, e: ApiError) -> JSONResponse:
