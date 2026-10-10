@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=9", "pytest-asyncio>=1.4", "respx>=0.23"]
+dev = ["pytest>=9", "pytest-asyncio>=1.4", "respx>=0.23", "http_ece>=1.2"]
 
 [project.scripts]
 wristcall-cloud = "wristcall_cloud.__main__:main"

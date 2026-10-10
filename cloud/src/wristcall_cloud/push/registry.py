@@ -17,10 +17,10 @@ import time
 import unicodedata
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
-from urllib.parse import urlsplit
 
 from ..config import CloudConfig
 from .channels import Message
+from .webpush import endpoint_allowed
 
 log = logging.getLogger("wristcall_cloud.push")
 
@@ -109,19 +109,12 @@ def _b64url(value: Any, field: str, size: int) -> str:
     return bare
 
 
-def _endpoint(value: Any) -> str:
-    """An https URL. The endpoint is a secret: it never reaches an error message."""
+def _endpoint(value: Any, hosts: tuple[str, ...]) -> str:
+    """An https URL of a push service on the list. The endpoint is a secret: it never reaches an error message."""
     if not isinstance(value, str) or not 1 <= len(value) <= MAX_ENDPOINT:
         raise _invalid(f"subscription.endpoint must be a URL of 1 to {MAX_ENDPOINT} characters")
-    if not value.isascii() or any(c.isspace() or not c.isprintable() or c == "\\" for c in value):
-        raise _invalid("subscription.endpoint must be an https URL")
-    try:
-        parts = urlsplit(value)
-        host = parts.hostname
-    except ValueError:
-        raise _invalid("subscription.endpoint must be an https URL") from None
-    if parts.scheme != "https" or not host or parts.username or parts.password:
-        raise _invalid("subscription.endpoint must be an https URL")
+    if not value.isascii() or not endpoint_allowed(value, hosts):
+        raise _invalid("subscription.endpoint must be an https URL of a known push service")
     return value
 
 
@@ -177,7 +170,7 @@ def parse_registration(body: Any, config: CloudConfig) -> dict[str, Any]:
         raise _invalid("subscription.keys.p256dh must be an uncompressed P-256 point")
     return {
         "platform": "webpush",
-        "channel": _endpoint(subscription.get("endpoint")),
+        "channel": _endpoint(subscription.get("endpoint"), config.webpush_hosts),
         "p256dh": p256dh,
         "auth": _b64url(keys.get("auth"), "subscription.keys.auth", 16),
         **common,

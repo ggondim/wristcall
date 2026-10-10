@@ -24,13 +24,14 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from . import __version__
 from .agenda import AgendaError, parse_agents, parse_new_server, parse_server_patch
 from .audience import AudienceError, is_loopback, normalize_audience
-from .config import CloudConfig, ConfigError, check_public_url, check_push_fake, same_url
+from .config import CloudConfig, ConfigError, check_public_url, check_push_fake, same_url, vapid_identity
 from .oidc import Identity, OidcError, OidcUnavailable, OidcVerifier
 from .push.api import push_error_response
 from .push.api import router as push_router
 from .push.channels import Channel, FakeChannel
 from .push.limits import RegistrationLimiter, SendLimiter
 from .push.registry import PushError, purge_idle_loop
+from .push.webpush import WebPushChannel
 from .signing import SigningKey, server_token_claims
 from .store import Store, open_store, public_server
 
@@ -149,7 +150,11 @@ def get_store(request: Request) -> Store:
 
 
 def public_config(
-    config: CloudConfig, *, server_tokens: bool = False, channels: dict[str, Channel] | None = None
+    config: CloudConfig,
+    *,
+    server_tokens: bool = False,
+    channels: dict[str, Channel] | None = None,
+    vapid_public_key: str | None = None,
 ) -> dict[str, Any]:
     scopes = list(BASE_SCOPES)
     if config.project_id:
@@ -163,7 +168,7 @@ def public_config(
         "push": {
             "apns": "apns" in (channels or {}),
             "webpush": "webpush" in (channels or {}),
-            "vapid_public_key": None,
+            "vapid_public_key": vapid_public_key if "webpush" in (channels or {}) else None,
             "apns_topics": list(config.apns_topics),
         },
     }
@@ -353,11 +358,17 @@ def create_app(
         check_push_fake(config.public_url)
     if config.public_url:
         check_public_url(config.public_url, config.issuer)
+    vapid = vapid_identity(config.vapid_private_pem, config.vapid_subject)
+    webpush_http: httpx.AsyncClient | None = None
     if channels is None:
         channels = {}
         if config.push_fake:
             fake = FakeChannel()
             channels = {"apns": fake, "webpush": fake}
+        elif vapid is not None:
+            # A client of its own: never follows redirects, and nothing else shares its connections.
+            webpush_http = httpx.AsyncClient(follow_redirects=False)
+            channels["webpush"] = WebPushChannel(vapid, webpush_http, config.webpush_hosts)
     owned_http: httpx.AsyncClient | None = None
     if verifier is None:
         if not config.clients:
@@ -396,6 +407,8 @@ def create_app(
                     await mongo.close()
                 if owned_http is not None:
                     await owned_http.aclose()
+                if webpush_http is not None:
+                    await webpush_http.aclose()
 
     app = FastAPI(title="wristcall-cloud", version=__version__, lifespan=lifespan)
     app.state.config = config
@@ -443,6 +456,11 @@ def create_app(
 
     @app.get("/v1/config")
     async def public() -> dict[str, Any]:
-        return public_config(config, server_tokens=signing_key is not None, channels=app.state.channels)
+        return public_config(
+            config,
+            server_tokens=signing_key is not None,
+            channels=app.state.channels,
+            vapid_public_key=vapid.public_key if vapid is not None else None,
+        )
 
     return app

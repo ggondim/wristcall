@@ -7,11 +7,14 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .audience import AudienceError, is_loopback, normalize_audience
+from .push.webpush import DEFAULT_HOSTS, Vapid
 from .signing import SigningKey
 
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _TOPIC = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]{0,254}")
 _HEADER = re.compile(r"[A-Za-z0-9-]{1,64}")
+_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+_PUSH_HOST = re.compile(rf"\.?{_LABEL}(?:\.{_LABEL})*")
 CLIENT_VARS = {"ios": "WRISTCALL_CLOUD_CLIENT_IOS", "pwa": "WRISTCALL_CLOUD_CLIENT_PWA", "watch": "WRISTCALL_CLOUD_CLIENT_WATCH"}
 
 
@@ -42,6 +45,11 @@ class CloudConfig:
     push_cleanup_every_s: int = 21600
     # One fake channel for every platform: nothing is delivered (local end-to-end tests only, loopback public_url).
     push_fake: bool = False
+    # Web Push: the VAPID key (EC P-256, PEM) and contact; without a key there is no webpush channel.
+    vapid_private_pem: bytes | None = field(default=None, repr=False)
+    vapid_subject: str | None = None
+    # Push services a Web Push endpoint may point to: a leading dot means any subdomain, otherwise that host.
+    webpush_hosts: tuple[str, ...] = DEFAULT_HOSTS
 
 
 class ConfigError(Exception):
@@ -150,6 +158,34 @@ def _apns_topics(env: Mapping[str, str]) -> tuple[str, ...]:
     return topics
 
 
+def vapid_identity(pem: bytes | None, subject: str | None) -> Vapid | None:
+    """The VAPID identity of the configuration (None without a key), or a ConfigError naming the variable."""
+    key_var, subject_var = "WRISTCALL_CLOUD_VAPID_PRIVATE_KEY", "WRISTCALL_CLOUD_VAPID_SUBJECT"
+    if pem is None and subject is None:
+        return None
+    if pem is None:
+        raise ConfigError(f"{subject_var} needs {key_var}")
+    if subject is None:
+        raise ConfigError(f"{subject_var} is required with {key_var}")
+    if not subject.startswith(("mailto:", "https://")) or subject in ("mailto:", "https://"):
+        raise ConfigError(f"{subject_var} must be a mailto: or https:// URL")
+    try:
+        return Vapid(pem, subject)
+    except ValueError:
+        raise ConfigError(f"{key_var} must be an EC P-256 private key (PEM)") from None
+
+
+def _webpush_hosts(env: Mapping[str, str]) -> tuple[str, ...]:
+    name = "WRISTCALL_CLOUD_WEBPUSH_HOSTS"
+    raw = _get(env, name)
+    if raw is None:
+        return DEFAULT_HOSTS
+    hosts = tuple(h for h in (s.strip().lower() for s in raw.split(",")) if h)
+    if not hosts or not all(_PUSH_HOST.fullmatch(h) for h in hosts):
+        raise ConfigError(f"{name} must be a comma-separated list of host names (a leading dot: any subdomain)")
+    return hosts
+
+
 def _header_name(env: Mapping[str, str], name: str) -> str | None:
     raw = _get(env, name)
     if raw is not None and not _HEADER.fullmatch(raw):
@@ -186,6 +222,9 @@ def config_from_env(env: Mapping[str, str]) -> CloudConfig:
     push_fake = _flag(env, "WRISTCALL_CLOUD_PUSH_FAKE")
     if push_fake:
         check_push_fake(public_url)
+    vapid_pem = _secret(env, "WRISTCALL_CLOUD_VAPID_PRIVATE_KEY")
+    vapid_subject = _get(env, "WRISTCALL_CLOUD_VAPID_SUBJECT")
+    vapid_identity(vapid_pem, vapid_subject)
     return CloudConfig(
         mongo_url=mongo_url,
         database=_get(env, "WRISTCALL_CLOUD_DATABASE") or CloudConfig.database,
@@ -206,4 +245,7 @@ def config_from_env(env: Mapping[str, str]) -> CloudConfig:
         client_ip_header=_header_name(env, "WRISTCALL_CLOUD_CLIENT_IP_HEADER"),
         push_idle_days=_positive_int(env, "WRISTCALL_CLOUD_PUSH_IDLE_DAYS", CloudConfig.push_idle_days),
         push_fake=push_fake,
+        vapid_private_pem=vapid_pem,
+        vapid_subject=vapid_subject,
+        webpush_hosts=_webpush_hosts(env),
     )
