@@ -5,7 +5,8 @@ declare const self: ServiceWorkerGlobalScope
 declare const __WC_ASSETS: string[] | undefined
 declare const __WC_CACHE: string | undefined
 
-const CACHE = typeof __WC_CACHE === "string" ? __WC_CACHE : "wristcall-shell-dev"
+const PREFIX = "wristcall-shell-"
+const CACHE = typeof __WC_CACHE === "string" ? __WC_CACHE : `${PREFIX}dev`
 const ASSETS = typeof __WC_ASSETS !== "undefined" ? __WC_ASSETS : []
 const SHELL = ["/", "/index.html", "/manifest.webmanifest", ...ASSETS.map((file) => `/${file}`)]
 
@@ -41,7 +42,7 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((names) => Promise.all(names.filter((name) => name !== CACHE).map((name) => caches.delete(name))))
+      .then((names) => Promise.all(names.filter((name) => name.startsWith(PREFIX) && name !== CACHE).map((name) => caches.delete(name))))
       .then(() => self.clients.claim()),
   )
 })

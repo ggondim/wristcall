@@ -58,6 +58,28 @@ describe("config", () => {
   test("config: reads /config.json without the HTTP cache", async () => {
     const fake = serving({ cloudUrl: "" })
     await loadConfig(fake)
-    expect(fake).toHaveBeenCalledWith("/config.json", { cache: "no-store" })
+    expect(fake).toHaveBeenCalledWith("/config.json", { cache: "no-store", signal: expect.any(AbortSignal) })
+  })
+
+  test("config: a request that hangs is aborted after 15 s and means no account", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    try {
+      const hanging = vi.fn(
+        (_url: unknown, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")))
+          }),
+      ) as unknown as typeof fetch
+      const result = loadConfig(hanging)
+      await vi.advanceTimersByTimeAsync(14_999)
+      let settled = false
+      void result.then(() => (settled = true))
+      await Promise.resolve()
+      expect(settled).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(await result).toEqual({ cloudUrl: null })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

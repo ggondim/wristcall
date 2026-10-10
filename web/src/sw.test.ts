@@ -105,12 +105,13 @@ describe("service worker", () => {
     expect(fetchMock).toHaveBeenCalledTimes(5)
   })
 
-  test("sw: activate deletes other versions and claims the open pages", async () => {
+  test("sw: activate deletes older shell caches only, and claims the open pages", async () => {
     const { lifecycle, caches, claim } = await loadServiceWorker()
     await caches.open("wristcall-shell-v0")
     await caches.open("wristcall-shell-v1")
+    await caches.open("other-app-cache")
     await lifecycle("activate")
-    expect(await caches.keys()).toEqual(["wristcall-shell-v1"])
+    expect((await caches.keys()).sort()).toEqual(["other-app-cache", "wristcall-shell-v1"])
     expect(claim).toHaveBeenCalledTimes(1)
   })
 
@@ -160,12 +161,19 @@ describe("service worker", () => {
     expect(store.put).not.toHaveBeenCalled()
   })
 
-  test("sw: without a build the asset list is empty", async () => {
-    vi.unstubAllGlobals()
+  test("sw: without a build it caches just the shell, under the dev name", async () => {
     const handlers = new Map<string, Handler>()
+    const devCaches = new FakeCaches()
     vi.stubGlobal("self", { location: new URL(ORIGIN), clients: { claim: async () => {} }, addEventListener: (t: string, h: Handler) => handlers.set(t, h) })
+    vi.stubGlobal("caches", devCaches)
+    vi.stubGlobal("fetch", async () => new Response("x"))
     vi.resetModules()
     await import("./sw")
     expect([...handlers.keys()].sort()).toEqual(["activate", "fetch", "install"])
+    const waits: Promise<unknown>[] = []
+    handlers.get("install")!({ waitUntil: (p: Promise<unknown>) => waits.push(p) })
+    await Promise.all(waits)
+    expect([...devCaches.stores.keys()]).toEqual(["wristcall-shell-dev"])
+    expect([...devCaches.stores.get("wristcall-shell-dev")!.entries.keys()].sort()).toEqual(["/", "/index.html", "/manifest.webmanifest"])
   })
 })

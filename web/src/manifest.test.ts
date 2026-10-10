@@ -54,7 +54,7 @@ describe("manifest", () => {
     const csp = headers["Content-Security-Policy"]!
     expect(csp).not.toContain("unsafe-inline")
     expect(csp).toContain("script-src 'self';")
-    expect(csp).toContain("connect-src 'self' https: http://localhost:* http://127.0.0.1:*;")
+    expect(csp).toContain("connect-src 'self' https: http://localhost:* http://127.0.0.1:* http://[::1]:*;")
     expect(headers["X-Content-Type-Options"]).toBe("nosniff")
   })
 })
