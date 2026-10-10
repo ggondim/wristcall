@@ -100,7 +100,8 @@ struct AccountModelTests {
         #expect(exchange["code"] == "code-1")
         #expect(exchange["redirect_uri"] == "wristcall://auth/callback")
         #expect(exchange["code_verifier"]?.isEmpty == false)
-        // Signing in mirrors the servers to the agenda.
+        // Signing in mirrors the servers to the agenda (in the background).
+        await model.agenda?.idle()
         #expect(world.entries.map(\.url) == ["https://srv.test"])
         #expect(model.appState.servers.first?.cloudServerID == "cs-1")
     }
@@ -242,13 +243,14 @@ struct AccountModelTests {
         #expect(model.appState.servers.map(\.id) == [saved.id])
         #expect(model.appState.servers.first?.token == "wc_pat_new")
         #expect(model.appState.servers.first?.linked == true)
-        #expect(model.appState.servers.first?.cloudServerID == "cs-1")
         #expect(fake.linkRequests.count == 1)
         #expect(fake.linkRequests.first?.serverToken == "per-server")
         #expect(fake.linkRequests.first?.code == "12345678")
         let tokenRequest = try #require(world.cloudRequests("POST", "/v1/server-tokens").first)
         #expect(try tokenRequest.json()["audience"] as? String == "https://srv.test")
         // The agenda gets the server, linked.
+        await model.agenda?.idle()
+        #expect(model.appState.servers.first?.cloudServerID == "cs-1")
         #expect(world.entries.map(\.linked) == [true])
     }
 
@@ -276,7 +278,28 @@ struct AccountModelTests {
         #expect(model.appState.servers.first?.linked == true)
         #expect(fake.linkRequests.first?.serverToken == "per-server")
         #expect(fake.linkRequests.first?.code == nil)
+        await model.agenda?.idle()
         #expect(world.entries.first?.linked == true)
+    }
+
+    @Test func codeLinkNotSavedSaysHowToRevoke() async throws {
+        let fake = FakeServerAPI(health: ownHealth)
+        fake.linkResult = .success(AccountLink(linked: true, issuer: world.cloud.url.absoluteString, apiToken: "wc_pat_orphan"))
+        fake.verifyError = APIError.unauthorized
+        let model = try await signedInModel(api: fake)
+        await model.appState.load()
+
+        await #expect(throws: LinkError.notSaved) {
+            try await model.addLinkedServer(urlText: "https://srv.test", code: "12345678", name: nil)
+        }
+
+        #expect(model.appState.servers.isEmpty)
+        let text = AccountModel.message(for: LinkError.notSaved)
+        #expect(text.contains("wristcall users tokens revoke"))
+        #expect(text.contains("account link"))
+        #expect(!text.contains("wc_pat_orphan"))
+        #expect(!text.contains("12345678"))
+        #expect(!text.contains("`"))
     }
 
     @Test func linkConflictIsAnotherUser() async throws {

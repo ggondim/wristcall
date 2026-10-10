@@ -25,6 +25,10 @@ final class AccountWorld: Sendable {
         var nextID = 1
         var refuseRefresh = false
         var cloudFailure: Int?
+        /// Agenda writes (anything but GET) wait while this is set: a hung Cloud.
+        var holding = false
+        /// Writes waiting in the hold right now.
+        var waiting = 0
     }
 
     private final class TextBox: Sendable {
@@ -80,6 +84,12 @@ final class AccountWorld: Sendable {
 
     var entries: [Entry] { box.state.withLock { $0.entries } }
 
+    /// Holds every agenda write until `release()` (at most 10 s, so a failing test cannot hang). The stub
+    /// answers on URLSession's protocol thread, so other stubbed hosts wait too while a write is held.
+    func hold() { box.state.withLock { $0.holding = true } }
+    func release() { box.state.withLock { $0.holding = false } }
+    var waiting: Int { box.state.withLock { $0.waiting } }
+
     func seed(name: String, url: String, linked: Bool = false) {
         box.state.withLock { state in
             state.entries.append(Entry(id: "cs-\(state.nextID)", name: name, url: url, linked: linked))
@@ -102,6 +112,14 @@ final class AccountWorld: Sendable {
                  "server_tokens":true,
                  "push":{"apns":false,"webpush":false,"vapid_public_key":null,"apns_topics":[]}}
                 """)
+        }
+        if request.method != "GET", box.state.withLock({ $0.holding }) {
+            box.state.withLock { $0.waiting += 1 }
+            let deadline = Date().addingTimeInterval(10)
+            while box.state.withLock({ $0.holding }), Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.005)
+            }
+            box.state.withLock { $0.waiting -= 1 }
         }
         if let status = box.state.withLock({ $0.cloudFailure }) {
             return StubHost.Reply(status, #"{"error":"unavailable","message":"down"}"#)

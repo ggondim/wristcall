@@ -38,7 +38,9 @@ struct AgendaSyncTests {
     @Test func pushAllStoresCloudIDs() async throws {
         let (sync, state) = await sync([home, lab])
 
-        await sync.pushAll()
+        sync.pushAll()
+
+        await sync.idle()
 
         #expect(world.entries.map(\.url) == ["https://home.test", "https://lab.test/x"])
         #expect(world.entries.map(\.linked) == [true, false])
@@ -57,7 +59,9 @@ struct AgendaSyncTests {
         gone.cloudServerID = "cs-404"
         let (sync, state) = await sync([known, gone])
 
-        await sync.pushAll()
+        sync.pushAll()
+
+        await sync.idle()
 
         #expect(world.entries.map(\.name) == ["Home", "Lab"])
         #expect(world.entries.first?.linked == true)
@@ -68,7 +72,9 @@ struct AgendaSyncTests {
     @Test func pushAllSendsAgentsOfEachServer() async throws {
         let (sync, _) = await sync([home], agents: agents(2))
 
-        await sync.pushAll()
+        sync.pushAll()
+
+        await sync.idle()
 
         #expect(world.entries.first?.agents.map { $0["slug"] } == ["agent-0", "agent-1"])
         #expect(world.entries.first?.agents.first?["call_type"] == "one-shot")
@@ -76,7 +82,8 @@ struct AgendaSyncTests {
 
     @Test func agentsSnapshotLimitedTo50() async throws {
         let (sync, state) = await sync([home])
-        await sync.agentsChanged(state.servers[0], agents(60))
+        sync.agentsChanged(state.servers[0], agents(60))
+        await sync.idle()
 
         let put = try #require(world.cloud.requests.first { $0.method == "PUT" })
         let sent = try #require(try put.json()["agents"] as? [[String: Any]])
@@ -92,7 +99,8 @@ struct AgendaSyncTests {
         let (sync, state) = await sync([named])
         var agent = agents(1)[0]
         agent.displayName = String(repeating: "👍🏽", count: 40)
-        await sync.agentsChanged(state.servers[0], [agent])
+        sync.agentsChanged(state.servers[0], [agent])
+        await sync.idle()
 
         let sentName = try #require(world.entries.first?.name)
         #expect(sentName.unicodeScalars.count <= 64)
@@ -107,14 +115,18 @@ struct AgendaSyncTests {
         known.cloudServerID = "cs-1"
         let (sync, _) = await sync([known])
 
-        await sync.serverRemoved(known)
+        sync.serverRemoved(known)
+
+        await sync.idle()
         #expect(world.entries.isEmpty)
         #expect(world.cloudRequests("DELETE", "/v1/servers/cs-1").count == 1)
 
         // Gone already (404) is fine; without an id, the entry is found by its URL.
-        await sync.serverRemoved(known)
+        sync.serverRemoved(known)
+        await sync.idle()
         world.seed(name: "Lab", url: "https://lab.test/x")
-        await sync.serverRemoved(lab)
+        sync.serverRemoved(lab)
+        await sync.idle()
         #expect(world.entries.isEmpty)
         #expect(sync.notice == nil)
     }
@@ -136,9 +148,13 @@ struct AgendaSyncTests {
         world.cloudFailure = 503
         let (sync, state) = await sync([home])
 
-        await sync.pushAll()
-        await sync.serverAdded(home)
-        await sync.agentsChanged(home, agents(1))
+        sync.pushAll()
+
+        await sync.idle()
+        sync.serverAdded(home)
+        await sync.idle()
+        sync.agentsChanged(home, agents(1))
+        await sync.idle()
 
         #expect(sync.notice != nil)
         #expect(state.servers.count == 1)
@@ -153,9 +169,13 @@ struct AgendaSyncTests {
         await state.load()
         let sync = AgendaSync(session: session, state: state)
 
-        await sync.pushAll()
-        await sync.serverAdded(home)
-        await sync.serverRemoved(home)
+        sync.pushAll()
+
+        await sync.idle()
+        sync.serverAdded(home)
+        await sync.idle()
+        sync.serverRemoved(home)
+        await sync.idle()
 
         #expect(world.cloud.requests.isEmpty)
         #expect(sync.notice == nil)
@@ -172,13 +192,185 @@ struct AgendaSyncTests {
 
         let saved = try await state.addServer(urlText: "https://new.test", token: "wc_pat_n", name: "New")
         #expect(earlierHook == 1)  // hooks already hung stay
+        await model.agenda?.idle()
         #expect(world.entries.map(\.name) == ["New"])
 
         try state.rename(saved.id, to: "Renamed")
         try await waitUntil { world.entries.first?.name == "Renamed" }
 
         await state.remove(saved.id)
+        await model.agenda?.idle()
         #expect(world.entries.isEmpty)
+    }
+
+    // MARK: - Background queue
+
+    func accountModel(_ servers: [ManagedServer]) async -> AccountModel {
+        let session = AccountSession(cloud: world.cloud.url, kind: .ios, store: InMemoryTokenStore(fresh),
+                                     session: .stubbed(), now: { Self.clock })
+        let state = AppState(store: InMemoryManagedServerStore(servers), makeAPI: { _, _ in
+            let fake = FakeServerAPI()
+            fake.agentList = (0..<2).map { AgentDetail(id: "ag\($0)", slug: "agent-\($0)", displayName: "Agent \($0)") }
+            return fake
+        })
+        await state.load()
+        let model = AccountModel(cloudURL: world.cloud.url, session: session, web: FakeWeb.approving(), state: state)
+        await model.restore()
+        await model.agenda?.idle()
+        return model
+    }
+
+    @Test func hungCloudDoesNotDelayServerChanges() async throws {
+        let model = await accountModel([])
+        let state = model.appState
+        world.hold()
+        defer { world.release() }
+
+        // The first add queues a sync that hangs on the Cloud; everything after must still return.
+        let first = try await state.addServer(urlText: "https://one.test", token: "wc_pat_1", name: "One")
+        try await waitUntil { world.waiting == 1 }
+        let second = try await state.addServer(urlText: "https://two.test", token: "wc_pat_2", name: "Two")
+        #expect(world.waiting == 1)
+
+        try state.rename(second.id, to: "Second")
+        let agents = AgentsModel(server: second, api: state.api(for: second)) { list in
+            await state.hooks.agentsChanged?(second, list)
+        }
+        await agents.load()
+        #expect(!agents.isLoading)
+        #expect(agents.agents.count == 2)
+        #expect(world.waiting == 1)
+
+        await state.remove(first.id)
+        #expect(state.servers.map(\.id) == [second.id])
+        #expect(world.waiting == 1)
+
+        world.release()
+        await model.agenda?.idle()
+        #expect(world.entries.map(\.name) == ["Second"])
+        #expect(world.entries.first?.agents.count == 2)
+        #expect(model.agenda?.notice == nil)
+    }
+
+    @Test func latestAgentsWin() async throws {
+        let model = await accountModel([home])
+        let state = model.appState
+        let sync = try #require(model.agenda)
+        world.hold()
+        defer { world.release() }
+
+        sync.agentsChanged(state.servers[0], agents(1))
+        try await waitUntil { world.waiting == 1 }
+        sync.agentsChanged(state.servers[0], agents(2))
+        sync.agentsChanged(state.servers[0], agents(3))
+        world.release()
+        await sync.idle()
+
+        let puts = world.cloud.requests.filter { $0.method == "PUT" }
+        let patches = world.cloud.requests.filter { $0.method == "PATCH" }
+        // The launch sync added the server (POST + PUT); the three changes became one PATCH and one PUT, with
+        // the last list.
+        #expect(puts.count == 2)
+        #expect(patches.count == 1)
+        #expect(world.entries.first?.agents.map { $0["id"] } == ["ag0", "ag1", "ag2"])
+    }
+
+    @Test func deleteDuringSyncWritesNothingAfter() async throws {
+        let model = await accountModel([home, lab])
+        let sync = try #require(model.agenda)
+        #expect(world.entries.count == 2)  // the launch sync wrote both servers
+        world.hold()
+        defer { world.release() }
+
+        sync.pushAll()
+        try await waitUntil { world.waiting == 1 }  // the first server's write hangs
+        let generation = sync.generation
+        let deleting = Task { await model.deleteAccount() }
+        try await waitUntil { sync.generation != generation }
+        world.release()
+        await deleting.value
+        await sync.idle()
+
+        let requests = world.cloud.requests
+        let deleteIndex = try #require(requests.firstIndex { $0.method == "DELETE" && $0.path == "/v1/account" })
+        let writesAfter = requests[(deleteIndex + 1)...].filter { $0.method != "GET" && $0.path.hasPrefix("/v1/servers") }
+        #expect(writesAfter.isEmpty)
+        #expect(world.entries.isEmpty)
+        #expect(model.state == .signedOut)
+        #expect(model.appState.servers.allSatisfy { $0.cloudServerID == nil })
+    }
+
+    @Test func invalidatedJobKeepsNoAgendaID() async throws {
+        let model = await accountModel([])
+        let state = model.appState
+        let sync = try #require(model.agenda)
+        world.hold()
+        defer { world.release() }
+
+        let saved = try await state.addServer(urlText: "https://new.test", token: "wc_pat_n", name: "New")
+        try await waitUntil { world.waiting == 1 }  // its POST hangs
+        sync.invalidate()
+        state.forgetAccount()
+        world.release()
+        await sync.idle()
+
+        // The POST was already out, but its reply must not leave an agenda id behind.
+        #expect(state.servers.first { $0.id == saved.id }?.cloudServerID == nil)
+        #expect(sync.notice == nil)
+    }
+
+    @Test func changesDuringDeleteQueueNothing() async throws {
+        let model = await accountModel([])
+        let state = model.appState
+        world.hold()
+        defer { world.release() }
+
+        let deleting = Task { await model.deleteAccount() }
+        try await waitUntil { world.waiting == 1 }  // the DELETE hangs
+        _ = try await state.addServer(urlText: "https://late.test", token: "wc_pat_l", name: "Late")
+        world.release()
+        await deleting.value
+        await model.agenda?.idle()
+
+        #expect(world.cloudRequests("POST", "/v1/servers").isEmpty)
+        #expect(world.entries.isEmpty)
+        #expect(model.state == .signedOut)
+    }
+
+    @Test func failedDeleteResumesTheSync() async throws {
+        let model = await accountModel([])
+        world.cloudFailure = 503
+        await model.deleteAccount()
+        #expect(model.state == .signedIn)
+        world.cloudFailure = nil
+
+        _ = try await model.appState.addServer(urlText: "https://after.test", token: "wc_pat_a", name: "After")
+        await model.agenda?.idle()
+        #expect(world.entries.map(\.name) == ["After"])
+    }
+
+    @Test func signOutDuringSyncWritesNothingAfter() async throws {
+        let model = await accountModel([home])
+        let sync = try #require(model.agenda)
+        world.hold()
+        defer { world.release() }
+
+        sync.agentsChanged(model.appState.servers[0], agents(1))
+        try await waitUntil { world.waiting == 1 }
+        let before = world.cloud.requests.count
+        // The stub serves every host on one loading thread, so the held write also holds the revocation:
+        // release once sign out has stopped the queue (a real hung Cloud would not hold the provider).
+        let generation = sync.generation
+        let signingOut = Task { await model.signOut() }
+        try await waitUntil { sync.generation != generation }
+        world.release()
+        await signingOut.value
+        await sync.idle()
+
+        // Only the write that was already on its way lands; nothing is sent after it.
+        let after = world.cloud.requests[before...].filter { $0.method != "GET" && $0.path.hasPrefix("/v1/servers") }
+        #expect(after.isEmpty)
+        #expect(model.appState.servers.first?.cloudServerID == nil)
     }
 
     private func waitUntil(_ condition: () -> Bool) async throws {

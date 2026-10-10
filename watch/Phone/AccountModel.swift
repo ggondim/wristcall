@@ -2,9 +2,11 @@ import Foundation
 import Observation
 import WristcallKit
 
-/// A link by code that cannot start: the code is not 8 digits.
 enum LinkError: Error, Equatable {
+    /// The code is not 8 digits (nothing was sent).
     case badCode
+    /// The server linked the account and issued a personal token, but the app could not verify or save it.
+    case notSaved
 }
 
 /// The central account on this iPhone (R5, R6): sign in (Authorization Code with PKCE in the system's web
@@ -64,7 +66,7 @@ final class AccountModel {
             return
         }
         state = .signedIn
-        await agenda?.pushAll()
+        agenda?.pushAll()
     }
 
     // MARK: - Sign in, sign out, delete
@@ -90,17 +92,20 @@ final class AccountModel {
             state = .failed(Self.signInMessage(for: error))
             return
         }
-        await agenda?.pushAll()
+        agenda?.pushAll()
     }
 
     /// Deletes the tokens, revokes the refresh token, then opens the provider's end-session page (so the
     /// next sign-in can pick another user). Servers and their tokens stay.
     func signOut() async {
         guard let session else { return }
+        // First: a sync still running must not write the agenda back once the tokens are gone.
+        agenda?.suspend()
         let endSession = await session.signOut(postLogoutRedirect: Self.logoutCallback)
         appState.forgetAccount()
         state = .signedOut
         error = nil
+        agenda?.resume()
         if let endSession {
             // Closing the page or failing to open it changes nothing: the app is signed out already.
             _ = try? await web.authenticate(url: endSession, callbackScheme: Self.callbackScheme)
@@ -112,12 +117,16 @@ final class AccountModel {
     func deleteAccount() async {
         guard let session, state == .signedIn else { return }
         error = nil
+        // First: a sync still running, or a change made meanwhile, must not add back what the deletion removes.
+        agenda?.suspend()
         do {
             try await session.cloudClient.deleteAccount(accessToken: try await session.accessToken())
         } catch AccountError.signedOut {
+            agenda?.resume()
             await sessionEnded()
             return
         } catch {
+            agenda?.resume()
             self.error = "Can't delete the account now. " + Self.message(for: error)
             return
         }
@@ -142,7 +151,12 @@ final class AccountModel {
             return try await api.linkAccount(serverToken: serverToken, code: code)
         }
         guard link.linked, let token = link.apiToken else { throw APIError.malformedResponse }
-        return try await appState.addServer(urlText: url.absoluteString, token: token, name: name, linked: true)
+        do {
+            return try await appState.addServer(urlText: url.absoluteString, token: token, name: name, linked: true)
+        } catch {
+            // The code is spent and the token exists on the server: say how to clean it up (never the token).
+            throw LinkError.notSaved
+        }
     }
 
     /// Links a saved server (personal token) to the account. The server's `409` means another user there has
@@ -174,6 +188,8 @@ final class AccountModel {
             return "wristcall Cloud is not set up for this app."
         case LinkError.badCode:
             return "Enter the 8-digit code."
+        case LinkError.notSaved:
+            return notSavedMessage
         case let failure as AddServerError:
             return failure.message
         case APIError.conflict:
@@ -190,6 +206,11 @@ final class AccountModel {
             return "Something went wrong. Try again."
         }
     }
+
+    static let notSavedMessage = "Your account is linked, but this iPhone could not save the server. The server "
+        + "made a personal token for it that stays valid: on the server's host, find it with "
+        + "\"wristcall users tokens list --user <you>\" (named \"account link\") and revoke it with "
+        + "\"wristcall users tokens revoke <id>\". Then add the server again."
 
     private static func signInMessage(for error: any Error) -> String {
         switch error {
@@ -226,11 +247,13 @@ final class AccountModel {
     /// The session ended on its own (refresh token refused): the tokens are gone already.
     private func sessionEnded() async {
         guard session != nil, state != .signedOut else { return }
+        agenda?.invalidate()
         appState.forgetAccount()
         state = .signedOut
     }
 
-    /// Hangs the agenda on the app's hooks, keeping the ones already there.
+    /// Hangs the agenda on the app's hooks, keeping the ones already there. The agenda part only queues a
+    /// background job: managing servers and agents never waits for the Cloud.
     private func installHooks() {
         guard let agenda else { return }
         var hooks = appState.hooks
@@ -240,19 +263,19 @@ final class AccountModel {
         let agents = hooks.agentsChanged
         hooks.serverAdded = { [weak agenda] server in
             await added?(server)
-            await agenda?.serverAdded(server)
+            agenda?.serverAdded(server)
         }
         hooks.serverChanged = { [weak agenda] server in
             await changed?(server)
-            await agenda?.serverChanged(server)
+            agenda?.serverChanged(server)
         }
         hooks.serverRemoved = { [weak agenda] server in
             await removed?(server)
-            await agenda?.serverRemoved(server)
+            agenda?.serverRemoved(server)
         }
         hooks.agentsChanged = { [weak agenda] server, list in
             await agents?(server, list)
-            await agenda?.agentsChanged(server, list)
+            agenda?.agentsChanged(server, list)
         }
         appState.hooks = hooks
     }

@@ -17,7 +17,7 @@ struct LinkServerSection: View {
                     Task { await link() }
                 } label: {
                     HStack {
-                        Label(server.linked ? "Link account again" : "Link account", systemImage: "link")
+                        Label("Link to your account", systemImage: "link")
                         Spacer()
                         if busy { ProgressView() }
                     }
