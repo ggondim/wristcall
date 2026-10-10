@@ -118,7 +118,13 @@ launch arguments:
 
 Push needs the `aps-environment` entitlement, which a free Apple ID (Personal Team) cannot sign. So the push code is
 built only in the `DebugPush` configuration (`WRISTCALL_PUSH`, `Config/Push.xcconfig`,
-`Wristcall/Wristcall-Push.entitlements`); Debug and Release are as before and never ask for notifications.
+`Wristcall/Wristcall-Push.entitlements`); Debug and Release are as before and never ask for notifications. On a real
+watch the push build needs a paid Apple Developer account, and the relay (the wristcall Cloud) needs that account's
+APNs key; until then it is a simulator build. Servers need 0.6.0 with `push` configured: with servers 0.5.0 and older
+the watch polls the result as before.
+
+**Privacy.** The notification's title, body and label (the server's host) pass through the relay and Apple. The
+transcript never does: the watch reads it from the server when it shows the result.
 
 ```sh
 make -C watch build-sim-push DESTINATION='platform=watchOS Simulator,id=<UDID>'

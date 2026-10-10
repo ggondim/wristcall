@@ -16,7 +16,7 @@ or any other) and a wristcall server. Version: **1**.
 
 | Route | Body | Responses |
 |---|---|---|
-| `GET /v1/health` | | `200 {"status":"ok","version":"0.5.0","protocol":1,"account":null}`. `account` is `{"issuer","device_credential"}` when the server accepts a [central account](#central-account-optional), `null` otherwise (older servers omit it) |
+| `GET /v1/health` | | `200 {"status":"ok","version":"0.6.0","protocol":1,"account":null,"push":null}`. `account` is `{"issuer","device_credential"}` when the server accepts a [central account](#central-account-optional), `null` otherwise; `push` is `{"relay"}` when the server sends [push notifications](#push-notifications-optional), `null` otherwise (older servers omit either) |
 | `POST /v1/pair` | `{"code": "12345678" \| null, "device_name": "Apple Watch"}` | `200 {"device_id","token"}`: paired (flow A). `202 {"request_id","poll_token","expires_at"}`: waiting for the owner's approval (flow B). `401 {"error":"invalid_code"}`. `429 {"error":"rate_limited"}` |
 | `POST /v1/pair/poll` | `{"poll_token": "..."}` | `202 {"request_id","expires_at"}`: pending. `200 {"device_id","token"}`: approved (delivered only once). `403 {"error":"limit"}`: approved, but the user is at the device limit, so the device cannot be collected yet (the request stays valid; try again after a device is revoked). `410 {"error":"gone"}`: expired, denied or already delivered. `422`: body without `poll_token` or with more than 128 characters |
 | `GET /v1/calls/{call_id}` | | `200 call` (see [One-way calls](#one-way-calls-one-shot-monologue)): a call of this token's user, with a device or an API token; a device token reads only the calls made from that device. `404 {"error":"not_found"}` (also for a call made from another device). `401` |
@@ -73,10 +73,17 @@ Clients read `account` in `GET /v1/health`: `{"issuer","device_credential"}` or 
 `device_credential` is `"approval"` or `"attestation"` (see [Configuration](../README.md#central-account-optional)).
 `issuer` is the wristcall Cloud the server trusts (0.6.0+). The client logs in at the central account with its
 own `client_id` (on a watch, with the device authorization grant, RFC 8628), then asks the Cloud for a token
-made for this server only: `POST {cloud}/v1/server-tokens {"audience": "<server URL>"}` with the login token.
-The audience is the URL the client itself uses to reach the server, never one the server announces, and the
-client knows the Cloud URL from its own configuration: if `account.issuer` names another Cloud, the client
-refuses the server (a server could otherwise collect login tokens that are good at the real Cloud).
+made for this server only:
+
+1. The client reads `account.issuer` in `GET /v1/health` and compares it with the Cloud URL of its own configuration
+   (the reference client's `--cloud`, an app's build settings). If they differ, it refuses the server and sends
+   nothing: a server announcing a "Cloud" of its own would otherwise collect login tokens that are good at the real
+   Cloud.
+2. `POST {cloud}/v1/server-tokens {"audience": "<server URL>"}` with `Authorization: Bearer <login token>`, to the
+   Cloud of its configuration. The audience is the exact URL the client itself uses to reach the server, never one
+   the server announces. The Cloud answers `200 {"token","audience","expires_at"}`: a token valid for 5 minutes
+   (see [cloud/README.md](../cloud/README.md#per-server-tokens)).
+3. The client sends that token to `POST /v1/pair/account` or `POST /v1/account/link` of that server, and to no other.
 
 The server accepts only these per-server tokens: header `typ` `wc-server+jwt`, `iss` = its `issuer`, `aud` =
 one of its `audience` URLs. A token made for another server, or the central account's own access token, is a
@@ -94,7 +101,7 @@ or a pairing code), and the token only opens the door to pairing.
 
 | Route | Body | Responses |
 |---|---|---|
-| `POST /v1/account/link` | `{"token": "<central access token>"}` with `Authorization: Bearer <API token>`, or `{"token": "...", "code": "12345678"}` without `Authorization` | With an API token: `200 {"linked":true,"issuer"}` (a `code` sent along is ignored and not spent). With a code: `200 {"linked":true,"issuer","user":{"id","handle"},"api_token"}`. Errors below |
+| `POST /v1/account/link` | `{"token": "<per-server token>"}` with `Authorization: Bearer <API token>`, or `{"token": "...", "code": "12345678"}` without `Authorization` | With an API token: `200 {"linked":true,"issuer"}` (a `code` sent along is ignored and not spent). With a code: `200 {"linked":true,"issuer","user":{"id","handle"},"api_token"}`. Errors below |
 | `DELETE /v1/account/link` | | `204`: the user's link removed. `404 {"error":"not_found"}`: not linked. `401`, `403 forbidden` (device token) |
 
 Errors of `POST /v1/account/link`, in the order they are checked. Like every error of this API, the body is
@@ -131,7 +138,7 @@ Rules:
 
 | Route | Body | Responses |
 |---|---|---|
-| `POST /v1/pair/account` | `{"token": "<central access token>", "device_name": "Apple Watch"}` (no `Authorization`) | `200 {"device_id","token"}`: paired (`attestation`). `202 {"request_id","poll_token","expires_at"}`: waiting for the user's approval (`approval`). Errors below |
+| `POST /v1/pair/account` | `{"token": "<per-server token>", "device_name": "Apple Watch"}` (no `Authorization`) | `200 {"device_id","token"}`: paired (`attestation`). `202 {"request_id","poll_token","expires_at"}`: waiting for the user's approval (`approval`). Errors below |
 
 | Status | `error` | When |
 |---|---|---|
@@ -168,17 +175,17 @@ A request lives 10 minutes. Each user can have 5 pending at once.
 
 ### Revocation and limits
 
-- The server only checks the token's signature and claims against the issuer's published keys
-  (cached for 1 hour; kept if the issuer goes down; at most one key fetch a minute). It never asks the
-  issuer whether a login is still valid. A session revoked at the issuer is accepted here until the access
-  token expires, so keep access tokens short (minutes) at the issuer.
+- The server only checks the token's signature and claims against the Cloud's published keys
+  (cached for 1 hour; kept if the Cloud goes down; at most one key fetch a minute). It never asks the
+  Cloud whether a login is still valid. A per-server token lives 5 minutes, and the Cloud issues one for as long as
+  the central account's access token is valid, so a session revoked at the central account keeps working until that
+  token expires: keep access tokens short (minutes) at the account issuer.
 - `unlink` does not revoke devices already paired: use `wristcall devices revoke` or `DELETE /v1/devices/{id}`.
-- In `attestation` mode a leaked access token of a linked account pairs a device until the token expires; revoke the
+- In `attestation` mode a leaked per-server token of a linked account pairs a device until it expires; revoke the
   device afterwards. `approval` mode puts the user between the token and the device.
-- Every server accepts the same app client ids. A central token given to one server's operator can be replayed at
-  another server's `/v1/account/link` and `/v1/pair/account` (it pairs a device wherever that account is linked). Per
-  server registration, which closes this, is planned (epic E6). Until then, use `approval`, and log in to servers
-  you do not trust only with a throwaway account.
+- A per-server token works only at the server whose URL it names: a server operator who receives one cannot replay it
+  at another server or at the Cloud API (0.5.0 accepted the central account's own token, which could). Links made
+  with 0.5.0 named the account issuer and must be made again.
 
 ## Call (`WS /v1/call`)
 
@@ -381,6 +388,8 @@ the result.
 
 Watch 0.2.0 and later sends both `agent` and `profile` in `session.start`, keeps the `call_id` of a one-way
 call and, after it ends, polls `GET /v1/calls/{call_id}` every 1.5 s for up to 3 minutes while the app is open.
+With a server that sends [push notifications](#push-notifications-optional), the `call.finished` notification
+ends that wait at once (watch 0.3.0, push build).
 
 ## History
 
@@ -416,6 +425,58 @@ ignoring case and accents: `reuniao` finds "Reunião". No prefixes, phrases or o
 letter or a digit separates words; at most 16 words count (the rest are ignored) and each word is cut at 64
 characters. An empty `q` does not filter, but a `q` of only punctuation finds nothing. Redelivery sends the kept text to the agent's webhook as it is configured now, with the same
 `Idempotency-Key` (the call id) and three more attempts; `attempts` adds them up.
+
+## Push notifications (optional)
+
+Since server 0.6.0 a server can notify its clients through a push relay, the wristcall Cloud (see
+[cloud/README.md](../cloud/README.md#push-relay)). It is off unless the operator sets `push.relay_url` in
+`wristcall.yaml`; without it `GET /v1/health` shows `"push": null` and the routes below answer
+`404 {"error":"not_configured"}`. With it, `push` is `{"relay": "<relay URL>"}`.
+
+The client knows the relay URL from its own configuration, never from a server: if `push.relay` names another relay
+(or is `null`), the client skips push for that server and registers nothing. Otherwise:
+
+1. The client registers its APNs token or Web Push subscription at the relay
+   (`POST {relay}/v1/push/registrations`, anonymous) with a `label` (the watch uses the server's host), a `tag`
+   (opaque, up to 64 characters: the watch uses its local id of the server) and the `events` it wants. It gets a
+   push key, `wc_push_` and 43 characters. One key per pair of client and server: the relay forces the label and the
+   tag on every message of that key, so the client knows which server a notification came from without trusting the
+   server.
+2. It hands the key to the server with `PUT /v1/push`.
+3. Each time it starts (or comes back to the foreground), it checks the key at the relay
+   (`GET {relay}/v1/push/registrations/current`): on `410` it registers again and repeats `PUT /v1/push`, which is
+   idempotent. A new APNs token or subscription means new keys; the old ones are dropped at the relay.
+
+| Route | Auth | Body | Responses |
+|---|---|---|---|
+| `PUT /v1/push` | device or API token | `{"push_key": "wc_push_..."}` | `204`: kept, one key per paired device or API token (a new one replaces the old, which the server drops at the relay). `422 {"error":"invalid"}`: not a push key. `401`. `404 not_configured` |
+| `DELETE /v1/push` | device or API token | | `204`: removed (and dropped at the relay). `404 {"error":"not_found"}`: no key. `401`. `404 not_configured` |
+
+The key is a secret: the server never logs it or sends it back, and the body is never echoed. Revoking the device or
+the API token deletes its key.
+
+What the server sends (the relay adds the label as the notification's subtitle and the tag as `wristcall.tag`):
+
+| Event | To | Title, body | `data` |
+|---|---|---|---|
+| `call.finished` | the device that made a one-shot or monologue call, when it reaches its final status (`delivered`, `failed`, `empty`) | the outcome ("Delivered", "Not delivered", "Not transcribed", "Nothing heard", "Call failed") and a sentence with the agent's name | `{"call_id","status","error","agent_id"}`, as in `GET /v1/calls/{call_id}`; the call id is also the collapse id |
+| `device.approval` | the management apps (keys set with an API token) of the user a `POST /v1/pair/account` request in `approval` mode is aimed at | "New device" and the device's name | `{"request_id","device_name","expires_at"}` |
+
+On APNs the message arrives as:
+
+```json
+{"aps":{"alert":{"title":"Delivered","subtitle":"wristcall.example.com","body":"Note got your message."},"sound":"default","thread-id":"call.finished","category":"WC_CALL_FINISHED"},
+ "wristcall":{"v":1,"event":"call.finished","tag":"<the registration's tag>","data":{"call_id":"c_5d1f...","status":"delivered","error":null,"agent_id":"ag_3f9c0a1b2c3d"}}}
+```
+
+- **Privacy.** The title, body and label pass through the relay and then Apple or the browser's push service. The
+  transcript never does: a notification says how the call ended and to which agent, and the client reads the text
+  from the server (`GET /v1/calls/{call_id}`).
+- **Best effort.** The call's status and the pairing request do not wait for the relay: a relay that is down, slow or
+  refusing only shows in the server's log. A key the relay answers `410` for is forgotten by the server; the client
+  finds out at its next check and registers again. Clients still poll while they are open; a notification only
+  ends the wait earlier.
+- Requests in `pairing_approval: manual` mode (no target user) notify nobody: the operator approves them in the CLI.
 
 ## Agents
 
@@ -498,8 +559,9 @@ A body that is not valid JSON or not a JSON object answers `422 {"error":"invali
 | `POST /v1/pairing-requests/{id}/approve` | | `200 {"device_name"}`. `403 limit`. `404` |
 | `POST /v1/pairing-requests/{id}/deny` | | `204`. `404` |
 | `/v1/calls...` | | the call history: see [History](#history) |
+| `PUT /v1/push`, `DELETE /v1/push` | see [Push notifications](#push-notifications-optional) | `204`, `401`, `404`, `422` |
 
-Missing or invalid token: `401 {"error":"unauthorized"}`. The central account routes answer `404 not_configured` when the server has no `central_account`.
+Missing or invalid token: `401 {"error":"unauthorized"}`. The central account routes answer `404 not_configured` when the server has no `central_account`, and the push routes when it has no `push`.
 
 ## Versioning
 

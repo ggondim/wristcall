@@ -14,8 +14,9 @@ server:
 #   clients: ["<watch client id>", "<iOS client id>", "<PWA client id>"]   # optional
 #   device_credential: approval   # approval (you approve each new device) | attestation (any linked login pairs)
 
-# Push through the wristcall Cloud relay: the watch gets a check failure when a one-way call ends, management apps
-# get device approval requests. Devices and apps register their own relay key; nothing else is set here.
+# Push through the wristcall Cloud relay: the watch gets a check or a failure when a one-way call ends, management
+# apps get device approval requests. Devices and apps register their own relay key; nothing else is set here.
+# Title, body and the server's host pass through the Cloud and Apple or the browser's push service; transcripts never do.
 # push:
 #   relay_url: https://cloud.wristcall.example
 
