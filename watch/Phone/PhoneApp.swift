@@ -58,6 +58,8 @@ struct PhoneApp: App {
                     // Back in the foreground: ask the servers for device approvals waiting for the owner.
                     guard phase == .active, !Self.isUnitTest else { return }
                     Task { await approvals.refresh() }
+                    // I2: a queued pairing code that expired while the app was away does not reach the watch.
+                    watchLink.sweepExpiredTransfers()
                     #if WRISTCALL_PUSH
                     // R20: every activation checks the push keys again.
                     if let push = PhoneAppDelegate.push { Task { await push.sync() } }
@@ -74,6 +76,7 @@ struct PhoneApp: App {
         let session = LiveWatchSession()
         let link = WatchLink(session: session)
         session.attach(link)
+        session.activate()
         return link
     }
 

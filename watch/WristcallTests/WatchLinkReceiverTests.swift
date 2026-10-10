@@ -20,6 +20,8 @@ struct WatchLinkReceiverTests {
         agents: [Agent(id: "ag_9", slug: "house", displayName: "House")])
     let home = URL(string: "https://home.example.com")!
     let code = PairingCode("12345678")!
+    /// The code's expiry, 10 minutes from now.
+    let soon = Date().timeIntervalSince1970 + 600
 
     private func makeModel() -> AppModel {
         AppModel(pairing: pairing, store: store, defaults: defaults, sleep: { _ in })
@@ -40,7 +42,7 @@ struct WatchLinkReceiverTests {
         pairing.pairResults = [.success(.paired(device))]
         pairing.setMeResults([.success(homeInfo)], for: home)
 
-        let reply = await receiver.handle(.pair(server: home, code: code, name: "Home"))
+        let reply = await receiver.handle(.pair(server: home, code: code, name: "Home", expiresAt: soon))
 
         #expect(reply == WatchLinkReply(ok: true))
         #expect(pairing.calls.contains("pair https://home.example.com code=12345678 name=Apple Watch"))
@@ -58,7 +60,7 @@ struct WatchLinkReceiverTests {
         pairing.pairResults = [.success(.paired(device))]
         pairing.setMeResults([.success(homeInfo)], for: home)
 
-        let reply = await receiver.handle(.pair(server: home, code: code, name: "Home"))
+        let reply = await receiver.handle(.pair(server: home, code: code, name: "Home", expiresAt: soon))
 
         #expect(reply.ok)
         #expect(model.phase == .home)
@@ -72,7 +74,7 @@ struct WatchLinkReceiverTests {
         let receiver = WatchLinkReceiver(model: model)
         pairing.pairResults = [.failure(.invalidCode)]
 
-        let reply = await receiver.handle(.pair(server: home, code: code, name: "Home"))
+        let reply = await receiver.handle(.pair(server: home, code: code, name: "Home", expiresAt: soon))
 
         #expect(reply == WatchLinkReply(ok: false, error: AppModel.Message.invalidCode))
         #expect(model.phase == .unpaired)
@@ -84,11 +86,91 @@ struct WatchLinkReceiverTests {
         let receiver = WatchLinkReceiver(model: model)
         pairing.pairResults = [.failure(.invalidCode)]
 
-        let reply = await receiver.handle(.pair(server: home, code: code, name: "Home"))
+        let reply = await receiver.handle(.pair(server: home, code: code, name: "Home", expiresAt: soon))
 
         #expect(reply == WatchLinkReply(ok: false, error: AppModel.Message.invalidCode))
         #expect(model.phase == .home)
         #expect(model.servers.map(\.credentials) == [first])
+    }
+
+    /// I1: a transfer queued on the iPhone is delivered right after activation, before the servers
+    /// were read: it waits for launch (starting it), then pairs.
+    @Test func queuedPairBeforeLaunchIsApplied() async throws {
+        try store.save([first])
+        pairing.setMeResults([.success(info)], for: first.serverURL)
+        pairing.pairResults = [.success(.paired(device))]
+        pairing.setMeResults([.success(homeInfo)], for: home)
+        let model = makeModel()
+        let receiver = WatchLinkReceiver(model: model)
+        #expect(model.phase == .launching)
+
+        receiver.receive(.pair(server: home, code: code, name: "Home", expiresAt: soon), reply: nil)
+        await waitUntil { model.servers.count == 2 && !model.isBusy }
+
+        #expect(model.phase == .home)
+        #expect(model.servers.map(\.credentials.serverURL) == [first.serverURL, home])
+        #expect(pairing.calls.first == "me https://agent.example.com")
+        #expect(receiver.lastContext == WatchLinkContext(servers: ["https://agent.example.com", "https://home.example.com"]))
+        // The scene's own launch afterwards does not read the Keychain again.
+        await model.launchIfNeeded()
+        #expect(pairing.calls.filter { $0 == "me https://agent.example.com" }.count == 1)
+    }
+
+    @Test func messagesBeforeLaunchKeepTheirOrderAndReplies() async throws {
+        let model = makeModel()
+        let receiver = WatchLinkReceiver(model: model)
+        let replies = Recorder<WatchLinkReply>()
+        receiver.receive(nil) { replies.append($0) }
+        receiver.receive(.deviceCode(userCode: "ZXSG-KCPN", expiresAt: soon)) { replies.append($0) }
+        await waitUntil { replies.all.count == 2 }
+        #expect(replies.all == [
+            WatchLinkReply(ok: false, error: WatchLinkReply.Reason.invalid),
+            WatchLinkReply(ok: false, error: WatchLinkReply.Reason.unsupported),
+        ])
+        #expect(model.phase == .unpaired)
+    }
+
+    /// I2: a queued transfer delivered after its code expired does nothing and says nothing.
+    @Test func expiredPairIsIgnored() async throws {
+        let model = try await makePairedModel()
+        let receiver = WatchLinkReceiver(model: model)
+
+        let reply = await receiver.handle(.pair(server: home, code: code, name: "Home", expiresAt: Date().timeIntervalSince1970 - 1))
+
+        #expect(reply == WatchLinkReply(ok: false, error: WatchLinkReply.Reason.expired))
+        #expect(!pairing.calls.contains { $0.hasPrefix("pair") })
+        #expect(model.phase == .home)
+        #expect(model.message == nil)
+    }
+
+    /// I3: a server in manual mode answers 202: the watch tells the iPhone at once (so the owner can
+    /// approve on it) and keeps waiting for the approval.
+    @Test func pendingRepliesAtOnceAndKeepsWaiting() async throws {
+        let gate = Gate()
+        try store.save([first])
+        pairing.setMeResults([.success(info)], for: first.serverURL)
+        let model = AppModel(pairing: pairing, store: store, defaults: defaults, sleep: { _ in await gate.wait() })
+        await model.launch()
+        let receiver = WatchLinkReceiver(model: model)
+        let request = PairingRequest(requestId: "4821", pollToken: "poll-secret", expiresAt: .now.addingTimeInterval(600))
+        pairing.pairResults = [.success(.pending(request))]
+        pairing.pollResults = [.success(.paired(device))]
+        pairing.setMeResults([.success(homeInfo)], for: home)
+        let replies = Recorder<WatchLinkReply>()
+
+        let running = Task { await receiver.handle(.pair(server: home, code: code, name: "Home", expiresAt: soon)) { replies.append($0) } }
+        await waitUntil { !replies.all.isEmpty }
+
+        #expect(replies.all == [WatchLinkReply(ok: true, pending: true, requestId: "4821")])
+        #expect(model.phase == .pairing(requestId: "4821"))
+        // The poll token never leaves the watch.
+        #expect(replies.all.first?.dictionary.values.contains { ($0 as? String) == "poll-secret" } == false)
+
+        gate.open()
+        await running.value
+        #expect(replies.all.count == 1)
+        #expect(model.servers.map(\.credentials.serverURL) == [first.serverURL, home])
+        #expect(receiver.lastContext?.servers.contains("https://home.example.com") == true)
     }
 
     @Test func busyDuringCall() async throws {
@@ -98,7 +180,7 @@ struct WatchLinkReceiverTests {
         model.startCall(target)
         try #require(model.phase == .inCall(target))
 
-        let reply = await receiver.handle(.pair(server: home, code: code, name: "Home"))
+        let reply = await receiver.handle(.pair(server: home, code: code, name: "Home", expiresAt: soon))
 
         #expect(reply == WatchLinkReply(ok: false, error: WatchLinkReply.Reason.busy))
         #expect(!pairing.calls.contains { $0.hasPrefix("pair") })
@@ -116,7 +198,7 @@ struct WatchLinkReceiverTests {
         let typed = model.requestApproval()
         await waitUntil { model.phase == .pairing(requestId: "4821") }
 
-        let reply = await receiver.handle(.pair(server: home, code: code, name: "Home"))
+        let reply = await receiver.handle(.pair(server: home, code: code, name: "Home", expiresAt: soon))
 
         #expect(reply == WatchLinkReply(ok: false, error: WatchLinkReply.Reason.busy))
         #expect(pairing.calls.filter { $0.hasPrefix("pair") }.count == 1)
@@ -170,7 +252,7 @@ struct WatchLinkReceiverTests {
         pairing.pairResults = [.success(.paired(device))]
         pairing.setMeResults([.success(homeInfo)], for: home)
 
-        _ = await receiver.handle(.pair(server: home, code: code, name: "Home"))
+        _ = await receiver.handle(.pair(server: home, code: code, name: "Home", expiresAt: soon))
         #expect(receiver.lastContext == WatchLinkContext(servers: ["https://agent.example.com", "https://home.example.com"]))
 
         await model.removeServer(id: "srv-1")

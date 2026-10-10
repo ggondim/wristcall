@@ -10,14 +10,22 @@ import WristcallKit
 /// `WatchLinkMessage` there and hop to the main actor with that (I8).
 @MainActor
 final class WatchLinkReceiver: NSObject {
+    /// One reply per message; `nil` for a `transferUserInfo` (nobody to answer).
+    typealias Reply = @Sendable (WatchLinkReply) -> Void
+
     private let model: AppModel
+    private let now: () -> Date
     /// Set by `activate()`; `nil` in tests and where WatchConnectivity is missing.
     private var session: WCSession?
     /// What `publishContext` last built (the iPhone reads it from `receivedApplicationContext`).
     private(set) var lastContext: WatchLinkContext?
+    /// Messages that arrived before the servers were read from the Keychain, in arrival order. A
+    /// queued transfer is delivered right after activation, often before the scene's first task.
+    private var held: [(message: WatchLinkMessage?, reply: Reply?)] = []
 
-    init(model: AppModel) {
+    init(model: AppModel, now: @escaping () -> Date = Date.init) {
         self.model = model
+        self.now = now
         super.init()
         model.onServersChanged = { [weak self] servers in self?.publishContext(servers) }
     }
@@ -32,28 +40,70 @@ final class WatchLinkReceiver: NSObject {
         session.activate()
     }
 
-    /// What the watch answers to `message`. A pairing waits for its outcome (a server in manual
-    /// mode: until the owner approves).
+    /// A message from the iPhone, already validated off the main actor (`nil`: malformed). Before
+    /// launch it waits for it (and starts it when the app was woken for this message).
+    func receive(_ message: WatchLinkMessage?, reply: Reply?) {
+        guard model.phase == .launching || !held.isEmpty else {
+            process(message, reply: reply)
+            return
+        }
+        held.append((message, reply))
+        guard held.count == 1 else { return }
+        Task {
+            await model.launchIfNeeded()
+            let waiting = held
+            held = []
+            for item in waiting { process(item.message, reply: item.reply) }
+        }
+    }
+
+    /// What the watch answers to `message`: the first reply. A pairing goes on until its outcome (a
+    /// server in manual mode: until the owner approves).
     func handle(_ message: WatchLinkMessage) async -> WatchLinkReply {
-        if case .inCall = model.phase { return WatchLinkReply(ok: false, error: WatchLinkReply.Reason.busy) }
+        let first = FirstReply()
+        await handle(message) { first.set($0) }
+        return first.value ?? WatchLinkReply(ok: false, error: WatchLinkReply.Reason.invalid)
+    }
+
+    /// Answers through `reply` once: at the outcome, or earlier when the server asks for the owner's
+    /// approval (`pending`); the pairing then goes on (I3).
+    func handle(_ message: WatchLinkMessage, reply: @escaping @MainActor (WatchLinkReply) -> Void) async {
+        let gate = FirstReply()
+        let answer: @MainActor (WatchLinkReply) -> Void = { value in
+            guard gate.value == nil else { return }
+            gate.set(value)
+            reply(value)
+        }
+        if case .inCall = model.phase {
+            answer(WatchLinkReply(ok: false, error: WatchLinkReply.Reason.busy))
+            return
+        }
         switch message {
-        case .pair(let server, let code, _):
-            switch await model.pair(server: server, code: code) {
+        case .pair(let server, let code, _, let expiresAt):
+            // I2: a transfer queued on the iPhone can arrive after its code died; nothing to try.
+            guard now().timeIntervalSince1970 < expiresAt else {
+                answer(WatchLinkReply(ok: false, error: WatchLinkReply.Reason.expired))
+                return
+            }
+            let result = await model.pair(server: server, code: code) { requestId in
+                answer(WatchLinkReply(ok: true, pending: true, requestId: requestId))
+            }
+            switch result {
             case .success:
-                return WatchLinkReply(ok: true)
+                answer(WatchLinkReply(ok: true))
             case .failure(AppModel.LinkPairingError.busy):
-                return WatchLinkReply(ok: false, error: WatchLinkReply.Reason.busy)
+                answer(WatchLinkReply(ok: false, error: WatchLinkReply.Reason.busy))
             case .failure(let error) where AppModel.isCancellation(error):
-                return WatchLinkReply(ok: false, error: "Cancelled on the watch.")
+                answer(WatchLinkReply(ok: false, error: "Cancelled on the watch."))
             case .failure(let error):
-                return WatchLinkReply(ok: false, error: AppModel.text(for: error))
+                answer(WatchLinkReply(ok: false, error: AppModel.text(for: error)))
             }
         case .refresh:
             await model.reloadAgents()
-            return WatchLinkReply(ok: true)
+            answer(WatchLinkReply(ok: true))
         case .deviceCode:
             // Watch → iPhone only.
-            return WatchLinkReply(ok: false, error: WatchLinkReply.Reason.unsupported)
+            answer(WatchLinkReply(ok: false, error: WatchLinkReply.Reason.unsupported))
         }
     }
 
@@ -71,16 +121,13 @@ final class WatchLinkReceiver: NSObject {
         try? session.updateApplicationContext(lastContext.dictionary)
     }
 
-    /// A message from the iPhone, already validated off the main actor; `reply` is `nil` for a
-    /// `transferUserInfo` (handled the same, nobody to answer).
-    private func receive(_ message: WatchLinkMessage?, reply: ReplyBox?) {
+    private func process(_ message: WatchLinkMessage?, reply: Reply?) {
         guard let message else {
-            reply?.send(WatchLinkReply(ok: false, error: WatchLinkReply.Reason.invalid))
+            reply?(WatchLinkReply(ok: false, error: WatchLinkReply.Reason.invalid))
             return
         }
         Task {
-            let answer = await handle(message)
-            reply?.send(answer)
+            await handle(message) { reply?($0) }
             // The iPhone app is there: a context refused before (WCError 7018, companion app not
             // installed yet) goes out now.
             sendContext()
@@ -106,7 +153,7 @@ extension WatchLinkReceiver: WCSessionDelegate {
     ) {
         let parsed = WatchLinkMessage(message)
         let box = ReplyBox(replyHandler)
-        Task { @MainActor in self.receive(parsed, reply: box) }
+        Task { @MainActor in self.receive(parsed) { box.send($0) } }
     }
 
     nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
@@ -130,5 +177,15 @@ private final class ReplyBox: @unchecked Sendable {
 
     func send(_ reply: WatchLinkReply) {
         handler(reply.dictionary)
+    }
+}
+
+/// The first reply of `handle(_:)`.
+@MainActor
+private final class FirstReply {
+    private(set) var value: WatchLinkReply?
+
+    func set(_ reply: WatchLinkReply) {
+        if value == nil { value = reply }
     }
 }

@@ -19,6 +19,8 @@ struct PairingCodeView: View {
         TimelineView(.periodic(from: .now, by: 1)) { _ in
             content(model.code)
         }
+        // A new code: what "Add to watch" did was about the old one.
+        .onChange(of: model.code?.code) { watchResult = nil }
         .navigationTitle("Pairing code")
         .navigationBarTitleDisplayMode(.inline)
         .task {

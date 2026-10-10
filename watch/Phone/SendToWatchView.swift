@@ -35,6 +35,10 @@ struct SendToWatchView: View {
                     ProgressView()
                     Text("Sending to the watch…")
                 }
+            } else if result != .paired && result != nil && watchLink.isOnWatch(server) {
+                // Queued, pending or slow: the watch's context says it is done.
+                Label("On watch", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                Text("\(server.name) is on the watch with its agents.")
             } else {
                 switch result {
                 case .paired:
@@ -44,8 +48,22 @@ struct SendToWatchView: View {
                     Label("Waiting for the watch", systemImage: "clock")
                     Text("The code goes to the watch when it is reachable: open Wristcall on it. The code works for 10 minutes.")
                         .foregroundStyle(.secondary)
+                case .pending(let requestId):
+                    Label("Approve the watch", systemImage: "hand.raised")
+                    Text(requestId.map { "This server wants your approval: approve request \($0) in Devices. The watch waits for it." }
+                         ?? "This server wants your approval: approve the watch in Devices. The watch waits for it.")
+                        .foregroundStyle(.secondary)
+                    NavigationLink {
+                        DevicesView(server: server)
+                    } label: {
+                        Label("Devices", systemImage: "applewatch")
+                    }
+                case .stillPairing:
+                    Label("Still pairing on the watch…", systemImage: "hourglass")
+                    Text("The watch has the code. This shows On watch once it is done.")
+                        .foregroundStyle(.secondary)
                 case .failed(let text):
-                    Text(text).foregroundStyle(.red)
+                    Text(WatchLink.text(forReason: text)).foregroundStyle(.red)
                     Button("Try again", systemImage: "arrow.clockwise") { Task { await send() } }
                 case .unavailable, nil:
                     EmptyView()
@@ -71,8 +89,9 @@ struct SendToWatchView: View {
         if outcome == .unavailable { showCode() }
     }
 
-    /// `PairingCodeView` asks for a code itself when it opens.
+    /// `PairingCodeView` asks for a code itself when it opens; a code still queued for the watch goes.
     private func showCode() {
+        watchLink.cancelQueuedPair()
         codeModel = DevicesModel(api: state.api(for: server))
     }
 }
@@ -83,7 +102,11 @@ extension WatchLink.SendResult {
         switch self {
         case .paired: "On watch."
         case .queued: "Waiting for the watch: open Wristcall on it."
-        case .failed(let text): text
+        case .pending(let requestId):
+            requestId.map { "Approve request \($0) in Devices: the watch waits for it." }
+                ?? "Approve the watch in Devices: it waits for it."
+        case .stillPairing: "Still pairing on the watch…"
+        case .failed(let text): WatchLink.text(forReason: text)
         case .unavailable: "No Apple Watch with Wristcall is paired with this iPhone."
         }
     }
@@ -91,7 +114,7 @@ extension WatchLink.SendResult {
     var isFailure: Bool {
         switch self {
         case .failed, .unavailable: true
-        case .paired, .queued: false
+        case .paired, .queued, .pending, .stillPairing: false
         }
     }
 }

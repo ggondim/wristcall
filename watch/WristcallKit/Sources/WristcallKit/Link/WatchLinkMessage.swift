@@ -5,12 +5,15 @@ import Foundation
 /// cross: the iPhone sends a pairing code, the watch pairs with it as if it had been typed.
 public enum WatchLinkMessage: Sendable, Equatable {
     /// iPhone → watch: pair with `server` using `code` (flow A'). `server` is the address the iPhone
-    /// reaches the server at (`ManagedServer.url`); `name` is what the iPhone calls the server.
-    case pair(server: URL, code: PairingCode, name: String)
+    /// reaches the server at (`ManagedServer.url`); `name` is what the iPhone calls the server;
+    /// `expiresAt` (Unix seconds) is when the code stops working: a queued transfer delivered later
+    /// is ignored by the watch.
+    case pair(server: URL, code: PairingCode, name: String, expiresAt: Double)
     /// iPhone → watch: ask every server for its agents again (decision R16).
     case refresh
     /// Watch → iPhone: the user code of the account login (RFC 8628), shown until `expiresAt` (Unix
-    /// seconds). Never the `device_code`: that one is the secret of the watch's poll.
+    /// seconds). Never the `device_code`: that one is the secret of the watch's poll. Case does not
+    /// matter: it is sent and compared uppercased.
     case deviceCode(userCode: String, expiresAt: Double)
 
     /// Protocol version, the `"v"` of every dictionary. Any other value is ignored.
@@ -30,9 +33,10 @@ public enum WatchLinkMessage: Sendable, Equatable {
                   let server = ServerAddress.parse(text),
                   let raw = dictionary["code"] as? String,
                   let code = PairingCode(raw),
-                  let name = (dictionary["name"] as? String).flatMap(Self.cleanName)
+                  let name = (dictionary["name"] as? String).flatMap(Self.cleanName),
+                  let expiresAt = Self.number(dictionary["expires_at"])
             else { return nil }
-            self = .pair(server: server, code: code, name: name)
+            self = .pair(server: server, code: code, name: name, expiresAt: expiresAt)
         case "refresh":
             self = .refresh
         case "device_code":
@@ -48,15 +52,28 @@ public enum WatchLinkMessage: Sendable, Equatable {
 
     public var dictionary: [String: Any] {
         switch self {
-        case .pair(let server, let code, let name):
+        case .pair(let server, let code, let name, let expiresAt):
             [
                 "v": Self.version, "type": "pair", "server_url": server.absoluteString,
-                "code": code.digits, "name": String(name.prefix(Self.maxNameLength)),
+                "code": code.digits, "name": String(name.prefix(Self.maxNameLength)), "expires_at": expiresAt,
             ]
         case .refresh:
             ["v": Self.version, "type": "refresh"]
         case .deviceCode(let userCode, let expiresAt):
-            ["v": Self.version, "type": "device_code", "user_code": userCode, "expires_at": expiresAt]
+            ["v": Self.version, "type": "device_code", "user_code": userCode.uppercased(), "expires_at": expiresAt]
+        }
+    }
+
+    public static func == (lhs: WatchLinkMessage, rhs: WatchLinkMessage) -> Bool {
+        switch (lhs, rhs) {
+        case let (.pair(a, b, c, d), .pair(e, f, g, h)):
+            a == e && b == f && c == g && d == h
+        case (.refresh, .refresh):
+            true
+        case let (.deviceCode(a, b), .deviceCode(c, d)):
+            a.uppercased() == c.uppercased() && b == d
+        default:
+            false
         }
     }
 
@@ -93,10 +110,14 @@ public enum WatchLinkMessage: Sendable, Equatable {
 }
 
 /// The watch's answer to a `sendMessage` (`pair` or `refresh`). `error` is a short reason: one of
-/// `Reason`, or the text the watch showed (a pairing failure).
+/// `Reason`, or the text the watch showed (a pairing failure). `pending`: the server asked for the
+/// owner's approval (`requestId` is the 4 digits the watch shows); the watch keeps waiting and the
+/// outcome shows up in the `applicationContext`.
 public struct WatchLinkReply: Sendable, Equatable {
     public var ok: Bool
     public var error: String?
+    public var pending: Bool
+    public var requestId: String?
 
     /// Reasons the watch gives without trying.
     public enum Reason {
@@ -106,22 +127,32 @@ public struct WatchLinkReply: Sendable, Equatable {
         public static let invalid = "invalid"
         /// A valid message this side does not take (a `device_code` sent to the watch).
         public static let unsupported = "unsupported"
+        /// The pairing code expired before the watch got it.
+        public static let expired = "expired"
     }
 
-    public init(ok: Bool, error: String? = nil) {
+    public init(ok: Bool, error: String? = nil, pending: Bool = false, requestId: String? = nil) {
         self.ok = ok
         self.error = error
+        self.pending = pending
+        self.requestId = requestId
     }
 
     public init?(_ dictionary: [String: Any]) {
         guard let ok = dictionary["ok"] as? Bool else { return nil }
         self.ok = ok
         error = dictionary["error"] as? String
+        pending = dictionary["pending"] as? Bool ?? false
+        requestId = (dictionary["request_id"] as? String).flatMap { id in
+            id.count == 4 && id.allSatisfy { $0.isASCII && $0.isNumber } ? id : nil
+        }
     }
 
     public var dictionary: [String: Any] {
         var dictionary: [String: Any] = ["ok": ok]
         if let error { dictionary["error"] = error }
+        if pending { dictionary["pending"] = true }
+        if let requestId { dictionary["request_id"] = requestId }
         return dictionary
     }
 }

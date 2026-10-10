@@ -15,9 +15,9 @@ protocol WatchSessionProtocol: AnyObject {
         _ message: [String: Any], replyHandler: (@Sendable ([String: Any]) -> Void)?,
         errorHandler: (@Sendable (any Error) -> Void)?)
     func transferUserInfo(_ userInfo: [String: Any])
-    /// Cancels the queued `transferUserInfo`s whose `"type"` is `type` (M8: a pairing code that was
-    /// replaced or expired).
-    func cancelOutstandingTransfers(ofType type: String)
+    /// Cancels the queued `transferUserInfo`s for which `shouldCancel` is `true` (M8: a pairing code
+    /// that was replaced or expired).
+    func cancelOutstandingTransfers(where shouldCancel: ([String: Any]) -> Bool)
 }
 
 /// "Add to watch" and "Refresh watch" (decision R10): sends the paired Apple Watch a fresh pairing
@@ -31,22 +31,42 @@ final class WatchLink {
         case paired
         /// The watch is not reachable now: the code goes when it is (while the code lasts).
         case queued
-        /// The text to show.
+        /// The server asked for the owner's approval (the watch shows `requestId`): approve it in
+        /// Devices; the watch keeps waiting.
+        case pending(requestId: String?)
+        /// The watch did not answer in time but may still be pairing; "On watch" shows when it is.
+        case stillPairing
+        /// The text to show (`WatchLink.text(forReason:)` turns the watch's short reasons into words).
         case failed(String)
         /// No paired Apple Watch with Wristcall: show the code to type instead.
         case unavailable
     }
 
-    enum Message {
+    nonisolated enum Message {
         static let unreachable = "Couldn't reach the watch. Open Wristcall on it and try again."
-        static let noAnswer = "The watch did not answer. Check it, then try again."
         static let unexpected = "Unexpected reply from the watch."
+        static let busy = "The watch is busy (on a call, or pairing). Try again after it."
+        static let expired = "The code expired before the watch got it. Try again."
+    }
+
+    /// Words for a reason the watch gave (`WatchLinkReply.Reason`); any other text is the watch's own.
+    nonisolated static func text(forReason reason: String) -> String {
+        switch reason {
+        case WatchLinkReply.Reason.busy: Message.busy
+        case WatchLinkReply.Reason.expired: Message.expired
+        case WatchLinkReply.Reason.invalid, WatchLinkReply.Reason.unsupported: Message.unexpected
+        default: reason
+        }
     }
 
     /// `ServerAddress.canonical` of each server the watch is paired with (its `applicationContext`).
     private(set) var watchServers: Set<String> = []
     /// The user code the watch shows for the account login (Task 11), until it expires.
-    private(set) var incomingDeviceCode: String?
+    var incomingDeviceCode: String? {
+        guard let deviceCodeOffer, now().timeIntervalSince1970 < deviceCodeOffer.expiresAt else { return nil }
+        return deviceCodeOffer.userCode
+    }
+    private var deviceCodeOffer: (userCode: String, expiresAt: Double)?
     /// A paired Apple Watch with Wristcall installed.
     private(set) var canReachWatch = false
 
@@ -54,8 +74,10 @@ final class WatchLink {
     @ObservationIgnored private let timeout: Duration
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
-    /// Cancels the queued `pair` once its code expires (M8).
+    /// Sweeps the queued `pair` once its code expires (M8), while the app runs.
     @ObservationIgnored private var expiryTask: Task<Void, Never>?
+    /// Forgets the login code once it expires, so screens reading it update.
+    @ObservationIgnored private var deviceCodeTask: Task<Void, Never>?
 
     /// `session` is `nil` where WatchConnectivity is not supported (and in unit tests of other models).
     init(
@@ -72,8 +94,9 @@ final class WatchLink {
         }
     }
 
+    /// The watch's last context lists the server, and that watch is still paired with the app on it.
     func isOnWatch(_ server: ManagedServer) -> Bool {
-        watchServers.contains(ServerAddress.canonical(server.url))
+        canReachWatch && watchServers.contains(ServerAddress.canonical(server.url))
     }
 
     /// Asks the server for a new code and sends it with `server.url` (the address this iPhone reaches
@@ -96,23 +119,46 @@ final class WatchLink {
         sessionStateDidChange()
         guard let session, canReachWatch else { return .unavailable }
         guard let code = PairingCode(grant.code) else { return .failed(Message.unexpected) }
-        let message = WatchLinkMessage.pair(server: server.url, code: code, name: server.name)
+        let message = WatchLinkMessage.pair(server: server.url, code: code, name: server.name, expiresAt: grant.expiresAt)
         // M8: an older code waiting in the queue is useless now.
-        session.cancelOutstandingTransfers(ofType: "pair")
-        expiryTask?.cancel()
-        expiryTask = nil
+        cancelQueuedPair()
         guard session.isReachable else {
             session.transferUserInfo(message.dictionary)
             scheduleExpiry(of: grant)
             return .queued
         }
         switch await request(message) {
+        case .success(let reply) where reply.ok && reply.pending:
+            return .pending(requestId: reply.requestId)
         case .success(let reply) where reply.ok:
             return .paired
         case .success(let reply):
             return .failed(reply.error ?? Message.unexpected)
+        case .failure(.noAnswer):
+            // I3: pairing can outlast the wait (slow network); the context tells when it is done.
+            return .stillPairing
         case .failure(let failure):
             return .failed(failure.text)
+        }
+    }
+
+    /// Cancels every queued `pair` ("Show the code instead", or a new code on the way).
+    func cancelQueuedPair() {
+        expiryTask?.cancel()
+        expiryTask = nil
+        session?.cancelOutstandingTransfers { $0["type"] as? String == "pair" }
+    }
+
+    /// I2: cancels the queued `pair` transfers whose code expired (or that carry no expiry). Runs at
+    /// activation and back in the foreground: the app may not have been running at expiry.
+    func sweepExpiredTransfers() {
+        let now = now().timeIntervalSince1970
+        session?.cancelOutstandingTransfers { userInfo in
+            guard userInfo["type"] as? String == "pair" else { return false }
+            guard let expiresAt = (userInfo["expires_at"] as? Double) ?? (userInfo["expires_at"] as? Int).map(Double.init) else {
+                return true
+            }
+            return expiresAt <= now
         }
     }
 
@@ -132,17 +178,36 @@ final class WatchLink {
         watchServers = Set(context.servers)
     }
 
+    /// The session is active: reads the watch's context and drops expired queued codes.
+    func sessionDidActivate(context: WatchLinkContext?) {
+        sessionStateDidChange()
+        if let context { contextDidChange(context) }
+        sweepExpiredTransfers()
+    }
+
     /// Paired, installed or reachable changed.
     func sessionStateDidChange() {
         let reach = session.map { $0.isPaired && $0.isWatchAppInstalled } ?? false
         if reach != canReachWatch { canReachWatch = reach }
     }
 
-    /// A message from the watch. M7: an expired login code is dropped.
+    /// A message from the watch. M7: an expired login code is dropped, a shown one goes at expiry.
     func receive(_ message: WatchLinkMessage) {
         guard case .deviceCode(let userCode, let expiresAt) = message else { return }
-        guard now().timeIntervalSince1970 < expiresAt else { return }
-        incomingDeviceCode = userCode
+        let left = expiresAt - now().timeIntervalSince1970
+        guard left > 0 else { return }
+        deviceCodeOffer = (userCode.uppercased(), expiresAt)
+        deviceCodeTask?.cancel()
+        let sleep = sleep
+        deviceCodeTask = Task { [weak self] in
+            do {
+                try await sleep(.milliseconds(Int64((left * 1000).rounded(.up))))
+            } catch {
+                return
+            }
+            guard let self, self.deviceCodeOffer?.expiresAt == expiresAt else { return }
+            self.deviceCodeOffer = nil
+        }
     }
 
     // MARK: - Private
@@ -152,8 +217,7 @@ final class WatchLink {
 
         var text: String {
             switch self {
-            case .unreachable: Message.unreachable
-            case .noAnswer: Message.noAnswer
+            case .unreachable, .noAnswer: Message.unreachable
             case .unexpected: Message.unexpected
             }
         }
@@ -202,7 +266,7 @@ final class WatchLink {
                 return
             }
             guard !Task.isCancelled, let self else { return }
-            self.session?.cancelOutstandingTransfers(ofType: "pair")
+            self.sweepExpiredTransfers()
             self.expiryTask = nil
         }
     }
@@ -241,16 +305,15 @@ final class LiveWatchSession: NSObject, WatchSessionProtocol, WCSessionDelegate,
         weak var value: WatchLink?
     }
 
-    /// Becomes the delegate and activates the session.
-    override init() {
-        super.init()
-        session.delegate = self
-        session.activate()
-    }
-
-    /// Where events go from now on.
+    /// Where events go from now on; attach before `activate()`, so activation reaches it.
     func attach(_ link: WatchLink) {
         self.link.withLock { $0.value = link }
+    }
+
+    /// Becomes the delegate and activates the session.
+    func activate() {
+        session.delegate = self
+        session.activate()
     }
 
     var isPaired: Bool { session.activationState == .activated && session.isPaired }
@@ -269,8 +332,8 @@ final class LiveWatchSession: NSObject, WatchSessionProtocol, WCSessionDelegate,
         session.transferUserInfo(userInfo)
     }
 
-    func cancelOutstandingTransfers(ofType type: String) {
-        for transfer in session.outstandingUserInfoTransfers where transfer.userInfo["type"] as? String == type {
+    func cancelOutstandingTransfers(where shouldCancel: ([String: Any]) -> Bool) {
+        for transfer in session.outstandingUserInfoTransfers where shouldCancel(transfer.userInfo) {
             transfer.cancel()
         }
     }
@@ -286,10 +349,7 @@ final class LiveWatchSession: NSObject, WatchSessionProtocol, WCSessionDelegate,
 
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: (any Error)?) {
         let context = WatchLinkContext(session.receivedApplicationContext)
-        onLink { link in
-            link.sessionStateDidChange()
-            if let context { link.contextDidChange(context) }
-        }
+        onLink { $0.sessionDidActivate(context: context) }
     }
 
     func sessionDidBecomeInactive(_ session: WCSession) {}

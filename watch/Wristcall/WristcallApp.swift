@@ -57,7 +57,8 @@ struct WristcallApp: App {
         WindowGroup {
             RootView(model: model)
                 .task {
-                    await model.launch()
+                    // A message from the iPhone may have started it already (WatchLinkReceiver).
+                    await model.launchIfNeeded()
                     // Once the servers are read: every one of them gets its push key.
                     push?.start()
                     // On a cold start the intent may record its request before `onReceive`

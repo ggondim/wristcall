@@ -155,8 +155,8 @@ final class AppModel {
 
     private var activeCall: CallRequest?
     private var pairingTask: Task<Void, Never>?
-    /// Why the last pairing attempt failed (`nil` when it paired), for `pair(server:code:)`.
-    private var pairingFailure: (any Error)?
+    /// The first launch, shared by everyone who needs it (`launchIfNeeded()`).
+    private var launchTask: Task<Void, Never>?
     /// The list last handed to `onServersChanged`.
     private var publishedServers: [Credentials]?
 
@@ -266,6 +266,18 @@ final class AppModel {
         phase = .home
         await load(stored)
         resumePendingResult()
+    }
+
+    /// The first `launch()`, run once whoever asks first (the scene, or a message from the iPhone that
+    /// woke the app); later callers wait for the same one.
+    func launchIfNeeded() async {
+        if let launchTask {
+            await launchTask.value
+            return
+        }
+        let task = Task { await launch() }
+        launchTask = task
+        await task.value
     }
 
     /// "Retry": reads the Keychain again after it failed, or asks again every server that is down.
@@ -383,14 +395,25 @@ final class AppModel {
     /// without touching `customServerURL`. Runs on Home or the pairing screen only; anywhere else (a
     /// call, its result, another pairing) it fails with `LinkPairingError.busy` and changes nothing.
     /// A failure goes back to the screen it started on, with the reason in `message`.
-    func pair(server: URL, code: PairingCode) async -> Result<Void, any Error> {
+    /// `onPending` runs as soon as the server asks for the owner's approval (with the request id);
+    /// this then keeps waiting for it, like flow B.
+    func pair(
+        server: URL, code: PairingCode, onPending: (@MainActor (String) -> Void)? = nil
+    ) async -> Result<Void, any Error> {
         guard pairingTask == nil, phase == .home || phase == .unpaired else { return .failure(LinkPairingError.busy) }
+        let outcome = PairingOutcome()
         let task = startPairing(returningTo: phase) { [self] in
-            let result = try await pairing.pair(server: server, code: code, deviceName: deviceName)
-            try await complete(result, server: server)
+            do {
+                let result = try await pairing.pair(server: server, code: code, deviceName: deviceName)
+                if case .pending(let request) = result { onPending?(request.requestId) }
+                try await complete(result, server: server)
+            } catch {
+                outcome.error = error
+                throw error
+            }
         }
         await task.value
-        return pairingFailure.map { .failure($0) } ?? .success(())
+        return outcome.error.map { .failure($0) } ?? .success(())
     }
 
     /// Flow B: asks `customServerURL` to pair without a code and waits for the owner's approval.
@@ -419,12 +442,10 @@ final class AppModel {
         if let pairingTask { return pairingTask }
         phase = .pairing(requestId: nil)
         message = nil
-        pairingFailure = nil
         let task = Task { [self] in
             do {
                 try await work()
             } catch {
-                pairingFailure = error
                 // A "Cancel" that already left the pairing screen (adding a server) keeps its screen.
                 if case .pairing = phase {
                     phase = fallback
@@ -886,6 +907,12 @@ final class AppModel {
     }
 
     // MARK: - Messages
+
+    /// The failure of one `pair(server:code:)`, kept by that call only.
+    @MainActor
+    private final class PairingOutcome {
+        var error: (any Error)?
+    }
 
     /// Why `pair(server:code:)` did not start.
     enum LinkPairingError: Error, Equatable {
