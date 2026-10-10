@@ -3,6 +3,20 @@ import Testing
 @testable import WristcallKit
 
 struct WatchLinkMessageTests {
+    @Test func pairMessagePrintsWithoutTheCode() throws {
+        let message = try #require(WatchLinkMessage(["v": 1, "type": "pair", "server_url": "https://example.com", "code": "12345678", "name": "Home", "expires_at": 1_800_000_000]))
+        var dumped = ""
+        dump(message, to: &dumped)
+        for text in ["\(message)", String(reflecting: message), String(describing: message), dumped] {
+            #expect(!text.contains("12345678"))
+            #expect(!text.contains("1234 5678"))
+            #expect(text.contains("<redacted>"))
+            #expect(text.contains("Home"))
+        }
+        // The dictionary sent to the watch still carries the digits.
+        #expect(message.dictionary["code"] as? String == "12345678")
+    }
+
     // MARK: - pair
 
     @Test func rejectsInsecureServer() {

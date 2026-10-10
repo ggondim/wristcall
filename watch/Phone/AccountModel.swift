@@ -141,7 +141,8 @@ final class AccountModel {
         }
     }
 
-    /// `DELETE /v1/account` (the agenda and the Cloud's push registrations), then `accountDeleted` and sign out.
+    /// `DELETE /v1/account` (the Cloud deletes the agenda only; push registrations are anonymous), then `accountDeleted`
+    /// (the app drops its own push keys) and sign out.
     /// On failure the session stays and `error` says so.
     func deleteAccount() async {
         guard let session, state == .signedIn else { return }

@@ -87,7 +87,7 @@ public struct PairingClient: Sendable {
     }
 
     /// `POST {server}/v1/pair/account` with `{"token", "device_name"}`: the per-server token of the central account
-    /// is the only proof, in the body (no `Authorization`). `.paired` when the server pairs at once (`direct`),
+    /// is the only proof, in the body (no `Authorization`). `.paired` when the server pairs at once (`attestation`),
     /// `.pending` when the account's owner approves it (`approval`; poll as in flow B).
     public func pairWithAccount(server: URL, serverToken: String, deviceName: String) async throws -> PairResult {
         var request = request(server.appending(path: "v1/pair/account"), method: "POST")

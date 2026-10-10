@@ -31,6 +31,10 @@ distribution and Sign in with Apple need a paid Apple Developer account; everyth
 - The iPhone sign-in (PKCE) could not be verified against the real identity provider: its hosted login page (login v2)
   was down when this was built. The watch's device code sign-in was verified against the real
   identity provider by a Kit integration test, not through the watch or iPhone screens.
+- "Delete account" deletes only the agenda in the Cloud (push registrations at the relay are anonymous and not part of
+  the account). The app then drops its own push keys (push build), but only until its next launch: on the next launch it
+  registers the keys again for every server that accepts the account; removing the server in the app clears its key
+  for good.
 - The default build has `WRISTCALL_CLOUD_URL` empty, so the account features are hidden until the Cloud is deployed.
 
 ## [watch-0.4.0] - 2026-10-10

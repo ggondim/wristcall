@@ -225,11 +225,18 @@ public struct AccountLink: Decodable, Sendable, Equatable {
     }
 }
 
-extension AccountLink: CustomStringConvertible, CustomDebugStringConvertible {
+extension AccountLink: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     public var description: String {
         "AccountLink(linked: \(linked), issuer: \(issuer), user: \(user.map(\.handle) ?? "nil"), "
             + "apiToken: \(apiToken == nil ? "nil" : "<redacted>"))"
     }
 
     public var debugDescription: String { description }
+
+    public var customMirror: Mirror {
+        Mirror(self, children: [
+            "linked": linked, "issuer": issuer, "user": user as Any,
+            "apiToken": apiToken == nil ? "nil" : "<redacted>",
+        ])
+    }
 }

@@ -13,7 +13,7 @@ public struct ServerHealth: Decodable, Sendable, Equatable {
 
     public struct AccountInfo: Decodable, Sendable, Equatable {
         public var issuer: String
-        /// `approval` (a login on the watch waits for the owner's approval) or `direct`.
+        /// `approval` (a login on the watch waits for the owner's approval) or `attestation` (the watch is paired at once).
         public var deviceCredential: String
 
         public init(issuer: String, deviceCredential: String) {

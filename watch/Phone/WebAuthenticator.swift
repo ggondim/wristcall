@@ -103,7 +103,12 @@ final class LiveWebAuthenticator: NSObject, WebAuthenticator, ASWebAuthenticatio
                 return window
             }
             // No window at all (should not happen while the app shows a button): a bare one in the first scene.
-            return scenes.first.map { UIWindow(windowScene: $0) } ?? ASPresentationAnchor()
+            if let scene = scenes.first { return UIWindow(windowScene: scene) }
+            // No scene either, which the system should never allow here. The anchor type has no non-deprecated way to
+            // make a window without a scene, so it is made through its NSObject initializer (nothing could be shown on
+            // it anyway; the web session just fails and the sign-in reports an error).
+            // The cast cannot fail: the class is UIWindow.
+            return (UIWindow.self as NSObject.Type).init() as! UIWindow
         }
     }
 }

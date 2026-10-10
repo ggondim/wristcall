@@ -300,9 +300,15 @@ struct ManagementClientTests {
         let host = StubHost(replies: [(200, #"{"linked":true,"issuer":"https://c","user":{"id":"u","handle":"h"},"api_token":"wc_pat_secret"}"#)])
         let link = try await ManagementClient.linkAccount(
             server: host.url, serverToken: "jwt", code: PairingCode("12345678")!, session: .stubbed())
-        for text in [String(describing: link), String(reflecting: link)] {
+        var dumped = ""
+        dump(link, to: &dumped)
+        dump([link], to: &dumped)
+        for text in [String(describing: link), String(reflecting: link), "\(link)", dumped] {
             #expect(!text.contains("wc_pat_secret"))
+            #expect(text.contains("<redacted>"))
         }
+        #expect(dumped.contains("issuer"))
+        #expect(link.apiToken == "wc_pat_secret")
     }
 
     @Test func linkWithAWrongCodeIsInvalidCode() async {

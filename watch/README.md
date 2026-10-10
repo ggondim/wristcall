@@ -123,7 +123,10 @@ server uses the same account, "Link account" links a saved server, and the serve
 their agents are mirrored to the account's server list in the Cloud; servers there without a token on this
 iPhone show under "From your account". The watch signs in with the account through a device code, which the iPhone
 asks you to approve. "Sign out" revokes the refresh token and ends the provider's session; "Delete account"
-deletes the server list in the Cloud (servers and tokens stay).
+deletes the server list in the Cloud (servers and tokens stay). The Cloud deletes only that list: push registrations
+at the relay are anonymous and stay. In the push build the app drops its own push keys after "Delete account", but
+only until its next launch; it then registers them again for every server that accepts the account (remove the
+server in the app to stop its notifications for good).
 
 The default build has `WRISTCALL_CLOUD_URL` empty: no account features show and nothing talks to a Cloud until you
 set one. The iPhone sign-in could not be verified against the real identity provider, whose hosted login page

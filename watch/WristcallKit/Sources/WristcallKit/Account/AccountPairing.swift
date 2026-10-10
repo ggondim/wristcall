@@ -5,7 +5,7 @@ import Foundation
 /// `POST /v1/pair/account`. Nothing here logs; tokens never reach an outcome or a reason.
 public struct AccountPairing: Sendable {
     public enum Outcome: Sendable, Equatable {
-        /// The server paired the watch at once (`device_credential: direct`).
+        /// The server paired the watch at once (`device_credential: attestation`).
         case paired(URL, PairedDevice)
         /// The account's owner approves it on the iPhone; poll with the request (as in flow B).
         case pending(URL, PairingRequest)
