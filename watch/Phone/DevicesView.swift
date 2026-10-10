@@ -145,14 +145,16 @@ private struct ApprovalRow: View {
             Text(item.request.deviceName).font(.headline)
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 let left = Int(item.request.expiresAt - context.date.timeIntervalSince1970)
-                Text(left > 0 ? "Expires in \(PairingCodeView.countdown(left))" : "Expired")
-                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(left > 0 ? "Expires in \(PairingCodeView.countdown(left))" : "Expired")
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    HStack {
+                        Button("Approve", action: approve).buttonStyle(.borderedProminent)
+                        Button("Deny", role: .destructive, action: deny).buttonStyle(.bordered)
+                    }
+                    .disabled(busy || left <= 0)
+                }
             }
-            HStack {
-                Button("Approve", action: approve).buttonStyle(.borderedProminent)
-                Button("Deny", role: .destructive, action: deny).buttonStyle(.bordered)
-            }
-            .disabled(busy)
         }
         .padding(.vertical, 4)
     }

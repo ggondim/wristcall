@@ -93,7 +93,7 @@ struct PairingCodeView: View {
                 }
                 .disabled(working)
             } footer: {
-                if grant != nil { Text("A new code replaces this one.") }
+                if grant != nil { Text("The old code keeps working until it expires or is used.") }
             }
         }
     }

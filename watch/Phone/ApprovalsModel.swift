@@ -116,13 +116,27 @@ final class ApprovalsModel {
 
     /// A notification action (Task 9): finds the server by the local id the push carried (its `tag`),
     /// checks the request id, and answers. Nothing from the push but the id is used. Returns `true` only
-    /// when the server accepted the answer. `expiresAt`, when the push knows it, stops an expired request
-    /// before any call goes out.
+    /// when the server accepted the answer.
+    ///
+    /// The expiry must be known before anything is sent: the 4 digit ids are reused, so a stale action could
+    /// otherwise hit a newer request. It is the push's `expiresAt`, or else the one of the request with
+    /// this id as the server lists it right now. With neither, or when the request is expired or no longer
+    /// listed, nothing is answered (`false`; the caller opens the app) and no request is approved blind.
     func handle(action: ApprovalAction, serverID: String, requestID: String, expiresAt: Date? = nil) async -> Bool {
         guard Self.isValidRequestID(requestID) else { return false }
         // Started by the action: the list may not have been read, and the health is not known.
-        guard state.loadStoreIfNeeded(), state.servers.contains(where: { $0.id == serverID }) else { return false }
-        if let expiresAt, expiresAt <= now() {
+        guard state.loadStoreIfNeeded(), let server = state.servers.first(where: { $0.id == serverID }) else { return false }
+        var expiry = expiresAt
+        if expiry == nil {
+            do {
+                let listed = try await state.api(for: server).pairingRequests()
+                expiry = listed.first { $0.requestId == requestID }.map { Date(timeIntervalSince1970: $0.expiresAt) }
+            } catch {
+                notice = APIError.text(error)
+                return false
+            }
+        }
+        guard let expiry, expiry > now() else {
             drop(serverID: serverID, requestID: requestID)
             notice = Self.expiredNotice
             return false

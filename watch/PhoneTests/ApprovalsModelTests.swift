@@ -56,16 +56,18 @@ struct ApprovalsModelTests {
     @Test func handleLoadsStoreWhenCold() async {
         // The app was launched by the notification action: `load()` did not run, so nothing is in memory.
         let fake = FakeServerAPI()
+        fake.requestList = [request("0423")]
         let state = AppState(store: InMemoryManagedServerStore([home]), makeAPI: { _, _ in fake })
         let model = ApprovalsModel(state: state, now: now)
         #expect(state.servers.isEmpty)
         #expect(await model.handle(action: .approve, serverID: home.id, requestID: "0423") == true)
         #expect(fake.approvedRequests == ["0423"])
-        #expect(fake.calls == ["approve"])
+        #expect(fake.calls == ["pairingRequests", "approve"])
     }
 
     @Test func handleDenySendsDeny() async {
         let fake = FakeServerAPI()
+        fake.requestList = [request("0423")]
         let model = await model([(home, fake)])
         #expect(await model.handle(action: .deny, serverID: home.id, requestID: "0423") == true)
         #expect(fake.deniedRequests == ["0423"])
@@ -94,6 +96,7 @@ struct ApprovalsModelTests {
 
     @Test func handleServerSideExpiryShowsNotice() async {
         let fake = FakeServerAPI()
+        fake.requestList = [request("0423")]
         fake.approveError = APIError.notFound
         let model = await model([(home, fake)])
         #expect(await model.handle(action: .approve, serverID: home.id, requestID: "0423") == false)
@@ -102,6 +105,7 @@ struct ApprovalsModelTests {
 
     @Test func handleDeviceLimitShowsMessage() async {
         let fake = FakeServerAPI()
+        fake.requestList = [request("0423")]
         fake.approveError = APIError.limit("You reached the limit of 5 devices.")
         let model = await model([(home, fake)])
         #expect(await model.handle(action: .approve, serverID: home.id, requestID: "0423") == false)
@@ -302,13 +306,52 @@ struct ApprovalsModelTests {
         #expect(fake.deniedRequests.isEmpty)
     }
 
-    @Test func lastNoticeCanBeCleared() async {
+    // MARK: handle needs a known expiry
+
+    @Test func handleWithoutAnyExpiryDoesNotApprove() async {
+        // Neither the push nor the server's list knows this id: a stale action must not hit a newer request.
         let fake = FakeServerAPI()
-        fake.approveError = APIError.notFound
+        fake.requestList = [request("0777")]
         let model = await model([(home, fake)])
-        _ = await model.handle(action: .approve, serverID: home.id, requestID: "0423")
-        #expect(model.notice != nil)
-        model.notice = nil
-        #expect(model.notice == nil)
+        #expect(await model.handle(action: .approve, serverID: home.id, requestID: "0423") == false)
+        #expect(await model.handle(action: .deny, serverID: home.id, requestID: "0423") == false)
+        #expect(!fake.calls.contains("approve"))
+        #expect(!fake.calls.contains("deny"))
+        #expect(model.notice == "This request expired.")
+    }
+
+    @Test func handleWithoutPushExpiryUsesTheListedOne() async {
+        let fake = FakeServerAPI()
+        fake.requestList = [request("0423", in: 120)]
+        let model = await model([(home, fake)])
+        let before = fake.calls
+        #expect(await model.handle(action: .approve, serverID: home.id, requestID: "0423") == true)
+        #expect(Array(fake.calls.dropFirst(before.count)) == ["pairingRequests", "approve"])
+    }
+
+    @Test func handleWithoutPushExpiryRefusesAListedExpiredRequest() async {
+        let fake = FakeServerAPI()
+        fake.requestList = [request("0423", in: -1)]
+        let model = await model([(home, fake)])
+        #expect(await model.handle(action: .approve, serverID: home.id, requestID: "0423") == false)
+        #expect(!fake.calls.contains("approve"))
+        #expect(model.notice == "This request expired.")
+    }
+
+    @Test func handleWithoutPushExpiryRefusesWhenTheListFails() async {
+        let fake = FakeServerAPI()
+        fake.requestsError = APIError.network(.notConnectedToInternet)
+        let model = await model([(home, fake)])
+        #expect(await model.handle(action: .approve, serverID: home.id, requestID: "0423") == false)
+        #expect(!fake.calls.contains("approve"))
+        #expect(model.notice == APIError.network(.notConnectedToInternet).message)
+    }
+
+    @Test func handleWithPushExpiryDoesNotNeedTheList() async {
+        let fake = FakeServerAPI()
+        let model = await model([(home, fake)])
+        let later = Self.clock.addingTimeInterval(60)
+        #expect(await model.handle(action: .approve, serverID: home.id, requestID: "0423", expiresAt: later) == true)
+        #expect(!fake.calls.contains("pairingRequests"))
     }
 }
