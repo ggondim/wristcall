@@ -145,7 +145,7 @@ describe("AddServerView", () => {
   test("addingSavesTheServerAndGoesToTheList", async () => {
     const { servers, store, f } = await world()
     vi.stubGlobal("fetch", f)
-    render(<App badge={new Badge()} config={{ cloudUrl: null }} servers={servers} />)
+    render(<App badge={new Badge()} servers={servers} />)
     expect(screen.getByRole("heading", { name: "Add server" })).toBeTruthy()
     fireEvent.input(screen.getByLabelText("Address"), { target: { value: "https://home.example.com" } })
     fireEvent.input(screen.getByLabelText("Personal token"), { target: { value: "wc_pat_abc" } })
@@ -174,7 +174,7 @@ describe("ServerDetailView actions", () => {
   test("removeAsksFirstThenForgetsAndLeaves", async () => {
     const { servers, store, f } = await world({ initial: [saved({ pushKey: "wc_push_k" })] })
     history.replaceState(null, "", "/servers/1")
-    render(<App badge={new Badge()} config={{ cloudUrl: null }} servers={servers} />)
+    render(<App badge={new Badge()} servers={servers} />)
     await screen.findByLabelText("Name")
     fireEvent.click(screen.getByRole("button", { name: "Remove server" }))
     expect(screen.getByText(/wristcall users tokens revoke/)).toBeTruthy()
@@ -191,7 +191,7 @@ describe("ServerDetailView actions", () => {
   test("cancelKeepsTheServer", async () => {
     const { servers, store } = await world({ initial: [saved()] })
     history.replaceState(null, "", "/servers/1")
-    render(<App badge={new Badge()} config={{ cloudUrl: null }} servers={servers} />)
+    render(<App badge={new Badge()} servers={servers} />)
     await screen.findByLabelText("Name")
     fireEvent.click(screen.getByRole("button", { name: "Remove server" }))
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
@@ -202,7 +202,7 @@ describe("ServerDetailView actions", () => {
   test("linkButtonOnlyForAnUnlinkedServerThatAcceptsTheAccount", async () => {
     const { servers, session, store } = await world({ signedIn: true, initial: [saved()] })
     history.replaceState(null, "", "/servers/1")
-    render(<App badge={new Badge()} config={{ cloudUrl: CLOUD }} servers={servers} session={session} />)
+    render(<App badge={new Badge()} servers={servers} session={session} />)
     const button = await screen.findByRole("button", { name: "Link to account" })
     await act(async () => {
       fireEvent.click(button)
@@ -215,7 +215,7 @@ describe("ServerDetailView actions", () => {
   test("noLinkButtonWithoutASignIn", async () => {
     const { servers } = await world({ initial: [saved()] })
     history.replaceState(null, "", "/servers/1")
-    render(<App badge={new Badge()} config={{ cloudUrl: null }} servers={servers} />)
+    render(<App badge={new Badge()} servers={servers} />)
     await screen.findByText("Accepts a wristcall account")
     expect(screen.queryByRole("button", { name: "Link to account" })).toBeNull()
   })
@@ -233,7 +233,7 @@ describe("ServerDetailView actions", () => {
       },
     })
     history.replaceState(null, "", "/servers/1")
-    render(<App badge={new Badge()} config={{ cloudUrl: CLOUD }} servers={servers} session={session} />)
+    render(<App badge={new Badge()} servers={servers} session={session} />)
     const button = await screen.findByRole("button", { name: "Link to account" })
     await act(async () => {
       fireEvent.click(button)

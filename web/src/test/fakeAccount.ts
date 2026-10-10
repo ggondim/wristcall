@@ -9,6 +9,7 @@ export class FakeSession implements AccountSessionPort {
   endSession: string | null = `${ISSUER}/oidc/v1/end_session?id_token_hint=x`
   signOutGate: Promise<void> | null = null
   completeError: unknown = null
+  completeGate: Promise<void> | null = null
   beginError: unknown = null
   tokenError: unknown = null
   configError: unknown = null
@@ -28,6 +29,7 @@ export class FakeSession implements AccountSessionPort {
 
   async completeSignIn(href: string): Promise<void> {
     this.calls.push(`completeSignIn:${href}`)
+    if (this.completeGate !== null) await this.completeGate
     await Promise.resolve()
     if (this.completeError !== null) throw this.completeError
     this.state = "signedIn"

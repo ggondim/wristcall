@@ -13,7 +13,6 @@ class FakeBadge extends BaseModel<{ count: number }> {
   }
 }
 
-const config = { cloudUrl: null }
 const emptyStore = { list: async () => [], get: async () => null, put: async () => {}, remove: async () => {}, update: async () => null }
 const servers = new ServersModel(emptyStore)
 
@@ -53,7 +52,7 @@ describe("App servers routes", () => {
       throw new TypeError("offline")
     })
     history.replaceState(null, "", "/servers/abc")
-    render(<App badge={new FakeBadge(0)} config={config} servers={model} />)
+    render(<App badge={new FakeBadge(0)} servers={model} />)
     expect(await screen.findByLabelText("Name")).toBeTruthy()
     expect(screen.getByRole("heading", { name: "home" })).toBeTruthy()
     expect(screen.getByRole("link", { name: "Agents" }).getAttribute("href")).toBe("/servers/abc/agents")
@@ -61,14 +60,14 @@ describe("App servers routes", () => {
 
   test("serversRouteRendersTheList", async () => {
     history.replaceState(null, "", "/servers")
-    render(<App badge={new FakeBadge(0)} config={config} servers={servers} />)
+    render(<App badge={new FakeBadge(0)} servers={servers} />)
     expect(await screen.findByText("Add your wristcall server")).toBeTruthy()
   })
 })
 
 describe("App", () => {
   test("rendersTabsWithBadge", () => {
-    render(<App badge={new FakeBadge(2)} config={config} servers={servers} />)
+    render(<App badge={new FakeBadge(2)} servers={servers} />)
     const nav = screen.getByRole("navigation")
     expect(nav.textContent).toContain("Servers")
     expect(nav.textContent).toContain("History")
@@ -78,7 +77,7 @@ describe("App", () => {
 
   test("badge: hidden at zero and follows the model", () => {
     const badge = new FakeBadge(0)
-    render(<App badge={badge} config={config} servers={servers} />)
+    render(<App badge={badge} servers={servers} />)
     expect(screen.queryByLabelText(/pending approvals/)).toBeNull()
     act(() => badge.setCount(3))
     expect(screen.getByLabelText("3 pending approvals").textContent).toBe("3")
@@ -86,12 +85,12 @@ describe("App", () => {
 
   test("callbackRouteDoesNotShowTabs", () => {
     history.replaceState(null, "", "/auth/callback")
-    render(<App badge={new FakeBadge(2)} config={config} servers={servers} />)
+    render(<App badge={new FakeBadge(2)} servers={servers} />)
     expect(screen.queryByRole("navigation")).toBeNull()
   })
 
   test("tabs: tapping one changes the route and marks it current", () => {
-    render(<App badge={new FakeBadge(0)} config={config} servers={servers} />)
+    render(<App badge={new FakeBadge(0)} servers={servers} />)
     fireEvent.click(screen.getByRole("link", { name: "History" }))
     expect(location.pathname).toBe("/history")
     expect(screen.getByRole("link", { name: "History" }).getAttribute("aria-current")).toBe("page")
@@ -99,7 +98,7 @@ describe("App", () => {
   })
 
   test("route: back button and navigate() update the screen", () => {
-    render(<App badge={new FakeBadge(0)} config={config} servers={servers} />)
+    render(<App badge={new FakeBadge(0)} servers={servers} />)
     act(() => navigate("/settings"))
     expect(screen.getByRole("heading", { name: "Settings" })).toBeTruthy()
     history.replaceState(null, "", "/history")
@@ -111,7 +110,7 @@ describe("App", () => {
 
   test("approvals route keeps the Servers tab current", () => {
     history.replaceState(null, "", "/approvals")
-    render(<App badge={new FakeBadge(1)} config={config} servers={servers} />)
+    render(<App badge={new FakeBadge(1)} servers={servers} />)
     expect(screen.getByRole("link", { name: /Servers/ }).getAttribute("aria-current")).toBe("page")
   })
 })

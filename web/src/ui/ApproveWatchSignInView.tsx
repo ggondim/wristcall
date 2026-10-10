@@ -5,7 +5,7 @@ import { useModel } from "./useModel"
 
 /** Approves the watch's account login: the code typed here, and a button that opens the provider's device page. */
 export function ApproveWatchSignInView({ model }: { model: AccountModel }) {
-  const { screen, watch } = useModel(model)
+  const { screen, watch, issuerReady, issuerError } = useModel(model)
   const [code, setCode] = useState("")
   useEffect(() => {
     model.resetWatchApproval()
@@ -65,10 +65,22 @@ export function ApproveWatchSignInView({ model }: { model: AccountModel }) {
             {watch.failed}
           </p>
         ) : null}
+        {issuerError !== null ? (
+          <p class="problem" role="alert">
+            {issuerError}
+          </p>
+        ) : null}
         {watch === "opened" ? <p role="status">Check your watch.</p> : null}
-        <button class="button" type="submit" disabled={!valid}>
-          Open approval page
-        </button>
+        <div class="actions">
+          <button class="button" type="submit" disabled={!valid || !issuerReady}>
+            Open approval page
+          </button>
+          {!issuerReady && issuerError !== null ? (
+            <button class="button quiet" type="button" onClick={() => void model.loadIssuer()}>
+              Try again
+            </button>
+          ) : null}
+        </div>
       </form>
     </main>
   )

@@ -117,6 +117,21 @@ describe("sign in", () => {
     expect(w.calls).toEqual([`completeSignIn:${href}`, "agenda.pushAll"])
   })
 
+  test("completeSignInCleansUrl: the code is gone from the address while the exchange is still running", async () => {
+    const w = await world({ state: "signedOut" })
+    let release!: () => void
+    w.session.completeGate = new Promise((resolve) => (release = resolve))
+    expect(location.search).toContain("code=the-code")
+    const href = location.href
+    const done = w.model.completeSignIn(href)
+    expect(location.search).toBe("")
+    expect(location.pathname).toBe("/auth/callback")
+    expect(w.calls).toEqual([`completeSignIn:${href}`]) // the exchange got the address it had read
+    release()
+    await done
+    expect(location.pathname).toBe("/settings")
+  })
+
   test("completeSignIn: a failure keeps the page, clears the code and offers a retry", async () => {
     const w = await world({ state: "signedOut" })
     w.session.completeError = new OidcError("state", "The sign-in answer does not belong to this sign-in.")
@@ -138,7 +153,7 @@ describe("sign out", () => {
   test("signOutStopsTheAgendaThenLeavesForTheEndSessionPage", async () => {
     const w = await world()
     await w.model.signOut()
-    expect(w.calls.slice(0, 2)).toEqual(["agenda.invalidate", "session.signOut"])
+    expect(w.calls).toEqual(["agenda.suspend", "session.signOut", "agenda.resume"])
     expect(w.model.state).toMatchObject({ screen: "signedOut", busy: false, error: null })
     expect(w.assigned).toEqual([`${ISSUER}/oidc/v1/end_session?id_token_hint=x`])
   })
@@ -165,6 +180,12 @@ describe("sign out", () => {
     expect(w.model.state).toMatchObject({ busy: false, screen: "signedOut" })
   })
 
+  test("signOut: ignored unless signed in", async () => {
+    const w = await world({ state: "signedOut" })
+    await w.model.signOut()
+    expect(w.calls).toEqual([])
+  })
+
   test("signedOutKeepsServers: the servers and their tokens stay, only the account links go", async () => {
     const w = await world()
     await w.model.signOut()
@@ -177,7 +198,7 @@ describe("sign out", () => {
     const w = await world()
     for (const listener of w.session.ended) listener()
     await vi.waitFor(() => expect(w.model.state.screen).toBe("signedOut"))
-    expect(w.calls).toContain("agenda.invalidate")
+    expect(w.calls).toEqual(["agenda.suspend", "agenda.resume"])
     expect(await w.store.get("1")).toMatchObject({ token: "wc_pat_secret", linked: false })
     expect(w.assigned).toEqual([])
   })
@@ -218,7 +239,7 @@ describe("delete account", () => {
       "agenda.suspend",
       "cloud.deleteAccount",
       "push.accountDeleted",
-      "agenda.invalidate",
+      "agenda.suspend",
       "session.signOut",
       "agenda.resume",
     ])
@@ -240,7 +261,8 @@ describe("delete account", () => {
     expect(w.cloud.deleteAccount).not.toHaveBeenCalled()
     expect(w.model.state.screen).toBe("signedOut")
     expect(w.model.state.error).toBeNull()
-    expect(w.calls).toContain("agenda.resume")
+    expect(w.calls.filter((c) => c === "agenda.resume")).toHaveLength(2) // the failed delete, then the ended session
+    expect(w.calls.filter((c) => c === "agenda.suspend")).toHaveLength(2)
   })
 
   test("deleteAccount: ignored when signed out", async () => {
@@ -260,7 +282,7 @@ describe("watch sign-in", () => {
   })
 
   test("watchSignInUrlRejects", () => {
-    for (const bad of ["ABC", "", "ABCD-EFG!", "ABCD-EFGHI", "ABCDE-FGH", "ABCD--EFGH", "ABCD-EF-GH", "ÁBCD-EFGH", "ABCD\nEFGH x"]) {
+    for (const bad of ["ABC", "", "ABCD-EFG!", "ABCD-EFGHI", "ABCDE-FGH", "ABCD--EFGH", "ABCD\tEFGH", "ABCD  EFGH", "ABCD\u00a0EFGH", "ABCD-EF-GH", "ÁBCD-EFGH", "ABCD\nEFGH x"]) {
       expect(watchSignInUrl(ISSUER, bad), bad).toBeNull()
     }
     expect(watchSignInUrl("http://evil.example", "ABCD-EFGH")).toBeNull()
@@ -277,25 +299,26 @@ describe("watch sign-in", () => {
     const w = await world()
     const open = vi.spyOn(window, "open").mockReturnValue(null)
     await w.model.loadIssuer()
+    expect(w.model.state.issuerReady).toBe(true)
     w.model.approveWatchSignIn("abcd efgh")
     expect(open).toHaveBeenCalledWith(`${ISSUER}/device?user_code=ABCD-EFGH`, "_blank", "noopener,noreferrer")
     expect(w.model.state.watch).toBe("opened")
   })
 
-  test("approveWatchSignIn: opens at once when the issuer is known (a popup blocker wants the tap)", async () => {
+  test("approveWatchSignIn: without the issuer a tap only starts loading and asks to tap again (never window.open after an await)", async () => {
     const w = await world()
     const open = vi.spyOn(window, "open").mockReturnValue(null)
+    expect(w.model.state.issuerReady).toBe(false)
+    w.model.approveWatchSignIn("ABCD-EFGH")
+    expect(open).not.toHaveBeenCalled()
+    expect(w.model.state.watch).toEqual({ failed: "Reaching wristcall Cloud. Tap again in a moment." })
+    await vi.waitFor(() => expect(w.model.state.issuerReady).toBe(true))
     await w.model.loadIssuer()
-    w.model.approveWatchSignIn("ABCD-EFGH")
-    expect(open).toHaveBeenCalledTimes(1) // no await between the tap and the call
-  })
-
-  test("approveWatchSignIn: asks the Cloud for the issuer when it was not loaded", async () => {
-    const w = await world()
-    const open = vi.spyOn(window, "open").mockReturnValue(null)
-    w.model.approveWatchSignIn("ABCD-EFGH")
-    await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(1))
+    expect(open).not.toHaveBeenCalled()
+    expect(w.model.state.watch).toBe("idle") // the request to tap again is gone
     expect(w.calls.filter((c) => c === "config")).toHaveLength(1)
+    w.model.approveWatchSignIn("ABCD-EFGH")
+    expect(open).toHaveBeenCalledTimes(1)
   })
 
   test("approveWatchSignIn: a bad code opens nothing and says what to enter", async () => {
@@ -321,10 +344,12 @@ describe("watch sign-in", () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null)
     w.session.configError = new NetworkError()
     await w.model.loadIssuer()
-    expect(w.model.state.watch).toEqual({ failed: "Can't reach wristcall Cloud." })
+    expect(w.model.state).toMatchObject({ issuerError: "Can't reach wristcall Cloud.", issuerReady: false })
     w.session.configError = null
+    await w.model.loadIssuer()
+    expect(w.model.state).toMatchObject({ issuerError: null, issuerReady: true })
     w.model.approveWatchSignIn("ABCD-EFGH")
-    await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(1))
+    expect(open).toHaveBeenCalledTimes(1)
     expect(w.model.state.watch).toBe("opened")
     w.model.resetWatchApproval()
     expect(w.model.state.watch).toBe("idle")

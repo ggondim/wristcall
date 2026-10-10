@@ -29,7 +29,6 @@ async function start(): Promise<void> {
       account={account}
       approvals={approvals}
       badge={new ApprovalsBadge(approvals)}
-      config={config}
       servers={servers}
       session={session}
     />,

@@ -27,7 +27,7 @@ function setup(opts: { state?: "signedIn" | "signedOut"; agenda?: AgendaControl 
     assign: (url) => void assigned.push(url),
   })
   const servers = new ServersModel(emptyStore)
-  const ui = () => render(<App badge={new Badge()} config={{ cloudUrl: "https://cloud.example.com" }} servers={servers} account={model} />)
+  const ui = () => render(<App badge={new Badge()} servers={servers} account={model} />)
   return { calls, session, assigned, deleteAccount, model, ui }
 }
 
@@ -39,7 +39,7 @@ afterEach(() => {
 
 describe("Settings", () => {
   test("noCloudHidesTheAccountSection", () => {
-    render(<App badge={new Badge()} config={{ cloudUrl: null }} servers={new ServersModel(emptyStore)} />)
+    render(<App badge={new Badge()} servers={new ServersModel(emptyStore)} />)
     expect(screen.getByRole("heading", { name: "Settings" })).toBeTruthy()
     expect(screen.queryByText("Account")).toBeNull()
     expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull()
@@ -160,15 +160,24 @@ describe("Approve watch sign-in", () => {
     const w = setup()
     w.ui()
     const button = screen.getByRole("button", { name: "Open approval page" }) as HTMLButtonElement
-    expect(button.disabled).toBe(true)
-    await waitFor(() => expect(w.calls).toContain("config"))
     fireEvent.input(screen.getByLabelText("Code shown on the watch"), { target: { value: "abcd efgh" } })
-    expect(button.disabled).toBe(false)
-    await act(async () => {
-      fireEvent.click(button)
-    })
+    await waitFor(() => expect(button.disabled).toBe(false)) // enabled once the issuer is loaded
+    fireEvent.click(button)
     expect(open).toHaveBeenCalledWith(`${ISSUER}/device?user_code=ABCD-EFGH`, "_blank", "noopener,noreferrer")
     expect(await screen.findByText("Check your watch.")).toBeTruthy()
+  })
+
+  test("theButtonWaitsForTheIssuerAndOffersARetryWhenItFails", async () => {
+    const w = setup()
+    w.session.configError = new TypeError("offline")
+    w.ui()
+    fireEvent.input(screen.getByLabelText("Code shown on the watch"), { target: { value: "ABCD-EFGH" } })
+    expect((await screen.findByRole("alert")).textContent).toBe("Something went wrong. Try again.")
+    expect((screen.getByRole("button", { name: "Open approval page" }) as HTMLButtonElement).disabled).toBe(true)
+    w.session.configError = null
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }))
+    await waitFor(() => expect((screen.getByRole("button", { name: "Open approval page" }) as HTMLButtonElement).disabled).toBe(false))
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull()
   })
 
   test("aBadCodeKeepsTheButtonOff", () => {
@@ -186,7 +195,7 @@ describe("Approve watch sign-in", () => {
   })
 
   test("withoutCloudTheRouteShowsSettings", () => {
-    render(<App badge={new Badge()} config={{ cloudUrl: null }} servers={new ServersModel(emptyStore)} />)
+    render(<App badge={new Badge()} servers={new ServersModel(emptyStore)} />)
     expect(screen.getByRole("heading", { name: "Settings" })).toBeTruthy()
   })
 })
@@ -229,7 +238,7 @@ describe("Callback", () => {
   })
 
   test("callbackWithoutCloudSaysSo", () => {
-    render(<App badge={new Badge()} config={{ cloudUrl: null }} servers={new ServersModel(emptyStore)} />)
+    render(<App badge={new Badge()} servers={new ServersModel(emptyStore)} />)
     expect(screen.getByText("Account sign-in is not available here.")).toBeTruthy()
   })
 })

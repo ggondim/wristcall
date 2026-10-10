@@ -19,6 +19,10 @@ export interface AccountState {
   /** A sign-out or a deletion is running (a sign-out can wait for a renewal in another tab). */
   busy: boolean
   watch: WatchApproval
+  /** The Cloud's issuer is loaded: "Open approval page" can open the page inside the tap. */
+  issuerReady: boolean
+  /** Why the issuer could not be loaded; the screen offers a retry. */
+  issuerError: string | null
 }
 
 /** What the account screens need from the sign-in (the real `AccountSession`, or a stand-in in a test). */
@@ -28,8 +32,8 @@ export type AccountSessionPort = Pick<AccountSession, "state" | "beginSignIn" | 
 
 /**
  * What the account screens need from the agenda mirror (the `AgendaSync` of the account agenda task implements it).
- * `invalidate` drops the work queued or running (nothing is written to the Cloud after it); `suspend`/`resume` hold the
- * mirror while the account is being deleted. Its writes need a signed-in session, so `resume` after a sign-out is idle.
+ * `suspend`/`resume` hold the mirror while the account is deleted or left (like the iPhone); `invalidate` drops the work
+ * queued or running. Its writes need a signed-in session, so `resume` after a sign-out leaves it idle.
  */
 export interface AgendaControl {
   /** A warning to show under the account, or null. */
@@ -56,13 +60,14 @@ export interface AccountOptions {
   assign?: (url: string) => void
 }
 
+const TAP_AGAIN = "Reaching wristcall Cloud. Tap again in a moment."
 const BAD_USER_CODE = "Enter the 8-character code the watch shows."
 const NOT_SET_UP = "wristcall Cloud isn't set up for this app."
 const CLOUD_DOWN = "Can't reach wristcall Cloud."
 const DELETE_FAILED = "Can't delete the account now. "
 const CALLBACK_PATH = "/auth/callback"
 
-const CODE_SHAPE = /^([A-Za-z0-9]{4})(?:-|\s)?([A-Za-z0-9]{4})$/
+const CODE_SHAPE = /^([A-Za-z0-9]{4})[ -]?([A-Za-z0-9]{4})$/
 
 /**
  * The code as the identity provider shows it (`XXXX-XXXX`, upper case), or null. Unlike the Kit's rule this accepts one
@@ -115,7 +120,7 @@ export class AccountModel extends BaseModel<AccountState> {
   #issuerLoading: Promise<void> | null = null
 
   constructor(session: AccountSessionPort | null, agenda: AgendaControl | null, push: PushHooks | null, opts: AccountOptions = {}) {
-    super({ screen: session === null ? "unavailable" : session.state, error: null, busy: false, watch: "idle" })
+    super({ screen: session === null ? "unavailable" : session.state, error: null, busy: false, watch: "idle", issuerReady: false, issuerError: null })
     this.#session = session
     this.agenda = agenda
     this.#push = push
@@ -157,10 +162,11 @@ export class AccountModel extends BaseModel<AccountState> {
     const session = this.#session
     if (session === null) return
     this.set({ screen: "signingIn", error: null })
+    // The code has been read (`href`): it leaves the address bar before the exchange, not after.
+    history.replaceState(null, "", CALLBACK_PATH)
     try {
       await session.completeSignIn(href)
     } catch (error) {
-      history.replaceState(null, "", CALLBACK_PATH) // the code is spent or refused: it must not stay in the address
       this.set({ screen: { failed: message(error) } })
       return
     }
@@ -174,7 +180,7 @@ export class AccountModel extends BaseModel<AccountState> {
    * pick another user). The servers and their tokens stay. Can wait for a renewal in another tab: `busy` shows it.
    */
   async signOut(): Promise<void> {
-    if (this.#session === null || this.state.busy) return
+    if (this.#session === null || this.state.busy || this.state.screen !== "signedIn") return
     this.set({ busy: true, error: null })
     await this.#leave()
   }
@@ -213,7 +219,7 @@ export class AccountModel extends BaseModel<AccountState> {
     const session = this.#session!
     this.#leaving = true
     // First: a mirror still running must not write to the agenda once the tokens are gone.
-    this.agenda?.invalidate()
+    this.agenda?.suspend()
     let endSession: string | null = null
     try {
       endSession = await session.signOut()
@@ -228,7 +234,7 @@ export class AccountModel extends BaseModel<AccountState> {
     this.#leaving = false
     this.#issuer = null
     this.#issuerLoading = null
-    this.set({ screen: "signedOut", busy: false, error: null, watch: "idle" })
+    this.set({ screen: "signedOut", busy: false, error: null, watch: "idle", issuerReady: false, issuerError: null })
     this.agenda?.resume()
     // The page leaves for the provider's end-session page; the app is signed out already.
     if (endSession !== null) this.#assign(endSession)
@@ -237,7 +243,7 @@ export class AccountModel extends BaseModel<AccountState> {
   /** The session ended on its own (the renewal was refused): the tokens are gone already. */
   async #sessionEnded(): Promise<void> {
     if (this.#leaving || this.state.screen === "signedOut" || this.state.screen === "unavailable") return
-    this.agenda?.invalidate()
+    this.agenda?.suspend()
     try {
       await this.#servers?.forgetAccount()
     } catch {
@@ -245,7 +251,8 @@ export class AccountModel extends BaseModel<AccountState> {
     }
     this.#issuer = null
     this.#issuerLoading = null
-    this.set({ screen: "signedOut", busy: false, error: null, watch: "idle" })
+    this.set({ screen: "signedOut", busy: false, error: null, watch: "idle", issuerReady: false, issuerError: null })
+    this.agenda?.resume()
   }
 
   // Watch sign-in
@@ -258,8 +265,9 @@ export class AccountModel extends BaseModel<AccountState> {
     const running = (async () => {
       try {
         this.#issuer = (await session.config()).issuer
+        this.set({ issuerReady: true, issuerError: null, watch: typeof this.state.watch === "object" ? "idle" : this.state.watch })
       } catch (error) {
-        this.set({ watch: { failed: message(error) } })
+        this.set({ issuerError: message(error) })
       }
     })()
     this.#issuerLoading = running
@@ -270,8 +278,8 @@ export class AccountModel extends BaseModel<AccountState> {
   }
 
   /**
-   * Opens `{issuer}/device?user_code=…` in a new tab. With the issuer loaded this runs inside the tap (a popup
-   * blocker wants that); otherwise it loads it first. The page never comes back here: the user returns on their own.
+   * Opens `{issuer}/device?user_code=…` in a new tab, inside the tap (a popup blocker refuses a window opened after an
+   * await). Without the issuer a tap only starts loading it and asks to tap again. The page never comes back here.
    */
   approveWatchSignIn(userCode: string): void {
     if (this.#session === null || this.state.screen !== "signedIn") return
@@ -283,9 +291,8 @@ export class AccountModel extends BaseModel<AccountState> {
       this.#openApproval(this.#issuer, userCode)
       return
     }
-    void this.loadIssuer().then(() => {
-      if (this.#issuer !== null) this.#openApproval(this.#issuer, userCode)
-    })
+    void this.loadIssuer()
+    this.set({ watch: { failed: TAP_AGAIN } })
   }
 
   #openApproval(issuer: string, userCode: string): void {

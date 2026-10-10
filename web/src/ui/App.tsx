@@ -1,4 +1,3 @@
-import type { AppConfig } from "../config"
 import type { AccountModel } from "../models/account"
 import { AddServerModel } from "../models/addServer"
 import { ApprovalsModel } from "../models/approvals"
@@ -24,7 +23,6 @@ export interface AppProps {
   badge: Model<{ count: number }>
   /** The requests behind the badge; the approvals route opens from the badge or a notification. Made over `servers` when left out. */
   approvals?: ApprovalsModel
-  config: AppConfig
   servers: ServersModel
   /** The account sign-in; null when the site runs without accounts. */
   session?: AccountLink | null
