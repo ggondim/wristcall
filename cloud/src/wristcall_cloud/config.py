@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .audience import AudienceError, is_loopback, normalize_audience
+from .push.apns import APNS_HOSTS, ProviderToken
 from .push.webpush import DEFAULT_HOSTS, Vapid
 from .signing import SigningKey
 
@@ -15,6 +16,7 @@ _TOPIC = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]{0,254}")
 _HEADER = re.compile(r"[A-Za-z0-9-]{1,64}")
 _LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 _PUSH_HOST = re.compile(rf"\.?{_LABEL}(?:\.{_LABEL})*")
+_APPLE_ID = re.compile(r"[A-Za-z0-9]{1,64}")  # key and team ids (10 characters at Apple)
 CLIENT_VARS = {"ios": "WRISTCALL_CLOUD_CLIENT_IOS", "pwa": "WRISTCALL_CLOUD_CLIENT_PWA", "watch": "WRISTCALL_CLOUD_CLIENT_WATCH"}
 
 
@@ -50,6 +52,12 @@ class CloudConfig:
     vapid_subject: str | None = None
     # Push services a Web Push endpoint may point to: a leading dot means any subdomain, otherwise that host.
     webpush_hosts: tuple[str, ...] = DEFAULT_HOSTS
+    # APNs: the team's key (the .p8, EC P-256 PEM), its id and the team id; without them there is no apns channel.
+    apns_key_pem: bytes | None = field(default=None, repr=False)
+    apns_key_id: str | None = None
+    apns_team_id: str | None = None
+    # APNs per environment; only changed by tests (a fake APNs on loopback).
+    apns_hosts: dict[str, str] = field(default_factory=lambda: dict(APNS_HOSTS))
 
 
 class ConfigError(Exception):
@@ -175,6 +183,35 @@ def vapid_identity(pem: bytes | None, subject: str | None) -> Vapid | None:
         raise ConfigError(f"{key_var} must be an EC P-256 private key (PEM)") from None
 
 
+def apns_provider_token(
+    pem: bytes | None, key_id: str | None, team_id: str | None, topics: tuple[str, ...]
+) -> ProviderToken | None:
+    """The APNs provider token of the configuration (None without a key), or a ConfigError naming the variable."""
+    key_var, id_var = "WRISTCALL_CLOUD_APNS_KEY", "WRISTCALL_CLOUD_APNS_KEY_ID"
+    team_var = "WRISTCALL_CLOUD_APNS_TEAM_ID"
+    given = (pem is not None, key_id is not None, team_id is not None)
+    if not any(given):
+        return None
+    if not all(given):
+        raise ConfigError(f"{key_var}, {id_var} and {team_var} go together")
+    for name, value in ((id_var, key_id), (team_var, team_id)):
+        if not _APPLE_ID.fullmatch(value):
+            raise ConfigError(f"{name} must be letters and digits")
+    if not topics:
+        raise ConfigError(f"WRISTCALL_CLOUD_APNS_TOPICS is required with {key_var}")
+    try:
+        return ProviderToken(pem, key_id, team_id)
+    except ValueError:
+        raise ConfigError(f"{key_var} must be an EC P-256 private key (PEM, the .p8 file)") from None
+
+
+def _apns_hosts(env: Mapping[str, str]) -> dict[str, str]:
+    return {
+        environment: _https_url(env, f"WRISTCALL_CLOUD_APNS_URL_{environment.upper()}", default)
+        for environment, default in APNS_HOSTS.items()
+    }
+
+
 def _webpush_hosts(env: Mapping[str, str]) -> tuple[str, ...]:
     name = "WRISTCALL_CLOUD_WEBPUSH_HOSTS"
     raw = _get(env, name)
@@ -225,6 +262,11 @@ def config_from_env(env: Mapping[str, str]) -> CloudConfig:
     vapid_pem = _secret(env, "WRISTCALL_CLOUD_VAPID_PRIVATE_KEY")
     vapid_subject = _get(env, "WRISTCALL_CLOUD_VAPID_SUBJECT")
     vapid_identity(vapid_pem, vapid_subject)
+    apns_topics = _apns_topics(env)
+    apns_key_pem = _secret(env, "WRISTCALL_CLOUD_APNS_KEY")
+    apns_key_id = _get(env, "WRISTCALL_CLOUD_APNS_KEY_ID")
+    apns_team_id = _get(env, "WRISTCALL_CLOUD_APNS_TEAM_ID")
+    apns_provider_token(apns_key_pem, apns_key_id, apns_team_id, apns_topics)
     return CloudConfig(
         mongo_url=mongo_url,
         database=_get(env, "WRISTCALL_CLOUD_DATABASE") or CloudConfig.database,
@@ -236,7 +278,7 @@ def config_from_env(env: Mapping[str, str]) -> CloudConfig:
         public_url=public_url,
         signing_key_pem=signing_key_pem,
         allow_loopback_audience=_flag(env, "WRISTCALL_CLOUD_ALLOW_LOOPBACK_AUDIENCE"),
-        apns_topics=_apns_topics(env),
+        apns_topics=apns_topics,
         push_per_minute=_positive_int(env, "WRISTCALL_CLOUD_PUSH_PER_MINUTE", CloudConfig.push_per_minute),
         push_per_day=_positive_int(env, "WRISTCALL_CLOUD_PUSH_PER_DAY", CloudConfig.push_per_day),
         registrations_per_minute_per_ip=_positive_int(
@@ -248,4 +290,8 @@ def config_from_env(env: Mapping[str, str]) -> CloudConfig:
         vapid_private_pem=vapid_pem,
         vapid_subject=vapid_subject,
         webpush_hosts=_webpush_hosts(env),
+        apns_key_pem=apns_key_pem,
+        apns_key_id=apns_key_id,
+        apns_team_id=apns_team_id,
+        apns_hosts=_apns_hosts(env),
     )

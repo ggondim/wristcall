@@ -24,10 +24,19 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from . import __version__
 from .agenda import AgendaError, parse_agents, parse_new_server, parse_server_patch
 from .audience import AudienceError, is_loopback, normalize_audience
-from .config import CloudConfig, ConfigError, check_public_url, check_push_fake, same_url, vapid_identity
+from .config import (
+    CloudConfig,
+    ConfigError,
+    apns_provider_token,
+    check_public_url,
+    check_push_fake,
+    same_url,
+    vapid_identity,
+)
 from .oidc import Identity, OidcError, OidcUnavailable, OidcVerifier
 from .push.api import push_error_response
 from .push.api import router as push_router
+from .push.apns import ApnsChannel
 from .push.channels import Channel, FakeChannel
 from .push.limits import RegistrationLimiter, SendLimiter
 from .push.registry import PushError, purge_idle_loop
@@ -346,9 +355,10 @@ def create_app(
     signing_key: SigningKey | None = None,
     channels: dict[str, Channel] | None = None,
 ) -> FastAPI:
-    # httpx logs every request URL at INFO, and some URLs the Cloud calls are secrets; pymongo logs every command
-    # and reply at DEBUG, documents included (push channels: APNs tokens, Web Push endpoints).
-    for name in ("httpx", "httpcore", "pymongo"):
+    # httpx logs every request URL at INFO, and some URLs the Cloud calls are secrets; HTTP/2 (h2, hpack) logs
+    # every header at DEBUG, the APNs request path (the device token) included; pymongo logs every command and
+    # reply at DEBUG, documents included (push channels: APNs tokens, Web Push endpoints).
+    for name in ("httpx", "httpcore", "h2", "hpack", "pymongo"):
         logging.getLogger(name).setLevel(logging.WARNING)
     if signing_key is None and config.signing_key_pem is not None:
         signing_key = SigningKey(config.signing_key_pem)
@@ -359,16 +369,24 @@ def create_app(
     if config.public_url:
         check_public_url(config.public_url, config.issuer)
     vapid = vapid_identity(config.vapid_private_pem, config.vapid_subject)
+    provider_token = apns_provider_token(
+        config.apns_key_pem, config.apns_key_id, config.apns_team_id, config.apns_topics
+    )
     webpush_http: httpx.AsyncClient | None = None
+    apns_http: httpx.AsyncClient | None = None
     if channels is None:
         channels = {}
         if config.push_fake:
             fake = FakeChannel()
             channels = {"apns": fake, "webpush": fake}
-        elif vapid is not None:
-            # A client of its own: never follows redirects, and nothing else shares its connections.
-            webpush_http = httpx.AsyncClient(follow_redirects=False)
-            channels["webpush"] = WebPushChannel(vapid, webpush_http, config.webpush_hosts)
+        else:
+            # Each channel has a client of its own: never follows redirects, and nothing else shares its connections.
+            if vapid is not None:
+                webpush_http = httpx.AsyncClient(follow_redirects=False)
+                channels["webpush"] = WebPushChannel(vapid, webpush_http, config.webpush_hosts)
+            if provider_token is not None:
+                apns_http = httpx.AsyncClient(http2=True, follow_redirects=False)
+                channels["apns"] = ApnsChannel(provider_token, apns_http, hosts=config.apns_hosts)
     owned_http: httpx.AsyncClient | None = None
     if verifier is None:
         if not config.clients:
@@ -409,6 +427,8 @@ def create_app(
                     await owned_http.aclose()
                 if webpush_http is not None:
                     await webpush_http.aclose()
+                if apns_http is not None:
+                    await apns_http.aclose()
 
     app = FastAPI(title="wristcall-cloud", version=__version__, lifespan=lifespan)
     app.state.config = config
