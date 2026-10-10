@@ -13,6 +13,10 @@ struct APIHTTP: Sendable {
                 throw APIError.malformedResponse
             }
             components.queryItems = query
+            // URLComponents leaves "+" as is in a query, and servers decode it as a space.
+            if let encoded = components.percentEncodedQuery {
+                components.percentEncodedQuery = encoded.replacingOccurrences(of: "+", with: "%2B")
+            }
             guard let withQuery = components.url else { throw APIError.malformedResponse }
             target = withQuery
         }

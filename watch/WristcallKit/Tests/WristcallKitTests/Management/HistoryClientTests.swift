@@ -74,6 +74,42 @@ struct HistoryClientTests {
         #expect(query(try #require(host.requests.first))["q"] == "grocery list")
     }
 
+    @Test func searchEncodesPlus() async throws {
+        let host = StubHost(replies: [(200, #"{"calls":[],"next_before":null}"#)])
+        _ = try await client(host).calls(HistoryQuery(text: "c++ +55 11"))
+        let request = try #require(host.requests.first)
+        let raw = try #require(request.url.query(percentEncoded: true))
+        #expect(raw.contains("q=c%2B%2B%20%2B55%2011"))
+        #expect(!raw.contains("+"))
+    }
+
+    @Test func blankAgentIsOmitted() async throws {
+        let host = StubHost(replies: [(200, #"{"calls":[],"next_before":null}"#), (200, "{}")])
+        let history = client(host)
+        _ = try await history.calls(HistoryQuery(agent: "  "))
+        _ = try await history.export(.json, agent: "")
+        #expect(host.requests.allSatisfy { query($0)["agent"] == nil })
+    }
+
+    @Test func blankAgentIsNeverDeleteAll() async throws {
+        let host = StubHost(replies: [(200, #"{"deleted":9}"#)])
+        await #expect(throws: APIError.invalid("Choose an agent.")) { try await client(host).deleteCalls(agent: " ") }
+        #expect(host.requests.isEmpty)
+    }
+
+    @Test func nonFiniteDatesAreSkipped() async throws {
+        let host = StubHost(replies: [(200, #"{"calls":[],"next_before":null}"#)])
+        _ = try await client(host).calls(HistoryQuery(
+            since: Date(timeIntervalSince1970: .infinity), until: Date(timeIntervalSince1970: .nan)))
+        #expect(query(try #require(host.requests.first)) == ["limit": "30"])
+    }
+
+    @Test func longSearchIsCutAtWhatTheServerTakes() async throws {
+        let host = StubHost(replies: [(200, #"{"calls":[],"next_before":null}"#)])
+        _ = try await client(host).calls(HistoryQuery(text: String(repeating: "a", count: 600)))
+        #expect(query(try #require(host.requests.first))["q"]?.count == 500)
+    }
+
     @Test(arguments: [(0, "1"), (-5, "1"), (1, "1"), (100, "100"), (101, "100"), (5000, "100")])
     func limitIsClamped(limit: Int, sent: String) async throws {
         let host = StubHost(replies: [(200, #"{"calls":[],"next_before":null}"#)])
@@ -294,5 +330,7 @@ struct HistoryClientTests {
     @Test func descriptionHidesTheToken() {
         let text = "\(HistoryClient(server: URL(string: "https://example.com")!, token: "wc_pat_secret"))"
         #expect(!text.contains("wc_pat_secret"))
+        #expect(!String(reflecting: HistoryClient(server: URL(string: "https://example.com")!, token: "wc_pat_secret"))
+            .contains("wc_pat_secret"))
     }
 }

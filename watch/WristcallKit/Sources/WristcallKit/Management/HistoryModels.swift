@@ -119,6 +119,8 @@ public struct CallPage: Decodable, Sendable, Equatable {
 /// Filters of the list (and of the export). `agent` is an id or a slug; `text` is a search over what was said.
 public struct HistoryQuery: Sendable, Equatable {
     public static let maxLimit = 100
+    /// The longest search the server takes (`q`, 500 characters); the client cuts longer text.
+    public static let maxTextLength = 500
 
     public var agent: String?
     public var text: String?

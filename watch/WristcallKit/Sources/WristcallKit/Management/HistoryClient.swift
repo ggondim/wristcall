@@ -17,7 +17,7 @@ public struct HistoryClient: Sendable {
     public func calls(_ query: HistoryQuery) async throws -> CallPage {
         var items = Self.filterItems(agent: query.agent, since: query.since, until: query.until)
         if let text = query.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
-            items.append(URLQueryItem(name: "q", value: text))
+            items.append(URLQueryItem(name: "q", value: String(text.prefix(HistoryQuery.maxTextLength))))
         }
         if let before = query.before {
             items.append(URLQueryItem(name: "before", value: before))
@@ -38,9 +38,17 @@ public struct HistoryClient: Sendable {
         guard status == 204 else { throw APIHTTP.error(status: status, data: data) }
     }
 
-    /// `DELETE /v1/calls?agent=…`, or `?all=true` for `agent == nil`: how many calls were deleted.
+    /// `DELETE /v1/calls?agent=…`, or `?all=true` for `agent == nil`: how many calls were deleted. A blank agent
+    /// is refused here (`APIError.invalid`) instead of being read as "all".
     public func deleteCalls(agent: String?) async throws -> Int {
-        let item = agent.map { URLQueryItem(name: "agent", value: $0) } ?? URLQueryItem(name: "all", value: "true")
+        let item: URLQueryItem
+        if let agent {
+            let ref = agent.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !ref.isEmpty else { throw APIError.invalid("Choose an agent.") }
+            item = URLQueryItem(name: "agent", value: ref)
+        } else {
+            item = URLQueryItem(name: "all", value: "true")
+        }
         let reply: Deleted = try await http.run(request(calls, "DELETE", query: [item]), expecting: 200)
         return reply.deleted
     }
@@ -76,15 +84,19 @@ public struct HistoryClient: Sendable {
 
     private static func filterItems(agent: String?, since: Date?, until: Date?) -> [URLQueryItem] {
         var items: [URLQueryItem] = []
-        if let agent { items.append(URLQueryItem(name: "agent", value: agent)) }
-        if let since { items.append(URLQueryItem(name: "since", value: seconds(since))) }
-        if let until { items.append(URLQueryItem(name: "until", value: seconds(until))) }
+        if let ref = agent?.trimmingCharacters(in: .whitespacesAndNewlines), !ref.isEmpty {
+            items.append(URLQueryItem(name: "agent", value: ref))
+        }
+        if let since, let value = seconds(since) { items.append(URLQueryItem(name: "since", value: value)) }
+        if let until, let value = seconds(until) { items.append(URLQueryItem(name: "until", value: value)) }
         return items
     }
 
-    /// Whole Unix seconds, rounded down.
-    private static func seconds(_ date: Date) -> String {
-        String(Int(date.timeIntervalSince1970.rounded(.down)))
+    /// Whole Unix seconds, rounded down; nil for a date that is not a finite, representable time.
+    private static func seconds(_ date: Date) -> String? {
+        let value = date.timeIntervalSince1970.rounded(.down)
+        guard value.isFinite, abs(value) < 1e15 else { return nil }
+        return String(Int(value))
     }
 
     /// The `filename` parameter of a `Content-Disposition` header, safe to use as a local file name: only its
