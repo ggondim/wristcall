@@ -18,7 +18,7 @@ export WRISTCALL_TEST_CONFIG ?= $(CURDIR)/WristcallKit/Tests/test-server.yaml
 export WRISTCALL_TEST_DATA_DIR ?= $(CURDIR)/build/test-server-data
 export WRISTCALL_TEST_CLI ?= wristcall
 
-.PHONY: generate test-kit test-server test-integration build test-sim clean
+.PHONY: generate test-kit test-server test-integration build build-sim-push test-sim clean
 
 generate:
 	xcodegen generate --spec project.yml
@@ -38,6 +38,11 @@ test-integration:
 
 build: generate
 	$(XCODEBUILD) build
+
+# The push build (DebugPush: WRISTCALL_PUSH, aps-environment, relay from Config/Push.xcconfig) for
+# the simulator. A free Apple ID cannot sign aps-environment for a real watch; see README.md.
+build-sim-push: generate
+	$(XCODEBUILD) -configuration DebugPush build
 
 test-sim: generate
 	$(XCODEBUILD) test

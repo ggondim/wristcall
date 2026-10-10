@@ -1,6 +1,7 @@
 import Combine
 import Intents
 import SwiftUI
+import UserNotifications
 import WatchKit
 import WidgetKit
 import WristcallKit
@@ -12,6 +13,11 @@ struct WristcallApp: App {
     private let coordinator: CallCoordinator
     /// Starts the calls that the App Intent asked for (phase 5).
     private let shortcuts: ShortcutCalls
+    /// Push notifications for one-way results (task 12): the push build only (`make build-sim-push`).
+    private let push: PushCoordinator?
+    #if WRISTCALL_PUSH
+    @WKApplicationDelegateAdaptor private var appDelegate: AppDelegate
+    #endif
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -36,6 +42,7 @@ struct WristcallApp: App {
         _model = State(initialValue: model)
         self.coordinator = coordinator
         shortcuts = ShortcutCalls(store: PendingCallStore(), model: model)
+        push = Self.makePush(model)
     }
 
     var body: some Scene {
@@ -43,6 +50,8 @@ struct WristcallApp: App {
             RootView(model: model)
                 .task {
                     await model.launch()
+                    // Once the servers are read: every one of them gets its push key.
+                    push?.start()
                     // On a cold start the intent may record its request before `onReceive`
                     // subscribes, with the scene already active: check once after launch.
                     await shortcuts.check()
@@ -57,6 +66,7 @@ struct WristcallApp: App {
                     if phase == .active {
                         // A result still waiting asks again (decision W10).
                         model.sceneDidBecomeActive()
+                        push?.sceneDidBecomeActive()
                         Task { await shortcuts.check() }
                     }
                 }
@@ -83,6 +93,23 @@ struct WristcallApp: App {
     /// no Intents entitlement.
     private static let startCallActivity = "INStartCallIntent"
     private static let startAudioCallActivity = "INStartAudioCallIntent"
+
+    /// The push build's coordinator, the notification delegate from before launch ends (a tapped
+    /// notification may be what launches the app). `nil` in the default builds and without a relay.
+    @MainActor
+    private static func makePush(_ model: AppModel) -> PushCoordinator? {
+        #if WRISTCALL_PUSH
+        let push = PushCoordinator()
+        guard push.isEnabled else { return nil }
+        push.model = model
+        model.pushHandler = push
+        UNUserNotificationCenter.current().delegate = push
+        AppDelegate.push = push
+        return push
+        #else
+        return nil
+        #endif
+    }
 
     @MainActor
     private static func makeCallControl() -> any CallControlling {

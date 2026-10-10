@@ -21,5 +21,10 @@
 	<!-- AgentCatalog.shared(): the App Group shared with the widget extension (decision W13). -->
 	<key>WristcallAppGroup</key>
 	<string>group.$(BUNDLE_ID_PREFIX).wristcall</string>
+	<!-- Push relay (Cloud) and APNs environment: set by Config/Push.xcconfig, empty (push off) otherwise. -->
+	<key>WristcallRelayURL</key>
+	<string>$(WRISTCALL_RELAY_URL)</string>
+	<key>WristcallPushEnvironment</key>
+	<string>$(WRISTCALL_PUSH_ENVIRONMENT)</string>
 </dict>
 </plist>

@@ -7,15 +7,23 @@ options:
     watchOS: "26.0"
   createIntermediateGroups: true
 
+# DebugPush is Debug plus push notifications (`WRISTCALL_PUSH`): it needs the `aps-environment`
+# entitlement, which a free Apple ID (Personal Team) cannot sign, so the default builds leave it out.
+configs:
+  Debug: debug
+  DebugPush: debug
+  Release: release
+
 configFiles:
   Debug: Config/Base.xcconfig
+  DebugPush: Config/Push.xcconfig
   Release: Config/Base.xcconfig
 
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "0.2.0"
-    CURRENT_PROJECT_VERSION: "2"
+    MARKETING_VERSION: "0.3.0"
+    CURRENT_PROJECT_VERSION: "3"
 
 packages:
   WristcallKit:
@@ -46,6 +54,11 @@ targets:
         INFOPLIST_KEY_NSMicrophoneUsageDescription: Wristcall sends your voice to your own wristcall server during a call.
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown
         ENABLE_PREVIEWS: YES
+      # A target setting wins over the project's xcconfig in XcodeGen, so the push build sets these here.
+      configs:
+        DebugPush:
+          CODE_SIGN_ENTITLEMENTS: Wristcall/Wristcall-Push.entitlements
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) DEBUG WRISTCALL_PUSH"
     scheme:
       testTargets:
         - WristcallTests

@@ -1,0 +1,8 @@
+// Push build (DebugPush configuration, `make build-sim-push`): Debug plus push notifications.
+// The relay is the Cloud the watch registers its APNs token with; the app never uses the relay a
+// server announces. `$()` keeps `//` from starting a comment.
+
+#include "Base.xcconfig"
+
+WRISTCALL_RELAY_URL = http:/$()/127.0.0.1:8090
+WRISTCALL_PUSH_ENVIRONMENT = sandbox

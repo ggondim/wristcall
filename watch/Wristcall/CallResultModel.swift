@@ -93,8 +93,10 @@ final class CallResultModel {
         start()
     }
 
-    /// A push says the call has a final status: drop whatever is running and ask once now. The
-    /// first `GET` already brings the final status, so nothing waits for the next poll.
+    /// A push says the call has a final status: drop whatever is running and start asking again
+    /// now, with a new deadline. The first `GET` normally brings the final status, so nothing waits
+    /// for the next poll; if the server has not caught up yet, polling goes on until a final status
+    /// or the deadline, as after "Check again".
     func pushArrived() {
         guard !isOver else { return }
         stop()

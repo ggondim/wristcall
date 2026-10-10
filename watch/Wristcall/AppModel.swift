@@ -68,6 +68,20 @@ protocol CallHandling: AnyObject {
     func endCall()
 }
 
+/// Push notifications (task 12, `PushCoordinator`): told when servers come and go, so each one
+/// has its push key, and when a one-way result first shows. Only the push build sets one.
+@MainActor
+protocol PushHandling: AnyObject {
+    /// A server was paired (or paired again): register its push key.
+    func serverAdded(_ credentials: Credentials)
+    /// The user removes this server; runs before `DELETE /v1/me`, while its token still works.
+    func serverWillBeRemoved(_ credentials: Credentials) async
+    /// The server left the list (removed by the user or by a `401`).
+    func serverRemoved(_ credentials: Credentials)
+    /// The result screen of a one-way call opened after the call.
+    func oneWayResultShown()
+}
+
 /// State and actions behind every screen: the paired servers and their agents, pairing (flows A,
 /// A' and B), removing a server, settings and the entry point of a call.
 @Observable
@@ -133,6 +147,8 @@ final class AppModel {
     var onAgentsChanged: (([CatalogAgent]) -> Void)?
     /// Told when a one-way call's result becomes final, `true` when delivered. The app plays a haptic.
     var onCallResultFinished: ((Bool) -> Void)?
+    /// Set by the push build at launch (task 12); `nil` means no push at all.
+    var pushHandler: (any PushHandling)?
 
     private var activeCall: CallRequest?
     private var pairingTask: Task<Void, Never>?
@@ -151,6 +167,8 @@ final class AppModel {
     /// Results the user closed with "Done" while still waiting: not reopened when the app comes
     /// back to the foreground, only by the next launch.
     private var dismissedResultIDs: Set<String> = []
+    /// A tapped notification's call: opens before any pending result, once its server answered.
+    private var requestedResult: PendingResult?
 
     init(
         pairing: any PairingService = PairingClient(),
@@ -411,13 +429,13 @@ final class AppModel {
     private func add(_ credentials: Credentials, info: Result<DeviceInfo, any Error>) throws {
         var list = servers
         var replaced: Credentials?
+        var added = credentials
         switch info {
         case .success(let info):
             if let index = list.firstIndex(where: { $0.isSameAccount(as: credentials.serverURL, info) }) {
                 replaced = list[index].credentials
-                var kept = credentials
-                kept.id = list[index].id
-                list[index] = ServerEntry(credentials: kept, status: .ready(info))
+                added.id = list[index].id
+                list[index] = ServerEntry(credentials: added, status: .ready(info))
             } else {
                 list.append(ServerEntry(credentials: credentials, status: .ready(info)))
             }
@@ -440,6 +458,7 @@ final class AppModel {
         default: break
         }
         publishCatalog()
+        pushHandler?.serverAdded(added)
     }
 
     /// Polls every `PairingClient.pollInterval`. Shows only `requestId`: the poll token is a
@@ -487,6 +506,8 @@ final class AppModel {
         guard let entry = servers.first(where: { $0.id == id }), !removingServerIDs.contains(id) else { return }
         removingServerIDs.insert(id)
         defer { removingServerIDs.remove(id) }
+        // The server forgets the push key while the token still works.
+        await pushHandler?.serverWillBeRemoved(entry.credentials)
         var offline = false
         do {
             try await pairing.unpair(server: entry.credentials.serverURL, token: entry.credentials.token)
@@ -513,6 +534,7 @@ final class AppModel {
         } catch {
             message = Message.keychain
         }
+        pushHandler?.serverRemoved(credentials)
         publishCatalog()
         if remaining.isEmpty, phase == .home {
             phase = .unpaired
@@ -729,6 +751,30 @@ final class AppModel {
         resumePendingResult()
     }
 
+    /// A push says this call is finished. When its result is on screen, it ends the wait at once
+    /// and the answer is `true` (no banner needed); any other call changes nothing.
+    @discardableResult
+    func pushArrived(serverID: String, callID: String) -> Bool {
+        guard let callResult, callResult.callID == callID, callResult.target.serverID == serverID else { return false }
+        callResult.pushArrived()
+        return true
+    }
+
+    /// A tapped notification of a finished call: opens its result the way a pending one from an
+    /// earlier launch opens (`serverID` is the push's tag, the server's local id). A result of
+    /// another call on screen gives way; during a call, or before the servers are read, it waits.
+    func openResult(serverID: String, callID: String, agentID: String?) {
+        if pushArrived(serverID: serverID, callID: callID) { return }
+        dismissedResultIDs.remove(callID)
+        requestedResult = PendingResult(callID: callID, serverID: serverID, agentID: agentID, startedAt: Date())
+        if phase == .callResult {
+            callResult?.stop()
+            callResult = nil
+            returnHome()
+        }
+        resumePendingResult()
+    }
+
     private func showResult(of call: CallRequest, callID: String) {
         pendingResults.add(PendingResult(
             callID: callID, serverID: call.credentials.id, agentID: call.target.agent.id, startedAt: Date()))
@@ -739,12 +785,24 @@ final class AppModel {
                 target: call.target, callID: callID, credentials: call.credentials, pairing: pairing,
                 poller: resultPoller),
             credentials: call.credentials)
+        pushHandler?.oneWayResultShown()
     }
 
     /// Opens the newest pending result, when the app is at Home with no result open. An entry of a
     /// server that is no longer paired is dropped. A server that has not answered yet waits:
     /// `launch()` tries again once every server did.
+    /// A tapped notification's call (`openResult`) comes first.
     private func resumePendingResult() {
+        if let requested = requestedResult, phase == .home, callResult == nil {
+            guard let entry = servers.first(where: { $0.id == requested.serverID }) else {
+                // Not a server of this watch (any more).
+                requestedResult = nil
+                return resumePendingResult()
+            }
+            guard entry.status != .loading else { return }
+            requestedResult = nil
+            return presentPending(requested, on: entry)
+        }
         while phase == .home, callResult == nil, let pending = pendingResults.latest() {
             guard !dismissedResultIDs.contains(pending.callID) else { return }
             guard let entry = servers.first(where: { $0.id == pending.serverID }) else {
@@ -752,16 +810,20 @@ final class AppModel {
                 continue
             }
             guard entry.status != .loading else { return }
-            let agent = entry.agents.first { $0.agent.id == pending.agentID }?.agent
-                ?? Agent(id: pending.agentID ?? "", slug: "", displayName: Message.unknownAgent, callType: .oneShot)
-            present(
-                CallResultModel(
-                    target: AgentTarget(serverID: entry.id, serverHost: entry.host, agent: agent),
-                    callID: pending.callID, credentials: entry.credentials, pairing: pairing,
-                    poller: resultPoller),
-                credentials: entry.credentials)
+            presentPending(pending, on: entry)
             return
         }
+    }
+
+    private func presentPending(_ pending: PendingResult, on entry: ServerEntry) {
+        let agent = entry.agents.first { $0.agent.id == pending.agentID }?.agent
+            ?? Agent(id: pending.agentID ?? "", slug: "", displayName: Message.unknownAgent, callType: .oneShot)
+        present(
+            CallResultModel(
+                target: AgentTarget(serverID: entry.id, serverHost: entry.host, agent: agent),
+                callID: pending.callID, credentials: entry.credentials, pairing: pairing,
+                poller: resultPoller),
+            credentials: entry.credentials)
     }
 
     private func present(_ result: CallResultModel, credentials: Credentials) {

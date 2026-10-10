@@ -107,11 +107,48 @@ launch arguments:
   check ("Delivered") or a cross with the reason, plus the text.
 - **Results are polled while the app is open.** The watch asks the server about the call (`GET /v1/calls/{id}`)
   every 1.5 s for up to 3 minutes, asks again when the app comes back to the foreground, and offers "Check again"
-  after that. The result is kept only in memory: if the app is closed first you do not see it (the server still
-  delivers). Push notifications come later. Tapping a complication, control or shortcut while the result screen
-  says "Sending…" closes it and the outcome is not shown (it stays in the server's history).
+  after that. A call without a final status is remembered (call id, server and agent ids, time; no text) for 24
+  hours: the next time the app opens it asks again. Tapping a complication, control or shortcut while the result
+  screen says "Sending…" closes it and the outcome is not shown (it stays in the server's history). In the push
+  build (below), a notification ends the wait at once.
 - **Servers older than 0.4.0.** With servers 0.2.x each profile appears as one conversation agent. Servers 0.3.0
   and later list real agents and turn modes, and 0.4.0 and later also record one-way agents.
+
+## Push notifications (push build)
+
+Push needs the `aps-environment` entitlement, which a free Apple ID (Personal Team) cannot sign. So the push code is
+built only in the `DebugPush` configuration (`WRISTCALL_PUSH`, `Config/Push.xcconfig`,
+`Wristcall/Wristcall-Push.entitlements`); Debug and Release are as before and never ask for notifications.
+
+```sh
+make -C watch build-sim-push DESTINATION='platform=watchOS Simulator,id=<UDID>'
+```
+
+- **Relay.** `WRISTCALL_RELAY_URL` in `Config/Push.xcconfig` (default `http://127.0.0.1:8090`, a local Cloud) and
+  `WRISTCALL_PUSH_ENVIRONMENT` (`sandbox`) become the `Info.plist` keys `WristcallRelayURL` and
+  `WristcallPushEnvironment`. Without a relay push is off. The watch never uses a relay a server announces: a
+  server whose `/v1/health` names another relay (or none) is skipped.
+- **One key per server.** At launch the watch asks APNs for a token, registers it at the relay once per paired
+  server (label: the server's host, which the relay shows on every notification of that key; tag: the server's
+  local id, which comes back in every push) and hands the key to that server (`PUT /v1/push`). The key and the
+  token are kept in the Keychain (account `push.<server id>`). Every time the app comes to the foreground it checks
+  each key: a key the relay forgot is registered again, a new APNs token replaces the old keys, and the server gets
+  the key again. A server or relay without push (`404`) is skipped silently; a failure on one server does not stop
+  the others.
+- **Removing a server** clears its key on the server first (`DELETE /v1/push`, while the token still works), then
+  revokes the watch (`DELETE /v1/me`), then drops the key at the relay (best effort) and from the Keychain.
+- **Notifications.** The watch asks for permission when the first one-way result shows, not at the first launch. A
+  `call.finished` notification for the result on screen ends its wait without a banner; any other one shows a
+  banner, and tapping it opens that call's result.
+- **Simulator.** The watch simulator gets no APNs token: the launch argument `-WCFakeAPNsToken <hex>` (Debug builds,
+  at least 32 bytes for the Cloud) stands in for it. `xcrun simctl push <UDID> <bundle id> payload.json` delivers a
+  notification, for example:
+
+  ```json
+  {"aps": {"alert": {"title": "Delivered", "subtitle": "127.0.0.1", "body": "Notes got your message."}},
+   "wristcall": {"v": 1, "event": "call.finished", "tag": "<server id>",
+                 "data": {"call_id": "<call id>", "status": "delivered", "error": null, "agent_id": "<agent id>"}}}
+  ```
 
 ## Complications, controls and shortcuts
 
