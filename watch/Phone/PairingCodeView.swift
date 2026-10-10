@@ -5,11 +5,14 @@ import WristcallKit
 /// watch, and the time left. The code is a secret for 10 minutes and is used once.
 struct PairingCodeView: View {
     let model: DevicesModel
-    /// Hook of the "Add to watch" button (Task 10 sends the code to the paired watch). Without it the
-    /// button is not shown and the screen is just the code and the address.
-    var addToWatch: ((PairingCodeGrant) async -> Void)?
+    /// Hook of the "Add to watch" button: sends the code on screen to the paired watch
+    /// (`WatchLink.send(server:grant:)`). Without it (no watch) the button is not shown and the screen
+    /// is just the code and the address.
+    var addToWatch: ((PairingCodeGrant) async -> WatchLink.SendResult)?
 
     @State private var working = false
+    /// What the last "Add to watch" did.
+    @State private var watchResult: WatchLink.SendResult?
 
     var body: some View {
         // The clock is read every second: the countdown moves and the code leaves the screen at expiry.
@@ -63,10 +66,14 @@ struct PairingCodeView: View {
                             Task {
                                 working = true
                                 defer { working = false }
-                                await addToWatch(grant)
+                                watchResult = await addToWatch(grant)
                             }
                         }
                         .disabled(working)
+                        if let watchResult {
+                            Text(watchResult.summary)
+                                .foregroundStyle(watchResult.isFailure ? .red : .secondary)
+                        }
                     } footer: {
                         Text("Sends the code to your paired watch so you do not have to type it.")
                     }

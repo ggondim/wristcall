@@ -149,9 +149,16 @@ final class AppModel {
     var onCallResultFinished: ((Bool) -> Void)?
     /// Set by the push build at launch (task 12); `nil` means no push at all.
     var pushHandler: (any PushHandling)?
+    /// Told the paired servers whenever the list changes (launch, pairing, removal), so the iPhone
+    /// learns which servers are on this watch (`WatchLinkReceiver`, decision R10).
+    var onServersChanged: (([Credentials]) -> Void)?
 
     private var activeCall: CallRequest?
     private var pairingTask: Task<Void, Never>?
+    /// Why the last pairing attempt failed (`nil` when it paired), for `pair(server:code:)`.
+    private var pairingFailure: (any Error)?
+    /// The list last handed to `onServersChanged`.
+    private var publishedServers: [Credentials]?
 
     private let pairing: any PairingService
     private let store: any ServerStore
@@ -240,6 +247,7 @@ final class AppModel {
             try? store.deleteAll()
             servers = []
             publishCatalog()
+            publishServers()
             phase = .unpaired
             return
         } catch {
@@ -250,6 +258,7 @@ final class AppModel {
         }
         servers = stored.map { ServerEntry(credentials: $0, status: .loading) }
         publishCatalog()
+        publishServers()
         guard !stored.isEmpty else {
             phase = .unpaired
             return
@@ -266,6 +275,11 @@ final class AppModel {
         } else {
             await load(servers.filter(\.isUnavailable).map(\.credentials))
         }
+    }
+
+    /// Asks every server for its agents again ("Refresh watch" on the iPhone, decision R16).
+    func reloadAgents() async {
+        await load(servers.map(\.credentials))
     }
 
     /// "Retry" on the row of a server that is down.
@@ -365,6 +379,20 @@ final class AppModel {
         }
     }
 
+    /// Pairing sent by the iPhone (decision R10): flow A' with `server`, as if the code had been typed,
+    /// without touching `customServerURL`. Runs on Home or the pairing screen only; anywhere else (a
+    /// call, its result, another pairing) it fails with `LinkPairingError.busy` and changes nothing.
+    /// A failure goes back to the screen it started on, with the reason in `message`.
+    func pair(server: URL, code: PairingCode) async -> Result<Void, any Error> {
+        guard pairingTask == nil, phase == .home || phase == .unpaired else { return .failure(LinkPairingError.busy) }
+        let task = startPairing(returningTo: phase) { [self] in
+            let result = try await pairing.pair(server: server, code: code, deviceName: deviceName)
+            try await complete(result, server: server)
+        }
+        await task.value
+        return pairingFailure.map { .failure($0) } ?? .success(())
+    }
+
     /// Flow B: asks `customServerURL` to pair without a code and waits for the owner's approval.
     @discardableResult
     func requestApproval() -> Task<Void, Never> {
@@ -383,18 +411,23 @@ final class AppModel {
         pairingTask?.cancel()
     }
 
-    /// Runs one pairing attempt; a second tap while one runs returns the running one.
-    private func startPairing(_ work: @escaping @MainActor () async throws -> Void) -> Task<Void, Never> {
+    /// Runs one pairing attempt; a second tap while one runs returns the running one. A failure goes
+    /// back to `fallback` (the pairing screen, or Home for a pairing the iPhone sent).
+    private func startPairing(
+        returningTo fallback: AppPhase = .unpaired, _ work: @escaping @MainActor () async throws -> Void
+    ) -> Task<Void, Never> {
         if let pairingTask { return pairingTask }
         phase = .pairing(requestId: nil)
         message = nil
+        pairingFailure = nil
         let task = Task { [self] in
             do {
                 try await work()
             } catch {
+                pairingFailure = error
                 // A "Cancel" that already left the pairing screen (adding a server) keeps its screen.
                 if case .pairing = phase {
-                    phase = .unpaired
+                    phase = fallback
                     message = Task.isCancelled || Self.isCancellation(error) ? nil : Self.text(for: error)
                 }
             }
@@ -458,6 +491,7 @@ final class AppModel {
         default: break
         }
         publishCatalog()
+        publishServers()
         pushHandler?.serverAdded(added)
     }
 
@@ -536,6 +570,7 @@ final class AppModel {
         }
         pushHandler?.serverRemoved(credentials)
         publishCatalog()
+        publishServers()
         if remaining.isEmpty, phase == .home {
             phase = .unpaired
         }
@@ -544,6 +579,14 @@ final class AppModel {
     /// Hands the catalog to `onAgentsChanged` when it changed: the agents of every server that
     /// answered and, for one that did not (yet), what the last catalog had for it, so complications
     /// and shortcuts pointing there survive a launch without network. Removed servers drop out.
+    /// Tells `onServersChanged` the paired servers when the list (not just a status) changed.
+    private func publishServers() {
+        let list = servers.map(\.credentials)
+        guard list != publishedServers else { return }
+        publishedServers = list
+        onServersChanged?(list)
+    }
+
     private func publishCatalog() {
         let previous = Dictionary(grouping: catalog, by: \.ref.serverID)
         let next = servers.flatMap { entry -> [CatalogAgent] in
@@ -844,6 +887,12 @@ final class AppModel {
 
     // MARK: - Messages
 
+    /// Why `pair(server:code:)` did not start.
+    enum LinkPairingError: Error, Equatable {
+        /// A call, its result or another pairing is on screen.
+        case busy
+    }
+
     private enum LocalFailure: Error {
         case expired
         case directoryUnreachable
@@ -851,11 +900,11 @@ final class AppModel {
 
     /// `PairingClient` can surface a cancelled retry sleep as a bare `CancellationError`, and a
     /// cancelled request as `PairingError.network(.cancelled)`: neither is worth a message.
-    private static func isCancellation(_ error: any Error) -> Bool {
+    static func isCancellation(_ error: any Error) -> Bool {
         error is CancellationError || error as? PairingError == .network(.cancelled)
     }
 
-    private static func text(for error: any Error) -> String {
+    static func text(for error: any Error) -> String {
         switch error {
         case LocalFailure.expired: Message.expired
         case LocalFailure.directoryUnreachable: Message.directoryUnreachable

@@ -13,6 +13,7 @@ struct ServerDetailView: View {
     #if DEBUG
     @State private var debugAgents = false
     @State private var debugDevices = false
+    @State private var debugSendToWatch = false
     #endif
     @FocusState private var nameFocused: Bool
     /// A tapped notification for this server: its devices open.
@@ -56,6 +57,8 @@ struct ServerDetailView: View {
 
             LinkServerSection(server: server)
 
+            WatchSection(server: server)
+
             Section {
                 NavigationLink {
                     AgentListView(server: server)
@@ -88,8 +91,10 @@ struct ServerDetailView: View {
         .task {
             debugAgents = DebugRoute.opensAgents
             debugDevices = DebugRoute.opensDevices
+            debugSendToWatch = DebugRoute.opensSendToWatch
         }
         .navigationDestination(isPresented: $debugAgents) { AgentListView(server: server) }
+        .navigationDestination(isPresented: $debugSendToWatch) { SendToWatchView(server: server) }
         .navigationDestination(isPresented: $debugDevices) { DevicesView(server: server) }
         #endif
         .confirmationDialog("Remove \(server.name)?", isPresented: $confirmingRemoval, titleVisibility: .visible) {

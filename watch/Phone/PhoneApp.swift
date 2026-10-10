@@ -2,6 +2,7 @@ import os
 import SwiftUI
 import UIKit
 import UserNotifications
+import WatchConnectivity
 import WristcallKit
 
 @main
@@ -13,6 +14,7 @@ struct PhoneApp: App {
     @State private var approvals: ApprovalsModel
     @State private var history: HistoryModel
     @State private var account: AccountModel
+    @State private var watchLink: WatchLink
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -26,6 +28,7 @@ struct PhoneApp: App {
         let session = cloud.map { AccountSession(cloud: $0, kind: .ios, store: KeychainTokenStore()) }
         let account = AccountModel(cloudURL: cloud, session: session, web: LiveWebAuthenticator(), state: state)
         _account = State(initialValue: account)
+        _watchLink = State(initialValue: Self.makeWatchLink())
         // Read by the app delegate in `didFinishLaunching`, which runs after this.
         PhoneAppDelegate.notifications = ApprovalNotificationHandler(approvals: approvals)
         #if WRISTCALL_PUSH
@@ -49,6 +52,7 @@ struct PhoneApp: App {
                 .environment(approvals)
                 .environment(history)
                 .environment(account)
+                .environment(watchLink)
                 .task { await start() }
                 .onChange(of: scenePhase) { _, phase in
                     // Back in the foreground: ask the servers for device approvals waiting for the owner.
@@ -60,6 +64,17 @@ struct PhoneApp: App {
                     #endif
                 }
         }
+    }
+
+    /// WatchConnectivity with the watch app (decision R10). Unit tests (hosted in this app) and devices
+    /// without it get a link that reports no watch.
+    @MainActor
+    private static func makeWatchLink() -> WatchLink {
+        guard !isUnitTest, WCSession.isSupported() else { return WatchLink(session: nil) }
+        let session = LiveWatchSession()
+        let link = WatchLink(session: session)
+        session.attach(link)
+        return link
     }
 
     fileprivate static var isUnitTest: Bool { ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil }
@@ -187,8 +202,9 @@ enum DebugLaunch {
 
 #if DEBUG
 /// `-debugOpen history|history-detail` opens the History tab (or its first call), `-debugOpen settings` the
-/// Settings tab; `-debugOpen server|agents|form-new|form-edit|devices|code` opens that screen at launch (simulator smoke tests have no
-/// way to tap): the first server, its agents, the form for a new agent, the form of the last agent, the devices of the server, or its pairing code.
+/// Settings tab; `-debugOpen server|agents|form-new|form-edit|devices|code|watch` opens that screen at launch (simulator smoke tests have
+/// no way to tap): the first server, its agents, the form for a new agent, the form of the last agent, the devices of the server, its
+/// pairing code, or "Add to watch" (which sends a new code to the paired watch at once).
 enum DebugRoute {
     static let value: String? = {
         let args = ProcessInfo.processInfo.arguments
@@ -201,5 +217,6 @@ enum DebugRoute {
     static var opensServer: Bool { value != nil && !opensHistory && !opensSettings }
     static var opensDevices: Bool { ["devices", "code"].contains(value ?? "") }
     static var opensAgents: Bool { ["agents", "form-new", "form-edit"].contains(value ?? "") }
+    static var opensSendToWatch: Bool { value == "watch" }
 }
 #endif

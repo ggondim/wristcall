@@ -34,6 +34,7 @@ private struct DevicesContent: View {
     let server: ManagedServer
     let model: DevicesModel
     let approvals: ApprovalsModel
+    @Environment(WatchLink.self) private var watchLink
 
     @State private var approving: ApprovalsModel.Pending?
     @State private var revoking: DeviceRecord?
@@ -43,6 +44,14 @@ private struct DevicesContent: View {
     @State private var loaded = false
 
     private var waiting: [ApprovalsModel.Pending] { approvals.pending.filter { $0.serverID == server.id } }
+
+    /// "Add to watch" on the pairing code screen, only with a paired watch that has Wristcall.
+    private var addToWatch: ((PairingCodeGrant) async -> WatchLink.SendResult)? {
+        guard watchLink.canReachWatch else { return nil }
+        let link = watchLink
+        let server = server
+        return { grant in await link.send(server: server, grant: grant) }
+    }
 
     var body: some View {
         List {
@@ -83,7 +92,7 @@ private struct DevicesContent: View {
 
             Section {
                 NavigationLink {
-                    PairingCodeView(model: model)
+                    PairingCodeView(model: model, addToWatch: addToWatch)
                 } label: {
                     Label("Pairing code", systemImage: "number.square")
                 }
@@ -92,7 +101,7 @@ private struct DevicesContent: View {
             }
         }
         #if DEBUG
-        .navigationDestination(isPresented: $debugCode) { PairingCodeView(model: model) }
+        .navigationDestination(isPresented: $debugCode) { PairingCodeView(model: model, addToWatch: addToWatch) }
         #endif
         .refreshable {
             await model.load()

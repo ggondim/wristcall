@@ -15,6 +15,9 @@ struct WristcallApp: App {
     private let shortcuts: ShortcutCalls
     /// Push notifications for one-way results (task 12): the push build only (`make build-sim-push`).
     private let push: PushCoordinator?
+    /// WatchConnectivity with the iPhone app (decision R10): pairing it sends, "Refresh watch", and
+    /// the servers this watch is paired with.
+    private let link: WatchLinkReceiver
     #if WRISTCALL_PUSH
     @WKApplicationDelegateAdaptor private var appDelegate: AppDelegate
     #endif
@@ -43,6 +46,11 @@ struct WristcallApp: App {
         self.coordinator = coordinator
         shortcuts = ShortcutCalls(store: PendingCallStore(), model: model)
         push = Self.makePush(model)
+        link = WatchLinkReceiver(model: model)
+        // Unit tests run inside this app: they talk to their own receiver, never to WatchConnectivity.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            link.activate()
+        }
     }
 
     var body: some Scene {

@@ -1,0 +1,107 @@
+import Foundation
+import Testing
+@testable import WristcallKit
+
+struct WatchLinkMessageTests {
+    // MARK: - pair
+
+    @Test func rejectsInsecureServer() {
+        #expect(WatchLinkMessage(["v": 1, "type": "pair", "server_url": "http://example.com", "code": "12345678", "name": "Home"]) == nil)
+        #expect(WatchLinkMessage(["v": 1, "type": "pair", "server_url": "http://127.0.0.1:8765", "code": "12345678", "name": "Dev"]) != nil)
+    }
+
+    @Test func rejectsBadCode() {
+        #expect(WatchLinkMessage(["v": 1, "type": "pair", "server_url": "https://srv.test", "code": "1234567", "name": "Home"]) == nil)
+    }
+
+    @Test func roundTrip() {
+        let m = WatchLinkMessage.pair(server: URL(string: "https://srv.test")!, code: PairingCode("12345678")!, name: "Home")
+        #expect(WatchLinkMessage(m.dictionary) == m)
+        #expect(WatchLinkMessage.deviceCode(userCode: "ZXSG-KCPN", expiresAt: 1_800_000_000).dictionary["user_code"] as? String == "ZXSG-KCPN")
+        #expect(WatchLinkMessage(WatchLinkMessage.refresh.dictionary) == .refresh)
+        let device = WatchLinkMessage.deviceCode(userCode: "ZXSG-KCPN", expiresAt: 1_800_000_000)
+        #expect(WatchLinkMessage(device.dictionary) == device)
+    }
+
+    @Test func pairDictionaryHasOnlyAddressCodeAndName() {
+        let m = WatchLinkMessage.pair(server: URL(string: "https://srv.test/wc")!, code: PairingCode("12345678")!, name: "Home")
+        let dictionary = m.dictionary
+        #expect(Set(dictionary.keys) == ["v", "type", "server_url", "code", "name"])
+        #expect(dictionary["v"] as? Int == 1)
+        #expect(dictionary["type"] as? String == "pair")
+        #expect(dictionary["server_url"] as? String == "https://srv.test/wc")
+        #expect(dictionary["code"] as? String == "12345678")
+        #expect(dictionary["name"] as? String == "Home")
+    }
+
+    @Test func nameIsTrimmedAndCut() {
+        let long = String(repeating: "a", count: 80)
+        let message = WatchLinkMessage(["v": 1, "type": "pair", "server_url": "https://srv.test", "code": "12345678", "name": "  \(long) "])
+        #expect(message == .pair(server: URL(string: "https://srv.test")!, code: PairingCode("12345678")!, name: String(repeating: "a", count: 64)))
+        let sent = WatchLinkMessage.pair(server: URL(string: "https://srv.test")!, code: PairingCode("12345678")!, name: long)
+        #expect((sent.dictionary["name"] as? String)?.count == 64)
+    }
+
+    @Test func emptyNameIsNil() {
+        #expect(WatchLinkMessage(["v": 1, "type": "pair", "server_url": "https://srv.test", "code": "12345678", "name": "  "]) == nil)
+        #expect(WatchLinkMessage(["v": 1, "type": "pair", "server_url": "https://srv.test", "code": "12345678"]) == nil)
+    }
+
+    @Test func unknownTypeIsNil() {
+        #expect(WatchLinkMessage(["v": 1, "type": "unpair"]) == nil)
+        #expect(WatchLinkMessage(["v": 1]) == nil)
+        #expect(WatchLinkMessage(["v": 1, "type": 7]) == nil)
+    }
+
+    @Test func wrongVersionIsNil() {
+        #expect(WatchLinkMessage(["v": 2, "type": "refresh"]) == nil)
+        #expect(WatchLinkMessage(["type": "refresh"]) == nil)
+        #expect(WatchLinkMessage(["v": "1", "type": "refresh"]) == nil)
+        #expect(WatchLinkMessage(["v": 1, "type": "refresh"]) == .refresh)
+    }
+
+    // MARK: - device_code
+
+    @Test func userCodeNormalized() {
+        let message = WatchLinkMessage(["v": 1, "type": "device_code", "user_code": "zxsgkcpn", "expires_at": 1_800_000_000.0])
+        #expect(message == .deviceCode(userCode: "ZXSGKCPN", expiresAt: 1_800_000_000))
+        #expect(WatchLinkMessage(["v": 1, "type": "device_code", "user_code": "zxsg-kcpn", "expires_at": 1_800_000_000])
+            == .deviceCode(userCode: "ZXSG-KCPN", expiresAt: 1_800_000_000))
+    }
+
+    @Test func badUserCodeIsNil() {
+        for code in ["ZXSG-KCP", "ZXSG--KCPN", "ZXSG KCPN", "ZXSG-KCPN1", "ZXSÉ-KCPN", ""] {
+            #expect(WatchLinkMessage(["v": 1, "type": "device_code", "user_code": code, "expires_at": 1_800_000_000]) == nil)
+        }
+    }
+
+    @Test func deviceCodeNeedsExpiry() {
+        #expect(WatchLinkMessage(["v": 1, "type": "device_code", "user_code": "ZXSG-KCPN"]) == nil)
+        #expect(WatchLinkMessage.deviceCode(userCode: "ZXSG-KCPN", expiresAt: 1_800_000_000).dictionary["expires_at"] as? Double == 1_800_000_000)
+    }
+
+    /// Review Focus I4: the poll secret of the device flow never crosses WatchConnectivity.
+    @Test func deviceCodeNeverLeavesWatch() {
+        let dictionary = WatchLinkMessage.deviceCode(userCode: "ZXSG-KCPN", expiresAt: 1_800_000_000).dictionary
+        #expect(dictionary["device_code"] == nil)
+        #expect(Set(dictionary.keys) == ["v", "type", "user_code", "expires_at"])
+    }
+
+    // MARK: - Reply and context
+
+    @Test func replyRoundTrip() {
+        #expect(WatchLinkReply(WatchLinkReply(ok: true).dictionary) == WatchLinkReply(ok: true))
+        #expect(WatchLinkReply(WatchLinkReply(ok: false, error: "busy").dictionary) == WatchLinkReply(ok: false, error: "busy"))
+        #expect(WatchLinkReply(ok: true).dictionary["error"] == nil)
+        #expect(WatchLinkReply(["error": "busy"]) == nil)
+    }
+
+    @Test func contextRoundTrip() {
+        let context = WatchLinkContext(servers: ["https://srv.test", "http://127.0.0.1:8765"])
+        #expect(WatchLinkContext(context.dictionary) == context)
+        #expect(WatchLinkContext([:]) == nil)
+        #expect(WatchLinkContext(["v": 1, "servers": [1, 2]]) == nil)
+        #expect(WatchLinkContext(["v": 2, "servers": ["https://srv.test"]]) == nil)
+        #expect(WatchLinkContext(WatchLinkContext(servers: []).dictionary) == WatchLinkContext(servers: []))
+    }
+}

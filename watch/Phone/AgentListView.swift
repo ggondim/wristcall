@@ -10,7 +10,7 @@ struct AgentListView: View {
     var body: some View {
         Group {
             if let model {
-                AgentListContent(model: model)
+                AgentListContent(server: server, model: model)
             } else {
                 ProgressView()
             }
@@ -42,7 +42,9 @@ private enum FormTarget: Identifiable {
 }
 
 private struct AgentListContent: View {
+    let server: ManagedServer
     let model: AgentsModel
+    @Environment(WatchLink.self) private var watchLink
     @State private var target: FormTarget?
     @State private var pendingDelete: AgentDetail?
     @State private var loaded = false
@@ -52,16 +54,23 @@ private struct AgentListContent: View {
             if let error = model.error {
                 Section { Text(error).foregroundStyle(.red) }
             }
-            ForEach(model.agents) { agent in
-                Button { target = .edit(agent) } label: { AgentRow(agent: agent) }
-                    .buttonStyle(.plain)
-                    .swipeActions(edge: .trailing) {
-                        Button(role: .destructive) { pendingDelete = agent } label: {
-                            Label("Delete", systemImage: "trash")
+            Section {
+                ForEach(model.agents) { agent in
+                    Button { target = .edit(agent) } label: { AgentRow(agent: agent) }
+                        .buttonStyle(.plain)
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) { pendingDelete = agent } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
                         }
-                    }
+                }
+                .onMove { from, to in Task { await model.move(from: from, to: to) } }
+            } footer: {
+                // Decision R16: the watch gets this server's agents from the server; a refresh shows edits now.
+                if watchLink.isOnWatch(server) {
+                    RefreshWatchButton(compact: true)
+                }
             }
-            .onMove { from, to in Task { await model.move(from: from, to: to) } }
         }
         .overlay {
             if loaded && model.agents.isEmpty && model.error == nil {
