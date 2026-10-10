@@ -4,39 +4,69 @@ import Synchronization
 /// A fake HTTP host for one test. Requests to `url` never touch the network: `StubURLProtocol`
 /// answers them with `respond` and records them. Every instance gets its own random host name,
 /// so tests running in parallel do not see each other's requests.
-final class StubHost: Sendable {
-    struct Request: Sendable {
-        let method: String
-        let url: URL
-        let headers: [String: String]
-        let body: Data?
+public final class StubHost: Sendable {
+    public struct Request: Sendable {
+        public let method: String
+        public let url: URL
+        public let headers: [String: String]
+        public let body: Data?
 
-        var path: String { url.path() }
+        public var path: String { url.path() }
 
         /// The body parsed as a JSON object.
-        func json() throws -> [String: Any] {
+        public func json() throws -> [String: Any] {
             guard let body, let object = try JSONSerialization.jsonObject(with: body) as? [String: Any] else {
                 throw URLError(.cannotParseResponse)
             }
             return object
         }
+
+        /// The body parsed as `application/x-www-form-urlencoded` (`+` is a space, `%XX` is decoded).
+        public func form() throws -> [String: String] {
+            guard let body, let text = String(data: body, encoding: .utf8) else {
+                throw URLError(.cannotParseResponse)
+            }
+            var fields: [String: String] = [:]
+            for pair in text.split(separator: "&", omittingEmptySubsequences: true) {
+                let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                guard let name = Self.decode(parts[0]), let value = parts.count > 1 ? Self.decode(parts[1]) : "" else {
+                    throw URLError(.cannotParseResponse)
+                }
+                fields[name] = value
+            }
+            return fields
+        }
+
+        private static func decode(_ part: Substring) -> String? {
+            String(part).replacingOccurrences(of: "+", with: " ").removingPercentEncoding
+        }
     }
 
-    /// Status code and body of a reply.
-    typealias Reply = (status: Int, body: String)
+    /// Status code, body and headers of a reply (`Content-Type: application/json` unless `headers` sets it).
+    public struct Reply: Sendable {
+        public var status: Int
+        public var body: String
+        public var headers: [String: String]
 
-    let url: URL
+        public init(_ status: Int, _ body: String, headers: [String: String] = [:]) {
+            self.status = status
+            self.body = body
+            self.headers = headers
+        }
+    }
+
+    public let url: URL
     private let respond: @Sendable (Request) throws -> Reply
     private let recorded = Mutex<[Request]>([])
 
-    init(path: String = "", respond: @escaping @Sendable (Request) throws -> Reply) {
+    public init(path: String = "", respond: @escaping @Sendable (Request) throws -> Reply) {
         self.url = URL(string: "https://\(UUID().uuidString.lowercased()).stub.test\(path)")!
         self.respond = respond
         StubURLProtocol.register(self)
     }
 
     /// Answers the n-th request (0-based) with `replies[n]`, repeating the last one after that.
-    convenience init(path: String = "", replies: [Reply]) {
+    public convenience init(path: String = "", replies: [Reply]) {
         let counter = Mutex(0)
         self.init(path: path) { _ in
             let index = counter.withLock { value in
@@ -47,11 +77,16 @@ final class StubHost: Sendable {
         }
     }
 
+    /// The same, for replies without headers: `replies: [(200, "{}")]`.
+    public convenience init(path: String = "", replies: [(status: Int, body: String)]) {
+        self.init(path: path, replies: replies.map { Reply($0.status, $0.body) })
+    }
+
     deinit {
         StubURLProtocol.unregister(host: url.host()!)
     }
 
-    var requests: [Request] { recorded.withLock { $0 } }
+    public var requests: [Request] { recorded.withLock { $0 } }
 
     fileprivate func handle(_ request: Request) throws -> Reply {
         recorded.withLock { $0.append(request) }
@@ -60,22 +95,22 @@ final class StubHost: Sendable {
 }
 
 /// Serves requests for registered `StubHost`s. Use it through `URLSession.stubbed()`.
-final class StubURLProtocol: URLProtocol {
+public final class StubURLProtocol: URLProtocol {
     private static let hosts = Mutex<[String: StubHost]>([:])
 
-    static func register(_ host: StubHost) {
+    fileprivate static func register(_ host: StubHost) {
         hosts.withLock { $0[host.url.host()!] = host }
     }
 
-    static func unregister(host: String) {
+    fileprivate static func unregister(host: String) {
         _ = hosts.withLock { $0.removeValue(forKey: host) }
     }
 
-    override class func canInit(with request: URLRequest) -> Bool { true }
+    public override class func canInit(with request: URLRequest) -> Bool { true }
 
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    public override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
-    override func startLoading() {
+    public override func startLoading() {
         guard let url = request.url, let name = url.host(), let host = Self.hosts.withLock({ $0[name] }) else {
             client?.urlProtocol(self, didFailWithError: URLError(.cannotFindHost))
             return
@@ -92,7 +127,7 @@ final class StubURLProtocol: URLProtocol {
                 url: url,
                 statusCode: reply.status,
                 httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "application/json"]
+                headerFields: ["Content-Type": "application/json"].merging(reply.headers) { _, new in new }
             )!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: Data(reply.body.utf8))
@@ -102,7 +137,7 @@ final class StubURLProtocol: URLProtocol {
         }
     }
 
-    override func stopLoading() {}
+    public override func stopLoading() {}
 
     /// URLSession hands the body to a protocol as a stream, not as `httpBody`.
     private static func readAll(_ stream: InputStream) -> Data {
@@ -121,7 +156,7 @@ final class StubURLProtocol: URLProtocol {
 
 extension URLSession {
     /// A session whose requests are all answered by `StubURLProtocol`.
-    static func stubbed() -> URLSession {
+    public static func stubbed() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
         return URLSession(configuration: configuration)
@@ -129,12 +164,14 @@ extension URLSession {
 }
 
 /// Records the delays a `PairingClient` asks for, without waiting.
-final class SleepRecorder: Sendable {
+public final class SleepRecorder: Sendable {
     private let recorded = Mutex<[Duration]>([])
 
-    var delays: [Duration] { recorded.withLock { $0 } }
+    public init() {}
 
-    var sleep: @Sendable (Duration) async throws -> Void {
+    public var delays: [Duration] { recorded.withLock { $0 } }
+
+    public var sleep: @Sendable (Duration) async throws -> Void {
         { [self] duration in recorded.withLock { $0.append(duration) } }
     }
 }

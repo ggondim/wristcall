@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import WristcallKit
+import WristcallKitTesting
 
 struct ServerPushClientTests {
     func client(_ server: StubHost) -> ServerPushClient {

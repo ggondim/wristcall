@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import WristcallKit
+import WristcallKitTesting
 
 struct PushRelayClientTests {
     let token = Data([0x00, 0x0A, 0xFF, 0x1B])

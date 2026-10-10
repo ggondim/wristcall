@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import WristcallKit
+import WristcallKitTesting
 
 struct ManagementClientTests {
     private static let agentJSON = #"""

@@ -115,5 +115,22 @@ struct ManagementIntegrationTests {
         let client = ManagementClient(server: try TestServer.requireBaseURL(), token: "wc_pat_not-a-real-token")
         await #expect(throws: APIError.unauthorized) { try await client.verify() }
     }
+
+    @Test func historyListsAndExports() async throws {
+        let history = HistoryClient(server: try TestServer.requireBaseURL(), token: try personalToken(name: "kit-history"))
+        let page = try await history.calls(HistoryQuery(limit: 5))
+        #expect(page.calls.count <= 5)
+        #expect(page.calls.allSatisfy { !$0.id.isEmpty })
+        // A cursor only comes with a full page.
+        #expect(page.nextBefore == nil || page.calls.count == 5)
+
+        let json = try await history.export(.json)
+        #expect(json.filename.hasSuffix(".json"))
+        #expect(String(decoding: json.data, as: UTF8.self).contains("\"version\": 1"))
+        let markdown = try await history.export(.markdown)
+        #expect(markdown.filename.hasSuffix(".md"))
+
+        await #expect(throws: APIError.notFound) { try await history.call("no-such-call") }
+    }
 }
 #endif
