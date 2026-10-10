@@ -5,6 +5,8 @@ import logging
 import time
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 
@@ -26,7 +28,10 @@ def b64(data: bytes) -> str:
 
 
 ENDPOINT = "https://fcm.googleapis.com/fcm/send/s3cr3t-endpoint-id"
-P256DH = b64(b"\x04" + bytes(range(64)))
+# A browser's key: a point of the P-256 curve (uncompressed, 65 bytes).
+POINT = ec.derive_private_key(12345, ec.SECP256R1()).public_key().public_bytes(
+    serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+P256DH = b64(POINT)
 AUTH = b64(b"0123456789abcdef")
 WEBPUSH = {"platform": "webpush", "subscription": {"endpoint": ENDPOINT, "keys": {"p256dh": P256DH, "auth": AUTH}},
            "label": "Home", "events": ["device.approval"]}
@@ -386,6 +391,9 @@ def _keys(**keys) -> dict:
     _webpush(endpoint="https://fcm.googleapis.com/a b"), _webpush(endpoint=1), _webpush(extra=1),
     _webpush(endpoint="https://" + "a" * 2050),
     _keys(p256dh=b64(b"\x04" + bytes(63))), _keys(p256dh=b64(b"\x05" + bytes(64))), _keys(p256dh="***"),
+    # 65 bytes starting with 0x04, but not a point of the curve.
+    _keys(p256dh=b64(b"\x04" + bytes(range(64)))), _keys(p256dh=b64(b"\x04" + bytes(64))),
+    _keys(p256dh=b64(POINT[:-1] + bytes([POINT[-1] ^ 1]))),
     _keys(auth=b64(bytes(15))), _keys(auth=1), _keys(extra="x"), _webpush(keys=None),
     [], "text",
 ])
@@ -397,7 +405,7 @@ def test_invalid_registration_is_422(client, body):
 
 def test_registration_accepts_a_browser_subscription(client):
     # PushSubscription.toJSON() has expirationTime as well; padded base64url is accepted.
-    padded = base64.urlsafe_b64encode(b"\x04" + bytes(range(64))).decode()
+    padded = base64.urlsafe_b64encode(POINT).decode()
     body = _webpush(expirationTime=None, keys={"p256dh": padded, "auth": AUTH})
     assert client.post("/v1/push/registrations", json=body).status_code == 201
     upper = {**APNS, "token": "AB" * 32, "label": "  Home  "}
@@ -617,6 +625,48 @@ def test_shutdown_closes_clients_when_the_purge_task_failed(mongo_db, fake_verif
     for c in serve(create_app(cfg), mongo_db):  # no verifier: the app owns its HTTP client
         assert c.get("/v1/health").status_code == 200
     assert "mongo" in closed and "http" in closed
+
+
+def test_shutdown_closes_everything_when_a_close_fails(mongo_db, fake_verifier, monkeypatch):
+    import httpx
+
+    import wristcall_cloud.app as app_module
+    from wristcall_cloud.push.webpush import Vapid
+
+    closed: list[str] = []
+
+    class Mongo:
+        async def close(self) -> None:
+            closed.append("mongo")
+            raise RuntimeError("mongo close failed")
+
+    original_aclose = httpx.AsyncClient.aclose
+    clients: dict[int, str] = {}
+
+    async def aclose(self) -> None:
+        closed.append(clients[id(self)])
+        await original_aclose(self)
+        if clients[id(self)] == "webpush":
+            raise RuntimeError("close failed")
+
+    vapid_pem = ec.generate_private_key(ec.SECP256R1()).private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+    apns_pem = ec.generate_private_key(ec.SECP256R1()).private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+    monkeypatch.setattr(app_module, "open_store", lambda config: (Mongo(), Store(mongo_db)))
+    monkeypatch.setattr(httpx.AsyncClient, "aclose", aclose)
+    cfg = CloudConfig(mongo_url=mongo_url(), issuer=ISSUER, clients=dict(CLIENTS), apns_topics=(TOPIC,),
+                      vapid_private_pem=vapid_pem, vapid_subject="mailto:ops@example.com",
+                      apns_key_pem=apns_pem, apns_key_id="KEY123", apns_team_id="TEAM456")
+    app = create_app(cfg)  # no verifier: the app owns its HTTP client as well
+    clients[id(app.state.verifier._http)] = "oidc"
+    clients[id(app.state.channels["webpush"].http)] = "webpush"
+    clients[id(app.state.channels["apns"].http)] = "apns"
+    assert isinstance(app.state.channels["webpush"].vapid, Vapid)
+    with pytest.raises(RuntimeError):
+        for c in serve(app, mongo_db):
+            assert c.get("/v1/health").status_code == 200
+    assert sorted(closed) == ["apns", "mongo", "oidc", "webpush"]
 
 
 async def test_purge_loop_survives_any_error():

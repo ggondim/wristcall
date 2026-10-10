@@ -32,6 +32,7 @@ log = logging.getLogger("wristcall_cloud.push")
 DEFAULT_HOSTS = (".push.apple.com", "fcm.googleapis.com", ".push.services.mozilla.com", ".notify.windows.com")
 VAPID_TTL_S = 12 * 3600
 VAPID_RENEW_S = 3600  # a cached VAPID header is replaced this long before it expires
+VAPID_CACHE_MAX = 1000  # origins; past it the cache starts over (there are a handful of push services)
 OK = frozenset({200, 201, 202})
 GONE = frozenset({404, 410})
 REFUSED = frozenset({400, 403, 413})  # our request was wrong (logged with the status); trying later may not help
@@ -139,6 +140,8 @@ class Vapid:
         token = jwt.encode({"aud": origin, "exp": exp, "sub": self.subject}, self._key, algorithm="ES256")
         value = f"vapid t={token}, k={self.public_key}"
         self._cache = {o: c for o, c in self._cache.items() if now < c[1] - VAPID_RENEW_S}
+        if len(self._cache) >= VAPID_CACHE_MAX:
+            self._cache = {}
         self._cache[origin] = (value, exp)
         return value
 

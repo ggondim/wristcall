@@ -253,6 +253,17 @@ def test_vapid_header_is_cached_per_origin():
     assert renewed != first and claims(renewed)["exp"] == int(now) + 23 * 3600
 
 
+def test_vapid_header_cache_is_bounded():
+    vapid = Vapid(VAPID_PEM, SUBJECT)
+    now = 1_800_000_000.0
+    for i in range(1000):
+        vapid.header(f"https://push{i}.example.com/x", now)
+    assert len(vapid._cache) == 1000
+    # One origin more: the cache starts over instead of growing without end.
+    vapid.header("https://push1000.example.com/x", now)
+    assert len(vapid._cache) == 1
+
+
 def test_vapid_refuses_bad_keys_and_subjects():
     p384_pem = ec.generate_private_key(ec.SECP384R1()).private_bytes(
         serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())

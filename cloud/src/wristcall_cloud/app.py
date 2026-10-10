@@ -9,7 +9,7 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -346,6 +346,16 @@ async def list_agents(request: Request, caller: Caller = Depends(current_account
     }
 
 
+async def _stop(task: asyncio.Task[None]) -> None:
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:  # the task died earlier; what is closed after it must close all the same
+        log.warning("push purge task had stopped (%s)", type(e).__name__)
+
+
 def create_app(
     config: CloudConfig,
     *,
@@ -398,37 +408,23 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        mongo = None
-        current = store
-        if current is None:
-            mongo, current = open_store(config)
-        app.state.store = current
-        purger: asyncio.Task[None] | None = None
-        try:
+        # On the way out, what was pushed is stopped or closed in the reverse order, each one even when one before
+        # it failed (the failures are raised after all of them ran).
+        async with AsyncExitStack() as stack:
+            for client in (owned_http, webpush_http, apns_http):
+                if client is not None:
+                    stack.push_async_callback(client.aclose)
+            current = store
+            if current is None:
+                mongo, current = open_store(config)
+                stack.push_async_callback(mongo.close)
+            app.state.store = current
             await current.ensure_indexes()
             purger = asyncio.create_task(
                 purge_idle_loop(current, every_s=config.push_cleanup_every_s, idle_s=config.push_idle_days * 86400)
             )
+            stack.push_async_callback(_stop, purger)
             yield
-        finally:
-            try:
-                if purger is not None:
-                    purger.cancel()
-                    try:
-                        await purger
-                    except asyncio.CancelledError:
-                        pass
-                    except Exception as e:  # the task died earlier; the clients below must close all the same
-                        log.warning("push purge task had stopped (%s)", type(e).__name__)
-            finally:
-                if mongo is not None:
-                    await mongo.close()
-                if owned_http is not None:
-                    await owned_http.aclose()
-                if webpush_http is not None:
-                    await webpush_http.aclose()
-                if apns_http is not None:
-                    await apns_http.aclose()
 
     app = FastAPI(title="wristcall-cloud", version=__version__, lifespan=lifespan)
     app.state.config = config

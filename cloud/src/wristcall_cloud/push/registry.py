@@ -18,6 +18,8 @@ import unicodedata
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
+from cryptography.hazmat.primitives.asymmetric import ec
+
 from ..config import CloudConfig
 from .channels import Message
 from .webpush import endpoint_allowed
@@ -166,8 +168,13 @@ def parse_registration(body: Any, config: CloudConfig) -> dict[str, Any]:
         raise _invalid("subscription.keys must be an object")
     _no_extra(keys, {"p256dh", "auth"}, "subscription.keys")
     p256dh = _b64url(keys.get("p256dh"), "subscription.keys.p256dh", 65)
-    if base64.urlsafe_b64decode(p256dh + "=" * (-len(p256dh) % 4))[0] != 4:
-        raise _invalid("subscription.keys.p256dh must be an uncompressed P-256 point")
+    point = base64.urlsafe_b64decode(p256dh + "=" * (-len(p256dh) % 4))
+    try:
+        if point[0] != 4:  # from_encoded_point also takes the compressed form
+            raise ValueError
+        ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), point)
+    except ValueError:
+        raise _invalid("subscription.keys.p256dh must be an uncompressed P-256 point") from None
     return {
         "platform": "webpush",
         "channel": _endpoint(subscription.get("endpoint"), config.webpush_hosts),
