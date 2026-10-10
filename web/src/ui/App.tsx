@@ -1,4 +1,7 @@
 import type { AppConfig } from "../config"
+import type { ServersModel } from "../models/servers"
+import { ServerDetailView } from "./ServerDetailView"
+import { ServersView } from "./ServersView"
 import { onNavigate, parseRoute, type Route } from "./route"
 import { Tabs } from "./Tabs"
 import { useEffect, useState } from "preact/hooks"
@@ -10,6 +13,7 @@ export interface AppProps {
   /** Pending approval requests, shown on the Servers tab. */
   badge: Model<{ count: number }>
   config: AppConfig
+  servers: ServersModel
 }
 
 function titleOf(route: Route): string {
@@ -28,7 +32,13 @@ function titleOf(route: Route): string {
 }
 
 // The screens arrive with their own tasks; each route renders its title until then.
-function Screen({ route, config }: { route: Route; config: AppConfig }) {
+function Screen({ route, config, servers }: { route: Route; config: AppConfig; servers: ServersModel }) {
+  if (route.tab === "servers") {
+    if (route.path === "/" || route.path === "/servers") return <ServersView model={servers} />
+    if (route.path !== "/servers/add") {
+      return <ServerDetailView model={servers} id={decodeId(route.path.slice("/servers/".length))} />
+    }
+  }
   return (
     <main class="screen">
       <h1>{titleOf(route)}</h1>
@@ -37,12 +47,20 @@ function Screen({ route, config }: { route: Route; config: AppConfig }) {
   )
 }
 
-export function App({ badge, config }: AppProps) {
+function decodeId(segment: string): string {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return segment
+  }
+}
+
+export function App({ badge, config, servers }: AppProps) {
   const [route, setRoute] = useState<Route>(() => parseRoute(location.pathname))
   useEffect(() => onNavigate(() => setRoute(parseRoute(location.pathname))), [])
   return (
     <>
-      <Screen route={route} config={config} />
+      <Screen route={route} config={config} servers={servers} />
       {route.tab === "callback" ? null : <Tabs route={route} badge={badge} />}
     </>
   )
