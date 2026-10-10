@@ -73,6 +73,8 @@ final class AppState {
     /// `false` after a failed Keychain read: the list in memory is not the saved one, so nothing is
     /// saved until a read succeeds (otherwise the saved servers would be overwritten).
     @ObservationIgnored private var storeReadable = true
+    /// `true` once the Keychain list was read at least once (by `load()` or `loadStoreIfNeeded()`).
+    @ObservationIgnored private var storeRead = false
 
     init(
         store: any ManagedServerStore = KeychainManagedServerStore(),
@@ -92,8 +94,17 @@ final class AppState {
         await refresh()
     }
 
+    /// Reads the Keychain when nothing did yet, without asking any server: a notification action can start
+    /// the app cold, with no `load()`. Returns `false` when the saved list could not be read.
+    @discardableResult
+    func loadStoreIfNeeded() -> Bool {
+        if !storeRead { readStore() }
+        return ensureReadable()
+    }
+
     /// Reads the saved list; a failure leaves the store marked unreadable and the list empty.
     private func readStore() {
+        storeRead = true
         do {
             servers = try store.load()
             storeReadable = true

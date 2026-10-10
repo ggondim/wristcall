@@ -85,12 +85,62 @@ final class FakeServerAPI: ServerAPI, @unchecked Sendable {
         return providerList
     }
 
-    func devices() async throws -> [DeviceRecord] { [] }
-    func revokeDevice(_ id: String) async throws {}
-    func createPairingCode() async throws -> PairingCodeGrant { throw APIError.notFound }
-    func pairingRequests() async throws -> [ApprovalRequest] { [] }
-    func approve(requestID: String) async throws -> String { "" }
-    func deny(requestID: String) async throws {}
+    var deviceList: [DeviceRecord] = []
+    var devicesError: (any Error)?
+    var revokeError: (any Error)?
+    private(set) var revokedDevices: [String] = []
+    var grant: PairingCodeGrant?
+    var pairingCodeError: (any Error)?
+    var requestList: [ApprovalRequest] = []
+    var requestsError: (any Error)?
+    var approveError: (any Error)?
+    var denyError: (any Error)?
+    private(set) var approvedRequests: [String] = []
+    private(set) var deniedRequests: [String] = []
+    /// Runs after the pending requests were read and before they are returned (a tap that lands mid refresh).
+    var afterListing: (@Sendable () async -> Void)?
+
+    func devices() async throws -> [DeviceRecord] {
+        calls.append("devices")
+        if let devicesError { throw devicesError }
+        return deviceList
+    }
+
+    func revokeDevice(_ id: String) async throws {
+        calls.append("revokeDevice")
+        if let revokeError { throw revokeError }
+        revokedDevices.append(id)
+        deviceList.removeAll { $0.id == id }
+    }
+
+    func createPairingCode() async throws -> PairingCodeGrant {
+        calls.append("createPairingCode")
+        if let pairingCodeError { throw pairingCodeError }
+        guard let grant else { throw APIError.notFound }
+        return grant
+    }
+
+    func pairingRequests() async throws -> [ApprovalRequest] {
+        calls.append("pairingRequests")
+        if let requestsError { throw requestsError }
+        let list = requestList
+        await afterListing?()
+        return list
+    }
+
+    func approve(requestID: String) async throws -> String {
+        calls.append("approve")
+        if let approveError { throw approveError }
+        approvedRequests.append(requestID)
+        return requestList.first { $0.requestId == requestID }?.deviceName ?? ""
+    }
+
+    func deny(requestID: String) async throws {
+        calls.append("deny")
+        if let denyError { throw denyError }
+        deniedRequests.append(requestID)
+    }
+
     func calls(_ query: HistoryQuery) async throws -> CallPage { CallPage(calls: []) }
     func deleteCall(_ id: String) async throws {}
     func deleteCalls(agent: String?) async throws -> Int { 0 }

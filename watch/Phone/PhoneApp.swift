@@ -3,32 +3,51 @@ import WristcallKit
 
 @main
 struct PhoneApp: App {
-    @State private var state = AppState()
+    @State private var state: AppState
+    @State private var approvals: ApprovalsModel
+    @Environment(\.scenePhase) private var scenePhase
+
+    init() {
+        let state = AppState()
+        _state = State(initialValue: state)
+        _approvals = State(initialValue: ApprovalsModel(state: state))
+    }
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environment(state)
+                .environment(approvals)
                 .task { await start() }
+                .onChange(of: scenePhase) { _, phase in
+                    // Back in the foreground: ask the servers for device approvals waiting for the owner.
+                    if phase == .active, !Self.isUnitTest { Task { await approvals.refresh() } }
+                }
         }
     }
 
+    private static var isUnitTest: Bool { ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil }
+
     private func start() async {
         // The unit tests run hosted in this app: they bring their own state and nothing should hit the network.
-        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
+        guard !Self.isUnitTest else { return }
         await state.load()
         #if DEBUG
         await DebugLaunch.apply(to: state)
         #endif
+        await approvals.refresh()
     }
 }
 
 struct RootView: View {
+    @Environment(ApprovalsModel.self) private var approvals
+
     var body: some View {
         TabView {
             Tab("Servers", systemImage: "server.rack") {
                 ServersView()
             }
+            .badge(approvals.pending.count)
             Tab("History", systemImage: "clock") {
                 NavigationStack {
                     ContentUnavailableView(
@@ -86,8 +105,8 @@ enum DebugLaunch {
 #endif
 
 #if DEBUG
-/// `-debugOpen server|agents|form-new|form-edit` opens that screen at launch (simulator smoke tests have no
-/// way to tap): the first server, its agents, the form for a new agent, or the form of the last agent.
+/// `-debugOpen server|agents|form-new|form-edit|devices|code` opens that screen at launch (simulator smoke tests have no
+/// way to tap): the first server, its agents, the form for a new agent, the form of the last agent, the devices of the server, or its pairing code.
 enum DebugRoute {
     static let value: String? = {
         let args = ProcessInfo.processInfo.arguments
@@ -96,6 +115,7 @@ enum DebugRoute {
     }()
 
     static var opensServer: Bool { value != nil }
+    static var opensDevices: Bool { ["devices", "code"].contains(value ?? "") }
     static var opensAgents: Bool { ["agents", "form-new", "form-edit"].contains(value ?? "") }
 }
 #endif

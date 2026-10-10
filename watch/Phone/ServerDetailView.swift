@@ -5,12 +5,14 @@ struct ServerDetailView: View {
     let serverID: String
 
     @Environment(AppState.self) private var state
+    @Environment(ApprovalsModel.self) private var approvals
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var renameError: String?
     @State private var confirmingRemoval = false
     #if DEBUG
     @State private var debugAgents = false
+    @State private var debugDevices = false
     #endif
     @FocusState private var nameFocused: Bool
 
@@ -59,10 +61,12 @@ struct ServerDetailView: View {
             }
 
             Section {
-                // Devices (task 6) land here.
-                Label("Devices", systemImage: "applewatch").foregroundStyle(.secondary)
-            } footer: {
-                Text("Coming soon.")
+                NavigationLink {
+                    DevicesView(server: server)
+                } label: {
+                    Label("Devices", systemImage: "applewatch")
+                }
+                .badge(approvals.pending.filter { $0.serverID == server.id }.count)
             }
 
             Section {
@@ -71,8 +75,12 @@ struct ServerDetailView: View {
         }
         .onAppear { name = server.name }
         #if DEBUG
-        .task { debugAgents = DebugRoute.opensAgents }
+        .task {
+            debugAgents = DebugRoute.opensAgents
+            debugDevices = DebugRoute.opensDevices
+        }
         .navigationDestination(isPresented: $debugAgents) { AgentListView(server: server) }
+        .navigationDestination(isPresented: $debugDevices) { DevicesView(server: server) }
         #endif
         .confirmationDialog("Remove \(server.name)?", isPresented: $confirmingRemoval, titleVisibility: .visible) {
             Button("Remove server", role: .destructive) {

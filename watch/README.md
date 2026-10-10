@@ -107,7 +107,7 @@ The default `IOS_DESTINATION` is an "iPhone 17" simulator. `CLOUD_URL` and `RELA
 `WRISTCALL_CLOUD_URL` and `WRISTCALL_RELAY_URL` for every build target of the Makefile (they can also go in
 `Config/Local.xcconfig`); left empty, the apps have no account and no push. In Debug builds
 `-addServer <URL> -addServerToken <token> [-addServerName <name>]` adds a server at launch, and
-`-debugOpen server|agents|form-new|form-edit` opens that screen (simulator smoke tests, which cannot tap).
+`-debugOpen server|agents|form-new|form-edit|devices|code` opens that screen (simulator smoke tests, which cannot tap).
 `AgentsLiveTests` run against a test server when `TEST_RUNNER_WRISTCALL_TEST_SERVER` and
 `TEST_RUNNER_WRISTCALL_TEST_TOKEN` are set for `make test-ios`.
 
