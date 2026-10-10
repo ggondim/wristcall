@@ -76,6 +76,40 @@ describe("AddServerView", () => {
 
   const office = { id: "c1", name: "Office", url: "https://office.example.com", kind: "self-hosted" as const, linked: false, agents: [], created_at: "", updated_at: "" }
 
+  test("pairingCodeFollowsTheAccountWithoutLeavingTheScreen", async () => {
+    const { servers } = await world()
+    const listeners = new Set<() => void>()
+    const link = {
+      state: "signedIn" as "signedIn" | "signedOut",
+      cloudUrl: CLOUD,
+      serverToken: async (audience: string) => ({ token: "t", audience, expires_at: 1 }),
+      onStateChange: (listener: () => void) => {
+        listeners.add(listener)
+        return () => {
+          listeners.delete(listener)
+        }
+      },
+    }
+    const { unmount } = render(<AddServerView model={new AddServerModel(servers, link)} />)
+    fireEvent.click(screen.getByRole("button", { name: "Pairing code" }))
+    expect(screen.getByLabelText("Pairing code")).toBeTruthy()
+    act(() => {
+      link.state = "signedOut"
+      for (const listener of listeners) listener()
+    })
+    expect(screen.queryByRole("button", { name: "Pairing code" })).toBeNull()
+    expect(screen.getByLabelText("Personal token")).toBeTruthy()
+    act(() => {
+      link.state = "signedIn"
+      for (const listener of listeners) listener()
+    })
+    expect(screen.getByRole("button", { name: "Pairing code" })).toBeTruthy()
+    act(() => {
+      unmount()
+    })
+    expect(listeners.size).toBe(0)
+  })
+
   test("setUpRowPrefillsAddressAndNameForAnAccountServerAndStartsWithTheCode", async () => {
     history.replaceState(null, "", "/servers/add?url=https%3A%2F%2FOffice.example.com%3A443%2F&name=Whatever")
     const { servers, session } = await world({ signedIn: true })

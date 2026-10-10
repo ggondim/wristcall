@@ -14,6 +14,9 @@ function requestedUrl(): string {
 export function AddServerView({ model }: { model: AddServerModel }) {
   const [requested] = useState(requestedUrl)
   const { fromAccount } = useModel(model.servers)
+  // The account can sign in or out while this screen is up (a refused renewal): the pairing code follows.
+  const [, setAccountTick] = useState(0)
+  useEffect(() => model.onAccountChange(() => setAccountTick((n) => n + 1)), [model])
   const canUseCode = model.canUseCode
   const [address, setAddress] = useState("")
   const [name, setName] = useState("")

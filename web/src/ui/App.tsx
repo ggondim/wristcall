@@ -1,10 +1,14 @@
 import type { AppConfig } from "../config"
+import type { AccountModel } from "../models/account"
 import { AddServerModel } from "../models/addServer"
 import { ApprovalsModel } from "../models/approvals"
 import type { AccountLink, ServersModel } from "../models/servers"
+import { SettingsView } from "./AccountView"
 import { AddServerView } from "./AddServerView"
 import { AgentsScreen } from "./AgentsView"
+import { ApproveWatchSignInView } from "./ApproveWatchSignInView"
 import { ApprovalsView } from "./ApprovalsView"
+import { CallbackView } from "./CallbackView"
 import { DevicesScreen } from "./DevicesView"
 import { ServerDetailView } from "./ServerDetailView"
 import { ServersView } from "./ServersView"
@@ -24,6 +28,8 @@ export interface AppProps {
   servers: ServersModel
   /** The account sign-in; null when the site runs without accounts. */
   session?: AccountLink | null
+  /** The account screens (Settings, the sign-in callback); null when the site runs without accounts. */
+  account?: AccountModel | null
 }
 
 function titleOf(route: Route): string {
@@ -44,16 +50,16 @@ function titleOf(route: Route): string {
 // The screens arrive with their own tasks; each route renders its title until then.
 function Screen({
   route,
-  config,
   servers,
   approvals,
   session,
+  account,
 }: {
   route: Route
-  config: AppConfig
   servers: ServersModel
   approvals: ApprovalsModel
   session: AccountLink | null
+  account: AccountModel | null
 }) {
   const addServer = useMemo(() => new AddServerModel(servers, session), [servers, session])
   if (route.tab === "servers") {
@@ -66,10 +72,14 @@ function Screen({
     return <ServerDetailView model={servers} id={decodeId(route.path.slice("/servers/".length))} account={session} />
   }
   if (route.tab === "approvals") return <ApprovalsView model={approvals} />
+  if (route.tab === "callback") return <CallbackView model={account} />
+  if (route.tab === "settings") {
+    if (route.path === "/settings/watch" && account !== null) return <ApproveWatchSignInView model={account} />
+    return <SettingsView account={account} />
+  }
   return (
     <main class="screen">
       <h1>{titleOf(route)}</h1>
-      {route.tab === "settings" ? <p>{config.cloudUrl ? "Account sign-in is available." : "Account sign-in is not configured."}</p> : null}
     </main>
   )
 }
@@ -82,17 +92,19 @@ function decodeId(segment: string): string {
   }
 }
 
-export function App({ badge, approvals: given, config, servers, session = null }: AppProps) {
+export function App({ badge, approvals: given, servers, session = null, account = null }: AppProps) {
   const [route, setRoute] = useState<Route>(() => parseRoute(location.pathname))
   const [search, setSearch] = useState(() => location.search)
-  useEffect(
-    () =>
-      onNavigate(() => {
-        setRoute(parseRoute(location.pathname))
-        setSearch(location.search)
-      }),
-    [],
-  )
+  useEffect(() => {
+    const read = () => {
+      const next = parseRoute(location.pathname)
+      setRoute((now) => (now.tab === next.tab && now.path === next.path ? now : next))
+      setSearch(location.search)
+    }
+    const off = onNavigate(read)
+    read() // a screen's own effect (they run first) may have moved the address before this subscription existed
+    return off
+  }, [])
   const approvals = useMemo(() => given ?? new ApprovalsModel(servers), [given, servers])
   // A notification opens `/approvals?server=&request=&expires=`: the model checks the request and highlights it.
   useEffect(() => {
@@ -105,7 +117,7 @@ export function App({ badge, approvals: given, config, servers, session = null }
   }, [route, search, approvals])
   return (
     <>
-      <Screen route={route} config={config} servers={servers} approvals={approvals} session={session} />
+      <Screen route={route} servers={servers} approvals={approvals} session={session} account={account} />
       {route.tab === "callback" ? null : <Tabs route={route} badge={badge} />}
     </>
   )

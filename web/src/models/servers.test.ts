@@ -116,6 +116,24 @@ describe("ServersModel", () => {
     expect(model.state.fromAccount.map((c) => c.id)).toEqual(["a", "b"])
   })
 
+  test("forgetAccountUnlinksEverythingAndKeepsTheServers", async () => {
+    const store = await fresh(
+      server({ id: "1", linked: true, cloudServerId: "c-1", pushKey: "wc_push_k" }),
+      server({ id: "2", url: "https://office.example.com", token: "wc_pat_two", addedAt: 2 }),
+    )
+    const model = new ServersModel(store, clients(() => ok(HEALTH)))
+    await model.load()
+    model.setFromAccount([cloud({ id: "a", url: "https://other.example.com" })])
+    const events: string[] = []
+    model.onChange((event) => events.push(event.kind))
+    await model.forgetAccount()
+    expect(await store.get("1")).toMatchObject({ linked: false, cloudServerId: null, token: "wc_pat_secret", pushKey: "wc_push_k" })
+    expect(await store.get("2")).toMatchObject({ token: "wc_pat_two", linked: false, cloudServerId: null })
+    expect(model.state.rows.map((row) => row.server.linked)).toEqual([false, false])
+    expect(model.state.fromAccount).toEqual([])
+    expect(events).toEqual([]) // the agenda belongs to the account that left: nothing to mirror
+  })
+
   test("removeForgetsAndNotifiesThenCallsTheHook", async () => {
     const store = await fresh(server())
     const model = new ServersModel(store, clients(() => ok(HEALTH)))

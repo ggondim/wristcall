@@ -39,6 +39,7 @@ export class AccountSession {
   readonly #now: () => number
   readonly #origin: string
   readonly #listeners = new Set<() => void>()
+  readonly #changeListeners = new Set<() => void>()
 
   #state: SessionState = "signedOut"
   #config: Promise<CloudConfig> | null = null
@@ -72,7 +73,9 @@ export class AccountSession {
 
   /** Reads the refresh token from the database: signed in when there is one. */
   async load(): Promise<void> {
+    const before = this.#state
     this.#state = (await this.#store.getKV<string>(KEY_REFRESH)) ? "signedIn" : "signedOut"
+    if (this.#state !== before) this.#notifyChange()
   }
 
   /** `GET /v1/config`, kept in memory after the first success. */
@@ -111,6 +114,7 @@ export class AccountSession {
     this.#refreshing = null
     await this.#save(tokens)
     this.#state = "signedIn"
+    this.#notifyChange()
   }
 
   /** An access token with at least 60 s to live. Renews when needed, one renewal at a time. */
@@ -154,6 +158,14 @@ export class AccountSession {
     return endSessionUrl(provider.provider, provider.clientId, `${this.#origin}/`, idToken)
   }
 
+  /** Calls `listener` whenever `state` changes (signed in, signed out or ended by the provider). Returns the unsubscribe. */
+  onStateChange(listener: () => void): () => void {
+    this.#changeListeners.add(listener)
+    return () => {
+      this.#changeListeners.delete(listener)
+    }
+  }
+
   onSignedOut(listener: () => void): () => void {
     this.#listeners.add(listener)
     return () => {
@@ -188,7 +200,14 @@ export class AccountSession {
     const wasSignedIn = this.#state === "signedIn"
     this.#access = null
     this.#state = "signedOut"
-    if (wasSignedIn) for (const listener of [...this.#listeners]) listener()
+    if (wasSignedIn) {
+      for (const listener of [...this.#listeners]) listener()
+      this.#notifyChange()
+    }
+  }
+
+  #notifyChange(): void {
+    for (const listener of [...this.#changeListeners]) listener()
   }
 
   async #clear(): Promise<void> {

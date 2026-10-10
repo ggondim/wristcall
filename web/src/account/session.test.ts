@@ -415,6 +415,24 @@ describe("signOut", () => {
     expect(calls).toBe(0)
   })
 
+  test("onStateChange: tells about signing in, loading and signing out, and unsubscribes", async () => {
+    const { w, href } = await sessionWithPending()
+    let calls = 0
+    const off = w.session.onStateChange(() => (calls += 1))
+    await w.session.completeSignIn(href)
+    expect(calls).toBe(1)
+    await w.session.signOut()
+    expect(calls).toBe(2)
+    const other = tab(w)
+    let loads = 0
+    other.onStateChange(() => (loads += 1))
+    await other.load() // signed out in the database: nothing changed
+    expect(loads).toBe(0)
+    off()
+    await w.session.beginSignIn()
+    expect(calls).toBe(2)
+  })
+
   test("onSignedOut: the returned function unsubscribes", async () => {
     const w = await signedInSession()
     let calls = 0

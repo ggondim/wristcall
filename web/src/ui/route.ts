@@ -53,6 +53,12 @@ export function navigate(path: string): void {
   window.dispatchEvent(new Event(NAVIGATE_EVENT))
 }
 
+/** Like `navigate`, but replaces the current history entry (the callback address must not stay in the back stack). */
+export function replaceRoute(path: string): void {
+  history.replaceState(null, "", path)
+  window.dispatchEvent(new Event(NAVIGATE_EVENT))
+}
+
 /** Calls `listener` on every navigation, by the back button or by navigate(). Returns the unsubscribe. */
 export function onNavigate(listener: () => void): () => void {
   window.addEventListener("popstate", listener)

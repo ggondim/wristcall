@@ -65,6 +65,11 @@ export class AddServerModel {
     return this.#session !== null && this.#session.state === "signedIn"
   }
 
+  /** Calls the listener when the account signs in or out (`canUseCode` may have changed). Returns the unsubscribe. */
+  onAccountChange(listener: () => void): () => void {
+    return this.#session?.onStateChange?.(listener) ?? (() => {})
+  }
+
   async addWithToken(address: string, token: string, name = ""): Promise<AddResult> {
     const url = parseServerAddress(address)
     if (url === null) return fail(BAD_ADDRESS)

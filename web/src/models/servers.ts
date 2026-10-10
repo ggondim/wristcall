@@ -16,6 +16,8 @@ export interface AccountLink {
   readonly state: "signedOut" | "signedIn"
   readonly cloudUrl: string
   serverToken(audience: string): Promise<{ token: string; audience: string; expires_at: number }>
+  /** Calls the listener when `state` changes (signing in or out, even in the background). Returns the unsubscribe. */
+  onStateChange?(listener: () => void): () => void
 }
 
 export interface ServerRow {
@@ -278,6 +280,20 @@ export class ServersModel extends BaseModel<ServersState> {
     if (updated === null) return
     this.set({ rows: this.state.rows.map((row) => (row.server.id === id ? { ...row, server: updated } : row)) })
     this.#emit({ kind: "updated", server: updated })
+  }
+
+  /**
+   * After signing out: the agenda ids and the links belonged to that account, and its list is no longer shown. The
+   * servers and their tokens stay. No change event: nobody mirrors this to the (gone) agenda.
+   */
+  async forgetAccount(): Promise<void> {
+    this.#account = []
+    for (const server of await this.#store.list()) {
+      if (server.linked || server.cloudServerId !== null) await this.#store.update(server.id, { linked: false, cloudServerId: null })
+    }
+    this.#changes++
+    const stored = new Map((await this.#store.list()).map((server) => [server.id, server]))
+    this.set({ rows: this.state.rows.map((row) => ({ ...row, server: stored.get(row.server.id) ?? row.server })), fromAccount: [] })
   }
 
   /** A server was saved by another screen (adding, or the account link): checks it and tells the listeners. */
