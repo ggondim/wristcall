@@ -1,0 +1,417 @@
+import Foundation
+import Synchronization
+import Testing
+import WristcallKit
+import WristcallKitTesting
+
+struct AccountSessionTests {
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    var stale: TokenSet { TokenSet(accessToken: "old", refreshToken: "rt", expiresAt: now.addingTimeInterval(10)) }
+    var fresh: TokenSet { TokenSet(accessToken: "fresh-at", refreshToken: "rt", expiresAt: now.addingTimeInterval(3600)) }
+
+    func session(_ world: StubAccountWorld, store: any TokenStore, kind: AccountClientKind = .ios) -> AccountSession {
+        let now = now
+        return AccountSession(cloud: world.cloud.url, kind: kind, store: store, session: .stubbed(), now: { now })
+    }
+
+    // MARK: - Access token
+
+    @Test func refreshInvalidGrantSignsOut() async throws {
+        let world = StubAccountWorld(token: { _ in StubHost.Reply(400, #"{"error":"invalid_grant"}"#) })
+        let store = InMemoryTokenStore(stale)
+        let session = session(world, store: store)
+        await #expect(throws: AccountError.signedOut) { try await session.accessToken() }
+        #expect(try store.load() == nil)
+        #expect(await !session.isSignedIn)
+        await #expect(throws: AccountError.signedOut) { try await session.accessToken() }
+        #expect(world.tokenRequests.count == 1)  // no retry loop
+    }
+
+    @Test func freshTokenIsNotRefreshed() async throws {
+        let world = StubAccountWorld()
+        let session = session(world, store: InMemoryTokenStore(fresh))
+        #expect(try await session.accessToken() == "fresh-at")
+        #expect(world.endpoints.requests.isEmpty)
+        #expect(world.cloud.requests.isEmpty)
+        #expect(await session.isSignedIn)
+    }
+
+    @Test func staleTokenIsRefreshedAndSaved() async throws {
+        let world = StubAccountWorld()
+        let store = InMemoryTokenStore(stale)
+        let session = session(world, store: store)
+        #expect(try await session.accessToken() == "new-at")
+        #expect(try store.load() == TokenSet(accessToken: "new-at", refreshToken: "new-rt", expiresAt: now.addingTimeInterval(3600)))
+        let form = try #require(world.tokenRequests.first).form()
+        #expect(form == ["grant_type": "refresh_token", "refresh_token": "rt", "client_id": "wristcall-ios"])
+        // The Cloud config and the issuer document are read once and kept.
+        #expect(try await session.accessToken() == "new-at")
+        _ = try await session.oidc()
+        #expect(world.cloud.requests.filter { $0.path == "/v1/config" }.count == 1)
+        #expect(world.issuer.requests.count == 1)
+    }
+
+    @Test func watchUsesTheWatchClient() async throws {
+        let world = StubAccountWorld()
+        let session = session(world, store: InMemoryTokenStore(stale), kind: .watch)
+        _ = try await session.accessToken()
+        #expect(try #require(world.tokenRequests.first).form()["client_id"] == "wristcall-watch")
+        let (client, provider) = try await session.oidc()
+        #expect(client.clientID == "wristcall-watch")
+        #expect(provider.issuer == world.issuer.url.absoluteString)
+    }
+
+    @Test func concurrentCallsRefreshOnce() async throws {
+        // The refreshed token is short-lived (30 s, under the 60 s margin): a second call that did not
+        // wait for the first refresh would refresh again.
+        let world = StubAccountWorld(token: { _ in
+            Thread.sleep(forTimeInterval: 0.1)
+            return StubHost.Reply(200, #"{"access_token":"new-at","refresh_token":"new-rt","expires_in":30}"#)
+        })
+        let session = session(world, store: InMemoryTokenStore(stale))
+        async let first = session.accessToken()
+        async let second = session.accessToken()
+        let tokens = try await [first, second]
+        #expect(tokens == ["new-at", "new-at"])
+        #expect(world.tokenRequests.count == 1)
+    }
+
+    @Test func refreshNetworkFailureKeepsTheTokens() async throws {
+        let world = StubAccountWorld(token: { _ in throw URLError(.notConnectedToInternet) })
+        let store = InMemoryTokenStore(stale)
+        let session = session(world, store: store)
+        await #expect(throws: OIDCError.network(.notConnectedToInternet)) { try await session.accessToken() }
+        #expect(try store.load() == stale)
+        #expect(await session.isSignedIn)
+    }
+
+    @Test func noTokensIsSignedOut() async throws {
+        let world = StubAccountWorld()
+        let session = session(world, store: InMemoryTokenStore())
+        #expect(await !session.isSignedIn)
+        await #expect(throws: AccountError.signedOut) { try await session.accessToken() }
+        #expect(world.cloud.requests.isEmpty)
+    }
+
+    @Test func staleTokenWithoutRefreshTokenSignsOut() async throws {
+        let world = StubAccountWorld()
+        let store = InMemoryTokenStore(TokenSet(accessToken: "old", refreshToken: nil, expiresAt: now))
+        let session = session(world, store: store)
+        await #expect(throws: AccountError.signedOut) { try await session.accessToken() }
+        #expect(try store.load() == nil)
+        #expect(world.endpoints.requests.isEmpty)
+    }
+
+    @Test func signInSavesTheTokens() async throws {
+        let world = StubAccountWorld()
+        let store = InMemoryTokenStore()
+        let session = session(world, store: store)
+        try await session.signIn(fresh)
+        #expect(try store.load() == fresh)
+        #expect(try await session.accessToken() == "fresh-at")
+    }
+
+    @Test func signInDuringARefreshWins() async throws {
+        // A refresh that ends after a new sign-in must not overwrite the new tokens.
+        let world = StubAccountWorld(token: { _ in
+            Thread.sleep(forTimeInterval: 0.2)
+            return StubHost.Reply(200, #"{"access_token":"late-at","refresh_token":"late-rt","expires_in":3600}"#)
+        })
+        let store = InMemoryTokenStore(stale)
+        let session = session(world, store: store)
+        let refreshing = Task { try await session.accessToken() }
+        while world.tokenRequests.isEmpty {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let signedIn = TokenSet(accessToken: "other-at", refreshToken: "other-rt", expiresAt: now.addingTimeInterval(3600))
+        try await session.signIn(signedIn)
+        _ = try? await refreshing.value
+        #expect(try store.load() == signedIn)
+        #expect(try await session.accessToken() == "other-at")
+    }
+
+    @Test func refreshKeepsTheOldIDTokenWhenNoneComesBack() async throws {
+        let world = StubAccountWorld()
+        let store = InMemoryTokenStore(TokenSet(accessToken: "old", refreshToken: "rt", expiresAt: now, idToken: "id-1"))
+        let session = session(world, store: store)
+        _ = try await session.accessToken()
+        #expect(try store.load()?.idToken == "id-1")
+    }
+
+    @Test func failedSaveKeepsTheRefreshedTokensInMemory() async throws {
+        // Zitadel rotates refresh tokens: losing the new one would sign the user out at the next refresh.
+        let world = StubAccountWorld()
+        let store = FlakyTokenStore(stale)
+        store.failSaves = true
+        let session = session(world, store: store)
+        #expect(try await session.accessToken() == "new-at")
+        #expect(try await session.accessToken() == "new-at")
+        #expect(world.tokenRequests.count == 1)
+        #expect(await session.isSignedIn)
+
+        // The save is tried again once the store works.
+        store.failSaves = false
+        #expect(try await session.accessToken() == "new-at")
+        #expect(try store.load()?.refreshToken == "new-rt")
+    }
+
+    @Test func failedSaveIsForgottenBySignOut() async throws {
+        let world = StubAccountWorld()
+        let store = FlakyTokenStore(stale)
+        store.failSaves = true
+        let session = session(world, store: store)
+        _ = try await session.accessToken()
+        await session.signOut()
+        #expect(await !session.isSignedIn)
+        await #expect(throws: AccountError.signedOut) { try await session.accessToken() }
+        #expect(try #require(world.revokeRequests.first).form()["token"] == "new-rt")
+    }
+
+    @Test func signOutDuringARefreshSignsTheWaitersOut() async throws {
+        let world = StubAccountWorld(token: { _ in
+            Thread.sleep(forTimeInterval: 0.2)
+            return StubHost.Reply(200, #"{"access_token":"late-at","refresh_token":"late-rt","expires_in":3600}"#)
+        })
+        let store = InMemoryTokenStore(stale)
+        let session = session(world, store: store)
+        let first = Task { try await session.accessToken() }
+        while world.tokenRequests.isEmpty {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let joined = Task { try await session.accessToken() }
+        try await Task.sleep(for: .milliseconds(20))
+        await session.signOut()
+        await #expect(throws: AccountError.signedOut) { try await first.value }
+        await #expect(throws: AccountError.signedOut) { try await joined.value }
+        #expect(try store.load() == nil)
+    }
+
+    @Test func signInDuringARefreshHandsWaitersTheNewTokens() async throws {
+        let world = StubAccountWorld(token: { _ in
+            Thread.sleep(forTimeInterval: 0.2)
+            return StubHost.Reply(200, #"{"access_token":"late-at","refresh_token":"late-rt","expires_in":3600}"#)
+        })
+        let session = session(world, store: InMemoryTokenStore(stale))
+        let first = Task { try await session.accessToken() }
+        while world.tokenRequests.isEmpty {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let joined = Task { try await session.accessToken() }
+        try await Task.sleep(for: .milliseconds(20))
+        try await session.signIn(TokenSet(accessToken: "other-at", refreshToken: "other-rt", expiresAt: now.addingTimeInterval(3600)))
+        #expect(try await first.value == "other-at")
+        #expect(try await joined.value == "other-at")
+    }
+
+    @Test func signOutReturnsTheEndSessionURLWithTheIDToken() async throws {
+        let world = StubAccountWorld()
+        let store = InMemoryTokenStore(TokenSet(accessToken: "at", refreshToken: "rt", expiresAt: now.addingTimeInterval(3600), idToken: "id-1"))
+        let session = session(world, store: store)
+        let url = try #require(await session.signOut(postLogoutRedirect: URL(string: "wristcall://auth/logout")!))
+        #expect(url.path() == "/oidc/v1/end_session")
+        #expect(AccountFixtures.query(url) == [
+            "client_id": "wristcall-ios", "post_logout_redirect_uri": "wristcall://auth/logout", "id_token_hint": "id-1",
+        ])
+        #expect(try store.load() == nil)
+    }
+
+    // MARK: - Config
+
+    @Test func configWithoutClientIsNotConfigured() async throws {
+        let world = StubAccountWorld(ios: nil)
+        let session = session(world, store: InMemoryTokenStore(stale))
+        await #expect(throws: AccountError.notConfigured) { try await session.oidc() }
+        await #expect(throws: AccountError.notConfigured) { try await session.accessToken() }
+        #expect(world.issuer.requests.isEmpty)
+        #expect(world.endpoints.requests.isEmpty)
+    }
+
+    @Test func configIsCachedOnlyAfterSuccess() async throws {
+        let calls = IssuerBox()
+        let cloud = StubHost { _ in
+            let first = calls.url.isEmpty
+            calls.url = "called"
+            return first
+                ? StubHost.Reply(503, #"{"error":"unavailable","message":"later"}"#)
+                : StubHost.Reply(200, AccountFixtures.config(issuer: "https://auth.test"))
+        }
+        let session = AccountSession(cloud: cloud.url, kind: .ios, store: InMemoryTokenStore(), session: .stubbed())
+        await #expect(throws: APIError.unavailable("later")) { try await session.config() }
+        #expect(try await session.config().issuer == URL(string: "https://auth.test")!)
+        #expect(try await session.config().clients.ios == "wristcall-ios")
+        #expect(cloud.requests.count == 2)
+    }
+
+    // MARK: - Device login (the watch)
+
+    /// A provider whose device endpoint gives `zxsgkcpn` and whose token endpoint answers `polls` in order.
+    func deviceWorld(expiresIn: Int = 600, polls: [StubHost.Reply]) -> StubAccountWorld {
+        let count = Mutex(0)
+        return StubAccountWorld(token: { request in
+            if request.path.hasSuffix("/device_authorization") {
+                return StubHost.Reply(200, """
+                    {"device_code":"device-secret","user_code":"zxsgkcpn","verification_uri":"https://auth.test/device",
+                     "expires_in":\(expiresIn),"interval":5}
+                    """)
+            }
+            let index = count.withLock { value in
+                defer { value += 1 }
+                return value
+            }
+            return polls[min(index, polls.count - 1)]
+        })
+    }
+
+    @Test func deviceLoginStoresTheTokens() async throws {
+        let world = deviceWorld(polls: [
+            StubHost.Reply(400, #"{"error":"authorization_pending"}"#),
+            StubHost.Reply(200, #"{"access_token":"at-1","refresh_token":"rt-1","expires_in":3600,"token_type":"Bearer"}"#),
+        ])
+        let store = InMemoryTokenStore()
+        let sleeper = SleepRecorder()
+        let now = now
+        let session = AccountSession(
+            cloud: world.cloud.url, kind: .watch, store: store, session: .stubbed(), now: { now }, sleep: sleeper.sleep)
+        let authorization = try await session.startDeviceAuthorization()
+        #expect(authorization.userCode == "ZXSG-KCPN")
+        #expect(authorization.expiresAt == now.addingTimeInterval(600))
+        let start = try #require(world.endpoints.requests.first { $0.path.hasSuffix("/device_authorization") }).form()
+        #expect(start["client_id"] == "wristcall-watch")
+        // The Cloud's scopes (offline_access: the refresh token "Sync with account" needs later).
+        #expect(start["scope"]?.contains("offline_access") == true)
+        #expect(await !session.isSignedIn)
+
+        try await session.completeDeviceAuthorization(authorization)
+        #expect(try store.load()?.accessToken == "at-1")
+        #expect(try store.load()?.refreshToken == "rt-1")
+        #expect(sleeper.delays == [.seconds(5), .seconds(5)])
+        let polls = world.tokenRequests
+        #expect(polls.count == 2)
+        #expect(try polls[0].form()["device_code"] == "device-secret")
+    }
+
+    @Test func deviceLoginExpiredStoresNothing() async throws {
+        let world = deviceWorld(expiresIn: 3, polls: [StubHost.Reply(400, #"{"error":"authorization_pending"}"#)])
+        let store = InMemoryTokenStore()
+        let session = AccountSession(
+            cloud: world.cloud.url, kind: .watch, store: store, session: .stubbed(), now: { [now] in now }, sleep: SleepRecorder().sleep)
+        let authorization = try await session.startDeviceAuthorization()
+        await #expect(throws: OIDCError.expiredToken) {
+            try await session.completeDeviceAuthorization(authorization)
+        }
+        #expect(try store.load() == nil)
+    }
+
+    // MARK: - Per-server token
+
+    @Test func serverTokenRefusesForeignIssuer() async throws {
+        let world = StubAccountWorld()
+        let session = session(world, store: InMemoryTokenStore(fresh))
+        let health = ServerHealth(version: "0.6.0", relay: nil, account: .init(issuer: "https://evil.test", deviceCredential: "approval"))
+        await #expect(throws: AccountError.foreignIssuer("https://evil.test")) {
+            try await session.serverToken(for: URL(string: "https://srv.test")!, health: health)
+        }
+        #expect(!world.cloud.requests.contains { $0.path == "/v1/server-tokens" })
+    }
+
+    @Test func serverTokenNeedsAnAccountOnTheServer() async throws {
+        let world = StubAccountWorld()
+        let session = session(world, store: InMemoryTokenStore(fresh))
+        await #expect(throws: AccountError.serverWithoutAccount) {
+            try await session.serverToken(for: URL(string: "https://srv.test")!, health: ServerHealth(version: "0.6.0"))
+        }
+        #expect(world.cloud.requests.isEmpty)
+    }
+
+    @Test func serverTokenAsksTheCloud() async throws {
+        let world = StubAccountWorld(cloudReply: { request in
+            let audience = try request.json()["audience"] as? String ?? ""
+            return StubHost.Reply(200, #"{"token":"per-server","audience":"\#(audience)","expires_at":1800000300}"#)
+        })
+        let session = session(world, store: InMemoryTokenStore(fresh))
+        // The server names the Cloud in another (equivalent) spelling.
+        let issuer = world.cloud.url.absoluteString.uppercased().replacingOccurrences(of: "HTTPS://", with: "https://") + "/"
+        let health = ServerHealth(version: "0.6.0", account: .init(issuer: issuer, deviceCredential: "approval"))
+        let token = try await session.serverToken(for: URL(string: "https://Srv.test:443/")!, health: health)
+        #expect(token == "per-server")
+        let request = try #require(world.cloud.requests.first { $0.path == "/v1/server-tokens" })
+        #expect(request.headers["Authorization"] == "Bearer fresh-at")
+        #expect(try request.json()["audience"] as? String == "https://srv.test")
+    }
+
+    @Test func serverTokenForAnotherAudienceIsRefused() async throws {
+        let world = StubAccountWorld(cloudReply: { _ in
+            StubHost.Reply(200, #"{"token":"per-server","audience":"https://other.test","expires_at":1800000300}"#)
+        })
+        let session = session(world, store: InMemoryTokenStore(fresh))
+        let health = ServerHealth(version: "0.6.0", account: .init(issuer: world.cloud.url.absoluteString, deviceCredential: "direct"))
+        await #expect(throws: APIError.malformedResponse) {
+            try await session.serverToken(for: URL(string: "https://srv.test")!, health: health)
+        }
+    }
+
+    // MARK: - Sign out
+
+    @Test func signOutRevokesAndDeletes() async throws {
+        let world = StubAccountWorld()
+        let store = InMemoryTokenStore(fresh)
+        let session = session(world, store: store)
+        await session.signOut()
+        #expect(try store.load() == nil)
+        let revoke = try #require(world.revokeRequests.first)
+        #expect(try revoke.form() == ["token": "rt", "client_id": "wristcall-ios"])
+        #expect(await !session.isSignedIn)
+    }
+
+    @Test func signOutDeletesEvenWhenRevocationFails() async throws {
+        let world = StubAccountWorld(revoke: { _ in throw URLError(.notConnectedToInternet) })
+        let store = InMemoryTokenStore(fresh)
+        let session = session(world, store: store)
+        await session.signOut()
+        #expect(try store.load() == nil)
+        #expect(world.revokeRequests.count == 1)
+
+        // Neither the Cloud nor the issuer reachable: still signed out.
+        let offline = StubHost { _ in throw URLError(.notConnectedToInternet) }
+        let offlineStore = InMemoryTokenStore(fresh)
+        let offlineSession = AccountSession(cloud: offline.url, kind: .ios, store: offlineStore, session: .stubbed())
+        await offlineSession.signOut()
+        #expect(try offlineStore.load() == nil)
+    }
+
+    @Test func inMemoryStoreRoundTrip() throws {
+        let store = InMemoryTokenStore()
+        #expect(try store.load() == nil)
+        try store.save(fresh)
+        #expect(try store.load() == fresh)
+        try store.delete()
+        #expect(try store.load() == nil)
+        try store.delete()
+    }
+}
+
+/// A token store whose saves can be made to fail (a Keychain that refuses to write).
+final class FlakyTokenStore: TokenStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var tokens: TokenSet?
+    private var failing = false
+
+    init(_ tokens: TokenSet?) { self.tokens = tokens }
+
+    var failSaves: Bool {
+        get { lock.withLock { failing } }
+        set { lock.withLock { failing = newValue } }
+    }
+
+    func load() throws -> TokenSet? { lock.withLock { tokens } }
+
+    func save(_ tokens: TokenSet) throws {
+        try lock.withLock {
+            if failing { throw CredentialStoreError.keychain(-25308) }
+            self.tokens = tokens
+        }
+    }
+
+    func delete() throws { lock.withLock { tokens = nil } }
+}

@@ -17,7 +17,7 @@ public struct PushRelayClient: Sendable {
         self.http = PushHTTP(session: session)
     }
 
-    /// `POST /v1/push/registrations` (`events: ["call.finished"]`); returns the push key.
+    /// `POST /v1/push/registrations` with `events: ["call.finished"]` (the watch); returns the push key.
     /// `tag` comes back in every push, so the watch knows which server a push is about.
     public func register(
         deviceToken: Data,
@@ -26,12 +26,28 @@ public struct PushRelayClient: Sendable {
         label: String,
         tag: String
     ) async throws -> String {
+        try await register(
+            deviceToken: deviceToken, topic: topic, environment: environment, label: label, tag: tag,
+            events: ["call.finished"]
+        )
+    }
+
+    /// `POST /v1/push/registrations` for `events` (the phone asks for `["device.approval"]`); returns the push key.
+    public func register(
+        deviceToken: Data,
+        topic: String,
+        environment: PushEnvironment,
+        label: String,
+        tag: String,
+        events: [String]
+    ) async throws -> String {
         let body = RegistrationBody(
             token: deviceToken.map { String(format: "%02x", $0) }.joined(),
             topic: topic,
             environment: environment.rawValue,
             label: label,
-            tag: tag
+            tag: tag,
+            events: events
         )
         let request = try http.request(registrations, method: "POST", json: body)
         let (status, data) = try await http.send(request)
@@ -58,6 +74,26 @@ public struct PushRelayClient: Sendable {
         guard status == 204 || status == 404 else { throw PushHTTP.error(for: status) }
     }
 
+    /// `https://Cloud.example.com:443/` and `https://cloud.example.com` are the same relay: scheme and host
+    /// lowercased, default port dropped, trailing slash removed. The path keeps its case. A URL with user,
+    /// password, query or fragment matches nothing. Apps compare the relay a server announces with their own
+    /// (never trusting the announced one by itself).
+    public static func sameRelay(_ lhs: URL, _ rhs: URL) -> Bool {
+        func normalized(_ url: URL) -> String? {
+            guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                  let scheme = parts.scheme?.lowercased(), let host = parts.host?.lowercased(),
+                  parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil
+            else { return nil }
+            let defaultPort = ["http": 80, "https": 443][scheme]
+            let port = parts.port.flatMap { $0 == defaultPort ? nil : ":\($0)" } ?? ""
+            var path = parts.percentEncodedPath
+            while path.hasSuffix("/") { path.removeLast() }
+            return "\(scheme)://\(host)\(port)\(path)"
+        }
+        guard let left = normalized(lhs), let right = normalized(rhs) else { return false }
+        return left == right
+    }
+
     private var registrations: URL { relayURL.appending(path: "v1/push/registrations") }
     private var current: URL { registrations.appending(path: "current") }
 }
@@ -69,7 +105,7 @@ private struct RegistrationBody: Encodable {
     var environment: String
     var label: String
     var tag: String
-    var events = ["call.finished"]
+    var events: [String]
 }
 
 private struct RegistrationReply: Decodable {

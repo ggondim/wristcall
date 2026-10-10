@@ -136,6 +136,20 @@ public enum PairingError: Error, Sendable, Equatable {
     case malformedResponse
     /// No HTTP reply at all (offline, DNS, TLS, timeout).
     case network(URLError.Code)
+    /// `401` on `POST /v1/pair/account`: the server refused the account's token (a server before 0.6.0 takes no
+    /// per-server token).
+    case accountRejected
+    /// `403 not_linked` on `POST /v1/pair/account`: no user on the server has this account.
+    case notLinked
+    /// `403 limit`: the user reached the server's device limit.
+    case limit
+    /// `404` on `POST /v1/pair/account`: the server has no central account.
+    case accountNotConfigured
+    /// `503` on `POST /v1/pair/account`: the server could not check the token with the account service.
+    case accountUnavailable
+    /// `429 too_many_requests` on `POST /v1/pair/account`: too many pairing requests wait for approval
+    /// (`429 rate_limited` is `.rateLimited`: too many attempts from this address).
+    case tooManyRequests
 }
 
 // The poll token and the device token are secrets: keep them out of `print`, logs and test failures.

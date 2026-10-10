@@ -86,6 +86,44 @@ public struct PairingClient: Sendable {
         }
     }
 
+    /// `POST {server}/v1/pair/account` with `{"token", "device_name"}`: the per-server token of the central account
+    /// is the only proof, in the body (no `Authorization`). `.paired` when the server pairs at once (`attestation`),
+    /// `.pending` when the account's owner approves it (`approval`; poll as in flow B).
+    public func pairWithAccount(server: URL, serverToken: String, deviceName: String) async throws -> PairResult {
+        var request = request(server.appending(path: "v1/pair/account"), method: "POST")
+        request.httpBody = try JSONEncoder().encode(AccountPairBody(token: serverToken, deviceName: deviceName))
+        let (status, data) = try await send(request)
+        switch status {
+        case 200:
+            let reply: DeviceReply = try decode(data)
+            return .paired(PairedDevice(deviceId: reply.deviceId, token: reply.token))
+        case 202:
+            let reply: PendingReply = try decode(data)
+            guard let pollToken = reply.pollToken else { throw PairingError.malformedResponse }
+            return .pending(PairingRequest(
+                requestId: reply.requestId,
+                pollToken: pollToken,
+                expiresAt: Date(timeIntervalSince1970: reply.expiresAt)
+            ))
+        case 401:
+            throw PairingError.accountRejected
+        case 403:
+            switch Self.errorCode(data) {
+            case "not_linked": throw PairingError.notLinked
+            case "limit": throw PairingError.limit
+            default: throw PairingError.unexpectedStatus(status)
+            }
+        case 404:
+            throw PairingError.accountNotConfigured
+        case 429:
+            throw Self.errorCode(data) == "too_many_requests" ? PairingError.tooManyRequests : PairingError.rateLimited
+        case 503:
+            throw PairingError.accountUnavailable
+        default:
+            throw Self.error(for: status)
+        }
+    }
+
     /// `POST {server}/v1/pair/poll` with the poll token in the body (never in the URL).
     public func poll(server: URL, pollToken: String) async throws -> PollResult {
         var request = request(server.appending(path: "v1/pair/poll"), method: "POST")
@@ -173,6 +211,11 @@ public struct PairingClient: Sendable {
         }
     }
 
+    /// The `error` code of a refused request (`nil` when the body has none).
+    private static func errorCode(_ data: Data) -> String? {
+        (try? JSONDecoder().decode(ErrorReply.self, from: data))?.error
+    }
+
     /// Statuses shared by every route; route-specific ones are handled before calling this.
     private static func error(for status: Int) -> PairingError {
         switch status {
@@ -205,6 +248,20 @@ private struct PairBody: Encodable {
         case code
         case deviceName = "device_name"
     }
+}
+
+private struct AccountPairBody: Encodable {
+    var token: String
+    var deviceName: String
+
+    private enum CodingKeys: String, CodingKey {
+        case token
+        case deviceName = "device_name"
+    }
+}
+
+private struct ErrorReply: Decodable {
+    var error: String?
 }
 
 private struct DeviceReply: Decodable {

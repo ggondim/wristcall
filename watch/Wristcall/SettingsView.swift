@@ -3,7 +3,9 @@ import SwiftUI
 /// Settings: pairing directory, the paired servers (`ServersView`), version.
 struct SettingsView: View {
     let model: AppModel
+    @Environment(AccountLoginModel.self) private var login
     @State private var directoryText = ""
+    @State private var confirmingSignOut = false
 
     var body: some View {
         List {
@@ -31,6 +33,18 @@ struct SettingsView: View {
                     }
                 }
             }
+            if login.isAvailable {
+                Section("Account") {
+                    if login.isSignedIn {
+                        Button("Sync with account") { Task { await login.sync() } }
+                            .disabled(login.isRunning || model.isBusy)
+                        Button("Sign out of account", role: .destructive) { confirmingSignOut = true }
+                    } else {
+                        Button("Sign in with account") { Task { await login.signIn() } }
+                            .disabled(login.isRunning || model.isBusy)
+                    }
+                }
+            }
             if let message = model.message {
                 Text(message)
                     .font(.footnote)
@@ -41,6 +55,11 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
+        .confirmationDialog("Sign out of account?", isPresented: $confirmingSignOut, titleVisibility: .visible) {
+            Button("Sign out", role: .destructive) { Task { await login.signOut() } }
+        } message: {
+            Text("The servers on this watch stay.")
+        }
         .onAppear { directoryText = model.directoryURL.absoluteString }
     }
 }

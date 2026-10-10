@@ -149,14 +149,22 @@ final class AppModel {
     var onCallResultFinished: ((Bool) -> Void)?
     /// Set by the push build at launch (task 12); `nil` means no push at all.
     var pushHandler: (any PushHandling)?
+    /// Told the paired servers whenever the list changes (launch, pairing, removal), so the iPhone
+    /// learns which servers are on this watch (`WatchLinkReceiver`, decision R10).
+    var onServersChanged: (([Credentials]) -> Void)?
 
     private var activeCall: CallRequest?
     private var pairingTask: Task<Void, Never>?
+    /// The first launch, shared by everyone who needs it (`launchIfNeeded()`).
+    private var launchTask: Task<Void, Never>?
+    /// The list last handed to `onServersChanged`.
+    private var publishedServers: [Credentials]?
 
     private let pairing: any PairingService
     private let store: any ServerStore
     private let defaults: UserDefaults
-    private let deviceName: String
+    /// Sent as `device_name` (also by the account login's `POST /v1/pair/account`).
+    let deviceName: String
     private let sleep: PairingClient.Sleep
     /// Asked before every call; `nil` (tests, previews) never blocks one.
     private let reachability: (any NetworkReachability)?
@@ -220,6 +228,13 @@ final class AppModel {
     }
     /// A pairing request is running.
     var isBusy: Bool { pairingTask != nil }
+    /// A call, or the result of the last one-way call, is on screen.
+    var isInCallOrResult: Bool {
+        switch phase {
+        case .inCall, .callResult: true
+        default: false
+        }
+    }
 
     // MARK: - Launch
 
@@ -240,6 +255,7 @@ final class AppModel {
             try? store.deleteAll()
             servers = []
             publishCatalog()
+            publishServers()
             phase = .unpaired
             return
         } catch {
@@ -250,6 +266,7 @@ final class AppModel {
         }
         servers = stored.map { ServerEntry(credentials: $0, status: .loading) }
         publishCatalog()
+        publishServers()
         guard !stored.isEmpty else {
             phase = .unpaired
             return
@@ -259,6 +276,18 @@ final class AppModel {
         resumePendingResult()
     }
 
+    /// The first `launch()`, run once whoever asks first (the scene, or a message from the iPhone that
+    /// woke the app); later callers wait for the same one.
+    func launchIfNeeded() async {
+        if let launchTask {
+            await launchTask.value
+            return
+        }
+        let task = Task { await launch() }
+        launchTask = task
+        await task.value
+    }
+
     /// "Retry": reads the Keychain again after it failed, or asks again every server that is down.
     func retry() async {
         if phase == .unavailable {
@@ -266,6 +295,11 @@ final class AppModel {
         } else {
             await load(servers.filter(\.isUnavailable).map(\.credentials))
         }
+    }
+
+    /// Asks every server for its agents again ("Refresh watch" on the iPhone, decision R16).
+    func reloadAgents() async {
+        await load(servers.map(\.credentials))
     }
 
     /// "Retry" on the row of a server that is down.
@@ -365,6 +399,31 @@ final class AppModel {
         }
     }
 
+    /// Pairing sent by the iPhone (decision R10): flow A' with `server`, as if the code had been typed,
+    /// without touching `customServerURL`. Runs on Home or the pairing screen only; anywhere else (a
+    /// call, its result, another pairing) it fails with `LinkPairingError.busy` and changes nothing.
+    /// A failure goes back to the screen it started on, with the reason in `message`.
+    /// `onPending` runs as soon as the server asks for the owner's approval (with the request id);
+    /// this then keeps waiting for it, like flow B.
+    func pair(
+        server: URL, code: PairingCode, onPending: (@MainActor (String) -> Void)? = nil
+    ) async -> Result<Void, any Error> {
+        guard pairingTask == nil, phase == .home || phase == .unpaired else { return .failure(LinkPairingError.busy) }
+        let outcome = PairingOutcome()
+        let task = startPairing(returningTo: phase) { [self] in
+            do {
+                let result = try await pairing.pair(server: server, code: code, deviceName: deviceName)
+                if case .pending(let request) = result { onPending?(request.requestId) }
+                try await complete(result, server: server)
+            } catch {
+                outcome.error = error
+                throw error
+            }
+        }
+        await task.value
+        return outcome.error.map { .failure($0) } ?? .success(())
+    }
+
     /// Flow B: asks `customServerURL` to pair without a code and waits for the owner's approval.
     @discardableResult
     func requestApproval() -> Task<Void, Never> {
@@ -383,8 +442,11 @@ final class AppModel {
         pairingTask?.cancel()
     }
 
-    /// Runs one pairing attempt; a second tap while one runs returns the running one.
-    private func startPairing(_ work: @escaping @MainActor () async throws -> Void) -> Task<Void, Never> {
+    /// Runs one pairing attempt; a second tap while one runs returns the running one. A failure goes
+    /// back to `fallback` (the pairing screen, or Home for a pairing the iPhone sent).
+    private func startPairing(
+        returningTo fallback: AppPhase = .unpaired, _ work: @escaping @MainActor () async throws -> Void
+    ) -> Task<Void, Never> {
         if let pairingTask { return pairingTask }
         phase = .pairing(requestId: nil)
         message = nil
@@ -394,7 +456,7 @@ final class AppModel {
             } catch {
                 // A "Cancel" that already left the pairing screen (adding a server) keeps its screen.
                 if case .pairing = phase {
-                    phase = .unpaired
+                    phase = fallback
                     message = Task.isCancelled || Self.isCancellation(error) ? nil : Self.text(for: error)
                 }
             }
@@ -426,7 +488,7 @@ final class AppModel {
     /// Decision W2: the same URL and user as a listed server replaces it under the same local id
     /// (complications keep pointing to it) and revokes the old token without waiting. Another user
     /// on the same server is another entry. A server that does not answer is kept, with "Retry".
-    private func add(_ credentials: Credentials, info: Result<DeviceInfo, any Error>) throws {
+    private func add(_ credentials: Credentials, info: Result<DeviceInfo, any Error>, leavesScreen: Bool = false) throws {
         var list = servers
         var replaced: Credentials?
         var added = credentials
@@ -450,14 +512,17 @@ final class AppModel {
             let pairing = pairing
             Task { try? await pairing.unpair(server: replaced.serverURL, token: replaced.token) }
         }
-        customServerURL = nil
-        isAddingServer = false
-        message = nil
-        switch phase {
-        case .unpaired, .pairing: phase = .home
-        default: break
+        if !leavesScreen {
+            customServerURL = nil
+            isAddingServer = false
+            message = nil
+            switch phase {
+            case .unpaired, .pairing: phase = .home
+            default: break
+            }
         }
         publishCatalog()
+        publishServers()
         pushHandler?.serverAdded(added)
     }
 
@@ -465,6 +530,11 @@ final class AppModel {
     /// client secret and never leaves this function except in the request body.
     private func waitForApproval(_ request: PairingRequest, server: URL) async throws -> PairedDevice {
         phase = .pairing(requestId: request.requestId)
+        return try await pollApproval(request, server: server)
+    }
+
+    /// The poll of `waitForApproval`, without touching the screen.
+    private func pollApproval(_ request: PairingRequest, server: URL) async throws -> PairedDevice {
         while true {
             try await sleep(PairingClient.pollInterval)
             try Task.checkCancellation()
@@ -477,6 +547,50 @@ final class AppModel {
                 throw LocalFailure.expired
             }
         }
+    }
+
+    // MARK: - Account login (I15)
+
+    /// Whether the account login may ask a server for a device now: Home or the pairing screen, no pairing
+    /// running. Checked before `POST /v1/pair/account`, so no device is made that the watch then drops.
+    var canPairWithAccount: Bool {
+        pairingTask == nil && (phase == .home || phase == .unpaired)
+    }
+
+    /// A device the account login paired (`POST /v1/pair/account`): asks `/v1/me` and adds it like any
+    /// pairing (W2's replacement included). The device exists on the server, so it is always kept: when a call
+    /// or another pairing took the screen meanwhile, it is added without touching that screen.
+    func addPaired(_ device: PairedDevice, server: URL) async throws {
+        let credentials = Credentials(serverURL: server, device: device)
+        // The device exists on the server: a cancelled login must not lose its token (as in `complete`).
+        let pairing = pairing
+        let info = await Task { await Self.me(credentials, pairing: pairing) }.value
+        try add(credentials, info: info, leavesScreen: !canPairWithAccount)
+    }
+
+    /// Waits for the owner's approval of an account login's request (polled every
+    /// `PairingClient.pollInterval`, as in flow B) as the running pairing: `cancelPairing()`, or cancelling
+    /// the caller, stops it; other pairings meanwhile get `LinkPairingError.busy`. The screen stays where it
+    /// is (the login screen shows the request id). `.gone` throws the "expired" failure (`text(for:)`).
+    func awaitApproval(_ request: PairingRequest, server: URL) async throws -> PairedDevice {
+        guard pairingTask == nil, phase == .home || phase == .unpaired else { throw LinkPairingError.busy }
+        let outcome = ApprovalOutcome()
+        let task = Task { [self] in
+            do {
+                outcome.result = .success(try await pollApproval(request, server: server))
+            } catch {
+                outcome.result = .failure(error)
+            }
+        }
+        pairingTask = task
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        pairingTask = nil
+        guard let result = outcome.result else { throw CancellationError() }
+        return try result.get()
     }
 
     // MARK: - Adding and removing servers
@@ -536,6 +650,7 @@ final class AppModel {
         }
         pushHandler?.serverRemoved(credentials)
         publishCatalog()
+        publishServers()
         if remaining.isEmpty, phase == .home {
             phase = .unpaired
         }
@@ -544,6 +659,14 @@ final class AppModel {
     /// Hands the catalog to `onAgentsChanged` when it changed: the agents of every server that
     /// answered and, for one that did not (yet), what the last catalog had for it, so complications
     /// and shortcuts pointing there survive a launch without network. Removed servers drop out.
+    /// Tells `onServersChanged` the paired servers when the list (not just a status) changed.
+    private func publishServers() {
+        let list = servers.map(\.credentials)
+        guard list != publishedServers else { return }
+        publishedServers = list
+        onServersChanged?(list)
+    }
+
     private func publishCatalog() {
         let previous = Dictionary(grouping: catalog, by: \.ref.serverID)
         let next = servers.flatMap { entry -> [CatalogAgent] in
@@ -844,6 +967,24 @@ final class AppModel {
 
     // MARK: - Messages
 
+    /// The failure of one `pair(server:code:)`, kept by that call only.
+    @MainActor
+    private final class PairingOutcome {
+        var error: (any Error)?
+    }
+
+    /// The outcome of one `awaitApproval`, kept by that call only.
+    @MainActor
+    private final class ApprovalOutcome {
+        var result: Result<PairedDevice, any Error>?
+    }
+
+    /// Why `pair(server:code:)` did not start.
+    enum LinkPairingError: Error, Equatable {
+        /// A call, its result or another pairing is on screen.
+        case busy
+    }
+
     private enum LocalFailure: Error {
         case expired
         case directoryUnreachable
@@ -851,11 +992,11 @@ final class AppModel {
 
     /// `PairingClient` can surface a cancelled retry sleep as a bare `CancellationError`, and a
     /// cancelled request as `PairingError.network(.cancelled)`: neither is worth a message.
-    private static func isCancellation(_ error: any Error) -> Bool {
+    static func isCancellation(_ error: any Error) -> Bool {
         error is CancellationError || error as? PairingError == .network(.cancelled)
     }
 
-    private static func text(for error: any Error) -> String {
+    static func text(for error: any Error) -> String {
         switch error {
         case LocalFailure.expired: Message.expired
         case LocalFailure.directoryUnreachable: Message.directoryUnreachable

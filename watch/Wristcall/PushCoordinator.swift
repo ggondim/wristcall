@@ -1,6 +1,5 @@
 import Foundation
 import os
-import Security
 import UserNotifications
 import WatchKit
 import WristcallKit
@@ -25,70 +24,7 @@ protocol ServerPushing: Sendable {
 
 extension ServerPushClient: ServerPushing {}
 
-/// The push key of one server and the APNs token it was registered with. Both are secrets.
-struct StoredPushKey: Codable, Equatable, Sendable {
-    var pushKey: String
-    /// Hex of the APNs device token: a new token means a new registration.
-    var deviceToken: String
-}
-
-/// Where the push keys live, one per server (`Credentials.id`).
-protocol PushKeyStore: Sendable {
-    func load(serverID: String) throws -> StoredPushKey?
-    func save(_ key: StoredPushKey, serverID: String) throws
-    func delete(serverID: String) throws
-}
-
-/// One generic password item per server in the service of the paired servers, account
-/// `push.<server id>`, readable after the first unlock and never synced, like the servers' tokens.
-struct KeychainPushKeyStore: PushKeyStore {
-    var service = KeychainCredentialStore.defaultService
-
-    func load(serverID: String) throws -> StoredPushKey? {
-        var query = baseQuery(serverID)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        switch status {
-        case errSecSuccess:
-            guard let data = result as? Data, let key = try? JSONDecoder().decode(StoredPushKey.self, from: data)
-            else { throw CredentialStoreError.corruptedData }
-            return key
-        case errSecItemNotFound:
-            return nil
-        default:
-            throw CredentialStoreError.keychain(status)
-        }
-    }
-
-    func save(_ key: StoredPushKey, serverID: String) throws {
-        let attributes: [String: Any] = [
-            kSecValueData as String: try JSONEncoder().encode(key),
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-        ]
-        let query = baseQuery(serverID)
-        var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound {
-            status = SecItemAdd(query.merging(attributes) { $1 } as CFDictionary, nil)
-        }
-        guard status == errSecSuccess else { throw CredentialStoreError.keychain(status) }
-    }
-
-    func delete(serverID: String) throws {
-        let status = SecItemDelete(baseQuery(serverID) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw CredentialStoreError.keychain(status) }
-    }
-
-    private func baseQuery(_ serverID: String) -> [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: "push.\(serverID)",
-            kSecUseDataProtectionKeychain as String: true,
-        ]
-    }
-}
+// `StoredPushKey`, `PushKeyStore` and `KeychainPushKeyStore` live in WristcallKit (the phone uses them too).
 
 /// Push notifications for the results of one-way calls (decisions R14, R17, R18, R20), compiled in
 /// every build but wired by the app only in the push build (`WRISTCALL_PUSH`).
@@ -372,22 +308,9 @@ final class PushCoordinator: NSObject, PushHandling, UNUserNotificationCenterDel
         return String(String.UnicodeScalarView(host.unicodeScalars.prefix(64)))
     }
 
-    /// `https://Cloud.example.com:443/` and `https://cloud.example.com` are the same relay: scheme and host
-    /// lowercased, default port dropped, trailing slash removed. The path keeps its case.
+    /// The same relay (`PushRelayClient.sameRelay`, shared with the phone).
     static func sameRelay(_ lhs: URL, _ rhs: URL) -> Bool {
-        func normalized(_ url: URL) -> String? {
-            guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
-                  let scheme = parts.scheme?.lowercased(), let host = parts.host?.lowercased(),
-                  parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil
-            else { return nil }
-            let defaultPort = ["http": 80, "https": 443][scheme]
-            let port = parts.port.flatMap { $0 == defaultPort ? nil : ":\($0)" } ?? ""
-            var path = parts.percentEncodedPath
-            while path.hasSuffix("/") { path.removeLast() }
-            return "\(scheme)://\(host)\(port)\(path)"
-        }
-        guard let left = normalized(lhs), let right = normalized(rhs) else { return false }
-        return left == right
+        PushRelayClient.sameRelay(lhs, rhs)
     }
 
     // MARK: - Private

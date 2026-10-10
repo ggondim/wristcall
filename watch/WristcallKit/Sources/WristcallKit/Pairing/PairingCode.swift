@@ -26,3 +26,10 @@ public struct PairingCode: Sendable, Hashable {
         return digits.count == 8 ? digits : nil
     }
 }
+
+/// The code is a one-time secret: nothing that prints a value (`print`, `dump`, a failed `#expect`) shows it.
+extension PairingCode: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    public var description: String { "PairingCode(<redacted>)" }
+    public var debugDescription: String { description }
+    public var customMirror: Mirror { Mirror(self, children: ["digits": "<redacted>"]) }
+}

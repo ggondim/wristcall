@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import WristcallKit
+import WristcallKitTesting
 
 struct PushRelayClientTests {
     let token = Data([0x00, 0x0A, 0xFF, 0x1B])
@@ -32,6 +33,23 @@ struct PushRelayClientTests {
         #expect(body["label"] as? String == "Ana's Apple Watch")
         #expect(body["tag"] as? String == "server-1")
         #expect(body["events"] as? [String] == ["call.finished"])
+    }
+
+    @Test func registerSendsEvents() async throws {
+        let relay = StubHost(replies: [(201, #"{"push_key":"wc_push_abc"}"#)])
+        let key = try await PushRelayClient(relayURL: relay.url, session: .stubbed()).register(
+            deviceToken: token,
+            topic: "br.com.trigram.wristcall",
+            environment: .production,
+            label: "Home",
+            tag: "server-1",
+            events: ["device.approval"]
+        )
+        #expect(key == "wc_push_abc")
+        let body = try #require(relay.requests.first).json()
+        #expect(body["events"] as? [String] == ["device.approval"])
+        #expect(body["environment"] as? String == "production")
+        #expect(body["label"] as? String == "Home")
     }
 
     @Test func registerKeepsTheRelayPathPrefix() async throws {
@@ -92,5 +110,30 @@ struct PushRelayClientTests {
         let relay = StubHost(replies: [(500, "")])
         let client = PushRelayClient(relayURL: relay.url, session: .stubbed())
         await #expect(throws: PairingError.unexpectedStatus(500)) { try await client.unregister(pushKey: "k") }
+    }
+
+    @Test(arguments: [
+        ("https://cloud.example.com", "https://cloud.example.com/"),
+        ("https://cloud.example.com", "HTTPS://Cloud.Example.com:443"),
+        ("https://cloud.example.com/relay", "https://cloud.example.com:443/relay/"),
+        ("http://localhost", "http://LOCALHOST:80/"),
+        ("http://127.0.0.1:8090", "http://127.0.0.1:8090/"),
+    ])
+    func sameRelayIgnoresCaseDefaultPortAndTrailingSlash(_ lhs: String, _ rhs: String) {
+        #expect(PushRelayClient.sameRelay(URL(string: lhs)!, URL(string: rhs)!))
+    }
+
+    @Test(arguments: [
+        ("https://cloud.example.com", "http://cloud.example.com"),
+        ("https://cloud.example.com", "https://cloud.example.com:8443"),
+        ("http://localhost", "http://localhost:443"),
+        ("https://cloud.example.com", "https://evil.example.com"),
+        ("https://cloud.example.com/relay", "https://cloud.example.com/other"),
+        ("https://cloud.example.com/Relay", "https://cloud.example.com/relay"),
+        ("https://cloud.example.com", "https://user@cloud.example.com"),
+        ("https://cloud.example.com?a=1", "https://cloud.example.com?a=1"),
+    ])
+    func sameRelayTellsDifferentRelaysApart(_ lhs: String, _ rhs: String) {
+        #expect(!PushRelayClient.sameRelay(URL(string: lhs)!, URL(string: rhs)!))
     }
 }

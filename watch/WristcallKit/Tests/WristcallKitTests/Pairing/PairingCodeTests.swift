@@ -19,4 +19,22 @@ struct PairingCodeTests {
         let code = try #require(PairingCode("12-34-56-78"))
         #expect(code.formatted == "1234 5678")
     }
+
+    @Test func printingNeverShowsTheDigits() throws {
+        let code = try #require(PairingCode("12345678"))
+        var dumped = ""
+        dump(code, to: &dumped)
+        dump([code], to: &dumped)
+        let texts = [code.description, code.debugDescription, "\(code)", String(reflecting: code), dumped,
+                     "\(Optional(code))", "\([code])"]
+        for text in texts {
+            #expect(!text.contains("12345678"))
+            #expect(!text.contains("1234"))
+            #expect(!text.contains("5678"))
+            #expect(text.contains("<redacted>"))
+        }
+        // The value itself is intact.
+        #expect(code.digits == "12345678")
+        #expect(code.formatted == "1234 5678")
+    }
 }

@@ -4,6 +4,7 @@ name: Wristcall
 
 options:
   deploymentTarget:
+    iOS: "26.0"
     watchOS: "26.0"
   createIntermediateGroups: true
 
@@ -22,8 +23,8 @@ configFiles:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "0.3.0"
-    CURRENT_PROJECT_VERSION: "3"
+    MARKETING_VERSION: "0.4.0"
+    CURRENT_PROJECT_VERSION: "4"
 
 packages:
   WristcallKit:
@@ -42,7 +43,8 @@ targets:
       - target: WristcallWidgets
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).wristcall
+        # The iPhone app owns $(BUNDLE_ID_PREFIX).wristcall and embeds this app (Watch/).
+        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).wristcall.watchkitapp
         PRODUCT_NAME: Wristcall
         GENERATE_INFOPLIST_FILE: YES
         # Keys the generated Info.plist cannot express (arrays) live in this file and are merged in.
@@ -50,7 +52,8 @@ targets:
         # The App Group shares the agent catalog (no secrets) with the widget extension (decision W13).
         CODE_SIGN_ENTITLEMENTS: Wristcall/Wristcall.entitlements
         INFOPLIST_KEY_CFBundleDisplayName: Wristcall
-        INFOPLIST_KEY_WKWatchOnly: YES
+        INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp: YES
+        INFOPLIST_KEY_WKCompanionAppBundleIdentifier: $(BUNDLE_ID_PREFIX).wristcall
         INFOPLIST_KEY_NSMicrophoneUsageDescription: Wristcall sends your voice to your own wristcall server during a call.
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown
         ENABLE_PREVIEWS: YES
@@ -63,6 +66,82 @@ targets:
       testTargets:
         - WristcallTests
 
+  # The iPhone app. It owns the bundle id the watch app is companion of and embeds it (Watch/).
+  WristcallPhone:
+    type: application
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - Phone
+    dependencies:
+      - package: WristcallKit
+      - target: Wristcall
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).wristcall
+        PRODUCT_NAME: Wristcall
+        # The watch app is module Wristcall too; the tests import this one by its own name.
+        PRODUCT_MODULE_NAME: WristcallPhone
+        GENERATE_INFOPLIST_FILE: YES
+        # Keys the generated Info.plist cannot express (the build settings read by the app) live in
+        # this file and are merged in.
+        INFOPLIST_FILE: Phone/Info.plist
+        INFOPLIST_KEY_CFBundleDisplayName: Wristcall
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        TARGETED_DEVICE_FAMILY: "1"
+        ENABLE_PREVIEWS: YES
+      # The push build (approval notifications, decision R9). A target setting wins over the project's
+      # xcconfig in XcodeGen, so these are set here, like the watch app's.
+      configs:
+        DebugPush:
+          CODE_SIGN_ENTITLEMENTS: Phone/WristcallPhone-Push.entitlements
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) DEBUG WRISTCALL_PUSH"
+    scheme:
+      testTargets:
+        - WristcallPhoneTests
+
+  WristcallPhoneTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - PhoneTests
+    dependencies:
+      - target: WristcallPhone
+      # Not linked: the host app already carries WristcallKit, and a second copy in the test bundle makes
+      # types (APIError, ...) differ between the tests and the app.
+      - package: WristcallKit
+        product: WristcallKit
+        link: false
+      - package: WristcallKit
+        product: WristcallKitTesting
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).wristcall.phone.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TARGETED_DEVICE_FAMILY: "1"
+        # The app's product is named Wristcall (not the target's name).
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Wristcall.app/Wristcall
+        BUNDLE_LOADER: $(TEST_HOST)
+
+  # XCUITest smoke test (add server, agents, history, settings, with screenshots). Own scheme
+  # (WristcallPhoneUI), so `make test-ios` and CI never run it; `make test-ios-ui` does.
+  WristcallPhoneUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - PhoneUITests
+    dependencies:
+      - target: WristcallPhone
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).wristcall.phone.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TARGETED_DEVICE_FAMILY: "1"
+        TEST_TARGET_NAME: WristcallPhone
   WristcallTests:
     type: bundle.unit-test
     platform: watchOS
@@ -95,7 +174,7 @@ targets:
       - package: WristcallKit
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).wristcall.widgets
+        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).wristcall.watchkitapp.widgets
         PRODUCT_NAME: WristcallWidgets
         GENERATE_INFOPLIST_FILE: YES
         # NSExtension (a dictionary) lives in this file and is merged in.
@@ -103,3 +182,14 @@ targets:
         CODE_SIGN_ENTITLEMENTS: WristcallWidgets/WristcallWidgets.entitlements
         INFOPLIST_KEY_CFBundleDisplayName: Wristcall
         SKIP_INSTALL: YES
+
+schemes:
+  WristcallPhoneUI:
+    build:
+      targets:
+        WristcallPhone: all
+        WristcallPhoneUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - WristcallPhoneUITests

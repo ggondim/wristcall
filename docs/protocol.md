@@ -564,6 +564,20 @@ A body that is not valid JSON or not a JSON object answers `422 {"error":"invali
 
 Missing or invalid token: `401 {"error":"unauthorized"}`. The central account routes answer `404 not_configured` when the server has no `central_account`, and the push routes when it has no `push`.
 
+## Management apps
+
+Apps that manage a server (the iPhone app, a PWA) use the [Management API](#management-api) and nothing else
+from the server. Their credential for a server is a **personal token** (`wc_pat_...`); a device token is refused
+(`403`), so an app never confuses it with a watch token. The app checks a pasted token with `GET /v1/providers`
+before saving it. With `central_account` an app can instead exchange a pairing code (`wristcall pair --user
+<handle>`) and its account login for a personal token through `POST /v1/account/link`.
+
+The watch signs in with the account without a keyboard (OAuth device authorization, RFC 8628), then pairs each
+server of the account's agenda with `POST /v1/pair/account` (see [Pairing with the account](#pairing-with-the-account)):
+`200` pairs at once, `202` waits for approval on a managing app (`GET /v1/pairing-requests`, then `approve` or
+`deny`). Apps send nothing but the `request_id` they got from the server when they answer a push for a device
+approval; the server is picked by the push's tag, never by an address inside it.
+
 ## Versioning
 
 Compatible changes (new fields, new messages the client can ignore)

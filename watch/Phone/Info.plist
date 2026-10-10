@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyLists-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The app uses only the encryption of the system (HTTPS): no export compliance question. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<!-- The Cloud for the account (empty: no account, servers and tokens alone). -->
+	<key>WristcallCloudURL</key>
+	<string>$(WRISTCALL_CLOUD_URL)</string>
+	<!-- Push relay (Cloud) and APNs environment: set by Config/Push.xcconfig, empty (push off) otherwise. -->
+	<key>WristcallRelayURL</key>
+	<string>$(WRISTCALL_RELAY_URL)</string>
+	<key>WristcallPushEnvironment</key>
+	<string>$(WRISTCALL_PUSH_ENVIRONMENT)</string>
+</dict>
+</plist>
