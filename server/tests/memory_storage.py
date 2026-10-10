@@ -138,6 +138,9 @@ class _Devices:
         if entry is None or entry[0].revoked_at is not None:
             return False
         self.rows[device_id] = (replace(entry[0], user_id=user_id), entry[1])
+        for row in self._push.rows:
+            if row["device_id"] == device_id:
+                row["user_id"] = user_id
         return True
 
 
@@ -414,6 +417,9 @@ class _Push:
 
     async def set(self, user_id, push_key, now, *, device_id=None, token_id=None):
         _one_client(device_id, token_id)
+        entry = self._root.devices.rows.get(device_id) if device_id is not None else self._root.tokens.rows.get(token_id)
+        if entry is None or entry[0].revoked_at is not None or entry[0].user_id != user_id:
+            raise KeyError(device_id or token_id)
         row = self._find(device_id, token_id)
         if row is None:
             self.rows.append(dict(user_id=user_id, device_id=device_id, token_id=token_id, push_key=push_key, created_at=now))
@@ -421,7 +427,7 @@ class _Push:
         if row["push_key"] == push_key:
             return None
         old = row["push_key"]
-        row.update(push_key=push_key, user_id=user_id)
+        row["push_key"] = push_key
         return old
 
     async def clear(self, *, device_id=None, token_id=None):
@@ -479,9 +485,12 @@ class MemoryStorage:
         self.meta = _Meta()
 
     def cascade(self, user_id: str) -> None:
-        self.push.rows = [r for r in self.push.rows if r["user_id"] != user_id]
         self.tokens.rows = {k: v for k, v in self.tokens.rows.items() if v[0].user_id != user_id}
         self.devices.rows = {k: v for k, v in self.devices.rows.items() if v[0].user_id != user_id}
+        self.push.rows = [  # follows its client and its user
+            r for r in self.push.rows
+            if r["user_id"] != user_id and (r["device_id"] in self.devices.rows or r["token_id"] in self.tokens.rows)
+        ]
         self.agents.rows = {k: v for k, v in self.agents.rows.items() if v.user_id != user_id}
         self.calls._drop([c.id for c in self.calls.rows.values() if c.user_id == user_id])
         self.pairing.codes = {k: v for k, v in self.pairing.codes.items() if v["user_id"] != user_id}

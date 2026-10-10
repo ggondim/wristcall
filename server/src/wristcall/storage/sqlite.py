@@ -187,9 +187,13 @@ class _Devices:
         return self._db.execute("UPDATE devices SET user_id = ? WHERE user_id IS NULL", (user_id,))
 
     async def assign(self, device_id: str, user_id: str) -> bool:
-        return self._db.execute(
-            "UPDATE devices SET user_id = ? WHERE id = ? AND revoked_at IS NULL", (user_id, device_id)
-        ) == 1
+        with self._db.transaction() as conn:
+            moved = conn.execute(
+                "UPDATE devices SET user_id = ? WHERE id = ? AND revoked_at IS NULL", (user_id, device_id)
+            ).rowcount == 1
+            if moved:
+                conn.execute("UPDATE push_targets SET user_id = ? WHERE device_id = ?", (user_id, device_id))
+        return moved
 
 
 class _Pairing:
@@ -529,7 +533,11 @@ class _Push:
     ) -> str | None:
         _one_client(device_id, token_id)
         column, client = ("device_id", device_id) if device_id is not None else ("token_id", token_id)
+        table = "devices" if device_id is not None else "api_tokens"
         with self._db.transaction() as conn:
+            owner = conn.execute(f"SELECT user_id FROM {table} WHERE id = ? AND revoked_at IS NULL", (client,)).fetchone()
+            if owner is None or owner["user_id"] != user_id:
+                raise KeyError(client)
             row = conn.execute(f"SELECT push_key FROM push_targets WHERE {column} = ?", (client,)).fetchone()
             if row is None:
                 conn.execute(
@@ -539,7 +547,7 @@ class _Push:
                 return None
             if row["push_key"] == push_key:
                 return None
-            conn.execute(f"UPDATE push_targets SET push_key = ?, user_id = ? WHERE {column} = ?", (push_key, user_id, client))
+            conn.execute(f"UPDATE push_targets SET push_key = ? WHERE {column} = ?", (push_key, client))
             return row["push_key"]
 
     async def clear(self, *, device_id: str | None = None, token_id: str | None = None) -> str | None:

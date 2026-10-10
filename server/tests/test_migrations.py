@@ -253,10 +253,20 @@ def test_step_5_database_gains_push_targets(tmp_path):
     conn.execute("INSERT INTO users (id, handle, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1.0)")
     conn.close()
     db = Database(path)
-    assert db.version == LATEST
+    assert db.version == LATEST == 6
     assert "push_targets" in tables(db)
     assert columns(db, "push_targets") == {"id", "user_id", "device_id", "token_id", "push_key", "created_at"}
     assert [r["handle"] for r in db.query("SELECT handle FROM users")] == ["owner"]
+    assert db.query("PRAGMA user_version")[0][0] == 6
+    # Exactly one client per row: both ids or neither is refused by the table itself.
+    db.execute("INSERT INTO devices (id, user_id, name, token_hash, created_at) VALUES ('d1', 'u1', 'W', 'h', 1.0)")
+    db.execute("INSERT INTO api_tokens (id, user_id, name, token_hash, created_at) VALUES ('t1', 'u1', 'A', 'h2', 1.0)")
+    for device_id, token_id in (("d1", "t1"), (None, None)):
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                "INSERT INTO push_targets (user_id, device_id, token_id, push_key, created_at) VALUES ('u1', ?, ?, 'k', 1.0)",
+                (device_id, token_id),
+            )
     db.close()
 
 

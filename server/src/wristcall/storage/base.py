@@ -90,7 +90,7 @@ class DeviceStore(Protocol):
         ...
 
     async def assign(self, device_id: str, user_id: str) -> bool:
-        """Operator. Moves an active device to this user; False if there is no such device."""
+        """Operator. Moves an active device (and its push key) to this user; False if there is no such device."""
         ...
 
 
@@ -258,8 +258,9 @@ class PushStore(Protocol):
     async def set(
         self, user_id: str, push_key: str, now: float, *, device_id: str | None = None, token_id: str | None = None
     ) -> str | None:
-        """Exactly one of device_id, token_id (else ValueError). Replaces the client's key; returns the key it
-        replaced (None: it had none, or the same one)."""
+        """Exactly one of device_id, token_id (else ValueError). The client must exist, be active (not revoked) and
+        belong to user_id, else KeyError (nothing stored). Replaces the client's key; returns the key it replaced
+        (None: it had none, or the same one)."""
         ...
 
     async def clear(self, *, device_id: str | None = None, token_id: str | None = None) -> str | None:

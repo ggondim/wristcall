@@ -588,3 +588,57 @@ async def test_exactly_one_client(storage):
     with pytest.raises(ValueError):
         await storage.push.clear(device_id="d1", token_id="t1")
     assert await storage.push.for_device("d1") is None
+
+
+async def test_push_set_checks_the_client(storage):
+    u = await _push_setup(storage)
+    other = await storage.users.create("u_000000000002", "bob", "Bob", 1.0)
+    await storage.devices.create("d_old", u.id, "Old", "hdo", 2.0)
+    await storage.tokens.create("t_old", u.id, "Old app", "hto", 2.0)
+    await storage.devices.revoke("d_old", 5.0)
+    await storage.tokens.revoke("t_old", 5.0)
+    for kwargs in (
+        {"device_id": "missing"}, {"token_id": "missing"},  # unknown
+        {"device_id": "d_old"}, {"token_id": "t_old"},  # revoked
+        {"device_id": "d1", "_user": other.id}, {"token_id": "t1", "_user": other.id},  # another user's
+    ):
+        who = kwargs.pop("_user", u.id)
+        with pytest.raises(KeyError):
+            await storage.push.set(who, "wc_push_x", 10.0, **kwargs)
+    # Nothing stored, for any of them.
+    for device_id in ("d1", "d_old"):
+        assert await storage.push.for_device(device_id) is None
+    assert await storage.push.for_apps(u.id) == []
+    assert await storage.push.for_apps(other.id) == []
+    assert await storage.push.forget("wc_push_x") == 0
+
+
+async def test_push_key_follows_an_assigned_device(storage):
+    u = await _push_setup(storage)
+    other = await storage.users.create("u_000000000002", "bob", "Bob", 1.0)
+    await storage.push.set(u.id, "wc_push_a", 10.0, device_id="d1")
+    assert await storage.devices.assign("d1", other.id) is True
+    await storage.users.delete(u.id)
+    assert await storage.push.for_device("d1") == "wc_push_a"
+    # The new owner can replace it; the old one no longer can.
+    assert await storage.push.set(other.id, "wc_push_b", 11.0, device_id="d1") == "wc_push_a"
+    await storage.users.delete(other.id)
+    assert await storage.push.for_device("d1") is None
+    assert await storage.push.forget("wc_push_b") == 0
+
+
+async def test_revoking_a_device_of_another_user_keeps_the_key(storage):
+    u = await _push_setup(storage)
+    await storage.push.set(u.id, "wc_push_a", 10.0, device_id="d1")
+    assert await storage.devices.revoke("d1", 20.0, user_id="u_wrong") is False
+    assert await storage.push.for_device("d1") == "wc_push_a"
+
+
+async def test_for_apps_excludes_another_users_token(storage):
+    u = await _push_setup(storage)
+    other = await storage.users.create("u_000000000002", "bob", "Bob", 1.0)
+    await storage.tokens.create("t_bob", other.id, "Bob app", "htb", 2.0)
+    await storage.push.set(u.id, "wc_push_ana", 10.0, token_id="t1")
+    await storage.push.set(other.id, "wc_push_bob", 11.0, token_id="t_bob")
+    assert await storage.push.for_apps(u.id) == ["wc_push_ana"]
+    assert await storage.push.for_apps(other.id) == ["wc_push_bob"]
