@@ -1,9 +1,10 @@
 import XCTest
 
 /// Smoke test of the iPhone app against a running test server (`make -C watch test-server`): add a server,
-/// open its agents, create a one-shot agent, open History and Settings. Every screen is attached as a
-/// screenshot (`XCTAttachment`, kept in the result bundle) and, when `WRISTCALL_UI_SHOTS` names a folder, also
-/// written there as `<prefix>-<name>.png`.
+/// open its agents, create a one-shot agent, open History and Settings, then remove the server again (so a rerun
+/// starts from the same state; a failed run may leave it, and adding the same address again just replaces it).
+/// Every screen is attached as a screenshot (`XCTAttachment`, kept in the result bundle) and, when
+/// `WRISTCALL_UI_SHOTS` names a folder, also written there as `t12-<name>.png`.
 ///
 /// Runs only through the `WristcallPhoneUI` scheme (`make -C watch test-ios-ui`), never in CI. Variables reach the
 /// test process with the `TEST_RUNNER_` prefix:
@@ -119,6 +120,29 @@ final class PhoneSmokeTests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: timeout))
         XCTAssertTrue(app.staticTexts["Version"].exists)
         shot("8-settings")
+
+        // 5. Remove the server again, so a rerun starts from the same state.
+        app.tabBars.buttons["Servers"].tap()
+        let added = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Smoke server")).firstMatch
+        XCTAssertTrue(added.waitForExistence(timeout: timeout))
+        added.tap()
+        let remove = app.buttons["Remove server"].firstMatch
+        XCTAssertTrue(remove.waitForExistence(timeout: timeout))
+        remove.tap()
+        // On iPhone the confirmation is a popover (a sheet in other layouts); it repeats the button's label.
+        let popoverButton = app.popovers.buttons["Remove server"].firstMatch
+        let sheetButton = app.sheets.buttons["Remove server"].firstMatch
+        if popoverButton.waitForExistence(timeout: 5) {
+            popoverButton.tap()
+        } else if sheetButton.waitForExistence(timeout: 5) {
+            sheetButton.tap()
+        } else {
+            XCTFail("no confirmation for removing the server")
+        }
+        XCTAssertTrue(app.navigationBars["Servers"].waitForExistence(timeout: timeout))
+        let gone = added.waitForNonExistence(timeout: timeout)
+        shot("10-server-removed")
+        XCTAssertTrue(gone, "the server was not removed")
     }
 
     // MARK: Helpers

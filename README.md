@@ -338,7 +338,8 @@ Sign in with Apple need a paid Apple Developer account; a free Apple ID builds e
 published binary: build it with Xcode, see [watch/README.md](watch/README.md#iphone-app).
 
 Known limitation: the iPhone sign-in could not be verified against the real identity provider, whose hosted
-login page was down while this was built. The watch's device code sign-in was verified end to end.
+login page was down while this was built. The watch's device code sign-in was verified against the real
+identity provider by a Kit integration test, not through the watch or iPhone screens.
 
 ## Documentation
 

@@ -225,8 +225,8 @@ enum DebugLaunch {
 
 #if DEBUG
 /// `-debugOpen history|history-detail` opens the History tab (or its first call), `-debugOpen settings` the
-/// Settings tab; `-debugOpen server|agents|form-new|form-edit|devices|code|watch` opens that screen at launch (simulator smoke tests have
-/// no way to tap): the first server, its agents, the form for a new agent, the form of the last agent, the devices of the server, its
+/// Settings tab; `-debugOpen server|agents|form-new|form-edit|devices|code|watch` opens that screen at launch (a way to reach a screen
+/// without tapping, for screenshots from the command line): the first server, its agents, the form for a new agent, the form of the last agent, the devices of the server, its
 /// pairing code, or "Add to watch" (which sends a new code to the paired watch at once).
 enum DebugRoute {
     static let value: String? = {

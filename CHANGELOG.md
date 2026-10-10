@@ -29,7 +29,8 @@ distribution and Sign in with Apple need a paid Apple Developer account; everyth
 ### Known limitations
 
 - The iPhone sign-in (PKCE) could not be verified against the real identity provider: its hosted login page (login v2)
-  was down when this was built. The watch's device code sign-in was verified end to end.
+  was down when this was built. The watch's device code sign-in was verified against the real
+  identity provider by a Kit integration test, not through the watch or iPhone screens.
 - The default build has `WRISTCALL_CLOUD_URL` empty, so the account features are hidden until the Cloud is deployed.
 
 ## [watch-0.4.0] - 2026-10-10

@@ -127,7 +127,8 @@ deletes the server list in the Cloud (servers and tokens stay).
 
 The default build has `WRISTCALL_CLOUD_URL` empty: no account features show and nothing talks to a Cloud until you
 set one. The iPhone sign-in could not be verified against the real identity provider, whose hosted login page
-(login v2) was down when this was built; the watch's device code sign-in was verified end to end.
+(login v2) was down when this was built; the watch's device code sign-in was verified against the real identity provider by a Kit integration test
+(`watchDeviceFlowPairsWithApproval`), not through the watch or iPhone screens.
 
 ```sh
 make -C watch build-ios                # builds the iPhone app and the embedded watch app
@@ -148,17 +149,21 @@ The default `IOS_DESTINATION` is an "iPhone 17" simulator. `CLOUD_URL` and `RELA
 **UI smoke test.** `PhoneUITests/PhoneSmokeTests.swift` (XCUITest, scheme `WristcallPhoneUI`) adds a server, opens
 its agents, creates a one-shot agent, opens History and Settings, and attaches a screenshot of each screen. It has
 its own scheme, so `make test-ios` and CI never run it. With the test server up (`make -C watch test-server`) and a
-personal token of it (`wristcall users tokens add`, with the test config), run:
+personal token of it, run (from `watch/`, with `wristcall` on your `PATH`; the config reads the same two variables
+`make test-server` sets, so they must match):
 
 ```sh
-TEST_RUNNER_WRISTCALL_UI_TOKEN=wc_pat_... make -C watch test-ios-ui
+cd watch
+export WRISTCALL_TEST_SERVER=http://127.0.0.1:8765 WRISTCALL_TEST_DATA_DIR=$PWD/build/test-server-data
+TOKEN=$(wristcall users tokens add --config WristcallKit/Tests/test-server.yaml --name ui-smoke | tail -1)
+TEST_RUNNER_WRISTCALL_UI_TOKEN=$TOKEN make test-ios-ui
 ```
 
 `TEST_RUNNER_WRISTCALL_UI_SERVER` changes the server address (default `http://127.0.0.1:8765`) and
 `TEST_RUNNER_WRISTCALL_UI_SHOTS=<folder>` also writes the screenshots there. Without the token the test skips. It
-deletes the agent it created. The simulator pair used for the screenshots is an iPhone 17 and, for the watch
-tests, "WC Series 7" (`python3 watch/scripts/ensure_simulator.py`); the iPhone simulator and a watch simulator can
-be paired in Xcode (Window > Devices and Simulators) to try WatchConnectivity.
+deletes the agent it created and removes the server it added. It runs on an "iPhone 17" simulator
+(`IOS_DESTINATION`, above). The watch simulator is the one from [Test](#test); to try WatchConnectivity between the
+two, pair the iPhone simulator with a watch simulator in Xcode (Window > Devices and Simulators).
 
 The watch app's bundle id (and so its APNs topic) is now `<BUNDLE_ID_PREFIX>.wristcall.watchkitapp`, no longer
 `<BUNDLE_ID_PREFIX>.wristcall`: the Cloud pushes to both apps, so it lists both in `WRISTCALL_CLOUD_APNS_TOPICS`.
@@ -270,8 +275,8 @@ Team registers three App IDs for it (iPhone app, watch app, widgets extension). 
 (`....wristcall.watchkitapp`) with its own Keychain, so pair it again.
 
 1. Add your Apple ID in Xcode > Settings > Accounts.
-2. Find your team ID: open the generated project, select the `Wristcall` target >
-   Signing & Capabilities, pick your Personal Team, then run
+2. Find your team ID: open the generated project, select the `WristcallPhone` target >
+   Signing & Capabilities (the `Wristcall` and `WristcallWidgets` targets take the same team), pick your Personal Team, then run
    `grep -m1 DEVELOPMENT_TEAM watch/Wristcall.xcodeproj/project.pbxproj`.
    (The next `make generate` discards that choice; the next step makes it permanent.)
 3. Create `watch/Config/Local.xcconfig` (gitignored):
