@@ -366,6 +366,8 @@ final class AgentFormModel {
                     return "Webhook: the header value must be printable ASCII on one line."
                 }
                 if masked(value) { return reenter }
+                // A stored secret only carries over under the name it was stored with.
+                if value == "***" && header != shownHeaderName { return reenter }
             }
             return nil
         }
@@ -395,8 +397,9 @@ final class AgentFormModel {
             for stage in activeStages {
                 if let built = endpoint(stage), !isUntouched(stage, built) { out[stage.field] = built }
             }
-            // A one-way agent has no voice; a stored one is dropped (the server would keep it otherwise).
-            if isOneWay, initialEndpoints[.tts] != nil { out["tts"] = .null }
+            // Switching to one-way drops the stored voice (the server would keep it otherwise); an agent that is
+            // already one-way keeps whatever it holds.
+            if isOneWay, !agent.isOneWay, initialEndpoints[.tts] != nil { out["tts"] = .null }
             if silenceMs != Self.silence(of: agent) { out["vad"] = .object(["silence_ms": .int(silenceMs)]) }
             if retention != Self.retention(of: agent) { out["retention_days"] = Self.encode(retention) }
             return out

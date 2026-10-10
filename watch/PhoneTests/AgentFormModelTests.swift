@@ -386,4 +386,29 @@ struct AgentFormModelTests {
         model.systemPrompt = String(repeating: "x", count: 20_001)
         #expect(model.validationMessage != nil)
     }
+
+    @Test func renamingAOneWayAgentKeepsItsStoredVoice() {
+        let agent = AgentDetail.sample(
+            callType: "one-shot", tts: .object(["provider": .string("piper")])
+        )
+        let model = AgentFormModel(editing: agent, providers: .sample)
+        model.displayName = "Renamed"
+        #expect(model.fields() == ["display_name": .string("Renamed")])
+    }
+
+    @Test func renamingAWebhookHeaderNeedsTheValueAgain() {
+        let action: JSONValue = .object([
+            "type": .string("webhook"), "url": .string("https://h.test"),
+            "headers": .object(["X-Key": .string("***")]),
+        ])
+        let model = AgentFormModel(editing: .sample(callType: "one-shot", action: action), providers: .sample)
+        model.webhookHeaderName = "X-Other"
+        #expect(model.validationMessage != nil)
+        model.webhookHeaderValue = "new-secret"
+        #expect(model.validationMessage == nil)
+        #expect(model.fields()["action"] == .object([
+            "type": .string("webhook"), "url": .string("https://h.test"),
+            "headers": .object(["X-Other": .string("new-secret")]),
+        ]))
+    }
 }
