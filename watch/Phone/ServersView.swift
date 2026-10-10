@@ -3,13 +3,17 @@ import WristcallKit
 
 struct ServersView: View {
     @Environment(AppState.self) private var state
+    @Environment(AccountModel.self) private var account
     @State private var adding = false
     @State private var path: [String] = []
+    /// Agenda servers without a token here (signed in only).
+    @State private var pending: [CloudServer] = []
+    @State private var settingUp: CloudServer?
 
     var body: some View {
         NavigationStack(path: $path) {
             Group {
-                if state.servers.isEmpty {
+                if state.servers.isEmpty && pending.isEmpty {
                     EmptyServersView(loadError: state.loadError)
                 } else {
                     list
@@ -25,6 +29,10 @@ struct ServersView: View {
                 ServerDetailView(serverID: id)
             }
             .sheet(isPresented: $adding) { AddServerView() }
+            .sheet(item: $settingUp) { entry in AddServerView(initialURL: entry.url, initialName: entry.name) }
+            .task(id: PendingKey(signedIn: account.state == .signedIn, servers: state.servers.map(\.url))) {
+                await loadPending()
+            }
         #if DEBUG
         .task(id: state.servers.first?.id) {
             if DebugRoute.opensServer, let id = state.servers.first?.id, path.isEmpty { path = [id] }
@@ -44,8 +52,53 @@ struct ServersView: View {
                               version: state.healths[server.id]?.version)
                 }
             }
+            if !pending.isEmpty {
+                Section {
+                    ForEach(pending) { entry in
+                        Button { settingUp = entry } label: { PendingRow(entry: entry) }
+                    }
+                } header: {
+                    Text("From your account")
+                } footer: {
+                    Text("Servers in your wristcall account that this iPhone has no access to yet.")
+                }
+            }
         }
-        .refreshable { await state.refresh() }
+        .refreshable {
+            await state.refresh()
+            await loadPending()
+        }
+    }
+
+    private func loadPending() async {
+        guard account.state == .signedIn, let agenda = account.agenda else {
+            pending = []
+            return
+        }
+        pending = await agenda.pendingSetup()
+    }
+}
+
+/// What makes the pending list stale: the sign-in, and the servers saved here.
+private struct PendingKey: Equatable {
+    var signedIn: Bool
+    var servers: [URL]
+}
+
+private struct PendingRow: View {
+    let entry: CloudServer
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.name).font(.headline).foregroundStyle(.primary)
+                Text(URL(string: entry.url)?.host() ?? entry.url)
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text("Set up").foregroundStyle(.tint)
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 

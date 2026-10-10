@@ -172,6 +172,11 @@ final class FakeServerAPI: ServerAPI, @unchecked Sendable {
 
     init(pages: [CallPage] = []) { self.pages = pages }
 
+    convenience init(health: ServerHealth) {
+        self.init()
+        healthResult = .success(health)
+    }
+
     /// Overrides `pages` for a query (tests that need different answers for different searches).
     var respond: (@Sendable (HistoryQuery) -> CallPage)?
     /// Holds the answer to a query until the returned gate opens: the answer is computed first, so it can
@@ -235,7 +240,21 @@ final class FakeServerAPI: ServerAPI, @unchecked Sendable {
         if let pushKeyError { throw pushKeyError }
         pushKeys = []
     }
-    func linkAccount(accountToken: String) async throws -> AccountLink { throw APIError.notFound }
+    var linkResult: Result<AccountLink, any Error> = .failure(APIError.notFound)
+    /// What the account links got: the Cloud's token for this server and, for a link by code, the code.
+    private(set) var linkRequests: [(serverToken: String, code: String?)] = []
+
+    func linkAccount(serverToken: String) async throws -> AccountLink {
+        calls.append("linkAccount")
+        linkRequests.append((serverToken, nil))
+        return try linkResult.get()
+    }
+
+    func linkAccount(serverToken: String, code: PairingCode) async throws -> AccountLink {
+        calls.append("linkAccountWithCode")
+        linkRequests.append((serverToken, code.digits))
+        return try linkResult.get()
+    }
 }
 
 /// A door a fake answer waits at until the test opens it; `reached()` says an answer is waiting.

@@ -37,17 +37,25 @@ protocol ServerAPI: Sendable {
     func setPushKey(_ key: String) async throws
     func clearPushKey() async throws
 
-    /// Links the signed-in account to the user of this token (`serverToken` is the Cloud's token for it).
-    func linkAccount(accountToken: String) async throws -> AccountLink
+    /// `POST /v1/account/link`: links the signed-in account to the user of this token. `serverToken` is the
+    /// Cloud's per-server token (never the account's access token).
+    func linkAccount(serverToken: String) async throws -> AccountLink
+    /// The same without a personal token: the pairing code proves the local user, and the reply carries a
+    /// new personal token (`apiToken`). Sent without `Authorization`.
+    func linkAccount(serverToken: String, code: PairingCode) async throws -> AccountLink
 }
 
 /// The real thing: the Kit's clients with the server's personal token.
 struct LiveServerAPI: ServerAPI {
+    private let server: URL
+    private let session: URLSession
     private let push: ServerPushClient
     private let management: ManagementClient
     private let history: HistoryClient
 
     init(server: URL, token: String, session: URLSession = .shared) {
+        self.server = server
+        self.session = session
         push = ServerPushClient(server: server, token: token, session: session)
         management = ManagementClient(server: server, token: token, session: session)
         history = HistoryClient(server: server, token: token, session: session)
@@ -86,7 +94,11 @@ struct LiveServerAPI: ServerAPI {
     func setPushKey(_ key: String) async throws { try await push.setPushKey(key) }
     func clearPushKey() async throws { try await push.clearPushKey() }
 
-    func linkAccount(accountToken: String) async throws -> AccountLink {
-        try await management.linkAccount(serverToken: accountToken)
+    func linkAccount(serverToken: String) async throws -> AccountLink {
+        try await management.linkAccount(serverToken: serverToken)
+    }
+
+    func linkAccount(serverToken: String, code: PairingCode) async throws -> AccountLink {
+        try await ManagementClient.linkAccount(server: server, serverToken: serverToken, code: code, session: session)
     }
 }

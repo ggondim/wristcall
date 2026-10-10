@@ -52,6 +52,8 @@ struct ServerDetailView: View {
                 statusLine(state.statuses[server.id] ?? .checking)
             }
 
+            LinkServerSection(server: server)
+
             Section {
                 NavigationLink {
                     AgentListView(server: server)

@@ -50,9 +50,12 @@ enum ServerStatus: Equatable, Sendable {
     case unreachable
 }
 
-/// Hooks other features hang on (agenda sync, push registration); empty by default.
+/// Hooks other features hang on (agenda sync, push registration); empty by default. A feature that hangs
+/// one keeps the one already there (see `AccountModel`).
 struct AppHooks {
     var serverAdded: (@MainActor (ManagedServer) async -> Void)?
+    /// Renamed, or linked to the account.
+    var serverChanged: (@MainActor (ManagedServer) async -> Void)?
     var serverRemoved: (@MainActor (ManagedServer) async -> Void)?
     var agentsChanged: (@MainActor (ManagedServer, [AgentDetail]) async -> Void)?
 }
@@ -85,6 +88,10 @@ final class AppState {
     }
 
     func api(for server: ManagedServer) -> any ServerAPI { makeAPI(server.url, server.token) }
+
+    /// A `ServerAPI` for a server not saved yet, without a token: only the routes that need none
+    /// (`health`, the account link by code).
+    func api(for url: URL) -> any ServerAPI { makeAPI(url, "") }
 
     /// Reads the Keychain, then asks every server for its health, in parallel.
     func load() async {
@@ -161,9 +168,10 @@ final class AppState {
 
     /// `urlText` goes through `ServerAddress`; the token loses its surrounding spaces, must start with
     /// `wc_pat_` and is verified against the server before anything is saved. The same server added again
-    /// (same canonical URL) keeps its id and name and gets the new token.
+    /// (same canonical URL) keeps its id and name and gets the new token. `linked`: the token came from an
+    /// account link (by code), so the server's user is linked to the account.
     @discardableResult
-    func addServer(urlText: String, token: String, name: String?) async throws -> ManagedServer {
+    func addServer(urlText: String, token: String, name: String?, linked: Bool = false) async throws -> ManagedServer {
         guard let url = ServerAddress.parse(urlText) else { throw AddServerError.invalidURL }
         let token = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard ManagementClient.isPersonalToken(token) else { throw AddServerError.notPersonalToken }
@@ -189,9 +197,11 @@ final class AppState {
         if let index = list.firstIndex(where: { ServerAddress.canonical($0.url) == canonical }) {
             list[index].token = token
             if let given { list[index].name = given }
+            // A token pasted again may be another user's: linked again only by a new link.
+            list[index].linked = linked
             saved = list[index]
         } else {
-            saved = ManagedServer(name: given ?? url.host() ?? url.absoluteString, url: url, token: token)
+            saved = ManagedServer(name: given ?? url.host() ?? url.absoluteString, url: url, token: token, linked: linked)
             list.append(saved)
         }
         do {
@@ -214,6 +224,50 @@ final class AppState {
         list[index].name = name
         try store.save(list)
         servers = list
+        if let hook = hooks.serverChanged {
+            let renamed = list[index]
+            Task { await hook(renamed) }
+        }
+    }
+
+    /// Marks the server linked to the account (after `POST /v1/account/link` succeeded) and tells the hooks.
+    func markLinked(_ id: String) async throws {
+        guard let changed = try change(id, { $0.linked = true }) else { return }
+        await hooks.serverChanged?(changed)
+    }
+
+    /// Keeps the server's id in the Cloud agenda. No hook: this is the agenda's own bookkeeping. A failed
+    /// save is dropped (the next sync finds the entry again by its URL).
+    func setCloudServerID(_ cloudID: String?, for id: String) {
+        _ = try? change(id) { $0.cloudServerID = cloudID }
+    }
+
+    /// After signing out: agenda ids and links belonged to that account. Servers and tokens stay.
+    func forgetAccount() {
+        guard ensureReadable(), servers.contains(where: { $0.cloudServerID != nil || $0.linked }) else { return }
+        var list = servers
+        for index in list.indices {
+            list[index].cloudServerID = nil
+            list[index].linked = false
+        }
+        guard (try? store.save(list)) != nil else { return }
+        servers = list
+    }
+
+    /// Saves one server changed by `edit`; `nil` when it is not in the list (removed meanwhile).
+    private func change(_ id: String, _ edit: (inout ManagedServer) -> Void) throws -> ManagedServer? {
+        guard ensureReadable() else { throw AddServerError.storage(unreadableMessage) }
+        guard let index = servers.firstIndex(where: { $0.id == id }) else { return nil }
+        var list = servers
+        edit(&list[index])
+        guard list[index] != servers[index] else { return list[index] }
+        do {
+            try store.save(list)
+        } catch {
+            throw AddServerError.storage(unwritableMessage)
+        }
+        servers = list
+        return list[index]
     }
 
     /// Takes the server out of the Keychain. Its token keeps working on the server until revoked there.

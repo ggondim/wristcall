@@ -96,6 +96,15 @@ launch arguments:
 with its address and a personal token (`wristcall users tokens add --name iphone`), rename it, remove it.
 Tokens live in the iPhone Keychain, readable after the first unlock and never synced.
 
+With a Cloud in the build (`CLOUD_URL`), Settings offers the central account: "Sign in" opens the provider's
+page in the system web sheet (Authorization Code with PKCE, client `wristcall-ios`, redirect
+`wristcall://auth/callback`; not ephemeral, so the watch's login can be approved later without signing in again).
+Signed in, "Add server" also takes a pairing code (`wristcall pair --user <you>` on the server's host) when the
+server uses the same account, "Link account" links a saved server, and the servers (name, address, linked) and
+their agents are mirrored to the account's server list in the Cloud; servers there without a token on this
+iPhone show under "From your account". "Sign out" revokes the refresh token and ends the provider's session;
+"Delete account" deletes the server list in the Cloud (servers and tokens stay).
+
 ```sh
 make -C watch build-ios                # builds the iPhone app and the embedded watch app
 make -C watch test-ios                 # PhoneTests on an iPhone 17 simulator
@@ -107,7 +116,7 @@ The default `IOS_DESTINATION` is an "iPhone 17" simulator. `CLOUD_URL` and `RELA
 `WRISTCALL_CLOUD_URL` and `WRISTCALL_RELAY_URL` for every build target of the Makefile (they can also go in
 `Config/Local.xcconfig`); left empty, the apps have no account and no push. In Debug builds
 `-addServer <URL> -addServerToken <token> [-addServerName <name>]` adds a server at launch, and
-`-debugOpen server|agents|form-new|form-edit|devices|code` opens that screen (simulator smoke tests, which cannot tap).
+`-debugOpen server|agents|form-new|form-edit|devices|code|settings` opens that screen (simulator smoke tests, which cannot tap).
 `AgentsLiveTests` run against a test server when `TEST_RUNNER_WRISTCALL_TEST_SERVER` and
 `TEST_RUNNER_WRISTCALL_TEST_TOKEN` are set for `make test-ios`.
 
