@@ -33,6 +33,7 @@ from .config import (
     same_url,
     vapid_identity,
 )
+from .identity import IdentityUnavailable, ZitadelUsers
 from .oidc import Identity, OidcError, OidcUnavailable, OidcVerifier
 from .push.api import push_error_response
 from .push.api import router as push_router
@@ -54,10 +55,15 @@ class Verifier(Protocol):
     async def verify(self, token: str) -> Identity: ...
 
 
+class Users(Protocol):
+    async def delete(self, user_id: str) -> bool: ...
+
+
 @dataclass(frozen=True)
 class Caller:
     key: str  # "<issuer>#<subject>": the account's id in this service
     client_id: str | None
+    subject: str = ""  # the user's id at the issuer
 
 
 class ApiError(Exception):
@@ -140,7 +146,7 @@ async def current_account(request: Request, authorization: str | None = Header(d
     except OidcError as e:
         log.info("token rejected: %s", e)
         raise ApiError("unauthorized", "missing or invalid token", 401) from None
-    return Caller(key=f"{identity.issuer}#{identity.subject}", client_id=identity.client_id)
+    return Caller(key=f"{identity.issuer}#{identity.subject}", client_id=identity.client_id, subject=identity.subject)
 
 
 async def json_object(request: Request) -> dict[str, Any]:
@@ -233,6 +239,17 @@ async def delete_account(request: Request, caller: Caller = Depends(current_acco
     if caller.client_id is None or caller.client_id not in (clients.get("ios"), clients.get("pwa")):
         raise ApiError("forbidden", "this client cannot delete the account", 403)
     await get_store(request).delete_account(caller.key)
+    # Then the user at the issuer (decision 23). If that fails the agenda is already gone, but the token still works:
+    # the app shows the error and a retry deletes the user (an empty agenda deletes again without harm).
+    users: Users | None = request.app.state.users
+    if users is not None:
+        try:
+            deleted = await users.delete(caller.subject)
+        except IdentityUnavailable as e:
+            log.warning("account deleted, its sign-in not: %s", e)
+            raise ApiError("account_unavailable", "the sign-in could not be deleted; try again later", 503) from None
+        if not deleted:
+            log.info("account deleted; its sign-in is not a user of the Cloud's organization (left alone)")
     return Response(status_code=204)
 
 
@@ -364,6 +381,7 @@ def create_app(
     http: httpx.AsyncClient | None = None,
     signing_key: SigningKey | None = None,
     channels: dict[str, Channel] | None = None,
+    users: Users | None = None,
 ) -> FastAPI:
     # httpx logs every request URL at INFO, and some URLs the Cloud calls are secrets; HTTP/2 (h2, hpack) logs
     # every header at DEBUG, the APNs request path (the device token) included; pymongo logs every command and
@@ -408,6 +426,12 @@ def create_app(
         # /v1/config tells it to; the token must still be issued to one of the app clients.
         audiences = client_ids + ([config.project_id] if config.project_id else [])
         verifier = OidcVerifier(config.issuer, audiences, http, clients=client_ids)
+    if users is None and config.zitadel_client_id and config.zitadel_org_id and config.zitadel_client_secret:
+        if http is None:
+            http = owned_http = httpx.AsyncClient()
+        users = ZitadelUsers(
+            config.issuer, config.zitadel_org_id, config.zitadel_client_id, config.zitadel_client_secret, http
+        )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -432,6 +456,7 @@ def create_app(
     app = FastAPI(title="wristcall-cloud", version=__version__, lifespan=lifespan)
     app.state.config = config
     app.state.verifier = verifier
+    app.state.users = users
     app.state.signing_key = signing_key
     app.state.channels = channels
     app.state.send_limiter = SendLimiter(config.push_per_minute, config.push_per_day)
