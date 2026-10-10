@@ -19,6 +19,10 @@ export function parseRoute(pathname: string): Route {
   if (head === "servers" && id && rest[0] === "agents" && rest.length <= 2 && rest[1] !== "") {
     return { tab: "servers", path: `/servers/${parts.slice(1).join("/")}` }
   }
+  // /servers/:id/devices and /servers/:id/devices/code
+  if (head === "servers" && id && rest[0] === "devices" && (rest.length === 1 || (rest.length === 2 && rest[1] === "code"))) {
+    return { tab: "servers", path: `/servers/${parts.slice(1).join("/")}` }
+  }
   if (rest.length > 0) return FALLBACK
   switch (path) {
     case "/":
@@ -82,4 +86,37 @@ export function parseAgentsTarget(path: string): AgentsTarget | null {
   if (agent === undefined) return { serverId, screen: "list" }
   if (agent === "new") return { serverId, screen: "new" }
   return agent === "" ? null : { serverId, screen: "edit", agentId: decoded(agent) }
+}
+
+/** Where a devices screen is: the list of devices, or the pairing code. The id is decoded. */
+export type DevicesTarget = { serverId: string; screen: "list" | "code" }
+
+export function devicesPath(serverId: string): string {
+  return `/servers/${encodeURIComponent(serverId)}/devices`
+}
+
+/** The devices screen a path under `/servers/` names, or null for any other server path. */
+export function parseDevicesTarget(path: string): DevicesTarget | null {
+  const [head, id, section, screen, ...rest] = path.split("/").slice(1)
+  if (head !== "servers" || !id || section !== "devices" || rest.length > 0) return null
+  if (screen === undefined) return { serverId: decoded(id), screen: "list" }
+  return screen === "code" ? { serverId: decoded(id), screen: "code" } : null
+}
+
+/** What a notification put in the approvals address: `?server=<local id>&request=<4 digits>&expires=<Unix seconds>`. */
+export interface ApprovalTarget {
+  serverId: string
+  requestId: string
+  expiresAt: number | null
+}
+
+/** The target of `/approvals?...`, or null when the address names no server and request. Nothing else of it is used. */
+export function parseApprovalTarget(search: string): ApprovalTarget | null {
+  const params = new URLSearchParams(search)
+  const serverId = params.get("server")
+  const requestId = params.get("request")
+  if (!serverId || !requestId) return null
+  const raw = params.get("expires")
+  const expires = raw === null || raw.trim() === "" ? null : Number(raw)
+  return { serverId, requestId, expiresAt: expires !== null && Number.isFinite(expires) ? expires : null }
 }
