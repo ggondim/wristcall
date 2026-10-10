@@ -1,4 +1,4 @@
-import { useEffect, useState } from "preact/hooks"
+import { useEffect, useRef, useState } from "preact/hooks"
 import type { ServersModel } from "../models/servers"
 import { Link } from "./Link"
 import { useModel } from "./useModel"
@@ -8,6 +8,7 @@ export function ServerDetailView({ model, id }: { model: ServersModel; id: strin
   const row = rows.find((candidate) => candidate.server.id === id)
   // What is being typed; null while the field shows the saved name.
   const [draft, setDraft] = useState<string | null>(null)
+  const renaming = useRef(false)
   const [renameError, setRenameError] = useState<string | null>(null)
   useEffect(() => {
     void model.load()
@@ -24,15 +25,21 @@ export function ServerDetailView({ model, id }: { model: ServersModel; id: strin
 
   const { server, health, problem } = row
   async function commit(value: string): Promise<void> {
-    if (value === server.name) {
+    // Enter submits and the field then loses focus: one rename, not two.
+    if (renaming.current) return
+    if (value.trim() === server.name) {
       setDraft(null)
+      setRenameError(null)
       return
     }
+    renaming.current = true
     try {
       await model.rename(server.id, value)
       setRenameError(null)
     } catch (e) {
       setRenameError(e instanceof Error ? e.message : "The name could not be saved.")
+    } finally {
+      renaming.current = false
     }
     setDraft(null)
   }

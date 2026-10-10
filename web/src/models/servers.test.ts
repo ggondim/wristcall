@@ -5,7 +5,7 @@ import type { CloudServer } from "../api/cloud"
 import { openDb } from "../store/db"
 import { ServerStore, type SavedServer } from "../store/servers"
 import { mockFetch } from "../test/mockFetch"
-import { ServersModel } from "./servers"
+import { openServerStorage, ServersModel, unavailableStorage } from "./servers"
 
 function server(over: Partial<SavedServer> = {}): SavedServer {
   return {
@@ -144,4 +144,84 @@ describe("ServersModel", () => {
     expect(await model.client("1")).toBeInstanceOf(ServerClient)
     expect(await model.client("nope")).toBeNull()
   })
+
+  test("loadDropsAListReadBeforeARemoval", async () => {
+    const real = await fresh(server())
+    let first = true
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const store = {
+      list: async () => {
+        const snapshot = await real.list()
+        if (first) {
+          first = false
+          await gate
+        }
+        return snapshot
+      },
+      get: (id: string) => real.get(id),
+      remove: (id: string) => real.remove(id),
+      update: (id: string, patch: Partial<SavedServer>) => real.update(id, patch),
+    }
+    const model = new ServersModel(store, clients(() => ok(HEALTH)))
+    const loading = model.load()
+    await new Promise((r) => setTimeout(r, 10))
+    await model.remove("1")
+    release()
+    await loading
+    expect(model.state.rows).toEqual([])
+  })
+
+  test("loadDropsAListReadBeforeARename", async () => {
+    const real = await fresh(server())
+    let first = true
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const store = {
+      list: async () => {
+        const snapshot = await real.list()
+        if (first) {
+          first = false
+          await gate
+        }
+        return snapshot
+      },
+      get: (id: string) => real.get(id),
+      remove: (id: string) => real.remove(id),
+      update: (id: string, patch: Partial<SavedServer>) => real.update(id, patch),
+    }
+    const model = new ServersModel(store, clients(() => ok(HEALTH)))
+    const loading = model.load()
+    await new Promise((r) => setTimeout(r, 10))
+    await model.rename("1", "office")
+    release()
+    await loading
+    expect(model.state.rows[0]?.server.name).toBe("office")
+  })
+
+  test("savedAddsARowAnnouncesItAndChecksIt", async () => {
+    const store = await fresh()
+    const model = new ServersModel(store, clients((_, path) => (path.endsWith("/health") ? ok(HEALTH) : ok({ providers: [], custom_endpoints: false }))))
+    const seen: string[] = []
+    model.onChange((event) => seen.push(`${event.kind}:${event.server.id}`))
+    model.setFromAccount([cloud({ id: "a", url: "https://home.example.com" })])
+    expect(model.state.fromAccount).toHaveLength(1)
+    await model.saved(server(), "added")
+    expect(model.state.rows).toHaveLength(1)
+    expect(model.state.rows[0]).toMatchObject({ health: { version: "0.7.0" }, problem: null })
+    expect(model.state.fromAccount).toEqual([])
+    await model.saved(server({ name: "renamed", linked: true }), "updated")
+    expect(model.state.rows).toHaveLength(1)
+    expect(model.state.rows[0]?.server.name).toBe("renamed")
+    expect(seen).toEqual(["added:1", "updated:1"])
+  })
+
+  test("openServerStorageFallsBackWhenTheDatabaseCannotBeOpened", async () => {
+    const storage = await openServerStorage(() => Promise.reject(new Error("blocked")))
+    expect(storage).toBe(unavailableStorage)
+    const model = new ServersModel(storage)
+    await model.load()
+    expect(model.state).toMatchObject({ rows: [], loaded: true, loading: false, loadError: "The saved servers could not be read." })
+  })
 })
+

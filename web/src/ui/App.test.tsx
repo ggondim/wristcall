@@ -46,6 +46,26 @@ describe("route", () => {
   })
 })
 
+describe("App servers routes", () => {
+  test("serverRouteRendersTheDetailView", async () => {
+    const saved = { id: "abc", name: "home", url: "https://home.example.com", token: "wc_pat_x", linked: false, cloudServerId: null, pushKey: null, pushEndpoint: null, addedAt: 1 }
+    const model = new ServersModel({ ...emptyStore, list: async () => [saved], get: async () => saved }, () => {
+      throw new TypeError("offline")
+    })
+    history.replaceState(null, "", "/servers/abc")
+    render(<App badge={new FakeBadge(0)} config={config} servers={model} />)
+    expect(await screen.findByLabelText("Name")).toBeTruthy()
+    expect(screen.getByRole("heading", { name: "home" })).toBeTruthy()
+    expect(screen.getByRole("link", { name: "Agents" }).getAttribute("href")).toBe("/servers/abc/agents")
+  })
+
+  test("serversRouteRendersTheList", async () => {
+    history.replaceState(null, "", "/servers")
+    render(<App badge={new FakeBadge(0)} config={config} servers={servers} />)
+    expect(await screen.findByText("Add your wristcall server")).toBeTruthy()
+  })
+})
+
 describe("App", () => {
   test("rendersTabsWithBadge", () => {
     render(<App badge={new FakeBadge(2)} config={config} servers={servers} />)

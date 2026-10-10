@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/preact
 import { afterEach, beforeEach, describe, expect, test } from "vitest"
 import type { CloudServer } from "../api/cloud"
 import { ServerClient } from "../api/server"
-import { ServersModel } from "../models/servers"
+import { ServersModel, unavailableStorage } from "../models/servers"
 import { openDb } from "../store/db"
 import { ServerStore, type SavedServer } from "../store/servers"
 import { mockFetch } from "../test/mockFetch"
@@ -61,6 +61,14 @@ describe("ServersView", () => {
   })
 })
 
+describe("ServersView without storage", () => {
+  test("showsTheStorageFailureInsteadOfABlankPage", async () => {
+    render(<ServersView model={new ServersModel(unavailableStorage)} />)
+    await screen.findByText("The saved servers could not be read.")
+    expect(screen.getByRole("link", { name: "Add server" })).toBeTruthy()
+  })
+})
+
 describe("ServerDetailView", () => {
   test("renamesOnBlurAndShowsRefusals", async () => {
     const model = await modelWith([server()])
@@ -75,6 +83,27 @@ describe("ServerDetailView", () => {
     fireEvent.blur(input)
     await waitFor(() => expect(screen.getByRole("heading", { name: "office" })).toBeTruthy())
     expect(screen.queryByText("The name cannot be empty.")).toBeNull()
+  })
+
+  test("enterThenBlurRenamesOnceAndSkipsTrimmedEqualNames", async () => {
+    const model = await modelWith([server()])
+    let renames = 0
+    const rename = model.rename.bind(model)
+    model.rename = async (id, name) => {
+      renames++
+      await rename(id, name)
+    }
+    render(<ServerDetailView model={model} id="1" />)
+    const input = (await screen.findByLabelText("Name")) as HTMLInputElement
+    fireEvent.input(input, { target: { value: "  home  " } })
+    fireEvent.blur(input)
+    await waitFor(() => expect(input.value).toBe("home"))
+    expect(renames).toBe(0)
+    fireEvent.input(input, { target: { value: "office" } })
+    fireEvent.submit(input.form!)
+    fireEvent.blur(input)
+    await waitFor(() => expect(screen.getByRole("heading", { name: "office" })).toBeTruthy())
+    expect(renames).toBe(1)
   })
 
   test("linksToManagementScreens", async () => {

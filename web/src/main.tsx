@@ -1,9 +1,7 @@
 import { render } from "preact"
 import "./ui/styles.css"
 import { loadConfig } from "./config"
-import { ServersModel } from "./models/servers"
-import { openDb } from "./store/db"
-import { ServerStore } from "./store/servers"
+import { openServerStorage, ServersModel } from "./models/servers"
 import { App } from "./ui/App"
 import { BaseModel } from "./ui/useModel"
 
@@ -16,7 +14,7 @@ class NoBadge extends BaseModel<{ count: number }> {
 
 async function start(): Promise<void> {
   const config = await loadConfig()
-  const servers = new ServersModel(new ServerStore(await openDb()))
+  const servers = new ServersModel(await openServerStorage())
   render(<App badge={new NoBadge()} config={config} servers={servers} />, document.getElementById("app")!)
 }
 

@@ -2,7 +2,9 @@ import { sameUrl } from "../lib/address"
 import { ApiError } from "../lib/errors"
 import { ServerClient, type Health } from "../api/server"
 import type { CloudServer } from "../api/cloud"
-import type { SavedServer, ServerStore } from "../store/servers"
+import type { SavedServer } from "../store/servers"
+import { openDb } from "../store/db"
+import { ServerStore } from "../store/servers"
 import { BaseModel } from "../ui/useModel"
 
 /** What the list needs from the store (the real `ServerStore`, or a stand-in in a test). */
@@ -38,15 +40,34 @@ export const NAME_INVALID = "The name cannot have control characters."
 const MAX_NAME = 64
 const LOAD_FAILED = "The saved servers could not be read."
 
+/** Stand-in when the database cannot be opened: the list shows the failure, and nothing is saved or removed. */
+export const unavailableStorage: ServerStorage = {
+  list: () => Promise.reject(new Error(LOAD_FAILED)),
+  get: async () => null,
+  remove: () => Promise.reject(new Error(LOAD_FAILED)),
+  update: () => Promise.reject(new Error(LOAD_FAILED)),
+}
+
+/** The store over IndexedDB; when that cannot be opened (blocked, private mode), the stand-in, so every screen still renders. */
+export async function openServerStorage(open: () => Promise<IDBDatabase> = openDb): Promise<ServerStorage> {
+  try {
+    return new ServerStore(await open())
+  } catch {
+    return unavailableStorage
+  }
+}
+
 /** The client of one saved server, with its token. */
 export function defaultServerClient(server: SavedServer): ServerClient {
   return new ServerClient(new URL(server.url), server.token)
 }
 
 /** Health tells whether the host answers; `providers` (needs the token) tells whether the token still works. */
-async function check(client: ServerClient): Promise<Pick<ServerRow, "health" | "problem">> {
+async function check(makeClient: () => ServerClient): Promise<Pick<ServerRow, "health" | "problem">> {
+  let client: ServerClient
   let health: Health
   try {
+    client = makeClient() // a stored address that no longer parses fails here
     health = await client.health()
   } catch {
     return { health: null, problem: UNREACHABLE }
@@ -68,6 +89,8 @@ export class ServersModel extends BaseModel<ServersState> {
   #account: CloudServer[] = []
   #beforeRemove: (server: SavedServer) => Promise<void> = async () => {}
   #generation = 0
+  /** Counts the changes made here (rename, remove, saved): a read of the database that began before one is stale. */
+  #changes = 0
 
   constructor(store: ServerStorage, serverClientFor: (server: SavedServer) => ServerClient = defaultServerClient) {
     super({ rows: [], fromAccount: [], loading: false, loaded: false, loadError: null })
@@ -81,7 +104,12 @@ export class ServersModel extends BaseModel<ServersState> {
     this.set({ loading: true })
     let servers: SavedServer[]
     try {
-      servers = await this.#store.list()
+      let changes: number
+      do {
+        changes = this.#changes
+        servers = await this.#store.list()
+        if (generation !== this.#generation) return
+      } while (changes !== this.#changes) // a rename or removal finished meanwhile: read again
     } catch {
       if (generation !== this.#generation) return
       this.set({ rows: [], loading: false, loaded: true, loadError: LOAD_FAILED, fromAccount: this.#pending([]) })
@@ -97,7 +125,7 @@ export class ServersModel extends BaseModel<ServersState> {
     this.set({ rows, loaded: true, loadError: null, fromAccount: this.#pending(rows) })
     await Promise.all(
       servers.map(async (server) => {
-        const result = await check(this.#clientFor(server))
+        const result = await check(() => this.#clientFor(server))
         if (generation !== this.#generation) return
         this.set({ rows: this.state.rows.map((row) => (row.server.id === server.id ? { ...row, ...result } : row)) })
       }),
@@ -118,6 +146,7 @@ export class ServersModel extends BaseModel<ServersState> {
     if (/\p{Cc}/u.test(clean)) throw new Error(NAME_INVALID)
     if (Array.from(clean).length > MAX_NAME) throw new Error(NAME_TOO_LONG)
     const server = await this.#store.update(id, { name: clean })
+    this.#changes++
     if (server === null) return
     this.set({ rows: this.state.rows.map((row) => (row.server.id === id ? { ...row, server } : row)) })
     this.#emit({ kind: "updated", server })
@@ -134,6 +163,7 @@ export class ServersModel extends BaseModel<ServersState> {
       // The server may be gone or unreachable: removing it here is still what was asked.
     }
     await this.#store.remove(id)
+    this.#changes++
     const rows = this.state.rows.filter((row) => row.server.id !== id)
     this.set({ rows, fromAccount: this.#pending(rows) })
     this.#emit({ kind: "removed", server })
@@ -141,12 +171,13 @@ export class ServersModel extends BaseModel<ServersState> {
 
   /** A server was saved by another screen (adding, or the account link): checks it and tells the listeners. */
   async saved(server: SavedServer, kind: "added" | "updated"): Promise<void> {
+    this.#changes++
     const rows = this.state.rows.some((row) => row.server.id === server.id)
       ? this.state.rows.map((row) => (row.server.id === server.id ? { ...row, server } : row))
       : [...this.state.rows, { server, health: null, problem: null }]
     this.set({ rows, fromAccount: this.#pending(rows) })
     this.#emit({ kind, server })
-    const result = await check(this.#clientFor(server))
+    const result = await check(() => this.#clientFor(server))
     this.set({ rows: this.state.rows.map((row) => (row.server.id === server.id ? { ...row, ...result } : row)) })
   }
 
