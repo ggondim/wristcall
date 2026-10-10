@@ -58,6 +58,11 @@ class CloudConfig:
     apns_team_id: str | None = None
     # APNs per environment; only changed by tests (a fake APNs on loopback).
     apns_hosts: dict[str, str] = field(default_factory=lambda: dict(APNS_HOSTS))
+    # Account deletion also deletes the user at the issuer (Zitadel): the organization whose users the Cloud may
+    # delete and its machine user's client credentials. Without them only the agenda is deleted.
+    zitadel_org_id: str | None = None
+    zitadel_client_id: str | None = None
+    zitadel_client_secret: str | None = field(default=None, repr=False)
 
 
 class ConfigError(Exception):
@@ -245,6 +250,19 @@ def _server_tokens(env: Mapping[str, str], issuer: str) -> tuple[str | None, byt
     return public_url, pem
 
 
+def _zitadel(env: Mapping[str, str]) -> tuple[str | None, str | None, str | None]:
+    names = ("WRISTCALL_CLOUD_ZITADEL_ORG_ID", "WRISTCALL_CLOUD_ZITADEL_CLIENT_ID", "WRISTCALL_CLOUD_ZITADEL_CLIENT_SECRET")
+    secret = _secret(env, names[2])
+    try:
+        text = secret.decode().strip() if secret is not None else None
+    except UnicodeDecodeError:
+        raise ConfigError(f"{names[2]} must be text") from None
+    values = (_get(env, names[0]), _get(env, names[1]), text or None)
+    if any(v is None for v in values) and any(v is not None for v in values):
+        raise ConfigError(f"{names[0]}, {names[1]} and {names[2]} (or {names[2]}_FILE) go together")
+    return values
+
+
 def config_from_env(env: Mapping[str, str]) -> CloudConfig:
     mongo_url = _get(env, "WRISTCALL_CLOUD_MONGO_URL")
     if mongo_url is None:
@@ -267,6 +285,7 @@ def config_from_env(env: Mapping[str, str]) -> CloudConfig:
     apns_key_id = _get(env, "WRISTCALL_CLOUD_APNS_KEY_ID")
     apns_team_id = _get(env, "WRISTCALL_CLOUD_APNS_TEAM_ID")
     apns_provider_token(apns_key_pem, apns_key_id, apns_team_id, apns_topics)
+    zitadel_org_id, zitadel_client_id, zitadel_client_secret = _zitadel(env)
     return CloudConfig(
         mongo_url=mongo_url,
         database=_get(env, "WRISTCALL_CLOUD_DATABASE") or CloudConfig.database,
@@ -294,4 +313,7 @@ def config_from_env(env: Mapping[str, str]) -> CloudConfig:
         apns_key_id=apns_key_id,
         apns_team_id=apns_team_id,
         apns_hosts=_apns_hosts(env),
+        zitadel_org_id=zitadel_org_id,
+        zitadel_client_id=zitadel_client_id,
+        zitadel_client_secret=zitadel_client_secret,
     )

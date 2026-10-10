@@ -2,6 +2,23 @@
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each component follows [SemVer](https://semver.org/) on its own: the server is published by the `server-vX.Y.Z` tag (Docker image); the Cloud (`cloud/`) by the `cloud-vX.Y.Z` tag (Docker image); the watch app is marked by the `watch-vX.Y.Z` tag and the iPhone app by the `ios-vX.Y.Z` tag; neither has a published binary (build them with Xcode, see [watch/README.md](watch/README.md)).
 
+## [cloud-0.3.0] - Unreleased
+
+### Added
+
+- Account deletion deletes the sign-in too (Apple's account deletion rule): `DELETE /v1/account` also deletes the
+  caller's user at Zitadel, through the management API as a machine user that manages one organization
+  (`WRISTCALL_CLOUD_ZITADEL_ORG_ID`, `_CLIENT_ID`, `_CLIENT_SECRET` or `_FILE`; all or none). A user of another
+  organization is left alone. If Zitadel fails, the agenda is already deleted and the call answers
+  `503 account_unavailable`; the app shows the error and a retry finishes. Without the variables only the agenda is
+  deleted, as before.
+
+### Changed
+
+- iPhone app (next release): the "Delete account" confirmation says the sign-in is deleted too.
+- The end-to-end browser helper (`tools/e2e/zitadel_browser.py`) drives Zitadel's login v2: the iPhone sign-in
+  (PKCE) is now verified against the real identity provider by the account e2e.
+
 ## [ios-0.1.0] - 2026-10-10
 
 First release of the iPhone app (`watch/Phone/`, tag `ios-v0.1.0`). It is meant for servers 0.6.0 (older ones lack parts of the
@@ -29,9 +46,9 @@ distribution and Sign in with Apple need a paid Apple Developer account; everyth
 ### Known limitations
 
 - The iPhone sign-in (PKCE) could not be verified against the real identity provider: its hosted login page (login v2)
-  was down when this was built. The watch's device code sign-in was verified against the real
-  identity provider by a Kit integration test, not through the watch or iPhone screens.
-- "Delete account" deletes only the agenda in the Cloud (push registrations at the relay are anonymous and not part of
+  was down when this was built (verified after release, see cloud-0.3.0). The watch's device code sign-in was
+  verified against the real identity provider by a Kit integration test, not through the watch or iPhone screens.
+- "Delete account" deletes only the agenda in the Cloud (with Cloud 0.3.0 also the sign-in, see there) (push registrations at the relay are anonymous and not part of
   the account). The app then drops its own push keys (push build), but only until its next launch: on the next launch it
   registers the keys again for every server that accepts the account; removing the server in the app clears its key
   for good.

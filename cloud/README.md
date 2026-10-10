@@ -48,6 +48,15 @@ Push relay (all optional; a channel exists only when its credentials are set):
 | `WRISTCALL_CLOUD_PUSH_IDLE_DAYS` | `180` | registrations without a send for this long are deleted (checked every 6 hours) |
 | `WRISTCALL_CLOUD_PUSH_FAKE` | `0` | `1` replaces both channels by one that delivers nothing, for end to end tests on one machine. It is refused unless `WRISTCALL_CLOUD_PUBLIC_URL` is a loopback URL, and when VAPID or APNs credentials are set as well, the fake channel is the one used |
 
+Account deletion at the identity provider (the three go together; without them `DELETE /v1/account` deletes only the
+agenda):
+
+| Variable | Default | |
+|---|---|---|
+| `WRISTCALL_CLOUD_ZITADEL_ORG_ID` | | Zitadel organization whose users the Cloud may delete (wristcall's: `394311486572333063`) |
+| `WRISTCALL_CLOUD_ZITADEL_CLIENT_ID` | | client id of the Cloud's machine user there (`wristcall-cloud`), which needs the organization role `ORG_USER_MANAGER` and nothing else |
+| `WRISTCALL_CLOUD_ZITADEL_CLIENT_SECRET` / `_FILE` | | that machine user's client secret |
+
 Configuration errors name the variable, never its value, and stop the start with exit code 2: a VAPID subject without
 a key, a VAPID key without a subject, one or two of the three APNs credentials, and a bad key, URL or number are all
 errors.
@@ -85,6 +94,16 @@ the user's agenda and add or delete servers (for example a phishing "Home" entry
 restricted (iOS and PWA clients). Servers 0.6.0 never receive the Zitadel token, only a per-server token (below),
 which the Cloud API does not accept: see "Before deploying".
 
+**Account deletion.** With the `WRISTCALL_CLOUD_ZITADEL_*` variables, `DELETE /v1/account` also deletes the user
+named by the token's `sub` at Zitadel (`DELETE /management/v1/users/{id}` with `x-zitadel-orgid`), signed in as the
+machine user (client credentials, token cached until a minute before it expires). The call is scoped to the
+organization: a user of another organization of the instance (who may sign in to the apps too) is not found there
+and is left alone, as is one already deleted (a warning is logged: for every user it means a wrong organization id).
+After the deletion Zitadel refuses the user's refresh token, and its end-session page sends the app straight back.
+Known gaps: the app's confirmation says the sign-in is deleted even when the Cloud lacks these variables or the user
+belongs to another organization; and an access token issued before the deletion (the watch's, say) stays valid until
+it expires, so a call with it in that window records an empty account again, which nothing deletes later.
+
 `src/wristcall_cloud/oidc.py` is a copy of `server/src/wristcall/oidc.py` (only the user agent differs); keep
 both in sync.
 
@@ -102,7 +121,7 @@ answers `404 not_found`, never `403`.
 | Route | Body | Answers |
 |---|---|---|
 | `GET /v1/account` | | `200 {"account", "created_at", "servers"}` |
-| `DELETE /v1/account` | | `204`, deletes the account and its servers; `403 forbidden` unless the token was issued to the iOS or PWA client |
+| `DELETE /v1/account` | | `204`, deletes the account, its servers and (when configured) the user at the identity provider; `403 forbidden` unless the token was issued to the iOS or PWA client; `503 account_unavailable` when the provider fails (the agenda is already gone; the same call again finishes) |
 | `GET /v1/servers` | | `200 {"servers": [Server]}` by creation |
 | `POST /v1/servers` | `{name, url, kind?, linked?}` | `201 Server`; `409 conflict` for a repeated URL; `403 limit` over `WRISTCALL_CLOUD_MAX_SERVERS` |
 | `GET /v1/servers/{id}` | | `200 Server`; `404` |
@@ -209,6 +228,9 @@ shares the proxy's address.
   soon as it fetches the new JWKS, and new tokens can fail for up to one minute, until the server fetches it (a
   server looks up an unknown key id at most once every 60 seconds). The APNs key can be replaced by a new one of the
   same team and topics.
+- **Account deletion** needs the machine user's secret (Infisical `prod:/servicos/wristcall-cloud`,
+  `WRISTCALL_ZITADEL_CLOUD_CLIENT_SECRET`) in `WRISTCALL_CLOUD_ZITADEL_CLIENT_SECRET_FILE`: without it the app's
+  "Delete account" leaves the sign-in in place, which Apple's review does not accept.
 - **Store the keys as secrets** (`_FILE` variables), and never run with `WRISTCALL_CLOUD_PUSH_FAKE` outside a local test.
 
 ## Development
@@ -221,4 +243,7 @@ docker build -t wristcall-cloud .
 ```
 
 Tests need a MongoDB (`WRISTCALL_CLOUD_TEST_MONGO_URL`, default `mongodb://localhost:27017`); each test uses a
-throwaway `test_<uuid>` database and drops it.
+throwaway `test_<uuid>` database and drops it. `tests/test_identity_zitadel.py` runs against the real Zitadel when
+`WRISTCALL_CLOUD_TEST_ZITADEL_CLIENT_SECRET` (or `_FILE`) holds the machine user's secret: it creates a throwaway user
+in the organization and deletes it (issuer, organization and client id default to wristcall's; `_ISSUER`, `_ORG_ID`,
+`_CLIENT_ID` change them). Without it the test is skipped.

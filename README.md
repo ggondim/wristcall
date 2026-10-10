@@ -337,12 +337,12 @@ hidden until a Cloud is deployed and set. Push notifications for device approval
 Sign in with Apple need a paid Apple Developer account; a free Apple ID builds everything else. There is no
 published binary: build it with Xcode, see [watch/README.md](watch/README.md#iphone-app).
 
-"Delete account" deletes only the server list in the Cloud. In the push build the app also drops its own push keys,
+"Delete account" deletes your wristcall account: the server list in the Cloud and your sign-in at the identity
+provider (Cloud 0.3.0). Your servers and their tokens stay. In the push build the app also drops its own push keys,
 but only until its next launch; removing a server in the app clears that server's key for good.
 
-Known limitation: the iPhone sign-in could not be verified against the real identity provider, whose hosted
-login page was down while this was built. The watch's device code sign-in was verified against the real
-identity provider by a Kit integration test, not through the watch or iPhone screens.
+The iPhone sign-in (PKCE) and the watch's device code sign-in were verified against the real identity provider by
+Kit integration tests driving its login page in a browser, not through the watch or iPhone screens.
 
 ## Documentation
 

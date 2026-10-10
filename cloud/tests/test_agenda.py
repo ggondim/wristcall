@@ -4,6 +4,7 @@ from pymongo import MongoClient
 from conftest import ISSUER, mongo_url, serve
 from wristcall_cloud.app import create_app
 from wristcall_cloud.config import CloudConfig
+from wristcall_cloud.identity import IdentityUnavailable
 from wristcall_cloud.store import Store
 
 H_A = {"Authorization": "Bearer token-a"}
@@ -275,3 +276,60 @@ def test_responses_never_include_account_field_in_servers(client):
     assert set(client.get("/v1/servers", headers=H_A).json()["servers"][0]) == keys
     assert "account" not in client.get("/v1/agents", headers=H_A).text
     assert '"_id"' not in client.get("/v1/agents", headers=H_A).text
+
+
+class FakeUsers:
+    """The identity provider's user deletion: records subjects; `answer` is what delete returns or raises."""
+
+    def __init__(self) -> None:
+        self.deleted: list[str] = []
+        self.answer: bool | Exception = True
+
+    async def delete(self, user_id: str) -> bool:
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        self.deleted.append(user_id)
+        return self.answer
+
+
+@pytest.fixture
+def users():
+    return FakeUsers()
+
+
+@pytest.fixture
+def users_client(config, mongo_db, fake_verifier, users):
+    yield from serve(create_app(config, store=Store(mongo_db), verifier=fake_verifier, users=users), mongo_db)
+
+
+def test_delete_account_deletes_the_sign_in_too(users_client, users):
+    add_server(users_client)
+    assert users_client.delete("/v1/account", headers=H_A).status_code == 204
+    assert users.deleted == ["a"]
+    assert users_client.get("/v1/servers", headers=H_A).json() == {"servers": []}
+
+
+def test_sign_in_outside_the_org_is_left_alone(users_client, users):
+    users.answer = False
+    add_server(users_client)
+    assert users_client.delete("/v1/account", headers=H_A).status_code == 204
+    assert users.deleted == ["a"]
+    assert users_client.get("/v1/servers", headers=H_A).json() == {"servers": []}
+
+
+def test_provider_down_answers_503_and_a_retry_finishes(users_client, users):
+    users.answer = IdentityUnavailable("user deletion answered 500")
+    add_server(users_client)
+    r = users_client.delete("/v1/account", headers=H_A)
+    assert r.status_code == 503
+    assert r.json()["error"] == "account_unavailable"
+    # The agenda is already gone; the sign-in is not, and its token still works: the app retries.
+    assert users_client.get("/v1/servers", headers=H_A).json() == {"servers": []}
+    users.answer = True
+    assert users_client.delete("/v1/account", headers=H_A).status_code == 204
+    assert users.deleted == ["a"]
+
+
+def test_watch_token_deletes_no_sign_in(users_client, users):
+    assert users_client.delete("/v1/account", headers=H_WATCH).status_code == 403
+    assert users.deleted == []

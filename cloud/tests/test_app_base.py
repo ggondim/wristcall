@@ -299,3 +299,44 @@ def test_indexes_are_created(client, mongo_db):
     keys = {tuple(ix["key"].items()): ix.get("unique", False) for ix in indexes}
     assert keys[(("account", 1), ("url", 1))] is True
     assert (("account", 1), ("created_at", 1)) in keys
+
+
+ZITADEL_ENV = {
+    "WRISTCALL_CLOUD_ZITADEL_ORG_ID": "org-1",
+    "WRISTCALL_CLOUD_ZITADEL_CLIENT_ID": "wristcall-cloud",
+    "WRISTCALL_CLOUD_ZITADEL_CLIENT_SECRET": "s3cr3t-zitadel",
+}
+
+
+def test_zitadel_user_deletion_config():
+    config = config_from_env({**BASE_ENV, **ZITADEL_ENV})
+    assert (config.zitadel_org_id, config.zitadel_client_id) == ("org-1", "wristcall-cloud")
+    assert config.zitadel_client_secret == "s3cr3t-zitadel"
+    assert "s3cr3t-zitadel" not in repr(config)
+    assert config_from_env(BASE_ENV).zitadel_client_id is None
+
+
+def test_zitadel_secret_from_a_file(tmp_path):
+    path = tmp_path / "secret"
+    path.write_text("s3cr3t-file\n")
+    env = {**BASE_ENV, **ZITADEL_ENV}
+    del env["WRISTCALL_CLOUD_ZITADEL_CLIENT_SECRET"]
+    assert config_from_env({**env, "WRISTCALL_CLOUD_ZITADEL_CLIENT_SECRET_FILE": str(path)}).zitadel_client_secret == "s3cr3t-file"
+
+
+def test_zitadel_secret_file_must_be_text(tmp_path):
+    path = tmp_path / "secret"
+    path.write_bytes(b"\xff\xfe\x00")
+    env = {**BASE_ENV, **ZITADEL_ENV}
+    del env["WRISTCALL_CLOUD_ZITADEL_CLIENT_SECRET"]
+    with pytest.raises(ConfigError, match="WRISTCALL_CLOUD_ZITADEL_CLIENT_SECRET"):
+        config_from_env({**env, "WRISTCALL_CLOUD_ZITADEL_CLIENT_SECRET_FILE": str(path)})
+
+
+@pytest.mark.parametrize("missing", list(ZITADEL_ENV))
+def test_zitadel_variables_go_together(missing):
+    env = {**BASE_ENV, **ZITADEL_ENV}
+    del env[missing]
+    with pytest.raises(ConfigError, match="WRISTCALL_CLOUD_ZITADEL_") as e:
+        config_from_env(env)
+    assert "s3cr3t-zitadel" not in str(e.value)
