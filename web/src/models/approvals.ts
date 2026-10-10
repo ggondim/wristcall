@@ -108,11 +108,11 @@ export class ApprovalsModel extends BaseModel<ApprovalsState> {
   }
 
   approve(item: PendingApproval): Promise<void> {
-    return this.#answer("approve", item.serverId, item.request.request_id)
+    return this.#answer("approve", item)
   }
 
   deny(item: PendingApproval): Promise<void> {
-    return this.#answer("deny", item.serverId, item.request.request_id)
+    return this.#answer("deny", item)
   }
 
   /**
@@ -144,8 +144,16 @@ export class ApprovalsModel extends BaseModel<ApprovalsState> {
     if (this.state.notice !== null) this.set({ notice: null })
   }
 
-  async #answer(action: "approve" | "deny", serverId: string, requestId: string): Promise<void> {
+  async #answer(action: "approve" | "deny", item: PendingApproval): Promise<void> {
+    const { serverId } = item
+    const requestId = item.request.request_id
     if (!REQUEST_ID.test(requestId)) return
+    // The 4 digit ids are reused: an item past its expiry may now name another request, so nothing is sent for it.
+    if (!(item.request.expires_at > this.#now())) {
+      this.#drop(serverId, requestId)
+      this.set({ notice: EXPIRED_NOTICE })
+      return
+    }
     const key = approvalKey(serverId, requestId)
     if (this.#busy.has(key)) return
     this.#busy.add(key)

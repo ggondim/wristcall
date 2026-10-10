@@ -244,6 +244,44 @@ describe("ApprovalsModel answers", () => {
     expect(model.state.pending).toEqual([])
   })
 
+  test("approveOfAnExpiredItemSendsNothing", async () => {
+    let now = 100
+    const posted: string[] = []
+    const { servers } = serversWith([home], {
+      "home.example.com": (path, method) => {
+        if (method === "POST") posted.push(path)
+        return listing(request("0423", 9_000), request("0777", 9_500))(path, method)
+      },
+    })
+    const model = new ApprovalsModel(servers, () => now)
+    await model.refresh()
+    const [first, second] = model.state.pending
+    now = 9_000 // the first one is over; its four digits may belong to another request by now
+    await model.approve(first!)
+    expect(posted).toEqual([])
+    expect(model.state.notice).toBe("This request expired.")
+    expect(model.state.pending.map((item) => item.request.request_id)).toEqual(["0777"])
+    await model.deny(second!)
+    expect(posted).toEqual(["pairing-requests/0777/deny"])
+  })
+
+  test("denyOfAnExpiredItemSendsNothing", async () => {
+    let now = 100
+    const posted: string[] = []
+    const { servers } = serversWith([home], {
+      "home.example.com": (path, method) => {
+        if (method === "POST") posted.push(path)
+        return listing(request("0423", 9_000))(path, method)
+      },
+    })
+    const model = new ApprovalsModel(servers, () => now)
+    await model.refresh()
+    now = 9_001
+    await model.deny(model.state.pending[0]!)
+    expect(posted).toEqual([])
+    expect(model.state.notice).toBe("This request expired.")
+  })
+
   test("answeringClearsTheHighlight", async () => {
     const { servers } = serversWith([home], {
       "home.example.com": (path, method) => (method === "POST" ? new Response(null, { status: 204 }) : listing(request("0423", 9_000))(path, method)),

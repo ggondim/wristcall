@@ -22,9 +22,7 @@ export function DevicesScreen({ servers, approvals, target }: { servers: Servers
       .then((client) => {
         if (!live) return
         if (client === null) return setModel("missing")
-        const devices = new DevicesModel(client)
-        setModel(devices)
-        void devices.load()
+        setModel(new DevicesModel(client))
       })
       .catch(() => live && setModel("missing"))
     return () => {

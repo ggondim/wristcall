@@ -98,7 +98,10 @@ export function App({ badge, approvals: given, config, servers, session = null }
   useEffect(() => {
     if (route.tab !== "approvals") return
     const target = parseApprovalTarget(search)
-    if (target !== null) void approvals.focus(target.serverId, target.requestId, target.expiresAt)
+    if (target === null) return
+    void approvals.focus(target.serverId, target.requestId, target.expiresAt)
+    // Read once: a relaunch or reload of this address must not focus the same request again.
+    history.replaceState(null, "", "/approvals")
   }, [route, search, approvals])
   return (
     <>

@@ -80,8 +80,38 @@ describe("DevicesScreen", () => {
     render(<DevicesScreen servers={servers} approvals={new ApprovalsModel(servers)} target={{ serverId: "home", screen: "list" }} />)
     await screen.findByText("New watch")
     fireEvent.click(screen.getByRole("button", { name: "Approve" }))
+    await screen.findByText(/Approve New watch\? It will be able to call your agents on home until you revoke it\./)
+    expect(fetchMock.calls.some((call) => call.init.method === "POST")).toBe(false)
+    fireEvent.click(screen.getByRole("button", { name: "Approve New watch" }))
     await waitFor(() => expect(screen.queryByText("New watch")).toBeNull())
     expect(fetchMock.calls.find((call) => call.init.method === "POST")!.url).toBe("https://home.example.com/v1/pairing-requests/0423/approve")
+  })
+
+  test("approveNeedsAConfirmationAndCancelSendsNothing", async () => {
+    const { servers, fetchMock } = serversWith([home], { "home.example.com": fakeHome({ requests: [request("0423", farFuture, "New watch")] }) })
+    render(<ApprovalsView model={new ApprovalsModel(servers)} />)
+    await screen.findByText("New watch")
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }))
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+    expect(screen.queryByText(/It will be able to call your agents/)).toBeNull()
+    expect(screen.getByRole("button", { name: "Approve" })).toBeTruthy()
+    expect(fetchMock.calls.some((call) => call.init.method === "POST")).toBe(false)
+  })
+
+  test("denyIsOneTap", async () => {
+    const { servers, fetchMock } = serversWith([home], { "home.example.com": fakeHome({ requests: [request("0423", farFuture, "New watch")] }) })
+    render(<ApprovalsView model={new ApprovalsModel(servers)} />)
+    await screen.findByText("New watch")
+    fireEvent.click(screen.getByRole("button", { name: "Deny" }))
+    await waitFor(() => expect(screen.queryByText("New watch")).toBeNull())
+    expect(fetchMock.calls.find((call) => call.init.method === "POST")!.url).toBe("https://home.example.com/v1/pairing-requests/0423/deny")
+  })
+
+  test("theDevicesAreReadOncePerOpen", async () => {
+    const { servers, fetchMock } = serversWith([home], { "home.example.com": fakeHome() })
+    render(<DevicesScreen servers={servers} approvals={new ApprovalsModel(servers)} target={{ serverId: "home", screen: "list" }} />)
+    await screen.findByText("Kitchen watch")
+    expect(fetchMock.calls.filter((call) => call.url.endsWith("/v1/devices"))).toHaveLength(1)
   })
 
   test("aRemovedServerSaysSo", async () => {
@@ -206,6 +236,8 @@ describe("ApprovalsView and the App", () => {
     await screen.findByText("Wrist A")
     expect(focus).toHaveBeenCalledWith("home", "0423", farFuture)
     await waitFor(() => expect(screen.getByText("Wrist A").closest("li")?.getAttribute("aria-current")).toBe("true"))
+    // The address is read once: a relaunch must not focus the request again.
+    expect(location.pathname + location.search).toBe("/approvals")
     expect(screen.getByText("Wrist B").closest("li")?.getAttribute("aria-current")).toBeNull()
   })
 

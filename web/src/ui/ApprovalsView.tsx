@@ -43,6 +43,8 @@ export function ApprovalRow({
 }) {
   const now = useClock()
   const [busy, setBusy] = useState(false)
+  // Approving hands a credential to the watch: it asks first, naming the device. Deny is one tap.
+  const [confirming, setConfirming] = useState(false)
   const ref = useRef<HTMLLIElement>(null)
   useEffect(() => {
     if (focused) ref.current?.scrollIntoView?.({ block: "center" })
@@ -64,14 +66,40 @@ export function ApprovalRow({
       <span class="row-sub" aria-live="off">
         {left > 0 ? `Expires in ${countdown(left)}` : "Expired"}
       </span>
-      <div class="actions">
-        <button class="button" type="button" disabled={busy || left <= 0} onClick={() => void answer(() => model.approve(item))}>
-          Approve
-        </button>
-        <button class="button danger" type="button" disabled={busy || left <= 0} onClick={() => void answer(() => model.deny(item))}>
-          Deny
-        </button>
-      </div>
+      {confirming ? (
+        <div class="confirm" role="group" aria-label={`Approve ${item.request.device_name}`}>
+          <p>
+            Approve {item.request.device_name}? It will be able to call your agents on {item.serverName} until you revoke it.
+          </p>
+          <div class="actions">
+            <button
+              class="button"
+              type="button"
+              disabled={busy || left <= 0}
+              onClick={() =>
+                void answer(async () => {
+                  await model.approve(item)
+                  setConfirming(false)
+                })
+              }
+            >
+              {`Approve ${item.request.device_name}`}
+            </button>
+            <button class="button quiet" type="button" disabled={busy} onClick={() => setConfirming(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div class="actions">
+          <button class="button" type="button" disabled={busy || left <= 0} onClick={() => setConfirming(true)}>
+            Approve
+          </button>
+          <button class="button danger" type="button" disabled={busy || left <= 0} onClick={() => void answer(() => model.deny(item))}>
+            Deny
+          </button>
+        </div>
+      )}
     </li>
   )
 }
