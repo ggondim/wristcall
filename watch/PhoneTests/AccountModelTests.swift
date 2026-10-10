@@ -350,8 +350,8 @@ struct AccountModelTests {
     }
 
     @Test func deleteExplanationSaysWhatStays() {
-        #expect(AccountSection.deleteExplanation == "Deletes your server list from wristcall Cloud. Your servers and "
-            + "their data stay as they are. Your sign-in stays until you delete it on the account page.")
+        #expect(AccountSection.deleteExplanation == "Deletes your wristcall account: your sign-in and your server list "
+            + "in wristcall Cloud. Your servers and their data stay as they are.")
     }
 
     @Test func messagesNeverCarrySecrets() {
