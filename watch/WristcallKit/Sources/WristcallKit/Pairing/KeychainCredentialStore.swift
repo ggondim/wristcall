@@ -27,52 +27,20 @@ public struct KeychainCredentialStore: CredentialStore {
     }
 
     public func load() throws -> Credentials? {
-        var query = baseQuery
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        switch status {
-        case errSecSuccess:
-            guard let data = result as? Data,
-                  let credentials = try? JSONDecoder().decode(Credentials.self, from: data)
-            else { throw CredentialStoreError.corruptedData }
-            return credentials
-        case errSecItemNotFound:
-            return nil
-        default:
-            throw CredentialStoreError.keychain(status)
+        guard let data = try item.read() else { return nil }
+        guard let credentials = try? JSONDecoder().decode(Credentials.self, from: data) else {
+            throw CredentialStoreError.corruptedData
         }
+        return credentials
     }
 
     public func save(_ credentials: Credentials) throws {
-        let data = try JSONEncoder().encode(credentials)
-        let attributes: [String: Any] = [
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-        ]
-        var status = SecItemUpdate(baseQuery as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound {
-            status = SecItemAdd(baseQuery.merging(attributes) { $1 } as CFDictionary, nil)
-        }
-        guard status == errSecSuccess else { throw CredentialStoreError.keychain(status) }
+        try item.write(try JSONEncoder().encode(credentials))
     }
 
     public func delete() throws {
-        let status = SecItemDelete(baseQuery as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw CredentialStoreError.keychain(status)
-        }
+        try item.delete()
     }
 
-    private var baseQuery: [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            // On macOS this selects the iOS-style keychain (the one watchOS always uses) instead of the
-            // file-based login keychain; it needs a signed app with an application identifier.
-            kSecUseDataProtectionKeychain as String: true,
-        ]
-    }
+    private var item: KeychainItem { KeychainItem(service: service, account: account) }
 }

@@ -35,6 +35,23 @@ struct PushRelayClientTests {
         #expect(body["events"] as? [String] == ["call.finished"])
     }
 
+    @Test func registerSendsEvents() async throws {
+        let relay = StubHost(replies: [(201, #"{"push_key":"wc_push_abc"}"#)])
+        let key = try await PushRelayClient(relayURL: relay.url, session: .stubbed()).register(
+            deviceToken: token,
+            topic: "br.com.trigram.wristcall",
+            environment: .production,
+            label: "Home",
+            tag: "server-1",
+            events: ["device.approval"]
+        )
+        #expect(key == "wc_push_abc")
+        let body = try #require(relay.requests.first).json()
+        #expect(body["events"] as? [String] == ["device.approval"])
+        #expect(body["environment"] as? String == "production")
+        #expect(body["label"] as? String == "Home")
+    }
+
     @Test func registerKeepsTheRelayPathPrefix() async throws {
         let relay = StubHost(path: "/relay", replies: [(201, #"{"push_key":"k"}"#)])
         _ = try await register(relay)
