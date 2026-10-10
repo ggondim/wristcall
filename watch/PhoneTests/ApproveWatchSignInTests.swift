@@ -152,14 +152,49 @@ struct ApproveWatchSignInTests {
         let model = await account(signedIn: true, web: web)
         let link = link()
         link.receive(.deviceCode(userCode: "ZXSG-KCPN", expiresAt: Self.clock.timeIntervalSince1970 + 600))
-        let running = Task { await model.approveWatchSignIn(userCode: "ZXSG-KCPN") }
+        let running = Task { await model.approveWatchSignIn(userCode: "ZXSG-KCPN", from: .sheet) }
         await waitFor { model.watchApproval == .open }
+        #expect(model.watchApprovalOrigin == .sheet)
         link.receive(.signedIn)
         #expect(link.incomingDeviceCode == nil)
         #expect(WatchSignInSheet.code(link: link, account: model, dismissed: "ZXSG-KCPN") == "ZXSG-KCPN")
         model.watchSignInFinished()
         await running.value
         #expect(WatchSignInSheet.code(link: link, account: model, dismissed: nil) == nil)
+    }
+
+    @Test func settingsApprovalNeverShowsTheSheet() async throws {
+        // Approved from Settings (typed code): no sheet pops over Settings while the page opens, nor for that
+        // code once the page closed.
+        let web = HangingWeb()
+        let model = await account(signedIn: true, web: web)
+        let link = link()
+        link.receive(.deviceCode(userCode: "ZXSG-KCPN", expiresAt: Self.clock.timeIntervalSince1970 + 600))
+        let running = Task { await model.approveWatchSignIn(userCode: "zxsg-kcpn", from: .settings) }
+        await waitFor { model.watchApproval == .open }
+        #expect(model.watchApprovalOrigin == .settings)
+        #expect(WatchSignInSheet.code(link: link, account: model, dismissed: nil) == nil)
+        model.watchSignInFinished()
+        await running.value
+        #expect(model.watchApproval == .done)
+        #expect(model.watchApprovalOrigin == nil)
+        #expect(link.incomingDeviceCode == "ZXSG-KCPN")
+        #expect(WatchSignInSheet.code(link: link, account: model, dismissed: nil) == nil)
+        // Another code from the watch still brings the sheet.
+        link.receive(.deviceCode(userCode: "ABCD-EFGH", expiresAt: Self.clock.timeIntervalSince1970 + 600))
+        #expect(WatchSignInSheet.code(link: link, account: model, dismissed: nil) == "ABCD-EFGH")
+    }
+
+    @Test func approvalDefaultsToSettings() async throws {
+        // An approval that does not say where it came from never keeps a sheet up.
+        let web = HangingWeb()
+        let model = await account(signedIn: true, web: web)
+        let running = Task { await model.approveWatchSignIn(userCode: "ZXSG-KCPN") }
+        await waitFor { model.watchApproval == .open }
+        #expect(model.watchApprovalOrigin == .settings)
+        #expect(WatchSignInSheet.code(link: link(), account: model, dismissed: nil) == nil)
+        model.watchSignInFinished()
+        await running.value
     }
 
     @Test func watchSignedInWithoutAPageDoesNothing() async {

@@ -49,9 +49,19 @@ final class AccountModel {
         case failed(String)
     }
 
+    /// Where an approval was started: the sheet the watch's code brought up, or Settings (typed code).
+    enum WatchApprovalOrigin: Equatable {
+        case sheet
+        case settings
+    }
+
     private(set) var watchApproval: WatchApproval = .idle
-    /// The code whose device page is open (the approval sheet stays up for it until the page closes).
+    /// The code whose device page is open.
     private(set) var approvingCode: String?
+    /// Where the open page was started from (`nil` when none is open). Only `.sheet` keeps the sheet up.
+    private(set) var watchApprovalOrigin: WatchApprovalOrigin?
+    /// The last code approved from Settings: the sheet does not come up for it afterwards.
+    private(set) var settingsApprovedCode: String?
     /// The device page's task; cancelling it closes the page (M13).
     @ObservationIgnored private var approvalTask: Task<(any Error)?, Never>?
 
@@ -158,7 +168,7 @@ final class AccountModel {
     /// Opens `{issuer}/device?user_code=…` (issuer from the build's Cloud, never from the watch) in the same
     /// non-ephemeral web session as the login, so the provider's cookie approves without a new sign-in. The
     /// page never redirects back: closing it (or `watchSignInFinished()`) ends the step with "Check your watch.".
-    func approveWatchSignIn(userCode: String) async {
+    func approveWatchSignIn(userCode: String, from origin: WatchApprovalOrigin = .settings) async {
         guard let session, state == .signedIn, approvalTask == nil else { return }
         guard DeviceVerification.normalized(userCode) != nil else {
             watchApproval = .failed(Self.badUserCode)
@@ -175,9 +185,15 @@ final class AccountModel {
             watchApproval = .failed(Self.message(for: AccountError.notConfigured))
             return
         }
+        let code = DeviceVerification.normalized(userCode)
+        approvingCode = code
+        watchApprovalOrigin = origin
+        if origin == .settings { settingsApprovedCode = code }
         watchApproval = .open
-        approvingCode = DeviceVerification.normalized(userCode)
-        defer { approvingCode = nil }
+        defer {
+            approvingCode = nil
+            watchApprovalOrigin = nil
+        }
         let web = web
         let task = Task { () -> (any Error)? in
             do {

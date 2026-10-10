@@ -23,14 +23,19 @@ enum DeviceVerification {
 }
 
 /// When the approval sheet is up: the watch sent a login code (still valid), the account is signed in here,
-/// and the user did not close the sheet for that very code. While a device page opened from it is up, the
-/// sheet stays (even once the code expired or the watch signed in): the page is never left without the
-/// screen that waits for it.
+/// and the user neither closed the sheet for that very code nor approved it from Settings. While a device page
+/// opened from the sheet is up, the sheet stays (even once the code expired or the watch signed in): the page
+/// is never left without the screen that waits for it. A page opened from Settings never brings the sheet
+/// (a second sheet over Settings while the page opens could keep the page from showing).
 enum WatchSignInSheet {
     @MainActor
     static func code(link: WatchLink, account: AccountModel, dismissed: String?) -> String? {
-        if account.watchApproval == .open, let code = account.approvingCode { return code }
-        guard account.state == .signedIn, let code = link.incomingDeviceCode, code != dismissed else { return nil }
+        if account.watchApproval == .open {
+            return account.watchApprovalOrigin == .sheet ? account.approvingCode : nil
+        }
+        guard account.state == .signedIn, let code = link.incomingDeviceCode,
+              code != dismissed, code != account.settingsApprovedCode
+        else { return nil }
         return code
     }
 }
@@ -102,7 +107,7 @@ struct ApproveWatchSignInView: View {
 
     private var approveButton: some View {
         Button("Approve on wristcall account") {
-            Task { await account.approveWatchSignIn(userCode: code) }
+            Task { await account.approveWatchSignIn(userCode: code, from: isSheet ? .sheet : .settings) }
         }
         .disabled(DeviceVerification.normalized(code) == nil)
     }
