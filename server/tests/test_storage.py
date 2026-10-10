@@ -490,3 +490,155 @@ async def test_deleting_user_drops_targeted_requests(storage):
     await storage.pairing.add_request("h1", "1234", "watch", 10.0, 100.0, target_user_id=u.id)
     await storage.users.delete(u.id)
     assert await storage.pairing.get_request("h1", 20.0) is None
+
+
+async def _push_setup(storage):
+    u = await storage.users.create("u_000000000001", "ana", "Ana", 1.0)
+    await storage.devices.create("d1", u.id, "Watch", "hd1", 2.0)
+    await storage.tokens.create("t1", u.id, "iPhone app", "ht1", 2.0)
+    return u
+
+
+async def test_push_key_per_client(storage):
+    u = await _push_setup(storage)
+    await storage.devices.create("d2", u.id, "Watch 2", "hd2", 3.0)
+    await storage.tokens.create("t2", u.id, "PWA", "ht2", 3.0)
+    assert await storage.push.set(u.id, "wc_push_a", 10.0, device_id="d1") is None
+    assert await storage.push.for_device("d1") == "wc_push_a"
+    # Same key again: nothing replaced. A different key replaces the old one and returns it.
+    assert await storage.push.set(u.id, "wc_push_a", 11.0, device_id="d1") is None
+    assert await storage.push.set(u.id, "wc_push_b", 12.0, device_id="d1") == "wc_push_a"
+    assert await storage.push.for_device("d1") == "wc_push_b"
+    assert await storage.push.for_device("d2") is None
+    # Management apps: keys of the user's API tokens, oldest first; devices do not count.
+    await storage.push.set(u.id, "wc_push_t2", 20.0, token_id="t2")
+    await storage.push.set(u.id, "wc_push_t1", 15.0, token_id="t1")
+    assert await storage.push.set(u.id, "wc_push_t1", 16.0, token_id="t1") is None
+    assert await storage.push.for_apps(u.id) == ["wc_push_t1", "wc_push_t2"]
+    assert await storage.push.for_apps("u_other") == []
+    assert await storage.push.set(u.id, "wc_push_t1b", 30.0, token_id="t1") == "wc_push_t1"
+    assert await storage.push.for_apps(u.id) == ["wc_push_t1b", "wc_push_t2"]
+    # clear returns the key the client had.
+    assert await storage.push.clear(device_id="d1") == "wc_push_b"
+    assert await storage.push.clear(device_id="d1") is None
+    assert await storage.push.for_device("d1") is None
+    assert await storage.push.clear(token_id="t2") == "wc_push_t2"
+    assert await storage.push.for_apps(u.id) == ["wc_push_t1b"]
+
+
+async def test_revoked_device_key_is_gone(storage):
+    u = await _push_setup(storage)
+    await storage.push.set(u.id, "wc_push_a", 10.0, device_id="d1")
+    assert await storage.devices.revoke("d1", 20.0) is True
+    assert await storage.push.for_device("d1") is None
+    assert await storage.push.clear(device_id="d1") is None  # the row is deleted, not just hidden
+    if isinstance(storage, MemoryStorage):
+        assert storage.push.rows == []
+    else:
+        assert storage.db.query("SELECT COUNT(*) FROM push_targets")[0][0] == 0
+
+
+async def test_revoked_token_key_is_gone(storage):
+    u = await _push_setup(storage)
+    await storage.push.set(u.id, "wc_push_t", 10.0, token_id="t1")
+    assert await storage.tokens.revoke("t1", 20.0) is True
+    assert await storage.push.for_apps(u.id) == []
+    assert await storage.push.clear(token_id="t1") is None
+    if isinstance(storage, MemoryStorage):
+        assert storage.push.rows == []
+    else:
+        assert storage.db.query("SELECT COUNT(*) FROM push_targets")[0][0] == 0
+
+
+async def test_forget_removes_everywhere(storage):
+    u = await _push_setup(storage)
+    await storage.push.set(u.id, "wc_push_shared", 10.0, device_id="d1")
+    await storage.push.set(u.id, "wc_push_shared", 11.0, token_id="t1")
+    await storage.devices.create("d2", u.id, "Watch 2", "hd2", 3.0)
+    await storage.push.set(u.id, "wc_push_other", 12.0, device_id="d2")
+    assert await storage.push.forget("wc_push_shared") == 2
+    assert await storage.push.forget("wc_push_shared") == 0
+    assert await storage.push.for_device("d1") is None
+    assert await storage.push.for_apps(u.id) == []
+    assert await storage.push.for_device("d2") == "wc_push_other"
+
+
+async def test_deleting_user_drops_push_keys(storage):
+    u = await _push_setup(storage)
+    other = await storage.users.create("u_000000000002", "bob", "Bob", 1.0)
+    await storage.devices.create("d9", other.id, "Watch", "hd9", 2.0)
+    await storage.push.set(u.id, "wc_push_a", 10.0, device_id="d1")
+    await storage.push.set(u.id, "wc_push_t", 10.0, token_id="t1")
+    await storage.push.set(other.id, "wc_push_b", 10.0, device_id="d9")
+    await storage.users.delete(u.id)
+    assert await storage.push.for_device("d1") is None
+    assert await storage.push.for_apps(u.id) == []
+    assert await storage.push.for_device("d9") == "wc_push_b"
+    assert await storage.push.forget("wc_push_a") == 0
+
+
+async def test_exactly_one_client(storage):
+    u = await _push_setup(storage)
+    with pytest.raises(ValueError):
+        await storage.push.set(u.id, "wc_push_a", 10.0)
+    with pytest.raises(ValueError):
+        await storage.push.set(u.id, "wc_push_a", 10.0, device_id="d1", token_id="t1")
+    with pytest.raises(ValueError):
+        await storage.push.clear()
+    with pytest.raises(ValueError):
+        await storage.push.clear(device_id="d1", token_id="t1")
+    assert await storage.push.for_device("d1") is None
+
+
+async def test_push_set_checks_the_client(storage):
+    u = await _push_setup(storage)
+    other = await storage.users.create("u_000000000002", "bob", "Bob", 1.0)
+    await storage.devices.create("d_old", u.id, "Old", "hdo", 2.0)
+    await storage.tokens.create("t_old", u.id, "Old app", "hto", 2.0)
+    await storage.devices.revoke("d_old", 5.0)
+    await storage.tokens.revoke("t_old", 5.0)
+    for kwargs in (
+        {"device_id": "missing"}, {"token_id": "missing"},  # unknown
+        {"device_id": "d_old"}, {"token_id": "t_old"},  # revoked
+        {"device_id": "d1", "_user": other.id}, {"token_id": "t1", "_user": other.id},  # another user's
+    ):
+        who = kwargs.pop("_user", u.id)
+        with pytest.raises(KeyError):
+            await storage.push.set(who, "wc_push_x", 10.0, **kwargs)
+    # Nothing stored, for any of them.
+    for device_id in ("d1", "d_old"):
+        assert await storage.push.for_device(device_id) is None
+    assert await storage.push.for_apps(u.id) == []
+    assert await storage.push.for_apps(other.id) == []
+    assert await storage.push.forget("wc_push_x") == 0
+
+
+async def test_push_key_follows_an_assigned_device(storage):
+    u = await _push_setup(storage)
+    other = await storage.users.create("u_000000000002", "bob", "Bob", 1.0)
+    await storage.push.set(u.id, "wc_push_a", 10.0, device_id="d1")
+    assert await storage.devices.assign("d1", other.id) is True
+    await storage.users.delete(u.id)
+    assert await storage.push.for_device("d1") == "wc_push_a"
+    # The new owner can replace it; the old one no longer can.
+    assert await storage.push.set(other.id, "wc_push_b", 11.0, device_id="d1") == "wc_push_a"
+    await storage.users.delete(other.id)
+    assert await storage.push.for_device("d1") is None
+    assert await storage.push.forget("wc_push_b") == 0
+
+
+async def test_revoking_a_device_of_another_user_keeps_the_key(storage):
+    u = await _push_setup(storage)
+    await storage.push.set(u.id, "wc_push_a", 10.0, device_id="d1")
+    assert await storage.devices.revoke("d1", 20.0, user_id="u_wrong") is False
+    assert await storage.push.for_device("d1") == "wc_push_a"
+
+
+async def test_for_apps_excludes_another_users_token(storage):
+    u = await _push_setup(storage)
+    other = await storage.users.create("u_000000000002", "bob", "Bob", 1.0)
+    await storage.tokens.create("t_bob", other.id, "Bob app", "htb", 2.0)
+    await storage.push.set(u.id, "wc_push_ana", 10.0, token_id="t1")
+    await storage.push.set(other.id, "wc_push_bob", 11.0, token_id="t_bob")
+    assert await storage.push.for_apps(u.id) == ["wc_push_ana"]
+    assert await storage.push.for_apps(other.id) == ["wc_push_bob"]

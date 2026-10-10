@@ -27,3 +27,23 @@ async def test_example_config_boots_into_two_agents():
     await bootstrap(st, cfg)
     owner = await st.users.by_handle("owner")
     assert [a.slug for a in await st.agents.list(owner.id)] == ["default", "demo"]
+
+
+def test_root_example_central_account_block_is_valid():
+    # The block ships commented out: uncommented as is, it must parse.
+    lines = (ROOT / "wristcall.example.yaml").read_text(encoding="utf-8").splitlines()
+    start = lines.index("# central_account:")
+    block = []
+    for line in lines[start:]:
+        if not line.startswith("#"):
+            break
+        block.append(line[2:])
+    data = yaml.safe_load((ROOT / "wristcall.example.yaml").read_text(encoding="utf-8"))
+    central = yaml.safe_load("\n".join(block))
+    # Placeholders ("<watch client id>") stand for real ids.
+    central["central_account"]["clients"] = [f"client-{i}" for i, _ in enumerate(central["central_account"]["clients"])]
+    data.update(central)
+    central = parse_config(data, ENV).central_account
+    assert central.issuer == "https://cloud.wristcall.example"
+    assert central.audience == ["https://wristcall.example.com"]
+    assert central.device_credential == "approval"

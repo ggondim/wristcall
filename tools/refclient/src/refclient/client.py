@@ -3,14 +3,16 @@
 import asyncio
 import json
 import time
-from collections.abc import AsyncIterator, Callable
-from contextlib import suppress
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
+
+from .device_flow import USER_AGENT
 
 FRAME_BYTES = 640
 CLOSE_UNAUTHORIZED = 4401
@@ -19,11 +21,15 @@ START = {"type": "session.start", "protocol": 1, "audio_in": {"codec": "pcm16", 
 ONE_WAY = ("one-shot", "monologue")
 
 
-class PairError(Exception):
+class RefclientError(Exception):
+    """A failure to show the user. Never carries a token."""
+
+
+class PairError(RefclientError):
     pass
 
 
-class CallError(Exception):
+class CallError(RefclientError):
     pass
 
 
@@ -77,6 +83,75 @@ def _error_name(r: httpx.Response) -> str:
     except ValueError:
         return "unknown"
     return str(body.get("error", "unknown")) if isinstance(body, dict) else "unknown"
+
+
+def _same_url(a: str, b: str) -> bool:
+    """Compared in normalized form: httpx lowercases scheme and host; default ports and trailing slash dropped.
+
+    Only a yes/no on the server's claim: the token request always goes to the Cloud the user gave (`--cloud`),
+    never to the issuer the server names."""
+    try:
+        x, y = httpx.URL(a), httpx.URL(b)
+    except httpx.InvalidURL:
+        return False
+
+    def key(url: httpx.URL) -> tuple:
+        return url.scheme, url.host, url.port or {"https": 443, "http": 80}.get(url.scheme), url.path.rstrip("/")
+
+    return key(x) == key(y)
+
+
+def _printable(value: object, limit: int = 200) -> str:
+    """Text a server chose, safe to print: no terminal escapes or other control/format characters."""
+    return "".join(c for c in str(value) if c.isprintable())[:limit]
+
+
+@contextmanager
+def _client(http: httpx.Client | None) -> Iterator[httpx.Client]:
+    if http is not None:
+        yield http
+    else:
+        with httpx.Client(timeout=10.0) as own:
+            yield own
+
+
+def require_cloud(server: str, cloud: str, *, http: httpx.Client | None = None) -> None:
+    """Refuses a server whose central account is not `cloud` (the Cloud the user chose, never one the server names).
+
+    A server announcing a Cloud of its own would get the login token, which is good at the real Cloud."""
+    with _client(http) as client:
+        r = client.get(f"{server.rstrip('/')}/v1/health", headers={"User-Agent": USER_AGENT})
+    try:
+        account = r.json().get("account") if r.status_code == 200 else None
+    except (ValueError, AttributeError):
+        account = None
+    if r.status_code != 200:
+        raise RefclientError(f"cannot read the server's health ({r.status_code})")
+    if not isinstance(account, dict):
+        raise RefclientError("this server has no central account")
+    issuer = account.get("issuer")
+    if not isinstance(issuer, str) or not _same_url(issuer, cloud):
+        raise RefclientError(f"this server trusts another central account: {_printable(issuer)}")
+
+
+def server_token(cloud: str, account_token: str, audience: str, *, http: httpx.Client | None = None) -> str:
+    """A token the Cloud makes for one server only (`audience`, its URL as the user typed it) from the central
+    account login. The login token itself never goes to a server."""
+    with _client(http) as client:
+        r = client.post(
+            f"{cloud.rstrip('/')}/v1/server-tokens",
+            json={"audience": audience},
+            headers={"Authorization": f"Bearer {account_token}", "User-Agent": USER_AGENT},
+        )
+    if r.status_code != 200:
+        raise RefclientError(f"the cloud refused a token for this server ({r.status_code}): {_error_name(r)}")
+    try:
+        token = r.json().get("token")
+    except (ValueError, AttributeError):
+        token = None
+    if not isinstance(token, str) or not token:
+        raise RefclientError("the cloud answered without a token")
+    return token
 
 
 def pair_account(

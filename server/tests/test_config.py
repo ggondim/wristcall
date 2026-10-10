@@ -179,8 +179,12 @@ def test_production_values_are_within_bounds():
     assert parse_config(data, ENV).profiles["default"].vad.silence_ms == 2000
 
 
+SERVER_AUD = "https://wc.example.com"
+
+
 def _with_central(**central):
-    return {**base(), "central_account": central}
+    # `audience` is required (0.6.0); the tests that are not about it get the server's URL.
+    return {**base(), "central_account": {"audience": [SERVER_AUD], **central}}
 
 
 def test_central_account_is_optional():
@@ -211,6 +215,12 @@ def test_central_account_parses_and_normalizes_issuer():
         {"issuer": "https://user:pass@auth.example.com", "clients": ["a"]},
         {"issuer": "https://user@auth.example.com", "clients": ["a"]},
         {"issuer": "https://:pass@auth.example.com", "clients": ["a"]},
+        {"issuer": "https://cloud.example.com", "audience": []},
+        {"issuer": "https://cloud.example.com", "audience": "https://wc.example.com"},
+        {"issuer": "https://cloud.example.com", "audience": ["ftp://wc.example.com"]},
+        {"issuer": "https://cloud.example.com", "audience": ["https://wc.example.com?x=1"]},
+        {"issuer": "https://cloud.example.com", "audience": ["http://wc.example.com"]},
+        {"issuer": "https://cloud.example.com", "audience": ["https://wc.example.com", "http://localhost:8765"]},
     ],
 )
 def test_bad_central_account_is_rejected(central):
@@ -218,9 +228,63 @@ def test_bad_central_account_is_rejected(central):
         parse_config(_with_central(**central), ENV)
 
 
+def test_central_account_without_audience_says_so():
+    # E5 configs (issuer = the account issuer, no audience) must not start: the server would never accept a token.
+    data = {**base(), "central_account": {"issuer": "https://auth.example.com", "clients": ["a"]}}
+    with pytest.raises(ConfigError, match="central_account.audience: Field required"):
+        parse_config(data, ENV)
+
+
+def test_central_account_audience_is_normalized():
+    cfg = parse_config(
+        _with_central(issuer="https://cloud.example.com", audience=["HTTPS://WC.Example.com:443/", "https://x.test/wc/"]),
+        ENV,
+    )
+    assert cfg.central_account.audience == ["https://wc.example.com", "https://x.test/wc"]
+
+
+def test_central_account_loopback_audiences_go_alone():
+    cfg = parse_config(
+        _with_central(issuer="https://cloud.example.com", audience=["http://localhost:8765", "http://127.0.0.1:8765"]),
+        ENV,
+    )
+    assert cfg.central_account.audience == ["http://localhost:8765", "http://127.0.0.1:8765"]
+
+
+def test_central_account_clients_are_optional():
+    cfg = parse_config(_with_central(issuer="https://cloud.example.com"), ENV)
+    assert cfg.central_account.clients is None
+
+
 def test_central_account_issuer_is_stripped():
     cfg = parse_config(_with_central(issuer="  https://auth.example.com/ \n", clients=["a"]), ENV)
     assert cfg.central_account.issuer == "https://auth.example.com"
+
+
+@pytest.mark.parametrize(
+    ("issuer", "canonical"),
+    [
+        ("https://Cloud.example.com:443/", "https://cloud.example.com"),
+        ("HTTPS://CLOUD.EXAMPLE.COM", "https://cloud.example.com"),
+        ("https://cloud.example.com:8443/wc/", "https://cloud.example.com:8443/wc"),
+        ("http://LOCALHOST:80/", "http://localhost"),
+    ],
+)
+def test_central_account_issuer_is_canonical(issuer, canonical):
+    # The Cloud signs with its canonical URL as `iss`: the configured issuer must be that same form.
+    cfg = parse_config(_with_central(issuer=issuer), ENV)
+    assert cfg.central_account.issuer == canonical
+
+
+@pytest.mark.parametrize("issuer", ["http://cloud.example.com", "http://127.0.0.2:8080", "http://[::1]:8080"])
+def test_central_account_issuer_http_only_for_localhost(issuer):
+    with pytest.raises(ConfigError, match="issuer"):
+        parse_config(_with_central(issuer=issuer), ENV)
+
+
+def test_central_account_invalid_issuer_names_the_issuer():
+    with pytest.raises(ConfigError, match="issuer has an invalid host"):
+        parse_config(_with_central(issuer="https://bad_host.example.com"), ENV)
 
 
 @pytest.mark.parametrize("issuer", ["http://localhost:8080", "http://127.0.0.1:8080"])
@@ -290,3 +354,38 @@ def test_effective_retention(default, ceiling, agent_days, expected):
     data = base()
     data["history"] = {"default_retention_days": default, "max_retention_days": ceiling}
     assert parse_config(data, ENV).history.effective_days(agent_days) == expected
+
+
+def _with_push(**push):
+    return {**base(), "push": push}
+
+
+def test_push_is_optional():
+    assert fake_config().push is None
+
+
+def test_push_parses_and_normalizes_relay_url():
+    cfg = parse_config(_with_push(relay_url="https://cloud.example.com/"), ENV)
+    assert cfg.push.relay_url == "https://cloud.example.com"
+    assert cfg.push.timeout_s == 10.0
+    assert parse_config(_with_push(relay_url="http://localhost:8800"), ENV).push.relay_url == "http://localhost:8800"
+
+
+@pytest.mark.parametrize(
+    "push",
+    [
+        {"relay_url": "http://cloud.example.com"},
+        {"relay_url": "ftp://cloud.example.com"},
+        {"relay_url": "https://cloud.example.com?x=1"},
+        {"relay_url": "https://cloud.example.com#frag"},
+        {"relay_url": "https://user:pass@cloud.example.com"},
+        {"relay_url": "https:///path"},
+        {"relay_url": "https://cloud.example.com", "timeout_s": 0},
+        {"relay_url": "https://cloud.example.com", "timeout_s": 31},
+        {"relay_url": "https://cloud.example.com", "extra": 1},
+        {},
+    ],
+)
+def test_bad_push_is_rejected(push):
+    with pytest.raises(ConfigError):
+        parse_config(_with_push(**push), ENV)

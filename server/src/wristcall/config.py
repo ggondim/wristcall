@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator, model_validator
 
+from .audience import AudienceError, is_loopback, normalize_audience
 from .history_codec import HistoryKeyError, parse_key
 
 
@@ -177,32 +178,71 @@ class HistoryConfig(BaseModel):
 
 
 _LOCAL_HOSTS = ("localhost", "127.0.0.1")
+ClientId = Annotated[str, StringConstraints(pattern=r"^\S{1,255}$")]
+
+
+def _check_base_url(value: str, what: str) -> str:
+    """An https URL (http only for localhost/127.0.0.1) without query, fragment or credentials; no trailing slash."""
+    value = value.strip()
+    url = urlsplit(value)
+    if url.query or url.fragment or "?" in value or "#" in value:
+        raise ValueError(f"{what} must not have a query or fragment")
+    if not url.hostname:
+        raise ValueError(f"{what} must have a host")
+    if url.username is not None or url.password is not None:
+        raise ValueError(f"{what} must not have credentials")
+    if url.scheme != "https" and not (url.scheme == "http" and url.hostname in _LOCAL_HOSTS):
+        raise ValueError(f"{what} must be an https URL (http only for localhost)")
+    return value.rstrip("/")
 
 
 class CentralAccountConfig(BaseModel):
     """Optional link to the wristcall cloud account (OIDC). Without it the server works on its own."""
 
     model_config = ConfigDict(extra="forbid")
-    issuer: str  # https://...; http only for localhost/127.0.0.1; the trailing slash is dropped
-    # Accepted OIDC client_ids (the apps' client ids, not the project id).
-    clients: list[Annotated[str, StringConstraints(pattern=r"^\S{1,255}$")]] = Field(min_length=1)
+    # The wristcall Cloud URL: it signs the per-server tokens. https://...; http only for localhost/127.0.0.1;
+    # kept in canonical form (scheme and host lowercased, default port and trailing slash dropped).
+    issuer: str
+    # The server's URL(s), exactly as apps reach it: a token is accepted only if it was made for one of them.
+    audience: list[str] = Field(min_length=1)
+    # Optional: the app client ids the token must come from (absent: any app of the central account).
+    clients: Annotated[list[ClientId], Field(min_length=1)] | None = None
     # approval: the owner approves each new device; attestation: any linked login pairs.
     device_credential: Literal["approval", "attestation"] = "approval"
 
     @field_validator("issuer")
     @classmethod
     def _check_issuer(cls, value: str) -> str:
-        value = value.strip()
-        url = urlsplit(value)
-        if url.query or url.fragment or "?" in value or "#" in value:
-            raise ValueError("issuer must not have a query or fragment")
-        if not url.hostname:
-            raise ValueError("issuer must have a host")
-        if url.username is not None or url.password is not None:
-            raise ValueError("issuer must not have credentials")
-        if url.scheme != "https" and not (url.scheme == "http" and url.hostname in _LOCAL_HOSTS):
-            raise ValueError("issuer must be an https URL (http only for localhost)")
-        return value.rstrip("/")
+        # Canonical (lowercase scheme and host, no default port, no trailing slash): the Cloud's `iss` is in this
+        # form, and the comparison with it is byte for byte.
+        try:
+            return normalize_audience(_check_base_url(value, "issuer"))
+        except AudienceError as e:
+            raise ValueError(str(e).replace("audience", "issuer", 1)) from None
+
+    @field_validator("audience")
+    @classmethod
+    def _check_audience(cls, value: list[str]) -> list[str]:
+        audience = [normalize_audience(url) for url in value]
+        # http is only for loopback, and a server reached on loopback is a development one: mixing both would
+        # let a token made for someone's localhost be good on this public server.
+        if len({is_loopback(url) for url in audience}) > 1:
+            raise ValueError("audience must be all loopback URLs or none")
+        return audience
+
+
+class PushConfig(BaseModel):
+    """Push through the wristcall Cloud relay (E6). Devices and apps register their own relay key; nothing else here."""
+
+    model_config = ConfigDict(extra="forbid")
+    # The Cloud URL: https://...; http only for localhost/127.0.0.1; the trailing slash is dropped.
+    relay_url: str
+    timeout_s: float = Field(default=10.0, gt=0, le=30)
+
+    @field_validator("relay_url")
+    @classmethod
+    def _check_relay_url(cls, value: str) -> str:
+        return _check_base_url(value, "relay_url")
 
 
 class AppConfig(BaseModel):
@@ -213,6 +253,7 @@ class AppConfig(BaseModel):
     profiles: dict[str, ProfileConfig] = Field(default_factory=dict)
     central_account: CentralAccountConfig | None = None
     history: HistoryConfig = Field(default_factory=HistoryConfig)
+    push: PushConfig | None = None
 
     @model_validator(mode="after")
     def _check_references(self) -> "AppConfig":

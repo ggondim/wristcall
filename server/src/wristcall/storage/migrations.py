@@ -136,6 +136,19 @@ MIGRATIONS: list[list[str]] = [
         "CREATE INDEX calls_agent ON calls (user_id, agent_id, created_at)",
         "CREATE INDEX calls_expiry ON calls (expires_at) WHERE expires_at IS NOT NULL",
     ],
+    # 6: push keys (E6): one relay key per client, a paired device or an API token. Rolling back to 0.5.0 needs a backup.
+    [
+        """CREATE TABLE push_targets (
+          id INTEGER PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          device_id TEXT UNIQUE REFERENCES devices(id) ON DELETE CASCADE,
+          token_id TEXT UNIQUE REFERENCES api_tokens(id) ON DELETE CASCADE,
+          push_key TEXT NOT NULL,
+          created_at REAL NOT NULL,
+          CHECK ((device_id IS NULL) != (token_id IS NULL))
+        )""",
+        "CREATE INDEX push_targets_user ON push_targets (user_id)",
+    ],
 ]
 
 LATEST = len(MIGRATIONS)

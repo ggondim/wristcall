@@ -52,11 +52,12 @@ python3 -m venv .venv && .venv/bin/pip install -e 'tools/refclient[mic]'
 
 With a central account (the server needs `central_account` configured), sign in once with the
 device flow and pair without a code. The issuer and client id are the ones your operator registered
-(for example `https://auth.trigram.com.br` and the watch app's public client):
+(for example `https://auth.trigram.com.br` and the watch app's public client); `--cloud` is the wristcall
+Cloud the server trusts (its `central_account.issuer`), which turns the login into a token for that server only:
 
 ```bash
 .venv/bin/wristcall-refclient login --issuer https://auth.trigram.com.br --client-id <client-id>
-.venv/bin/wristcall-refclient pair-account --server https://wristcall.yourdomain.com
+.venv/bin/wristcall-refclient pair-account --server https://wristcall.yourdomain.com --cloud <cloud-url>
 ```
 
 Use headphones. Enter toggles mute.
@@ -90,6 +91,8 @@ watches and agents live in the server's database (`data_dir/wristcall.db`).
   always loaded (uses GPU memory). Example: `warmup: {on_call: true}`.
 - Behind a proxy: the server trusts `X-Forwarded-For` only from the IPs in `FORWARDED_ALLOW_IPS` (the example compose already sets it). Behind Cloudflare, use `server.client_ip_header: CF-Connecting-IP`.
 - `history`: how long calls stay and whether their text is encrypted (see [Call history](#call-history)).
+- `central_account`: pairing with a login of the central account (see [Central account](#central-account-optional)).
+- `push`: notifications through the wristcall Cloud relay (see [Push notifications](#push-notifications-optional)).
 
 ## Call history
 
@@ -140,15 +143,21 @@ instead of an 8 digit code. Without it the server works as before and the routes
 
 ```yaml
 central_account:
-  issuer: https://auth.trigram.com.br      # https; http only for localhost
-  clients: ["<watch client id>", "<iOS client id>"]   # app client ids
-  device_credential: approval              # or attestation
+  issuer: https://cloud.wristcall.example        # the wristcall Cloud; https, http only for localhost
+  audience: ["https://wristcall.example.com"]    # this server's URL(s), exactly as apps reach it
+  clients: ["<watch client id>", "<iOS client id>"]   # optional: app client ids
+  device_credential: approval                    # or attestation
 ```
 
-- `issuer`: where the login happens. The server reads its public keys (`/.well-known/openid-configuration`) and never calls it with a user token.
-- `clients`: the client ids of the apps whose logins you accept. Use the apps' client ids, never
-  the id of the project: that would accept every app of the project. A token must be an access token
-  of one of these clients; ID tokens are refused.
+- `issuer`: the wristcall Cloud. Apps sign in to the central account and exchange that login at the Cloud
+  for a short token made for this server only; the server reads the Cloud's public keys
+  (`/.well-known/openid-configuration`) and never calls it with a user token.
+- `audience` (required): the URL(s) apps use to reach this server (`https`; `http` only for localhost, and then
+  every item must be a loopback URL). A token made for another server, or the central account's own login token,
+  is refused. Starting with 0.6.0 a `central_account` without `audience` does not start: point `issuer` at the
+  Cloud, add `audience`, and link users again (links made with 0.5.0 named the account issuer).
+- `clients` (optional): the client ids of the apps whose logins you accept. Use the apps' client ids, never
+  the id of the project: that would accept every app of the project. Absent: any app of the central account.
 - `device_credential` decides what a login can do on this server:
   - `approval` (default): the linked user approves each new device (`wristcall devices approve <id>`
     or `POST /v1/pairing-requests/{id}/approve`).
@@ -161,13 +170,49 @@ Routes and error codes: [docs/protocol.md](docs/protocol.md#central-account-opti
 Know before you turn it on:
 - A pairing code now also links a login and returns a management API token to whoever links first. Do not
   show codes in public places.
-- The server does not ask the issuer whether a login was revoked: it is accepted until its access token
-  expires. Configure short access tokens at the issuer.
+- The server does not ask the Cloud whether a login was revoked: a per-server token lives 5 minutes, and the Cloud
+  issues one while the central account's access token is valid. Configure short access tokens at the account issuer.
 - `users unlink` does not revoke devices already paired (`wristcall devices revoke`). In `attestation`
   mode a leaked login pairs a device until the token expires.
-- Servers accept the same app client ids, so a token given to one server's operator can be replayed at another
-  server that has the same account linked. Per server registration is planned (epic E6); `approval` limits the damage.
-- Keys of the issuer are cached for 1 hour (stale keys are used if the issuer is down; at most one fetch a minute).
+- A per-server token is made for this server's URL only: its operator cannot replay it at another server or at the
+  Cloud API. Apps ask the Cloud of their own configuration, never one a server names.
+- Keys of the Cloud are cached for 1 hour (stale keys are used if the Cloud is down; at most one fetch a minute).
+
+## Push notifications (optional)
+
+With `push`, the server notifies its clients through the wristcall Cloud relay: the watch gets a check or a failure
+when a one-shot or monologue call ends (even with the app closed), and the user's management apps get a notification
+when a device asks to pair with their account (`approval` mode). Without it the server works as before, `/v1/health`
+shows `"push": null` and the push routes answer `404 not_configured`.
+
+```yaml
+push:
+  relay_url: https://cloud.wristcall.example   # the wristcall Cloud; https, http only for localhost
+  # timeout_s: 10                              # per notification, at most 30
+```
+
+There is nothing else to set on the server: each watch or app registers at the relay and gives the server its own
+relay key (`PUT /v1/push`), one per device or API token, which the server never logs. Apps use the relay of their own
+configuration: a server that names another one gets no key. Push is best effort: a relay that is down or slow only
+shows in the log, and calls and pairing requests never wait for it. Routes and payloads:
+[docs/protocol.md](docs/protocol.md#push-notifications-optional).
+
+**Privacy.** A notification's title and body (how the call ended and the agent's name, or the name of the device
+asking to pair) and its label (the server's host, set by the device) pass through the Cloud and then through Apple or
+the browser's push service. The transcript of a call never does: the app reads it from this server.
+
+## Upgrading from 0.5.0
+
+1. Back up `data_dir` first: stop the server and copy it, or run `sqlite3 <db> ".backup <file>"`. The database
+   migrates to schema 6 on start (step 6: the `push_targets` table for relay keys). Rolling back to 0.5.0 needs
+   that backup: 0.5.0 refuses the newer schema, and setting `user_version` back by hand makes the next upgrade fail,
+   because step 6 runs again on a database that already has the table.
+2. Without `central_account` and `push` nothing else changes.
+3. With a 0.5.0 `central_account` (issuer = the account issuer, for example Zitadel) the server does not start until
+   you update it: set `issuer` to the wristcall Cloud URL and add `audience` with this server's URL(s). Links made
+   with 0.5.0 no longer match: users link again from the app (API token or pairing code).
+4. Add `push` to send notifications. Watches only get them in the watch's push build (watch 0.3.0, which needs a paid
+   Apple Developer account for a real watch); watches of servers 0.5.0 and older keep polling.
 
 ## Upgrading from 0.4.0
 
@@ -273,13 +318,15 @@ With an API token (`wristcall users tokens add`), in `Authorization: Bearer wc_p
 `GET/POST /v1/agents`, `GET/PATCH/DELETE /v1/agents/{slug or id}`, `GET /v1/providers`,
 `GET /v1/devices`, `DELETE /v1/devices/{id}`, `POST /v1/pairing-codes`. With `central_account`:
 `POST/DELETE /v1/account/link` and `GET /v1/pairing-requests` with `POST .../{id}/approve|deny`. Call history:
-`GET/DELETE /v1/calls`, `GET/DELETE /v1/calls/{id}`, `GET /v1/calls/export`, `POST /v1/calls/{id}/redeliver`. The JSON fields are
+`GET/DELETE /v1/calls`, `GET/DELETE /v1/calls/{id}`, `GET /v1/calls/export`, `POST /v1/calls/{id}/redeliver`. With `push`:
+`PUT/DELETE /v1/push` (the app's relay key). The JSON fields are
 the ones `wristcall agents show` prints. See [docs/protocol.md](docs/protocol.md#management-api).
 
 ## Documentation
 
 - Client ↔ server protocol: [docs/protocol.md](docs/protocol.md)
 - Pairing directory: [directory/README.md](directory/README.md)
+- wristcall Cloud (central account, per-server tokens, push relay): [cloud/README.md](cloud/README.md)
 - History: [CHANGELOG.md](CHANGELOG.md)
 
 ## License

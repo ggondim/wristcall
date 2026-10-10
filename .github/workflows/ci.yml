@@ -49,6 +49,9 @@ jobs:
         run: |
           diff <(grep -v -e '^"""' -e 'User-Agent' ../server/src/wristcall/oidc.py) \
                <(grep -v -e '^"""' -e 'User-Agent' src/wristcall_cloud/oidc.py)
+      # Token audiences: the Cloud signs the form the server checks, so both must normalize byte for byte.
+      - name: Audience normalizer copies in sync
+        run: diff ../server/src/wristcall/audience.py src/wristcall_cloud/audience.py
       - run: docker build -t wristcall-cloud-ci .
 
   directory:

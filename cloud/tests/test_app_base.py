@@ -2,6 +2,8 @@ from typing import Any
 
 import pytest
 from fastapi import Depends, Request
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from pydantic import BaseModel
 from pymongo import MongoClient
 
@@ -40,6 +42,8 @@ def test_config_is_public_and_has_clients(client):
         "project_id": "1234",
         "clients": {"ios": "client-ios", "pwa": "client-pwa", "watch": "client-watch"},
         "scopes": ["openid", "profile", "offline_access", "urn:zitadel:iam:org:project:id:1234:aud"],
+        "server_tokens": False,
+        "push": {"apns": False, "webpush": False, "vapid_public_key": None, "apns_topics": []},
     }
 
 
@@ -113,6 +117,91 @@ def test_config_errors_do_not_echo_values(overrides):
     with pytest.raises(ConfigError) as e:
         config_from_env({**BASE_ENV, **overrides})
     assert "s3cr3t-pass" not in str(e.value)
+
+
+def _pem(key) -> bytes:
+    return key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+    )
+
+
+P256_PEM = _pem(ec.generate_private_key(ec.SECP256R1()))
+
+
+def test_signing_key_and_public_url_go_together():
+    message = "WRISTCALL_CLOUD_PUBLIC_URL and WRISTCALL_CLOUD_SIGNING_KEY go together"
+    with pytest.raises(ConfigError, match=message):
+        config_from_env({**BASE_ENV, "WRISTCALL_CLOUD_SIGNING_KEY": P256_PEM.decode()})
+    with pytest.raises(ConfigError, match=message):
+        config_from_env({**BASE_ENV, "WRISTCALL_CLOUD_PUBLIC_URL": "https://cloud.example"})
+    cfg = config_from_env(
+        {**BASE_ENV, "WRISTCALL_CLOUD_SIGNING_KEY": P256_PEM.decode(), "WRISTCALL_CLOUD_PUBLIC_URL": "https://cloud.example/"}
+    )
+    assert cfg.signing_key_pem == P256_PEM.strip()
+    assert cfg.public_url == "https://cloud.example"
+    assert cfg.server_token_ttl_s == 300
+    assert cfg.allow_loopback_audience is False
+    plain = config_from_env(BASE_ENV)
+    assert plain.signing_key_pem is None and plain.public_url is None
+
+
+def test_signing_key_from_file(tmp_path):
+    path = tmp_path / "signing.pem"
+    path.write_bytes(P256_PEM)
+    env = {**BASE_ENV, "WRISTCALL_CLOUD_SIGNING_KEY_FILE": str(path), "WRISTCALL_CLOUD_PUBLIC_URL": "https://cloud.example"}
+    assert config_from_env(env).signing_key_pem == P256_PEM
+    with pytest.raises(ConfigError, match="WRISTCALL_CLOUD_SIGNING_KEY") as e:
+        config_from_env({**env, "WRISTCALL_CLOUD_SIGNING_KEY": P256_PEM.decode()})
+    assert "PRIVATE KEY" not in str(e.value)
+    with pytest.raises(ConfigError, match="WRISTCALL_CLOUD_SIGNING_KEY_FILE") as e:
+        config_from_env({**env, "WRISTCALL_CLOUD_SIGNING_KEY_FILE": str(tmp_path / "s3cr3t-missing.pem")})
+    assert "s3cr3t" not in str(e.value)
+
+
+def test_signing_key_must_be_p256():
+    rsa_pem = _pem(rsa.generate_private_key(public_exponent=65537, key_size=2048))
+    p384_pem = _pem(ec.generate_private_key(ec.SECP384R1()))
+    for pem in (rsa_pem, p384_pem, b"s3cr3t-not-a-pem"):
+        with pytest.raises(ConfigError, match="WRISTCALL_CLOUD_SIGNING_KEY") as e:
+            config_from_env(
+                {**BASE_ENV, "WRISTCALL_CLOUD_SIGNING_KEY": pem.decode(), "WRISTCALL_CLOUD_PUBLIC_URL": "https://c.example"}
+            )
+        assert "s3cr3t" not in str(e.value) and "PRIVATE KEY" not in str(e.value)
+
+
+def test_public_url_differs_from_issuer():
+    env = {**BASE_ENV, "WRISTCALL_CLOUD_SIGNING_KEY": P256_PEM.decode(), "WRISTCALL_CLOUD_ISSUER": "https://auth.example"}
+    for public_url in ("https://auth.example", "https://auth.example/", "HTTPS://Auth.Example:443"):
+        with pytest.raises(ConfigError, match="WRISTCALL_CLOUD_PUBLIC_URL"):
+            config_from_env({**env, "WRISTCALL_CLOUD_PUBLIC_URL": public_url})
+    for public_url in ("http://cloud.example", "cloud.example", "https://u:s3cr3t@cloud.example"):
+        with pytest.raises(ConfigError, match="WRISTCALL_CLOUD_PUBLIC_URL") as e:
+            config_from_env({**env, "WRISTCALL_CLOUD_PUBLIC_URL": public_url})
+        assert "s3cr3t" not in str(e.value)
+
+
+@pytest.mark.parametrize("public_url", ["HTTPS://Cloud.Example", "https://cloud.example:443", "https://cloud.example/a//b"])
+def test_public_url_must_be_canonical(public_url):
+    # The URL is the `iss` of every per-server token: servers compare it byte for byte.
+    env = {**BASE_ENV, "WRISTCALL_CLOUD_SIGNING_KEY": P256_PEM.decode()}
+    with pytest.raises(ConfigError, match="WRISTCALL_CLOUD_PUBLIC_URL"):
+        config_from_env({**env, "WRISTCALL_CLOUD_PUBLIC_URL": public_url})
+
+
+@pytest.mark.parametrize("public_url", ["https://cloud.example/api", "http://localhost:8081", "http://127.0.0.1:8081"])
+def test_public_url_canonical_forms_are_accepted(public_url):
+    env = {**BASE_ENV, "WRISTCALL_CLOUD_SIGNING_KEY": P256_PEM.decode()}
+    assert config_from_env({**env, "WRISTCALL_CLOUD_PUBLIC_URL": public_url}).public_url == public_url
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("1", True), ("true", True), ("0", False), ("", False)])
+def test_allow_loopback_audience_from_env(raw, expected):
+    assert config_from_env({**BASE_ENV, "WRISTCALL_CLOUD_ALLOW_LOOPBACK_AUDIENCE": raw}).allow_loopback_audience is expected
+
+
+def test_allow_loopback_audience_rejects_other_values():
+    with pytest.raises(ConfigError, match="WRISTCALL_CLOUD_ALLOW_LOOPBACK_AUDIENCE"):
+        config_from_env({**BASE_ENV, "WRISTCALL_CLOUD_ALLOW_LOOPBACK_AUDIENCE": "maybe"})
 
 
 def test_missing_token_is_401(probe):

@@ -54,6 +54,7 @@ class OidcVerifier:
         refetch_min_s: float = 60,
         leeway_s: float = 60,
         clients: Sequence[str] | None = None,
+        typ: str | None = None,
     ) -> None:
         if not audiences:
             raise ValueError("at least one audience is required")
@@ -61,6 +62,8 @@ class OidcVerifier:
         self._audiences = list(audiences)
         # With clients set, the token must also have been issued to one of them (client_id or azp claim).
         self._clients = set(clients) if clients is not None else None
+        # When set, the JWT header's `typ` must be exactly this (a per-server token, not any token of the issuer).
+        self._typ = typ
         self._http = http
         self._now = now
         self._ttl = jwks_ttl_s
@@ -78,6 +81,8 @@ class OidcVerifier:
             header = jwt.get_unverified_header(token)
         except jwt.PyJWTError:
             raise OidcError("malformed token") from None
+        if self._typ is not None and header.get("typ") != self._typ:
+            raise OidcError("unexpected token type")
         alg, kid = header.get("alg"), header.get("kid")
         if alg not in ALGORITHMS:
             raise OidcError("unsupported signing algorithm")
@@ -101,6 +106,8 @@ class OidcVerifier:
             )
         except jwt.ExpiredSignatureError:
             raise OidcError("token expired") from None
+        except jwt.ImmatureSignatureError:
+            raise OidcError("token not valid yet; check the server clock") from None
         except jwt.InvalidAudienceError:
             raise OidcError("token is not meant for this server") from None
         except jwt.InvalidIssuerError:

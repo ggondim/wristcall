@@ -184,4 +184,97 @@ struct CallResultModelTests {
         #expect(result.state == .waiting(nil))
         #expect(finishes.all.isEmpty)
     }
+
+    // MARK: - Push
+
+    /// The push says the call has a final status: one query, no waiting for the next poll.
+    @Test func pushArrivedAsksOnceAndFinishes() async throws {
+        pairing.callStatusResults = [.success(status(.delivered, text: "buy milk"))]
+        let result = makeResult()
+
+        result.pushArrived()
+        await waitUntil { !result.isChecking }
+
+        #expect(result.state == .finished(status(.delivered, text: "buy milk")))
+        #expect(pairing.callStatusCount == 1)
+        #expect(finishes.all == [true])
+    }
+
+    @Test func pushArrivedAfterTheDeadlineAsksAgain() async throws {
+        let result = makeResult()
+        await run(result)
+        try #require(result.state == .timedOut(nil))
+        let asked = pairing.callStatusCount
+        pairing.callStatusResults = [.success(status(.delivered))]
+
+        result.pushArrived()
+        await waitUntil { !result.isChecking }
+
+        #expect(result.state == .finished(status(.delivered)))
+        #expect(pairing.callStatusCount == asked + 1)
+    }
+
+    @Test func pushArrivedReplacesTheRunningQuery() async throws {
+        let gate = pairing.holdCallStatus()
+        let result = makeResult()
+        result.start()
+        await waitUntil { pairing.callStatusCount == 1 }
+
+        result.pushArrived()
+        pairing.callStatusResults = [.success(status(.delivered))]
+        gate.open()
+        await waitUntil { !result.isChecking }
+
+        #expect(result.state == .finished(status(.delivered)))
+        #expect(finishes.all == [true])
+    }
+
+    @Test func pushArrivedAfterTheEndAsksNothing() async throws {
+        pairing.callStatusResults = [.success(status(.delivered))]
+        let result = makeResult()
+        await run(result)
+        try #require(result.state == .finished(status(.delivered)))
+
+        result.pushArrived()
+
+        #expect(!result.isChecking)
+        #expect(pairing.callStatusCount == 1)
+        #expect(finishes.all == [true])
+    }
+
+    // MARK: - Settled
+
+    @Test func settledIsToldOnceWhenTheStatusIsFinal() async throws {
+        pairing.callStatusResults = [.success(status(.processing)), .success(status(.delivered))]
+        let result = makeResult()
+        let settled = Recorder<Bool>()
+        result.onSettled = { settled.append(true) }
+
+        await run(result)
+
+        #expect(settled.all == [true])
+    }
+
+    @Test func settledIsToldWhenUnavailable() async throws {
+        pairing.callStatusResults = [.failure(.notFound)]
+        let result = makeResult()
+        let settled = Recorder<Bool>()
+        result.onSettled = { settled.append(true) }
+
+        await run(result)
+
+        #expect(settled.all == [true])
+    }
+
+    @Test func settledIsNotToldOnTimeoutOrStop() async throws {
+        let result = makeResult()
+        let settled = Recorder<Bool>()
+        result.onSettled = { settled.append(true) }
+
+        await run(result)
+        try #require(result.state == .timedOut(nil))
+        result.stop()
+
+        #expect(settled.all.isEmpty)
+    }
 }

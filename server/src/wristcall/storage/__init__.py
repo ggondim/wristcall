@@ -1,6 +1,6 @@
-"""Storage of users, devices, pairing, agents and calls behind one interface (base.Storage)."""
+"""Storage of users, devices, pairing, agents, calls and push keys behind one interface (base.Storage)."""
 
-from .base import AgentStore, CallStore, DeviceStore, MetaStore, PairingStore, Storage, TokenStore, UserStore
+from .base import AgentStore, CallStore, DeviceStore, MetaStore, PairingStore, PushStore, Storage, TokenStore, UserStore
 from .database import Database, DatabaseError
 from .migrations import MigrationError
 from .models import AgentRecord, ApiToken, CallRecord, Conflict, Device, EntryRecord, LimitReached, NotSupported, PairingRequest, StorageError, User

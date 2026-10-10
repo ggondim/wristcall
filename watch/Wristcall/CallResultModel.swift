@@ -5,8 +5,9 @@ import WristcallKit
 
 /// What happened to a one-way call after hang-up (decisions W10 and W11): asks the server with
 /// `GET /v1/calls/{id}` until the status is final, gives up after `CallStatusPoller.timeout` and
-/// asks again when the app comes back to the foreground. Kept in memory only: quitting the app
-/// loses the result (push arrives with E6).
+/// asks again when the app comes back to the foreground. The model lives in memory; the app keeps
+/// the call id in a `PendingResultStore` until the status is final, so quitting the app does not
+/// lose the result.
 @Observable
 @MainActor
 final class CallResultModel {
@@ -28,6 +29,9 @@ final class CallResultModel {
     var onFinished: ((Bool) -> Void)?
     /// `401`: the token of this server is no longer valid. The app model removes the server.
     var onUnauthorized: (() -> Void)?
+    /// Told once when there is nothing more to ask: a final status, or no result at all (`404`,
+    /// `401`). Not on a timeout: the call may still finish. The app forgets the pending result.
+    var onSettled: (() -> Void)?
 
     /// A query is running.
     var isChecking: Bool { task != nil }
@@ -89,6 +93,16 @@ final class CallResultModel {
         start()
     }
 
+    /// A push says the call has a final status: drop whatever is running and start asking again
+    /// now, with a new deadline. The first `GET` normally brings the final status, so nothing waits
+    /// for the next poll; if the server has not caught up yet, polling goes on until a final status
+    /// or the deadline, as after "Check again".
+    func pushArrived() {
+        guard !isOver else { return }
+        stop()
+        start()
+    }
+
     /// "Done", or the screen went away.
     func stop() {
         run += 1
@@ -99,7 +113,7 @@ final class CallResultModel {
     // MARK: - Private
 
     /// Nothing more to ask: a final status, or no result at all.
-    private var isOver: Bool {
+    var isOver: Bool {
         switch state {
         case .finished, .unavailable: true
         case .waiting, .timedOut: false
@@ -128,16 +142,19 @@ final class CallResultModel {
             Self.log.notice("call result: \(status.state.wireValue, privacy: .public)")
             state = .finished(status)
             onFinished?(status.state == .delivered)
+            onSettled?()
         case .timedOut(let last):
             Self.log.notice("call result: still \(last?.state.wireValue ?? "unknown", privacy: .public) at the deadline")
             state = .timedOut(last ?? lastStatus)
         case .notFound:
             Self.log.notice("call result: not found")
             state = .unavailable
+            onSettled?()
         case .unauthorized:
             Self.log.notice("call result: unauthorized")
             state = .unavailable
             onUnauthorized?()
+            onSettled?()
         case .cancelled:
             break
         }

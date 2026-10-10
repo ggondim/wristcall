@@ -241,6 +241,35 @@ def test_version_4_database_moves_call_text_to_the_history(tmp_path):
     db.close()
 
 
+def test_step_5_database_gains_push_targets(tmp_path):
+    # A database of the 0.5.0 server (version 5) upgrades in place, keeps its rows and gets the push key table.
+    path = database_path(tmp_path)
+    conn = sqlite3.connect(path, isolation_level=None)
+    conn.create_function("wristcall_terms", 1, database_module._terms)  # step 5 calls it
+    for step in MIGRATIONS[:5]:
+        for statement in step:
+            conn.execute(statement)
+    conn.execute("PRAGMA user_version = 5")
+    conn.execute("INSERT INTO users (id, handle, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1.0)")
+    conn.close()
+    db = Database(path)
+    assert db.version == LATEST == 6
+    assert "push_targets" in tables(db)
+    assert columns(db, "push_targets") == {"id", "user_id", "device_id", "token_id", "push_key", "created_at"}
+    assert [r["handle"] for r in db.query("SELECT handle FROM users")] == ["owner"]
+    assert db.query("PRAGMA user_version")[0][0] == 6
+    # Exactly one client per row: both ids or neither is refused by the table itself.
+    db.execute("INSERT INTO devices (id, user_id, name, token_hash, created_at) VALUES ('d1', 'u1', 'W', 'h', 1.0)")
+    db.execute("INSERT INTO api_tokens (id, user_id, name, token_hash, created_at) VALUES ('t1', 'u1', 'A', 'h2', 1.0)")
+    for device_id, token_id in (("d1", "t1"), (None, None)):
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                "INSERT INTO push_targets (user_id, device_id, token_id, push_key, created_at) VALUES ('u1', ?, ?, 'k', 1.0)",
+                (device_id, token_id),
+            )
+    db.close()
+
+
 def test_step_5_cuts_moved_text_like_new_text(tmp_path):
     path = database_path(tmp_path)
     conn = sqlite3.connect(path, isolation_level=None)
