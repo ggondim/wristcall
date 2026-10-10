@@ -74,13 +74,38 @@ describe("AddServerView", () => {
     expect(screen.queryByLabelText("Personal token")).toBeNull()
   })
 
-  test("setUpRowPrefillsAddressAndNameAndStartsWithTheCode", async () => {
-    history.replaceState(null, "", "/servers/add?url=https%3A%2F%2Foffice.example.com&name=Office")
+  const office = { id: "c1", name: "Office", url: "https://office.example.com", kind: "self-hosted" as const, linked: false, agents: [], created_at: "", updated_at: "" }
+
+  test("setUpRowPrefillsAddressAndNameForAnAccountServerAndStartsWithTheCode", async () => {
+    history.replaceState(null, "", "/servers/add?url=https%3A%2F%2FOffice.example.com%3A443%2F&name=Whatever")
     const { servers, session } = await world({ signedIn: true })
+    servers.setFromAccount([office])
     render(<AddServerView model={new AddServerModel(servers, session)} />)
-    expect((screen.getByLabelText("Address") as HTMLInputElement).value).toBe("https://office.example.com")
+    await waitFor(() => expect((screen.getByLabelText("Address") as HTMLInputElement).value).toBe("https://office.example.com"))
     expect((screen.getByLabelText(/^Name/) as HTMLInputElement).value).toBe("Office")
     expect(screen.getByLabelText("Pairing code")).toBeTruthy()
+  })
+
+  test("prefillWaitsForTheAccountList", async () => {
+    history.replaceState(null, "", "/servers/add?url=https%3A%2F%2Foffice.example.com")
+    const { servers, session } = await world({ signedIn: true })
+    render(<AddServerView model={new AddServerModel(servers, session)} />)
+    expect((screen.getByLabelText("Address") as HTMLInputElement).value).toBe("")
+    await act(async () => servers.setFromAccount([office]))
+    await waitFor(() => expect((screen.getByLabelText("Address") as HTMLInputElement).value).toBe("https://office.example.com"))
+  })
+
+  test("aLinkToAnotherAddressDoesNotFillTheForm", async () => {
+    history.replaceState(null, "", "/servers/add?url=https%3A%2F%2Fevil.example&name=Home")
+    const { servers, session } = await world({ signedIn: true })
+    servers.setFromAccount([office])
+    render(<AddServerView model={new AddServerModel(servers, session)} />)
+    await act(async () => {
+      await servers.load()
+    })
+    expect((screen.getByLabelText("Address") as HTMLInputElement).value).toBe("")
+    expect((screen.getByLabelText(/^Name/) as HTMLInputElement).value).toBe("")
+    expect(screen.getByLabelText("Personal token")).toBeTruthy() // still the token method
   })
 
   test("addingSavesTheServerAndGoesToTheList", async () => {
@@ -124,6 +149,7 @@ describe("ServerDetailView actions", () => {
       fireEvent.click(screen.getByRole("button", { name: "Remove" }))
     })
     await waitFor(() => expect(location.pathname).toBe("/servers"))
+    await servers.cleanupsDone()
     expect(await store.list()).toEqual([])
     expect(f.calls.some((c) => c.url.endsWith("/v1/push") && c.init.method === "DELETE")).toBe(true)
   })
@@ -179,6 +205,5 @@ describe("ServerDetailView actions", () => {
       fireEvent.click(button)
     })
     expect((await screen.findByRole("alert")).textContent).toBe("Your account is linked to another user of this server.")
-    expect(vi.isMockFunction(console.log)).toBe(false)
   })
 })

@@ -44,6 +44,7 @@ export const TOKEN_REFUSED = "Token was revoked."
 export const NAME_EMPTY = "The name cannot be empty."
 export const NAME_TOO_LONG = "The name can have at most 64 characters."
 export const NAME_INVALID = "The name cannot have control characters."
+export const BAD_ADDRESS = "Use an https:// address (http:// only for localhost)."
 export const ALREADY_ADDED = "This server is already added."
 export const OTHER_ACCOUNT = "This server uses another account service."
 export const NO_ACCOUNT = "This server has no account set up."
@@ -133,6 +134,7 @@ export class ServersModel extends BaseModel<ServersState> {
   #account: CloudServer[] = []
   #beforeRemove: (server: SavedServer) => Promise<void> = async () => {}
   #generation = 0
+  readonly #cleanups = new Set<Promise<void>>()
   /** Counts the changes made here (rename, remove, saved): a read of the database that began before one is stale. */
   #changes = 0
 
@@ -202,7 +204,7 @@ export class ServersModel extends BaseModel<ServersState> {
   /** Saves a new server and checks it. Throws an `Error` whose message is the text for the screen. */
   async add(fields: Omit<SavedServer, "id" | "addedAt">): Promise<SavedServer> {
     const parsed = parseServerAddress(fields.url)
-    if (parsed === null) throw new Error("Use an https:// address (http:// only for localhost).")
+    if (parsed === null) throw new Error(BAD_ADDRESS)
     if (await this.has(fields.url)) throw new Error(ALREADY_ADDED)
     const server: SavedServer = { ...fields, url: canonical(parsed), id: newId(), addedAt: Date.now() }
     await this.#store.put(server)
@@ -212,29 +214,40 @@ export class ServersModel extends BaseModel<ServersState> {
   }
 
   /**
-   * Forgets the server here. First, best effort and each on its own: its push key is deleted on the server, and the
-   * hook undoes the rest (the relay registration). The token keeps working until it is revoked on the server.
+   * Forgets the server here (same order as the iPhone app): it is deleted locally first, and that is all the caller
+   * waits for. Then, each on its own and best effort, its push key is deleted on the server and the hook undoes the
+   * rest (the relay registration). The token keeps working until it is revoked on the server.
    */
   async remove(id: string): Promise<void> {
     const server = await this.#store.get(id)
     if (server === null) return
-    if (server.pushKey !== null) {
-      try {
-        await this.#clientFor(server).clearPushKey()
-      } catch {
-        // The server may be gone or unreachable: removing it here is still what was asked.
-      }
-    }
-    try {
-      await this.#beforeRemove(server)
-    } catch {
-      // Same: a failure at the relay does not keep the server.
-    }
     await this.#store.remove(id)
     this.#changes++
     const rows = this.state.rows.filter((row) => row.server.id !== id)
     this.set({ rows, fromAccount: this.#pending(rows) })
     this.#emit({ kind: "removed", server })
+    const cleanup = this.#cleanUp(server).finally(() => this.#cleanups.delete(cleanup))
+    this.#cleanups.add(cleanup)
+  }
+
+  /** Resolves when the cleanups started by `remove` are over (they never reject). */
+  async cleanupsDone(): Promise<void> {
+    while (this.#cleanups.size > 0) await Promise.all([...this.#cleanups])
+  }
+
+  async #cleanUp(server: SavedServer): Promise<void> {
+    if (server.pushKey !== null) {
+      try {
+        await this.#clientFor(server).clearPushKey()
+      } catch {
+        // The server may be gone or unreachable: it is forgotten here anyway.
+      }
+    }
+    try {
+      await this.#beforeRemove(server)
+    } catch {
+      // Same: a failure at the relay changes nothing here.
+    }
   }
 
   /**

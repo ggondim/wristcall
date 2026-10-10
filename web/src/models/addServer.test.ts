@@ -140,9 +140,17 @@ describe("AddServerModel.addWithToken", () => {
 
   test("addServerExplainsAnAddressThatIsNotAServer", async () => {
     const f = mockFetch(() => new Response("<html>hi</html>", { status: 200, headers: { "content-type": "text/html" } }))
-    const { model } = await setup({ fetch: f })
+    const { model, store } = await setup({ fetch: f })
     const result = await model.addWithToken(HOME, PAT)
-    expect(result.ok).toBe(false)
+    expect(result).toEqual({ ok: false, message: "This is not a wristcall server." })
+    expect(await store.list()).toEqual([])
+  })
+
+  test("addServerExplainsAnOldServer", async () => {
+    const f = serverFetch((m, h, path) => (path === "/v1/providers" ? reply(404, { error: "not_found" }) : undefined))
+    const { model, store } = await setup({ fetch: f })
+    expect(await model.addWithToken(HOME, PAT)).toEqual({ ok: false, message: "This server is too old for this app. Update it." })
+    expect(await store.list()).toEqual([])
   })
 
   test("addServerRejectsBadName", async () => {
@@ -248,6 +256,15 @@ describe("AddServerModel.addWithCode", () => {
     expect(f.calls.some((c) => c.url.endsWith("/v1/account/link"))).toBe(false)
   })
 
+  test("addWithCodeRejectsAnApiTokenThatIsNotAPat", async () => {
+    const f = serverFetch((m, h, path) =>
+      path === "/v1/account/link" ? reply(200, { linked: true, issuer: CLOUD, user: { id: "u", handle: "me" }, api_token: "something-else" }) : undefined,
+    )
+    const { model, store } = await setup({ fetch: f })
+    expect(await model.addWithCode(HOME, "12345678")).toEqual({ ok: false, message: "The server's reply was not understood." })
+    expect(await store.list()).toEqual([])
+  })
+
   test("addWithCodeDoesNotSpendTheCodeOnADuplicateOrABadName", async () => {
     const { model, servers, f, session } = await setup()
     expect(await model.addWithCode(HOME, "12345678", "a\u0007b")).toEqual({ ok: false, message: "The name cannot have control characters." })
@@ -302,6 +319,7 @@ describe("ServersModel remove and link", () => {
     })
 
     await servers.remove("a")
+    await servers.cleanupsDone()
     const call = f.calls.find((c) => c.url === `${HOME}/v1/push`)!
     expect(call.init.method).toBe("DELETE")
     expect(bearer(call.init)).toBe(`Bearer ${PAT}`)
@@ -316,12 +334,14 @@ describe("ServersModel remove and link", () => {
     const ran: string[] = []
     offline.servers.setBeforeRemove(async (s) => void ran.push(s.id))
     await offline.servers.remove("b")
+    await offline.servers.cleanupsDone()
     expect(down.calls).toHaveLength(1)
     expect(ran).toEqual(["b"])
     expect(await offline.store.get("b")).toBeNull()
 
     // The hook (the relay) fails: forgotten anyway; the server was asked first.
     await servers.remove("c")
+    await servers.cleanupsDone()
     expect(hooked).toEqual(["a", "c"])
     expect(f.calls.some((c) => c.url === "https://hook.example.com/v1/push" && c.init.method === "DELETE")).toBe(true)
     expect(await store.get("c")).toBeNull()
@@ -329,6 +349,7 @@ describe("ServersModel remove and link", () => {
     // No push key was ever handed to this server: nothing to undo there.
     const before = f.calls.length
     await servers.remove("d")
+    await servers.cleanupsDone()
     expect(f.calls.length).toBe(before)
     expect(await store.get("d")).toBeNull()
   })
@@ -338,7 +359,29 @@ describe("ServersModel remove and link", () => {
     const { servers, store } = await setup({ fetch: f })
     await store.put(saved({ pushKey: "wc_push_k" }))
     await servers.remove("1")
+    await servers.cleanupsDone()
     expect(await store.list()).toEqual([])
+  })
+
+  test("removeDeletesLocallyFirstAndDoesNotWaitForTheCleanup", async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const order: string[] = []
+    const f = serverFetch((m, h, path) => {
+      if (path === "/v1/push") order.push("push")
+      return undefined
+    })
+    const { servers, store } = await setup({ fetch: f })
+    await store.put(saved({ pushKey: "wc_push_k" }))
+    servers.setBeforeRemove(async (s) => {
+      order.push(`hook:${(await store.get(s.id)) === null ? "gone" : "present"}`)
+      await gate
+    })
+    await servers.remove("1") // returns although the hook is still waiting
+    expect(await store.list()).toEqual([])
+    release()
+    await servers.cleanupsDone()
+    expect(order).toEqual(["push", "hook:gone"])
   })
 
   test("linkAccountUsesCanonicalAudience", async () => {

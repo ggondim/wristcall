@@ -1,25 +1,39 @@
-import { useState } from "preact/hooks"
+import { useEffect, useRef, useState } from "preact/hooks"
 import type { AddServerModel } from "../models/addServer"
 import { Link } from "./Link"
 import { navigate } from "./route"
+import { useModel } from "./useModel"
 
 type Method = "token" | "code"
 
-/** `?url=…&name=…` from a "Set up" row of the account's servers. */
-function prefill(): { url: string; name: string } {
-  const params = new URLSearchParams(location.search)
-  return { url: params.get("url") ?? "", name: params.get("name") ?? "" }
+/** The address a link asks to fill in (`?url=`); only used when it is a server of the account (see `accountServer`). */
+function requestedUrl(): string {
+  return new URLSearchParams(location.search).get("url") ?? ""
 }
 
 export function AddServerView({ model }: { model: AddServerModel }) {
-  const [initial] = useState(prefill)
+  const [requested] = useState(requestedUrl)
+  const { fromAccount } = useModel(model.servers)
   const canUseCode = model.canUseCode
-  const [address, setAddress] = useState(initial.url)
-  const [name, setName] = useState(initial.name)
+  const [address, setAddress] = useState("")
+  const [name, setName] = useState("")
   const [token, setToken] = useState("")
   const [code, setCode] = useState("")
   // A server of the account most likely uses it: start with the code.
-  const [chosen, setChosen] = useState<Method>(initial.url !== "" ? "code" : "token")
+  const [chosen, setChosen] = useState<Method>("token")
+  const touched = useRef(false)
+  useEffect(() => {
+    void model.servers.load()
+  }, [model])
+  // Fills in the form from a "Set up" link, once the account's list is known and only for one of its servers.
+  const entry = requested === "" ? null : model.accountServer(requested)
+  useEffect(() => {
+    if (entry === null || touched.current) return
+    touched.current = true
+    setAddress(entry.url)
+    setName(entry.name)
+    setChosen("code")
+  }, [entry, fromAccount])
   const method: Method = canUseCode ? chosen : "token"
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -94,7 +108,10 @@ export function AddServerView({ model }: { model: AddServerModel }) {
             spellcheck={false}
             inputMode="url"
             enterkeyhint="next"
-            onInput={(event) => setAddress(event.currentTarget.value)}
+            onInput={(event) => {
+              touched.current = true
+              setAddress(event.currentTarget.value)
+            }}
           />
         </label>
         {method === "token" ? (
@@ -136,7 +153,10 @@ export function AddServerView({ model }: { model: AddServerModel }) {
             maxLength={64}
             autocomplete="off"
             enterkeyhint="done"
-            onInput={(event) => setName(event.currentTarget.value)}
+            onInput={(event) => {
+              touched.current = true
+              setName(event.currentTarget.value)
+            }}
           />
         </label>
         {method === "token" ? (

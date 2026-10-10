@@ -116,7 +116,7 @@ describe("ServersModel", () => {
     expect(model.state.fromAccount.map((c) => c.id)).toEqual(["a", "b"])
   })
 
-  test("removeCallsHookThenForgetsAndNotifies", async () => {
+  test("removeForgetsAndNotifiesThenCallsTheHook", async () => {
     const store = await fresh(server())
     const model = new ServersModel(store, clients(() => ok(HEALTH)))
     const order: string[] = []
@@ -127,7 +127,8 @@ describe("ServersModel", () => {
     model.onChange((event) => order.push(`${event.kind}:${event.server.id}`))
     await model.load()
     await model.remove("1")
-    expect(order).toEqual(["hook:1:present", "removed:1"])
+    await model.cleanupsDone()
+    expect(order).toEqual(["removed:1", "hook:1:gone"])
     expect(await store.list()).toEqual([])
     expect(model.state.rows).toEqual([])
   })
