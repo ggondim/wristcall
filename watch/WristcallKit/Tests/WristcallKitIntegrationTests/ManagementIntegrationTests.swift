@@ -27,6 +27,8 @@ struct ManagementIntegrationTests {
         let list = try await client.providers()
         #expect(Set(list.providers.map(\.name)).isSuperset(of: ["demo-stt", "demo-chat", "demo-tts"]))
         #expect(list.providers.first { $0.name == "demo-stt" }?.kind == "stt")
+        #expect(list.providers.first { $0.name == "demo-chat" }?.kind == "action")
+        #expect(list.providers.allSatisfy { ["stt", "action", "tts", "webhook"].contains($0.kind) })
     }
 
     @Test func verifyRejectsADeviceToken() async throws {

@@ -101,7 +101,7 @@ public typealias AgentFields = [String: JSONValue]
 
 public struct Provider: Decodable, Sendable, Hashable {
     public var name: String
-    /// `stt`, `responder`, `tts` or `webhook`.
+    /// `stt`, `action`, `tts` or `webhook`.
     public var kind: String
 
     public init(name: String, kind: String) {

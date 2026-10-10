@@ -53,6 +53,10 @@ struct JSONValueTests {
         #expect(JSONValue.int(3).stringValue == nil)
         #expect(JSONValue.int(3).intValue == 3)
         #expect(JSONValue.double(3).intValue == nil)
+        #expect(JSONValue.double(0.5).doubleValue == 0.5)
+        #expect(JSONValue.int(3).doubleValue == 3.0)
+        #expect(JSONValue.string("3").doubleValue == nil)
+        #expect(JSONValue.null.doubleValue == nil)
         #expect(JSONValue.string("a")["k"] == nil)
         #expect(JSONValue.object([:])["k"] == nil)
     }

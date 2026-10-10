@@ -59,4 +59,13 @@ public enum JSONValue: Codable, Sendable, Hashable {
         if case .int(let value) = self { return value }
         return nil
     }
+
+    /// A `.double`, or an `.int` converted.
+    public var doubleValue: Double? {
+        switch self {
+        case .double(let value): value
+        case .int(let value): Double(value)
+        default: nil
+        }
+    }
 }

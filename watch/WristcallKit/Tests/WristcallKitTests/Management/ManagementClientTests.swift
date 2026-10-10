@@ -32,9 +32,9 @@ struct ManagementClientTests {
     }
 
     @Test func providersDecode() async throws {
-        let host = StubHost(replies: [(200, #"{"providers":[{"name":"demo-stt","kind":"stt"},{"name":"demo-chat","kind":"responder"}],"custom_endpoints":true}"#)])
+        let host = StubHost(replies: [(200, #"{"providers":[{"name":"demo-stt","kind":"stt"},{"name":"demo-chat","kind":"action"}],"custom_endpoints":true}"#)])
         let list = try await client(host).providers()
-        #expect(list.providers == [Provider(name: "demo-stt", kind: "stt"), Provider(name: "demo-chat", kind: "responder")])
+        #expect(list.providers == [Provider(name: "demo-stt", kind: "stt"), Provider(name: "demo-chat", kind: "action")])
         #expect(list.customEndpoints)
     }
 
@@ -135,22 +135,22 @@ struct ManagementClientTests {
         #expect(host.requests.first?.path == "/v1/agents/notes")
     }
 
-    @Test func agentIdIsOnePathComponent() async {
+    @Test func agentIdIsOnePathComponent() async throws {
         let host = StubHost(replies: [(204, "")])
         let client = ManagementClient(server: host.url, token: "wc_pat_x", session: .stubbed())
-        try? await client.deleteAgent("../devices")
+        try await client.deleteAgent("../devices")
         #expect(host.requests.first?.url.absoluteString.hasSuffix("/v1/agents/..%2Fdevices") == true)
     }
 
-    @Test func deviceIdIsOnePathComponent() async {
+    @Test func deviceIdIsOnePathComponent() async throws {
         let host = StubHost(replies: [(204, "")])
-        try? await client(host).revokeDevice("a/b")
+        try await client(host).revokeDevice("a/b")
         #expect(host.requests.first?.url.absoluteString.hasSuffix("/v1/devices/a%2Fb") == true)
     }
 
-    @Test func requestIDIsOnePathComponent() async {
+    @Test func requestIDIsOnePathComponent() async throws {
         let host = StubHost(replies: [(204, "")])
-        try? await client(host).deny(requestID: "1/2")
+        try await client(host).deny(requestID: "1/2")
         #expect(host.requests.first?.url.absoluteString.hasSuffix("/v1/pairing-requests/1%2F2/deny") == true)
     }
 
