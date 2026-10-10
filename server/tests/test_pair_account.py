@@ -331,7 +331,8 @@ def test_zitadel_token_is_rejected_by_server(client, issuer, router):
     r = client.post("/v1/pair/account", json={"token": token, "device_name": "watch"})
     assert r.status_code == 401
     # And the real attack: a token from another issuer (the Zitadel itself) naming this server.
-    zitadel = FakeIssuer(router, "https://zitadel.test")
+    # Right audience and type: only the issuer is wrong.
+    zitadel = FakeIssuer(router, "https://zitadel.test", typ=SERVER_TOKEN_TYPE)
     token = zitadel.token(aud=[SERVER_AUDIENCE])
     r = client.post("/v1/pair/account", json={"token": token, "device_name": "watch"})
     assert r.status_code == 401

@@ -107,7 +107,7 @@ class OidcVerifier:
         except jwt.ExpiredSignatureError:
             raise OidcError("token expired") from None
         except jwt.ImmatureSignatureError:
-            raise OidcError("token not valid yet; check server clock") from None
+            raise OidcError("token not valid yet; check the server clock") from None
         except jwt.InvalidAudienceError:
             raise OidcError("token is not meant for this server") from None
         except jwt.InvalidIssuerError:

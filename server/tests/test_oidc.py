@@ -86,7 +86,7 @@ async def test_typ_is_enforced_when_set(issuer):
 
 @pytest.mark.parametrize("overrides", [{"iat": time.time() + 3600}, {"nbf": time.time() + 3600}])
 async def test_token_from_the_future_points_at_the_clock(issuer, overrides):
-    with pytest.raises(OidcError, match="token not valid yet; check server clock"):
+    with pytest.raises(OidcError, match="token not valid yet; check the server clock"):
         await verifier().verify(issuer.token(**overrides))
 
 

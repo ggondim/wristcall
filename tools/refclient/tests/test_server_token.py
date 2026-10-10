@@ -133,3 +133,28 @@ def test_pair_account_cli_requires_cloud(monkeypatch):
     with pytest.raises(SystemExit) as e:
         cli.main()
     assert e.value.code == 2
+
+
+@respx.mock
+def test_require_cloud_does_not_print_terminal_escapes():
+    respx.get(f"{SERVER}/v1/health").respond(200, json={"account": {"issuer": "https://evil.test\x1b[2J‮\x07"}})
+    with httpx.Client() as http, pytest.raises(RefclientError) as e:
+        require_cloud(SERVER, CLOUD, http=http)
+    assert str(e.value) == "this server trusts another central account: https://evil.test[2J"
+
+
+@respx.mock
+def test_own_clients_are_closed(monkeypatch):
+    made: list[httpx.Client] = []
+
+    class Tracked(httpx.Client):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            made.append(self)
+
+    monkeypatch.setattr("refclient.client.httpx.Client", Tracked)
+    respx.get(f"{SERVER}/v1/health").respond(200, json=HEALTH)
+    respx.post(f"{CLOUD}/v1/server-tokens").respond(200, json={"token": "server-tok"})
+    require_cloud(SERVER, CLOUD)
+    assert server_token(CLOUD, "secret-at", SERVER) == "server-tok"
+    assert len(made) == 2 and all(c.is_closed for c in made)
