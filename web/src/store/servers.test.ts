@@ -69,4 +69,15 @@ describe("ServerStore", () => {
     await store.deleteKV("session")
     expect(await store.getKV("session")).toBeNull()
   })
+
+  test("store: takeKV reads and erases, once", async () => {
+    const db = await openDb("t-" + crypto.randomUUID())
+    const a = new ServerStore(db)
+    const b = new ServerStore(db)
+    await a.setKV("k", { n: 1 })
+    const [x, y] = await Promise.all([a.takeKV("k"), b.takeKV("k")])
+    expect([x, y].filter((v) => v !== null)).toEqual([{ n: 1 }])
+    expect(await a.getKV("k")).toBeNull()
+    expect(await a.takeKV("k")).toBeNull()
+  })
 })

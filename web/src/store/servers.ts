@@ -83,6 +83,21 @@ export class ServerStore {
     await finished(tx)
   }
 
+  /** Reads a value and deletes it in one transaction: of several tabs, only one gets it. */
+  async takeKV<T>(key: string): Promise<T | null> {
+    const tx = this.db.transaction(KV, "readwrite")
+    const store = tx.objectStore(KV)
+    let taken: T | null = null
+    const read = store.get(key) as IDBRequest<T | undefined>
+    read.onsuccess = () => {
+      if (read.result === undefined) return
+      taken = read.result
+      store.delete(key)
+    }
+    await finished(tx)
+    return taken
+  }
+
   async deleteKV(key: string): Promise<void> {
     const tx = this.db.transaction(KV, "readwrite")
     tx.objectStore(KV).delete(key)
