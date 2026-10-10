@@ -1,5 +1,5 @@
 // Server and Cloud addresses: https:// with a host; http:// only for loopback (same rule as the Kit's ServerAddress).
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"])
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1"]) // the CSP can name only these (no IPv6 literal host source)
 
 /** The address as a URL, or null. Surrounding spaces and trailing slashes are dropped; no query, fragment or credentials. */
 export function parseServerAddress(input: string): URL | null {

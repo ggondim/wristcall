@@ -26,7 +26,6 @@ describe("config", () => {
   test("config: http cloud on loopback is allowed", async () => {
     expect(await loadConfig(serving({ cloudUrl: "http://localhost:8090" }))).toEqual({ cloudUrl: "http://localhost:8090" })
     expect(await loadConfig(serving({ cloudUrl: "http://127.0.0.1:8090" }))).toEqual({ cloudUrl: "http://127.0.0.1:8090" })
-    expect(await loadConfig(serving({ cloudUrl: "http://[::1]:8090" }))).toEqual({ cloudUrl: "http://[::1]:8090" })
   })
 
   test("config: path, query, user and fragment are refused", async () => {

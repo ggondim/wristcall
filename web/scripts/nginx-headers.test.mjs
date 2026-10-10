@@ -1,10 +1,9 @@
 import { readFileSync } from "node:fs"
 import { describe, expect, test } from "vitest"
 
-// nginx/security-headers.conf is what the image sends; csp.json is what `vite preview` (so the e2e run) sends. The
-// preview adds loopback connect-src entries for development; everything else must be identical, so they cannot drift.
+// nginx/security-headers.conf is what the image sends; csp.json is what `vite preview` (so the e2e run) sends. They must
+// be identical, so the e2e run sees the policy of the image. Both allow http loopback servers (the app accepts them).
 const read = (name) => readFileSync(new URL(name, import.meta.url), "utf8")
-const LOOPBACK_SOURCES = ["http://localhost:*", "http://127.0.0.1:*", "http://[::1]:*"]
 
 /** `add_header Name "value" always;` lines as a name → value map. */
 export function parseHeaders(conf) {
@@ -26,33 +25,21 @@ export function blocks(conf, opener) {
   return found
 }
 
-function stripLoopback(policy) {
-  return policy
-    .split(";")
-    .map((directive) =>
-      directive
-        .trim()
-        .split(/\s+/)
-        .filter((token) => !LOOPBACK_SOURCES.includes(token))
-        .join(" "),
-    )
-    .join("; ")
-}
-
 describe("image headers", () => {
   const preview = JSON.parse(read("../csp.json"))
   const image = parseHeaders(read("../nginx/security-headers.conf"))
 
-  test("cspMatchesPreview: same headers as csp.json, minus the development loopback sources", () => {
+  test("cspMatchesPreview: same headers as csp.json", () => {
     expect(Object.keys(image).sort()).toEqual(Object.keys(preview).sort())
     for (const [name, value] of Object.entries(preview)) {
-      expect(image[name], name).toBe(name === "Content-Security-Policy" ? stripLoopback(value) : value)
+      expect(image[name], name).toBe(value)
     }
   })
 
-  test("the production policy has no loopback source and no unsafe-inline", () => {
+  test("the policy allows http loopback servers only as host sources a CSP can express, and no unsafe-*", () => {
     const csp = image["Content-Security-Policy"]
-    for (const source of LOOPBACK_SOURCES) expect(csp).not.toContain(source)
+    expect(csp).toContain("connect-src 'self' https: http://localhost:* http://127.0.0.1:*;")
+    expect(csp).not.toContain("[")
     expect(csp).not.toContain("unsafe-")
   })
 

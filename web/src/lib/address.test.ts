@@ -8,7 +8,7 @@ describe("address", () => {
     expect(parseServerAddress(" https://Home.Example/ ")?.toString()).toBe("https://home.example/")
     expect(parseServerAddress("http://localhost:8765")).not.toBeNull()
     expect(parseServerAddress("http://127.0.0.1:8765")).not.toBeNull()
-    expect(parseServerAddress("http://[::1]:8765")).not.toBeNull()
+    expect(parseServerAddress("http://[::1]:8765")).toBeNull() // not a CSP host source, so the page could not reach it
     expect(parseServerAddress("https://u:p@home.example")).toBeNull()
     expect(parseServerAddress("https://home.example/?x=1")).toBeNull()
     expect(parseServerAddress("https://home.example/#top")).toBeNull()
@@ -30,7 +30,6 @@ describe("address", () => {
     expect(canonical(new URL("http://localhost:80"))).toBe("http://localhost")
     expect(canonical(new URL("http://localhost:8765/"))).toBe("http://localhost:8765")
     expect(canonical(new URL("https://home.example/wc/"))).toBe("https://home.example/wc")
-    expect(canonical(new URL("http://[::1]:8765"))).toBe("http://[::1]:8765")
   })
 
   test("address: sameUrl compares the canonical form", () => {

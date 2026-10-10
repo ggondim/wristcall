@@ -17,13 +17,15 @@ trap cleanup EXIT
 
 fail() {
   echo "smoke: FAIL: $*" >&2
-  if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then docker logs "$NAME" >&2 || true; fi
+  local names
+  names="$(docker ps -a --format '{{.Names}}')"
+  if grep -qx "$NAME" <<<"$names"; then docker logs "$NAME" >&2 || true; fi
   exit 1
 }
 
 # 1. Bad Cloud addresses stop the container, with a message that names the variable; good ones start it.
 refuses() {
-  local value="$1" state="" i
+  local value="$1" state="" logs i
   docker rm -f "${NAME}-refuse" >/dev/null 2>&1 || true
   docker run -d -e "WRISTCALL_WEB_CLOUD_URL=${value}" --name "${NAME}-refuse" "$IMAGE" >/dev/null
   for i in $(seq 20); do
@@ -31,9 +33,10 @@ refuses() {
     [ "${state%% *}" = exited ] && break
     sleep 1
   done
-  [ "${state%% *}" = exited ] || fail "container still running with WRISTCALL_WEB_CLOUD_URL=${value@Q}"
-  [ "${state##* }" != 0 ] || fail "container exited 0 with WRISTCALL_WEB_CLOUD_URL=${value@Q}"
-  docker logs "${NAME}-refuse" 2>&1 | grep -q WRISTCALL_WEB_CLOUD_URL || fail "refusal for ${value@Q} does not name the variable"
+  [ "${state%% *}" = exited ] || fail "container still running with WRISTCALL_WEB_CLOUD_URL=$(printf %q "$value")"
+  [ "${state##* }" != 0 ] || fail "container exited 0 with WRISTCALL_WEB_CLOUD_URL=$(printf %q "$value")"
+  logs="$(docker logs "${NAME}-refuse" 2>&1)"
+  grep -q WRISTCALL_WEB_CLOUD_URL <<<"$logs" || fail "refusal for $(printf %q "$value") does not name the variable"
   docker rm -f "${NAME}-refuse" >/dev/null
 }
 refuses 'http://evil.example'
@@ -50,7 +53,7 @@ serves_config() {
   cid="$(docker run -d -p "${PORT}:8080" -e "WRISTCALL_WEB_CLOUD_URL=${value}" --name "$NAME" "$IMAGE")"
   for _ in $(seq 30); do curl -sf "$BASE/" >/dev/null && break; sleep 1; done
   curl -sf "$BASE/config.json" | EXPECTED="$expected" python3 -c 'import json,os,sys; assert json.load(sys.stdin)=={"cloudUrl": os.environ["EXPECTED"]}' \
-    || fail "config.json for ${value@Q}"
+    || fail "config.json for $(printf %q "$value")"
   docker rm -f "$cid" >/dev/null
 }
 serves_config '' ''
@@ -62,7 +65,8 @@ for _ in $(seq 30); do curl -sf "$BASE/" >/dev/null && break; sleep 1; done
 curl -sf "$BASE/" >/dev/null || fail "container did not answer on ${BASE}"
 curl -sf "$BASE/config.json" | python3 -c 'import json,sys; assert json.load(sys.stdin)=={"cloudUrl": "https://cloud.example"}' || fail "config.json"
 
-ASSET="$(curl -sf "$BASE/" | grep -oE '/assets/[A-Za-z0-9_.-]+\.js' | head -1)"
+INDEX_HTML="$(curl -sf "$BASE/")"
+ASSET="$(grep -oE '/assets/[A-Za-z0-9_.-]+\.js' <<<"$INDEX_HTML" | sed -n 1p)"
 [ -n "$ASSET" ] || fail "index.html lists no /assets/ script"
 
 # Headers (lowercased) and status of a GET.
@@ -94,7 +98,11 @@ cmp -s "$WORK/index.html" "$WORK/servers.html" || fail "/servers is not index.ht
 [ "$(status_of /assets/missing.js)" = 404 ] || fail "/assets/missing.js is not a 404"
 [ "$(status_of /icons/missing.png)" = 404 ] || fail "/icons/missing.png is not a 404"
 if grep -q '^cache-control:' <<<"$(head_of /assets/missing.js)"; then fail "a 404 carries a cache-control"; fi
-grep -qi '^content-type: application/json' <<<"$(head_of /config.json)" || fail "/config.json content type"
+# Content types (a `types` block in nginx replaces the stock map, so check the common ones too).
+for pair in '/config.json application/json' '/manifest.webmanifest application/manifest+json' '/sw.js application/javascript' "$ASSET application/javascript" '/icons/icon-192.png image/png' '/ text/html'; do
+  set -- $pair
+  grep -q "^content-type: $2" <<<"$(head_of "$1")" || fail "$1: content type is not $2"
+done
 
 # The build manifest is not published.
 curl -sf "$BASE/.vite/manifest.json" >"$WORK/manifest.html"
