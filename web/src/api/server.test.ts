@@ -97,6 +97,47 @@ describe("ServerClient", () => {
     expect(url.searchParams.get("before")).toBe("c_1")
   })
 
+  test("callsQueryWorksWithoutUrlSearchParamsSize", async () => {
+    // Safari before 17 has no URLSearchParams.size: the query string must not depend on it.
+    const proto = URLSearchParams.prototype
+    const saved = Object.getOwnPropertyDescriptor(proto, "size")
+    delete (proto as { size?: number }).size
+    try {
+      expect("size" in new URLSearchParams("a=1")).toBe(false)
+      const fetchMock = mockFetch(() => ok({ calls: [], next_before: null }))
+      const client = new ServerClient(BASE, "wc_pat_x", fetchMock)
+      await client.calls({ agent: "notes", before: "c_1" })
+      expect(new URL(fetchMock.lastUrl()).searchParams.get("agent")).toBe("notes")
+      expect(new URL(fetchMock.lastUrl()).searchParams.get("limit")).toBe("50")
+      await client.exportCalls("json", {})
+      expect(new URL(fetchMock.lastUrl()).searchParams.get("format")).toBe("json")
+      await client.agents()
+      expect(fetchMock.lastUrl()).toBe("https://s.example/v1/agents")
+    } finally {
+      if (saved) Object.defineProperty(proto, "size", saved)
+    }
+  })
+
+  test("callsLimitFallsBackWhenNotFinite", async () => {
+    const fetchMock = mockFetch(() => ok({ calls: [], next_before: null }))
+    const client = new ServerClient(BASE, "wc_pat_x", fetchMock)
+    for (const limit of [NaN, Infinity]) {
+      await client.calls({ limit })
+      const wanted = new URL(fetchMock.lastUrl()).searchParams.get("limit")
+      expect(wanted).toBe("50")
+    }
+    await client.calls({ limit: 0 })
+    expect(new URL(fetchMock.lastUrl()).searchParams.get("limit")).toBe("1")
+  })
+
+  test("callsQueryCutsTextByCharacters", async () => {
+    const fetchMock = mockFetch(() => ok({ calls: [], next_before: null }))
+    await new ServerClient(BASE, "wc_pat_x", fetchMock).calls({ q: "😀".repeat(501) })
+    const q = new URL(fetchMock.lastUrl()).searchParams.get("q") ?? ""
+    expect(Array.from(q)).toHaveLength(500)
+    expect(q).toBe("😀".repeat(500))
+  })
+
   test("exportReadsFilename", async () => {
     const withHeader = mockFetch(
       () => new Response("# calls", { headers: { "Content-Disposition": 'attachment; filename="wristcall-calls.md"' } }),

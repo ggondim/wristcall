@@ -42,6 +42,14 @@ describe("ServerStore", () => {
     expect(await store.list()).toHaveLength(1)
   })
 
+  test("store: update ignores undefined values", async () => {
+    const store = await fresh()
+    await store.put(server({ id: "1", name: "home", pushKey: "wc_push_k" }))
+    const next = await store.update("1", { name: undefined, pushKey: null, linked: true })
+    expect(next).toMatchObject({ name: "home", pushKey: null, linked: true })
+    expect(await store.get("1")).toMatchObject({ name: "home", pushKey: null, linked: true })
+  })
+
   test("store: list is ordered by addedAt, remove deletes", async () => {
     const store = await fresh()
     await store.put(server({ id: "b", addedAt: 20 }))

@@ -61,6 +61,7 @@ export interface CallsQuery {
 
 const HISTORY_TIMEOUT_MS = 30_000
 const MAX_LIMIT = 100
+const DEFAULT_LIMIT = 50
 const MAX_TEXT = 500
 
 /**
@@ -160,9 +161,11 @@ export class ServerClient {
     const params = new URLSearchParams()
     appendFilters(params, query)
     const q = query.q?.trim()
-    if (q) params.set("q", q.slice(0, MAX_TEXT))
+    if (q) params.set("q", Array.from(q).slice(0, MAX_TEXT).join(""))
     if (query.before) params.set("before", query.before)
-    const limit = Math.min(Math.max(Math.trunc(query.limit ?? 20), 1), MAX_LIMIT)
+    // The default is the server's documented one (docs/protocol.md, History: 1 to 100, default 50).
+    const wanted = query.limit !== undefined && Number.isFinite(query.limit) ? Math.trunc(query.limit) : DEFAULT_LIMIT
+    const limit = Math.min(Math.max(wanted, 1), MAX_LIMIT)
     params.set("limit", String(limit))
     return this.#send("calls", "GET", undefined, params, HISTORY_TIMEOUT_MS)
   }
@@ -194,8 +197,9 @@ export class ServerClient {
   }
 
   #url(path: string, params?: URLSearchParams): string {
-    const query = params !== undefined && params.size > 0 ? `?${params.toString()}` : ""
-    return `${this.#base}/v1/${path}${query}`
+    // `URLSearchParams.size` is missing before Safari 17: use the string.
+    const qs = params?.toString() ?? ""
+    return `${this.#base}/v1/${path}${qs === "" ? "" : `?${qs}`}`
   }
 
   #bearer(): string {

@@ -84,6 +84,14 @@ describe("http", () => {
     expect(String(e) + e.stack).not.toContain("wc_pat_secret")
   })
 
+  test("http: a 200 that is not JSON is not a wristcall server", async () => {
+    const fetchMock = mockFetch(() => new Response("<!doctype html><title>site</title>", { status: 200 }))
+    const e = (await json("https://s.example/v1/health", {}, fetchMock).catch((x: unknown) => x)) as ApiError
+    expect(e).toBeInstanceOf(ApiError)
+    expect([e.status, e.code]).toEqual([200, "bad_response"])
+    expect(userMessage(e)).toBe("This is not a wristcall server.")
+  })
+
   test("http: user messages", () => {
     expect(userMessage(new ApiError(401, "unauthorized", "x"))).toContain("revoked")
     expect(userMessage(new ApiError(401, "invalid_code", "x"))).toContain("code")

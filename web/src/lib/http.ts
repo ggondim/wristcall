@@ -11,6 +11,7 @@ export interface RequestOptions {
 }
 
 export const DEFAULT_TIMEOUT_MS = 15_000
+export const NOT_A_SERVER = "This is not a wristcall server."
 
 /** Runs one request. `consume` reads the body while the time limit still runs. */
 async function run<T>(
@@ -47,7 +48,13 @@ async function run<T>(
       throw new NetworkError()
     }
     if (!response.ok) throw await toApiError(response)
-    return consume(response)
+    try {
+      return await consume(response)
+    } catch (error) {
+      // A JSON body that does not parse: the address answers, but it is not a wristcall server (a web site, say).
+      if (error instanceof SyntaxError) throw new ApiError(response.status, "bad_response", NOT_A_SERVER)
+      throw error
+    }
   })()
   work.catch(() => {})
   try {

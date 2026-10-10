@@ -29,6 +29,8 @@ export class TimeoutError extends Error {
 export function userMessage(e: unknown): string {
   if (e instanceof ApiError) {
     switch (e.code) {
+      case "bad_response":
+        return e.message
       case "invalid_code":
         return "The code is wrong, expired or already used."
       case "invalid_account_token":

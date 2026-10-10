@@ -57,7 +57,9 @@ export class ServerStore {
     const read = store.get(id) as IDBRequest<SavedServer | undefined>
     read.onsuccess = () => {
       if (read.result === undefined) return
-      result = { ...read.result, ...patch, id }
+      // An undefined value means "no change", not "erase the field".
+      const changes = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined))
+      result = { ...read.result, ...changes, id }
       store.put(result)
     }
     await finished(tx)
