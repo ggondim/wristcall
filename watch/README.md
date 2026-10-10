@@ -1,11 +1,12 @@
 # wristcall watch app
 
-Watch-only Apple Watch app that pairs with one or more wristcall servers and calls your agents by voice
+Apple Watch app (with an iPhone companion that manages servers) that pairs with one or more wristcall servers and calls your agents by voice
 (protocol in [docs/protocol.md](../docs/protocol.md)).
 
 - `WristcallKit/`: Swift package with everything that does not need the watch hardware
   (protocol, pairing, audio conversion, transport, call session). Runs with `swift test` on a Mac.
 - `Wristcall/`: the watchOS app (SwiftUI, CallKit, audio). `WristcallTests/`: its unit tests.
+- `Phone/`: the iPhone app (SwiftUI), which embeds the watch app. `PhoneTests/`: its unit tests.
 - `project.yml`: XcodeGen spec. `Wristcall.xcodeproj` is generated and not committed.
 
 ## Prerequisites
@@ -68,10 +69,10 @@ Product > Scheme > Edit Scheme > Run > Arguments):
 
 Typing the pairing code on the simulated watch is slow; `-pairServer <URL> -pairCode <8 digits>`
 pairs at launch (without `-pairCode` it sends an approval request). From the command line, once
-the app is installed (the bundle id changes if you set `BUNDLE_ID_PREFIX`):
+the app is installed (the bundle id of the watch app is `<BUNDLE_ID_PREFIX>.wristcall.watchkitapp`; the iPhone app owns `<BUNDLE_ID_PREFIX>.wristcall`):
 
 ```sh
-xcrun simctl launch <UDID> io.github.ggondim.wristcall \
+xcrun simctl launch <UDID> io.github.ggondim.wristcall.watchkitapp \
   -pairServer http://127.0.0.1:8765 -pairCode 12345678 -noCallKit -syntheticMic
 ```
 
@@ -87,6 +88,28 @@ launch arguments:
 - `-openURL <url>`: does what a tapped complication does, for example
   `-openURL 'wristcall://call?agent=<server id>/<agent id>'`. `xcrun simctl openurl` fails on watch simulators
   (LaunchServices error 115), so use this one.
+
+## iPhone app
+
+`Phone/` is the iPhone app. Its bundle id is `<BUNDLE_ID_PREFIX>.wristcall` and it embeds the watch app
+(`Wristcall.app/Watch/`), so both carry the same version (0.4.0, build 4). Today it manages servers: add one
+with its address and a personal token (`wristcall users tokens add --name iphone`), rename it, remove it.
+Tokens live in the iPhone Keychain, readable after the first unlock and never synced.
+
+```sh
+make -C watch build-ios                # builds the iPhone app and the embedded watch app
+make -C watch test-ios                 # PhoneTests on an iPhone 17 simulator
+make -C watch test-ios IOS_DESTINATION='platform=iOS Simulator,id=<UDID>'
+make -C watch build-ios CLOUD_URL=http://127.0.0.1:8090   # point the build at a Cloud
+```
+
+The default `IOS_DESTINATION` is an "iPhone 17" simulator. `CLOUD_URL` and `RELAY_URL` set
+`WRISTCALL_CLOUD_URL` and `WRISTCALL_RELAY_URL` for every build target of the Makefile (they can also go in
+`Config/Local.xcconfig`); left empty, the apps have no account and no push. In Debug builds
+`-addServer <URL> -addServerToken <token> [-addServerName <name>]` adds a server at launch.
+
+The watch app's bundle id (and so its APNs topic) is now `<BUNDLE_ID_PREFIX>.wristcall.watchkitapp`, no longer
+`<BUNDLE_ID_PREFIX>.wristcall`: a Cloud that pushes to both apps lists both in `WRISTCALL_CLOUD_APNS_TOPICS`.
 
 ## Servers, agents and calls
 

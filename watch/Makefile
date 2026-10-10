@@ -12,13 +12,26 @@ DERIVED_DATA := build/DerivedData
 XCODEBUILD := xcodebuild -project $(PROJECT) -scheme $(SCHEME) -destination '$(DESTINATION)' \
 	-derivedDataPath $(DERIVED_DATA)
 
+# The iPhone app (embeds the watch app). Any iOS simulator destination, for example
+# IOS_DESTINATION='platform=iOS Simulator,id=<UDID>' (list yours with `xcrun simctl list devices iOS`).
+IOS_SCHEME := WristcallPhone
+IOS_DESTINATION ?= platform=iOS Simulator,name=iPhone 17
+XCODEBUILD_IOS := xcodebuild -project $(PROJECT) -scheme $(IOS_SCHEME) -destination '$(IOS_DESTINATION)' \
+	-derivedDataPath $(DERIVED_DATA)
+
+# Cloud and push relay URLs reach every build when given (`make build-ios CLOUD_URL=http://127.0.0.1:8090`);
+# left out, Config/Local.xcconfig or the empty default of Config/Base.xcconfig applies.
+CLOUD_URL ?=
+RELAY_URL ?=
+URL_SETTINGS := $(if $(CLOUD_URL),WRISTCALL_CLOUD_URL=$(CLOUD_URL)) $(if $(RELAY_URL),WRISTCALL_RELAY_URL=$(RELAY_URL))
+
 # Integration tests (see README.md): a local wristcall server with fake providers.
 TEST_SERVER_PORT ?= 8765
 export WRISTCALL_TEST_CONFIG ?= $(CURDIR)/WristcallKit/Tests/test-server.yaml
 export WRISTCALL_TEST_DATA_DIR ?= $(CURDIR)/build/test-server-data
 export WRISTCALL_TEST_CLI ?= wristcall
 
-.PHONY: generate test-kit test-server test-integration build build-sim-push test-sim clean
+.PHONY: generate test-kit test-server test-integration build build-sim-push test-sim build-ios build-ios-push test-ios clean
 
 generate:
 	xcodegen generate --spec project.yml
@@ -37,15 +50,25 @@ test-integration:
 	cd WristcallKit && swift test --filter WristcallKitIntegrationTests
 
 build: generate
-	$(XCODEBUILD) build
+	$(XCODEBUILD) build $(URL_SETTINGS)
 
 # The push build (DebugPush: WRISTCALL_PUSH, aps-environment, relay from Config/Push.xcconfig) for
 # the simulator. A free Apple ID cannot sign aps-environment for a real watch; see README.md.
 build-sim-push: generate
-	$(XCODEBUILD) -configuration DebugPush build
+	$(XCODEBUILD) -configuration DebugPush build $(URL_SETTINGS)
 
 test-sim: generate
-	$(XCODEBUILD) test
+	$(XCODEBUILD) test $(URL_SETTINGS)
+
+# The iPhone app with the watch app embedded (Wristcall.app/Watch/).
+build-ios: generate
+	$(XCODEBUILD_IOS) build $(URL_SETTINGS)
+
+build-ios-push: generate
+	$(XCODEBUILD_IOS) -configuration DebugPush build $(URL_SETTINGS)
+
+test-ios: generate
+	$(XCODEBUILD_IOS) test $(URL_SETTINGS)
 
 clean:
 	rm -rf $(PROJECT) build WristcallKit/.build

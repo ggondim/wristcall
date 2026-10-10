@@ -4,5 +4,6 @@
 
 #include "Base.xcconfig"
 
+WRISTCALL_CLOUD_URL = http:/$()/127.0.0.1:8090
 WRISTCALL_RELAY_URL = http:/$()/127.0.0.1:8090
 WRISTCALL_PUSH_ENVIRONMENT = sandbox
