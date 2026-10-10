@@ -5,6 +5,7 @@ left to the reverse proxy of the deployment (see README).
 """
 
 import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -20,8 +21,10 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import __version__
 from .agenda import AgendaError, parse_agents, parse_new_server, parse_server_patch
-from .config import CloudConfig, ConfigError
+from .audience import AudienceError, is_loopback, normalize_audience
+from .config import CloudConfig, ConfigError, same_url
 from .oidc import Identity, OidcError, OidcUnavailable, OidcVerifier
+from .signing import SigningKey, server_token_claims
 from .store import Store, open_store, public_server
 
 log = logging.getLogger("wristcall_cloud.app")
@@ -138,11 +141,41 @@ def get_store(request: Request) -> Store:
     return request.app.state.store
 
 
-def public_config(config: CloudConfig) -> dict[str, Any]:
+def public_config(config: CloudConfig, *, server_tokens: bool = False) -> dict[str, Any]:
     scopes = list(BASE_SCOPES)
     if config.project_id:
         scopes.append(f"urn:zitadel:iam:org:project:id:{config.project_id}:aud")
-    return {"issuer": config.issuer, "project_id": config.project_id, "clients": dict(config.clients), "scopes": scopes}
+    return {
+        "issuer": config.issuer,
+        "project_id": config.project_id,
+        "clients": dict(config.clients),
+        "scopes": scopes,
+        "server_tokens": server_tokens,
+    }
+
+
+def signing_key(request: Request) -> SigningKey:
+    """The key per-server tokens are signed with; 404 `not_configured` before anything else when there is none."""
+    key: SigningKey | None = request.app.state.signing_key
+    if key is None:
+        raise ApiError("not_configured", "this cloud does not issue server tokens", 404)
+    return key
+
+
+def parse_audience(body: dict[str, Any], config: CloudConfig) -> str:
+    raw = body.get("audience")
+    if not isinstance(raw, str):
+        raise ApiError("invalid", "audience must be a string", 422)
+    try:
+        audience = normalize_audience(raw)
+    except AudienceError as e:
+        raise ApiError("invalid", str(e), 422) from None
+    if is_loopback(audience) and not config.allow_loopback_audience:
+        raise ApiError("invalid", "audience must not be a loopback address", 422)
+    # A token for the Cloud or for the issuer would be a credential where none is expected: refuse it outright.
+    if any(same_url(audience, own) for own in (config.public_url, config.issuer) if own):
+        raise ApiError("invalid", "audience must be a server, not the cloud or the issuer", 422)
+    return audience
 
 
 router = APIRouter()
@@ -234,6 +267,45 @@ async def put_agents(server_id: str, request: Request, caller: Caller = Depends(
     return {"agents": doc["agents"]}
 
 
+# Per-server tokens: the Cloud is an OIDC issuer of its own (public_url), whose tokens are meant for one server.
+@router.get("/.well-known/openid-configuration")
+async def discovery(request: Request) -> dict[str, Any]:
+    signing_key(request)
+    public_url = request.app.state.config.public_url
+    return {
+        "issuer": public_url,
+        "jwks_uri": f"{public_url}/v1/jwks",
+        "id_token_signing_alg_values_supported": ["ES256"],
+        "response_types_supported": [],
+    }
+
+
+@router.get("/v1/jwks")
+async def jwks(request: Request) -> JSONResponse:
+    key = signing_key(request)
+    return JSONResponse({"keys": [key.jwk()]}, headers={"Cache-Control": "public, max-age=3600"})
+
+
+@router.post("/v1/server-tokens")
+async def issue_server_token(request: Request, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    key = signing_key(request)
+    caller = await current_account(request, authorization)
+    config: CloudConfig = request.app.state.config
+    audience = parse_audience(await json_object(request), config)
+    claims = server_token_claims(
+        issuer=config.public_url,
+        account=caller.key,
+        client_id=caller.client_id,
+        audience=audience,
+        now=time.time(),
+        ttl_s=config.server_token_ttl_s,
+    )
+    token = key.sign(claims)
+    # Neither the audience (it says where the user has a server) nor the token reach the log.
+    log.info("server token issued (client %s)", caller.client_id)
+    return {"token": token, "audience": audience, "expires_at": claims["exp"]}
+
+
 @router.get("/v1/agents")
 async def list_agents(request: Request, caller: Caller = Depends(current_account)) -> dict[str, Any]:
     return {
@@ -251,7 +323,15 @@ def create_app(
     store: Store | None = None,
     verifier: Verifier | None = None,
     http: httpx.AsyncClient | None = None,
+    signing_key: SigningKey | None = None,
 ) -> FastAPI:
+    # httpx logs every request URL at INFO, and some URLs the Cloud calls are secrets.
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+    if signing_key is None and config.signing_key_pem is not None:
+        signing_key = SigningKey(config.signing_key_pem)
+    if signing_key is not None and not config.public_url:
+        raise ConfigError("WRISTCALL_CLOUD_PUBLIC_URL and WRISTCALL_CLOUD_SIGNING_KEY go together")
     owned_http: httpx.AsyncClient | None = None
     if verifier is None:
         if not config.clients:
@@ -280,6 +360,7 @@ def create_app(
     app = FastAPI(title="wristcall-cloud", version=__version__, lifespan=lifespan)
     app.state.config = config
     app.state.verifier = verifier
+    app.state.signing_key = signing_key
     app.add_middleware(BodyLimit, limit=MAX_BODY)
 
     @app.exception_handler(ApiError)
@@ -312,6 +393,6 @@ def create_app(
 
     @app.get("/v1/config")
     async def public() -> dict[str, Any]:
-        return public_config(config)
+        return public_config(config, server_tokens=signing_key is not None)
 
     return app

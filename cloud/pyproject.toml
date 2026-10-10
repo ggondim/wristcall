@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wristcall-cloud"
-version = "0.1.0"
+version = "0.2.0"
 description = "wristcall cloud: central account API (servers and agents linked to a user's central account)"
 license = "Apache-2.0"
 requires-python = ">=3.12"
