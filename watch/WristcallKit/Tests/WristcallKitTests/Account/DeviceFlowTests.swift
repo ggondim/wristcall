@@ -89,6 +89,58 @@ struct DeviceFlowTests {
         #expect(token.requests.count == 2)
     }
 
+    @Test func deviceFlowSurvivesTransientErrors() async throws {
+        // One dropped poll (offline, timeout) or a 5xx must not end a login the user may be approving.
+        let count = Mutex(0)
+        let token = StubHost { _ in
+            let index = count.withLock { value in defer { value += 1 }; return value }
+            switch index {
+            case 0: return StubHost.Reply(400, #"{"error":"authorization_pending"}"#)
+            case 1: throw URLError(.networkConnectionLost)
+            case 2: return StubHost.Reply(503, #"{"error":"temporarily_unavailable"}"#)
+            case 3: return StubHost.Reply(502, "bad gateway")
+            case 4: throw URLError(.timedOut)
+            default: return StubHost.Reply(200, #"{"access_token":"at","refresh_token":"rt","expires_in":3600}"#)
+            }
+        }
+        let sleeps = SleepRecorder()
+        let start = start
+        let client = OIDCClient(issuer: issuer, clientID: "watch", session: .stubbed(), sleep: sleeps.sleep, now: { start })
+        let tokens = try await client.pollDeviceToken(authorization(), provider(token: token.url))
+        #expect(tokens.accessToken == "at")
+        #expect(token.requests.count == 6)
+        // Transient errors wait the same interval (no slow_down).
+        #expect(sleeps.delays == Array(repeating: .seconds(5), count: 6))
+    }
+
+    @Test func deviceFlowTransientErrorsStillStopAtExpiry() async throws {
+        let token = StubHost { _ in throw URLError(.notConnectedToInternet) }
+        let clock = Mutex(0)
+        let start = start
+        let now: @Sendable () -> Date = {
+            clock.withLock { readings in
+                defer { readings += 1 }
+                return start.addingTimeInterval(TimeInterval(readings) * 50)
+            }
+        }
+        let client = OIDCClient(issuer: issuer, clientID: "watch", session: .stubbed(), sleep: SleepRecorder().sleep, now: now)
+        await #expect(throws: OIDCError.expiredToken) {
+            try await client.pollDeviceToken(authorization(), provider(token: token.url))
+        }
+        #expect(token.requests.count <= 6)
+    }
+
+    @Test func deviceFlowCancelledRequestIsTerminal() async throws {
+        // URLSession's own `.cancelled` (not a task cancellation) is not retried.
+        let token = StubHost { _ in throw URLError(.cancelled) }
+        let start = start
+        let client = OIDCClient(issuer: issuer, clientID: "watch", session: .stubbed(), sleep: SleepRecorder().sleep, now: { start })
+        await #expect(throws: OIDCError.network(.cancelled)) {
+            try await client.pollDeviceToken(authorization(), provider(token: token.url))
+        }
+        #expect(token.requests.count == 1)
+    }
+
     @Test func deviceFlowDenied() async throws {
         let token = StubHost(replies: [(400, #"{"error":"access_denied"}"#)])
         let start = start
@@ -123,12 +175,10 @@ struct DeviceFlowTests {
         let before = token.requests.count
         task.cancel()
         await #expect(throws: CancellationError.self) { try await task.value }
-        // A request in flight when the task was cancelled may still reach the stub; nothing after it.
-        try await Task.sleep(for: .milliseconds(50))
-        let polls = token.requests.count
-        #expect(polls <= before + 1)
-        try await Task.sleep(for: .milliseconds(100))
-        #expect(token.requests.count == polls)
+        // A request already handed to URLSession may still reach the stub (late, under load), but no loop goes
+        // on: at 5 ms per poll, a live loop would add dozens in this time.
+        try await Task.sleep(for: .milliseconds(250))
+        #expect(token.requests.count <= before + 2)
     }
 
     @Test func cancellationIsSeenEvenWhenSleepDoesNotThrow() async throws {

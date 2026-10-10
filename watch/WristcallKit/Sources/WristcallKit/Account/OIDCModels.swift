@@ -38,18 +38,21 @@ public struct OIDCProvider: Decodable, Sendable, Equatable {
     }
 }
 
-/// The tokens of the central account on this device. Both tokens are secrets: `description`, `debugDescription`
+/// The tokens of the central account on this device. All tokens are secrets: `description`, `debugDescription`
 /// and the mirror (`dump`) hide them. The `Codable` form (the Keychain item) keeps them.
 public struct TokenSet: Codable, Sendable, Equatable {
     public var accessToken: String
     /// `nil` when the provider gave none (no `offline_access`): the session ends with the access token.
     public var refreshToken: String?
     public var expiresAt: Date
+    /// The ID token of the login, kept only as `id_token_hint` for the end-session URL. Also a secret.
+    public var idToken: String?
 
-    public init(accessToken: String, refreshToken: String?, expiresAt: Date) {
+    public init(accessToken: String, refreshToken: String?, expiresAt: Date, idToken: String? = nil) {
         self.accessToken = accessToken
         self.refreshToken = refreshToken
         self.expiresAt = expiresAt
+        self.idToken = idToken
     }
 
     /// Whether the access token still has at least `margin` seconds to live at `now`.
@@ -142,7 +145,8 @@ public enum OIDCError: Error, Sendable, Equatable {
 
 extension TokenSet: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     public var description: String {
-        "TokenSet(accessToken: <redacted>, refreshToken: \(refreshToken == nil ? "nil" : "<redacted>"), expiresAt: \(expiresAt))"
+        "TokenSet(accessToken: <redacted>, refreshToken: \(refreshToken == nil ? "nil" : "<redacted>"), "
+            + "expiresAt: \(expiresAt), idToken: \(idToken == nil ? "nil" : "<redacted>"))"
     }
 
     public var debugDescription: String { description }
@@ -152,6 +156,7 @@ extension TokenSet: CustomStringConvertible, CustomDebugStringConvertible, Custo
             "accessToken": "<redacted>",
             "refreshToken": refreshToken == nil ? "nil" : "<redacted>",
             "expiresAt": expiresAt,
+            "idToken": idToken == nil ? "nil" : "<redacted>",
         ])
     }
 }

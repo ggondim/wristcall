@@ -154,15 +154,23 @@ public struct OIDCClient: Sendable {
 
     /// The URL that ends the provider's browser session (its cookie would otherwise sign the same user in
     /// again). `nil` when the provider has no end-session endpoint.
-    /// Without an ID token to hint with, the provider tells the client by `client_id`.
-    public func endSessionURL(_ provider: OIDCProvider, postLogoutRedirect: URL) -> URL? {
+    /// `client_id` always names the client; `id_token_hint` (the login's ID token, a secret: the URL must not be
+    /// logged) is added when there is one.
+    public func endSessionURL(_ provider: OIDCProvider, postLogoutRedirect: URL, idTokenHint: String? = nil) -> URL? {
         guard let endpoint = provider.endSessionEndpoint,
               var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
         else { return nil }
-        components.queryItems = (components.queryItems ?? []) + [
+        var items = (components.queryItems ?? []) + [
             URLQueryItem(name: "client_id", value: clientID),
             URLQueryItem(name: "post_logout_redirect_uri", value: postLogoutRedirect.absoluteString),
         ]
+        if let idTokenHint, !idTokenHint.isEmpty {
+            items.append(URLQueryItem(name: "id_token_hint", value: idTokenHint))
+        }
+        components.queryItems = items
+        if let encoded = components.percentEncodedQuery {
+            components.percentEncodedQuery = encoded.replacingOccurrences(of: "+", with: "%2B")
+        }
         return components.url
     }
 
@@ -195,11 +203,17 @@ public struct OIDCClient: Sendable {
     }
 
     /// Polls the token endpoint until the user approves (RFC 8628 3.4 and 3.5). Waits `interval` before every
-    /// poll; `authorization_pending` waits again, `slow_down` adds 5 s for good. Ends with `.expiredToken` once
-    /// the next poll would come after `expiresAt` (no request then), `.accessDenied`, or the task's
-    /// `CancellationError`.
+    /// poll; `authorization_pending` waits again, `slow_down` adds 5 s for good. A transient failure (no HTTP
+    /// reply, or a 5xx) counts as pending: one dropped poll must not end a login the user may be approving.
+    /// Ends with `.expiredToken` once the next poll would come after `expiresAt` (no request then),
+    /// `.accessDenied`, any other OAuth error, or the task's `CancellationError`.
     public func pollDeviceToken(_ authorization: DeviceAuthorization, _ provider: OIDCProvider) async throws -> TokenSet {
         var interval = authorization.interval
+        let fields = [
+            ("grant_type", Self.deviceCodeGrant),
+            ("device_code", authorization.deviceCode),
+            ("client_id", clientID),
+        ]
         while true {
             try Task.checkCancellation()
             guard now().addingTimeInterval(Self.seconds(interval)) <= authorization.expiresAt else {
@@ -208,22 +222,25 @@ public struct OIDCClient: Sendable {
             try await sleep(interval)
             try Task.checkCancellation()
             guard now() < authorization.expiresAt else { throw OIDCError.expiredToken }
+            let issuedAt = now()
+            let status: Int, data: Data
             do {
-                return try await tokenRequest(provider.tokenEndpoint, [
-                    ("grant_type", Self.deviceCodeGrant),
-                    ("device_code", authorization.deviceCode),
-                    ("client_id", clientID),
-                ], previousRefreshToken: nil)
-            } catch OIDCError.server("authorization_pending") {
+                (status, data) = try await send(formRequest(provider.tokenEndpoint, fields))
+            } catch OIDCError.network(let code) {
+                if Task.isCancelled { throw CancellationError() }
+                if code == .cancelled { throw OIDCError.network(code) }
                 continue
-            } catch OIDCError.server("slow_down") {
-                interval += Self.slowDownStep
-            } catch OIDCError.server("access_denied") {
-                throw OIDCError.accessDenied
-            } catch OIDCError.server("expired_token") {
-                throw OIDCError.expiredToken
-            } catch OIDCError.network where Task.isCancelled {
-                throw CancellationError()
+            }
+            if status == 200 {
+                return try tokens(from: data, issuedAt: issuedAt, previousRefreshToken: nil)
+            }
+            if (500...599).contains(status) { continue }
+            switch Self.providerError(status: status, data: data) {
+            case .server("authorization_pending"): continue
+            case .server("slow_down"): interval += Self.slowDownStep
+            case .server("access_denied"): throw OIDCError.accessDenied
+            case .server("expired_token"): throw OIDCError.expiredToken
+            case let error: throw error
             }
         }
     }
@@ -236,13 +253,23 @@ public struct OIDCClient: Sendable {
         let issuedAt = now()
         let (status, data) = try await send(formRequest(endpoint, fields))
         guard status == 200 else { throw Self.providerError(status: status, data: data) }
+        return try tokens(from: data, issuedAt: issuedAt, previousRefreshToken: previousRefreshToken)
+    }
+
+    /// A `200` token reply as a `TokenSet`.
+    private func tokens(from data: Data, issuedAt: Date, previousRefreshToken: String?) throws -> TokenSet {
         guard let reply = try? JSONDecoder().decode(TokenReply.self, from: data),
               !reply.accessToken.isEmpty,
               reply.tokenType.map({ $0.lowercased() == "bearer" }) ?? true
         else { throw OIDCError.malformedResponse }
         let refreshToken = reply.refreshToken.flatMap { $0.isEmpty ? nil : $0 } ?? previousRefreshToken
         let lifetime = max(reply.expiresIn ?? Self.defaultLifetime, 0)
-        return TokenSet(accessToken: reply.accessToken, refreshToken: refreshToken, expiresAt: issuedAt.addingTimeInterval(lifetime))
+        return TokenSet(
+            accessToken: reply.accessToken,
+            refreshToken: refreshToken,
+            expiresAt: issuedAt.addingTimeInterval(lifetime),
+            idToken: reply.idToken.flatMap { $0.isEmpty ? nil : $0 }
+        )
     }
 
     private func formRequest(_ url: URL, _ fields: [(String, String)]) -> URLRequest {
@@ -346,8 +373,10 @@ private struct TokenReply: Decodable {
     var refreshToken: String?
     var expiresIn: TimeInterval?
     var tokenType: String?
+    var idToken: String?
 
     private enum CodingKeys: String, CodingKey {
+        case idToken = "id_token"
         case accessToken = "access_token"
         case refreshToken = "refresh_token"
         case expiresIn = "expires_in"

@@ -130,6 +130,91 @@ struct AccountSessionTests {
         #expect(try await session.accessToken() == "other-at")
     }
 
+    @Test func refreshKeepsTheOldIDTokenWhenNoneComesBack() async throws {
+        let world = StubAccountWorld()
+        let store = InMemoryTokenStore(TokenSet(accessToken: "old", refreshToken: "rt", expiresAt: now, idToken: "id-1"))
+        let session = session(world, store: store)
+        _ = try await session.accessToken()
+        #expect(try store.load()?.idToken == "id-1")
+    }
+
+    @Test func failedSaveKeepsTheRefreshedTokensInMemory() async throws {
+        // Zitadel rotates refresh tokens: losing the new one would sign the user out at the next refresh.
+        let world = StubAccountWorld()
+        let store = FlakyTokenStore(stale)
+        store.failSaves = true
+        let session = session(world, store: store)
+        #expect(try await session.accessToken() == "new-at")
+        #expect(try await session.accessToken() == "new-at")
+        #expect(world.tokenRequests.count == 1)
+        #expect(await session.isSignedIn)
+
+        // The save is tried again once the store works.
+        store.failSaves = false
+        #expect(try await session.accessToken() == "new-at")
+        #expect(try store.load()?.refreshToken == "new-rt")
+    }
+
+    @Test func failedSaveIsForgottenBySignOut() async throws {
+        let world = StubAccountWorld()
+        let store = FlakyTokenStore(stale)
+        store.failSaves = true
+        let session = session(world, store: store)
+        _ = try await session.accessToken()
+        await session.signOut()
+        #expect(await !session.isSignedIn)
+        await #expect(throws: AccountError.signedOut) { try await session.accessToken() }
+        #expect(try #require(world.revokeRequests.first).form()["token"] == "new-rt")
+    }
+
+    @Test func signOutDuringARefreshSignsTheWaitersOut() async throws {
+        let world = StubAccountWorld(token: { _ in
+            Thread.sleep(forTimeInterval: 0.2)
+            return StubHost.Reply(200, #"{"access_token":"late-at","refresh_token":"late-rt","expires_in":3600}"#)
+        })
+        let store = InMemoryTokenStore(stale)
+        let session = session(world, store: store)
+        let first = Task { try await session.accessToken() }
+        while world.tokenRequests.isEmpty {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let joined = Task { try await session.accessToken() }
+        try await Task.sleep(for: .milliseconds(20))
+        await session.signOut()
+        await #expect(throws: AccountError.signedOut) { try await first.value }
+        await #expect(throws: AccountError.signedOut) { try await joined.value }
+        #expect(try store.load() == nil)
+    }
+
+    @Test func signInDuringARefreshHandsWaitersTheNewTokens() async throws {
+        let world = StubAccountWorld(token: { _ in
+            Thread.sleep(forTimeInterval: 0.2)
+            return StubHost.Reply(200, #"{"access_token":"late-at","refresh_token":"late-rt","expires_in":3600}"#)
+        })
+        let session = session(world, store: InMemoryTokenStore(stale))
+        let first = Task { try await session.accessToken() }
+        while world.tokenRequests.isEmpty {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let joined = Task { try await session.accessToken() }
+        try await Task.sleep(for: .milliseconds(20))
+        try await session.signIn(TokenSet(accessToken: "other-at", refreshToken: "other-rt", expiresAt: now.addingTimeInterval(3600)))
+        #expect(try await first.value == "other-at")
+        #expect(try await joined.value == "other-at")
+    }
+
+    @Test func signOutReturnsTheEndSessionURLWithTheIDToken() async throws {
+        let world = StubAccountWorld()
+        let store = InMemoryTokenStore(TokenSet(accessToken: "at", refreshToken: "rt", expiresAt: now.addingTimeInterval(3600), idToken: "id-1"))
+        let session = session(world, store: store)
+        let url = try #require(await session.signOut(postLogoutRedirect: URL(string: "wristcall://auth/logout")!))
+        #expect(url.path() == "/oidc/v1/end_session")
+        #expect(AccountFixtures.query(url) == [
+            "client_id": "wristcall-ios", "post_logout_redirect_uri": "wristcall://auth/logout", "id_token_hint": "id-1",
+        ])
+        #expect(try store.load() == nil)
+    }
+
     // MARK: - Config
 
     @Test func configWithoutClientIsNotConfigured() async throws {
@@ -243,4 +328,29 @@ struct AccountSessionTests {
         #expect(try store.load() == nil)
         try store.delete()
     }
+}
+
+/// A token store whose saves can be made to fail (a Keychain that refuses to write).
+final class FlakyTokenStore: TokenStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var tokens: TokenSet?
+    private var failing = false
+
+    init(_ tokens: TokenSet?) { self.tokens = tokens }
+
+    var failSaves: Bool {
+        get { lock.withLock { failing } }
+        set { lock.withLock { failing = newValue } }
+    }
+
+    func load() throws -> TokenSet? { lock.withLock { tokens } }
+
+    func save(_ tokens: TokenSet) throws {
+        try lock.withLock {
+            if failing { throw CredentialStoreError.keychain(-25308) }
+            self.tokens = tokens
+        }
+    }
+
+    func delete() throws { lock.withLock { tokens = nil } }
 }

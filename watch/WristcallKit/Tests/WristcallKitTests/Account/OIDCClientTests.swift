@@ -127,7 +127,7 @@ struct OIDCClientTests {
         let req = client.authorizationRequest(provider, redirectURI: redirect, scopes: ["openid"])
         let callback = URL(string: "wristcall://auth/callback?code=the%2Bcode&state=\(req.state)&iss=https%3A%2F%2Fauth.test")!
         let tokens = try await client.exchange(callback: callback, for: req, provider)
-        #expect(tokens == TokenSet(accessToken: "at", refreshToken: "rt", expiresAt: start.addingTimeInterval(3600)))
+        #expect(tokens == TokenSet(accessToken: "at", refreshToken: "rt", expiresAt: start.addingTimeInterval(3600), idToken: "x"))
 
         let request = try #require(tokenHost.requests.first)
         #expect(tokenHost.requests.count == 1)
@@ -316,18 +316,48 @@ struct OIDCClientTests {
         #expect(client().endSessionURL(provider, postLogoutRedirect: URL(string: "wristcall://auth/logout")!) == nil)
     }
 
+    @Test func endSessionURLHintsWithTheIDToken() throws {
+        let url = try #require(client("ios-client").endSessionURL(
+            AccountFixtures.provider(), postLogoutRedirect: URL(string: "wristcall://auth/logout")!, idTokenHint: "the.id.token"
+        ))
+        #expect(AccountFixtures.query(url) == [
+            "client_id": "ios-client",
+            "post_logout_redirect_uri": "wristcall://auth/logout",
+            "id_token_hint": "the.id.token",
+        ])
+    }
+
+    @Test func exchangeKeepsTheIDToken() async throws {
+        let tokenHost = StubHost(replies: [(200, #"{"access_token":"at","refresh_token":"rt","id_token":"the.id.token"}"#)])
+        let provider = AccountFixtures.provider(token: tokenHost.url)
+        let client = client()
+        let req = client.authorizationRequest(provider, redirectURI: redirect, scopes: ["openid"])
+        let callback = URL(string: "wristcall://auth/callback?code=abc&state=\(req.state)")!
+        let tokens = try await client.exchange(callback: callback, for: req, provider)
+        #expect(tokens.idToken == "the.id.token")
+    }
+
     // MARK: - Secrets stay out of descriptions
 
     @Test func tokenSetDescriptionHidesTokens() throws {
-        let tokens = TokenSet(accessToken: "secret-access", refreshToken: "secret-refresh", expiresAt: start)
+        let tokens = TokenSet(accessToken: "secret-access", refreshToken: "secret-refresh", expiresAt: start, idToken: "secret-id")
         for text in [String(describing: tokens), String(reflecting: tokens), dumped(tokens), "\(tokens)"] {
             #expect(!text.contains("secret-access"))
             #expect(!text.contains("secret-refresh"))
+            #expect(!text.contains("secret-id"))
             #expect(text.contains("<redacted>"))
         }
         // The stored form keeps them, of course.
         let data = try JSONEncoder().encode(tokens)
         #expect(try JSONDecoder().decode(TokenSet.self, from: data) == tokens)
+    }
+
+    @Test func tokenSetDecodesItemsWithoutIDToken() throws {
+        // Keychain items written before the ID token was kept.
+        let old = #"{"accessToken":"a","refreshToken":"r","expiresAt":0}"#
+        let tokens = try JSONDecoder().decode(TokenSet.self, from: Data(old.utf8))
+        #expect(tokens == TokenSet(accessToken: "a", refreshToken: "r", expiresAt: Date(timeIntervalSinceReferenceDate: 0)))
+        #expect(tokens.idToken == nil)
     }
 
     @Test func tokenSetFreshness() {
