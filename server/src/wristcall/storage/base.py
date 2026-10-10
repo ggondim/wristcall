@@ -252,6 +252,34 @@ class CallStore(Protocol):
         ...
 
 
+class PushStore(Protocol):
+    """Push relay keys (E6): one per client, a paired device or an API token (a management app)."""
+
+    async def set(
+        self, user_id: str, push_key: str, now: float, *, device_id: str | None = None, token_id: str | None = None
+    ) -> str | None:
+        """Exactly one of device_id, token_id (else ValueError). Replaces the client's key; returns the key it
+        replaced (None: it had none, or the same one)."""
+        ...
+
+    async def clear(self, *, device_id: str | None = None, token_id: str | None = None) -> str | None:
+        """Exactly one of device_id, token_id (else ValueError). Returns the key the client had, now deleted; None
+        if it had none."""
+        ...
+
+    async def forget(self, push_key: str) -> int:
+        """The relay said this key is gone: deletes it wherever it is. Returns how many clients had it."""
+        ...
+
+    async def for_device(self, device_id: str) -> str | None:
+        """The key of an active (not revoked) device."""
+        ...
+
+    async def for_apps(self, user_id: str) -> list[str]:
+        """Keys set by the user's active API tokens (management apps), oldest first."""
+        ...
+
+
 class MetaStore(Protocol):
     async def get(self, key: str) -> str | None: ...
 
@@ -267,6 +295,7 @@ class Storage(Protocol):
     pairing: PairingStore
     agents: AgentStore
     calls: CallStore
+    push: PushStore
     meta: MetaStore
 
     async def close(self) -> None: ...

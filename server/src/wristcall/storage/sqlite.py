@@ -135,9 +135,13 @@ class _Tokens:
         return [_token(r) for r in rows]
 
     async def revoke(self, token_id: str, now: float) -> bool:
-        return self._db.execute(
-            "UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL", (now, token_id)
-        ) == 1
+        with self._db.transaction() as conn:
+            revoked = conn.execute(
+                "UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL", (now, token_id)
+            ).rowcount == 1
+            if revoked:
+                conn.execute("DELETE FROM push_targets WHERE token_id = ?", (token_id,))  # no secret left behind
+        return revoked
 
 
 class _Devices:
@@ -173,7 +177,11 @@ class _Devices:
         else:
             sql = "UPDATE devices SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL"
             params = (now, device_id, user_id)
-        return self._db.execute(sql, params) == 1
+        with self._db.transaction() as conn:
+            revoked = conn.execute(sql, params).rowcount == 1
+            if revoked:
+                conn.execute("DELETE FROM push_targets WHERE device_id = ?", (device_id,))  # no secret left behind
+        return revoked
 
     async def adopt_orphans(self, user_id: str) -> int:
         return self._db.execute("UPDATE devices SET user_id = ? WHERE user_id IS NULL", (user_id,))
@@ -507,6 +515,59 @@ class _Calls:
 
 
 
+def _one_client(device_id: str | None, token_id: str | None) -> None:
+    if (device_id is None) == (token_id is None):
+        raise ValueError("exactly one of device_id and token_id")
+
+
+class _Push:
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def set(
+        self, user_id: str, push_key: str, now: float, *, device_id: str | None = None, token_id: str | None = None
+    ) -> str | None:
+        _one_client(device_id, token_id)
+        column, client = ("device_id", device_id) if device_id is not None else ("token_id", token_id)
+        with self._db.transaction() as conn:
+            row = conn.execute(f"SELECT push_key FROM push_targets WHERE {column} = ?", (client,)).fetchone()
+            if row is None:
+                conn.execute(
+                    f"INSERT INTO push_targets (user_id, {column}, push_key, created_at) VALUES (?, ?, ?, ?)",
+                    (user_id, client, push_key, now),
+                )
+                return None
+            if row["push_key"] == push_key:
+                return None
+            conn.execute(f"UPDATE push_targets SET push_key = ?, user_id = ? WHERE {column} = ?", (push_key, user_id, client))
+            return row["push_key"]
+
+    async def clear(self, *, device_id: str | None = None, token_id: str | None = None) -> str | None:
+        _one_client(device_id, token_id)
+        column, client = ("device_id", device_id) if device_id is not None else ("token_id", token_id)
+        rows = self._db.query(f"DELETE FROM push_targets WHERE {column} = ? RETURNING push_key", (client,))
+        return rows[0]["push_key"] if rows else None
+
+    async def forget(self, push_key: str) -> int:
+        return self._db.execute("DELETE FROM push_targets WHERE push_key = ?", (push_key,))
+
+    async def for_device(self, device_id: str) -> str | None:
+        rows = self._db.query(
+            "SELECT p.push_key FROM push_targets p JOIN devices d ON d.id = p.device_id "
+            "WHERE p.device_id = ? AND d.revoked_at IS NULL",
+            (device_id,),
+        )
+        return rows[0]["push_key"] if rows else None
+
+    async def for_apps(self, user_id: str) -> list[str]:
+        rows = self._db.query(
+            "SELECT p.push_key FROM push_targets p JOIN api_tokens t ON t.id = p.token_id "
+            "WHERE p.user_id = ? AND t.revoked_at IS NULL ORDER BY p.created_at, p.id",
+            (user_id,),
+        )
+        return [r["push_key"] for r in rows]
+
+
 class _Meta:
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -534,6 +595,7 @@ class SqliteStorage:
         self.pairing = _Pairing(db)
         self.agents = _Agents(db)
         self.calls = _Calls(db)
+        self.push = _Push(db)
         self.meta = _Meta(db)
 
     async def close(self) -> None:

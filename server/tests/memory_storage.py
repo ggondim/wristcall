@@ -67,7 +67,8 @@ class _Users:
 
 
 class _Tokens:
-    def __init__(self) -> None:
+    def __init__(self, push: "_Push") -> None:
+        self._push = push
         self.rows: dict[str, tuple[ApiToken, str]] = {}
 
     async def create(self, token_id, user_id, name, token_hash, now):
@@ -91,11 +92,13 @@ class _Tokens:
         if entry is None or entry[0].revoked_at is not None:
             return False
         self.rows[token_id] = (replace(entry[0], revoked_at=now), entry[1])
+        self._push.rows = [r for r in self._push.rows if r["token_id"] != token_id]
         return True
 
 
 class _Devices:
-    def __init__(self) -> None:
+    def __init__(self, push: "_Push") -> None:
+        self._push = push
         self.rows: dict[str, tuple[Device, str]] = {}
 
     def add_orphan(self, device_id, name, token_hash, now):
@@ -120,6 +123,7 @@ class _Devices:
         if entry is None or entry[0].revoked_at is not None or (user_id is not None and entry[0].user_id != user_id):
             return False
         self.rows[device_id] = (replace(entry[0], revoked_at=now), entry[1])
+        self._push.rows = [r for r in self._push.rows if r["device_id"] != device_id]
         return True
 
     async def adopt_orphans(self, user_id):
@@ -395,6 +399,60 @@ class _Calls:
         pass
 
 
+def _one_client(device_id, token_id):
+    if (device_id is None) == (token_id is None):
+        raise ValueError("exactly one of device_id and token_id")
+
+
+class _Push:
+    def __init__(self, root: "MemoryStorage") -> None:
+        self._root = root
+        self.rows: list[dict] = []  # user_id, device_id, token_id, push_key, created_at (insertion order)
+
+    def _find(self, device_id, token_id):
+        return next((r for r in self.rows if r["device_id"] == device_id and r["token_id"] == token_id), None)
+
+    async def set(self, user_id, push_key, now, *, device_id=None, token_id=None):
+        _one_client(device_id, token_id)
+        row = self._find(device_id, token_id)
+        if row is None:
+            self.rows.append(dict(user_id=user_id, device_id=device_id, token_id=token_id, push_key=push_key, created_at=now))
+            return None
+        if row["push_key"] == push_key:
+            return None
+        old = row["push_key"]
+        row.update(push_key=push_key, user_id=user_id)
+        return old
+
+    async def clear(self, *, device_id=None, token_id=None):
+        _one_client(device_id, token_id)
+        row = self._find(device_id, token_id)
+        if row is None:
+            return None
+        self.rows.remove(row)
+        return row["push_key"]
+
+    async def forget(self, push_key):
+        before = len(self.rows)
+        self.rows = [r for r in self.rows if r["push_key"] != push_key]
+        return before - len(self.rows)
+
+    async def for_device(self, device_id):
+        entry = self._root.devices.rows.get(device_id)
+        if entry is None or entry[0].revoked_at is not None:
+            return None
+        row = self._find(device_id, None)
+        return row["push_key"] if row else None
+
+    async def for_apps(self, user_id):
+        found = [
+            r for r in self.rows
+            if r["user_id"] == user_id and r["token_id"] in self._root.tokens.rows
+            and self._root.tokens.rows[r["token_id"]][0].revoked_at is None
+        ]
+        return [r["push_key"] for r in sorted(found, key=lambda r: r["created_at"])]  # stable: ties keep insertion order
+
+
 class _Meta:
     def __init__(self) -> None:
         self.rows: dict[str, str] = {}
@@ -412,14 +470,16 @@ class _Meta:
 class MemoryStorage:
     def __init__(self) -> None:
         self.users = _Users(self)
-        self.tokens = _Tokens()
-        self.devices = _Devices()
+        self.push = _Push(self)
+        self.tokens = _Tokens(self.push)
+        self.devices = _Devices(self.push)
         self.pairing = _Pairing()
         self.agents = _Agents()
         self.calls = _Calls()
         self.meta = _Meta()
 
     def cascade(self, user_id: str) -> None:
+        self.push.rows = [r for r in self.push.rows if r["user_id"] != user_id]
         self.tokens.rows = {k: v for k, v in self.tokens.rows.items() if v[0].user_id != user_id}
         self.devices.rows = {k: v for k, v in self.devices.rows.items() if v[0].user_id != user_id}
         self.agents.rows = {k: v for k, v in self.agents.rows.items() if v.user_id != user_id}
