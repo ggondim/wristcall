@@ -23,8 +23,17 @@ Environment:
 Standard output carries only the result. Progress goes to standard error as page paths, never query strings,
 so no code, state or token is printed; the password is never printed.
 
-Exit codes: 0 done, 2 usage or configuration, 3 the provider's login page is unavailable (e.g. a 404 on the
-hosted login), 4 the login did not go through (error shown, or a page this helper does not know), 5 timeout.
+Exit codes: 0 done, 1 unexpected error (only its type is printed), 2 usage or configuration, 3 the provider's
+login page is unavailable (e.g. a 404 on the hosted login), 4 the login did not go through (error shown, or a page
+this helper does not know), 5 timeout.
+
+Tested on Zitadel's login v1 (`/ui/login/...`, the device flow). The login v2 path (`/ui/v2/login/...`, what the
+authorization code flow lands on) is UNTESTED: login v2 was down when this was written (404). Its handling uses
+generic selectors (`input[name=loginName]`, `autocomplete=username`, `input[type=password]`, Skip buttons);
+check it, and its error detection, the first time login v2 is up.
+
+Secrets: Playwright writes filled values into its error call logs, so no exception text ever reaches the output:
+a failed fill becomes a fixed message, and any other exception prints only its type.
 
 Needs Playwright for Python (`pip install playwright`, then `playwright install --only-shell chromium`).
 """
@@ -37,7 +46,11 @@ import time
 import urllib.parse
 
 SKIP_LABELS = ("Skip", "Überspringen", "Not now", "Later", "Pular", "Agora não")
-ALLOW_LABELS = ("Allow", "Erlauben", "Permitir", "Accept", "Akzeptieren", "Aceitar", "Continue", "Weiter")
+# Device approval and consent buttons. Not "Continue"/"Next": on login v2 those are the login steps themselves.
+ALLOW_LABELS = ("Allow", "Erlauben", "Permitir", "Accept", "Akzeptieren", "Aceitar")
+# Where a login error shows: v1's `.lgn-error`; on v2 (untested) an alert inside the page's form. Never a bare
+# `[role=alert]`: Next.js's route announcer (`next-route-announcer`, aria-live) has that role and says the page title.
+ERROR_SELECTOR = ".lgn-error, form [role=alert], form .error, form [data-error]"
 
 
 class Stop(Exception):
@@ -91,6 +104,14 @@ def submit(page, field) -> None:
         target.click()
     else:
         field.press("Enter")
+
+
+def fill_secret(field, secret: str) -> None:
+    """Fills the password; a failure never carries Playwright's call log (it holds the filled value)."""
+    try:
+        field.fill(secret)
+    except Exception:  # noqa: BLE001 - the message would contain the password
+        raise Stop(4, "password field not fillable") from None
 
 
 def run(mode: str, argument: str) -> str:
@@ -167,7 +188,7 @@ def run(mode: str, argument: str) -> str:
                 body = page.locator("body").inner_text(timeout=5_000) if page.locator("body").count() else ""
                 if '"code":5' in body.replace(" ", "") and "Not Found" in body:
                     raise Stop(3, f"the login page {here} answers 404 (the provider's hosted login is down)")
-                error = visible(page, ".lgn-error, [role=alert], .error")
+                error = visible(page, ERROR_SELECTOR)
                 if error is not None and error.inner_text().strip():
                     raise Stop(4, f"login error on {here}: {error.inner_text().strip()[:200]}")
 
@@ -180,7 +201,7 @@ def run(mode: str, argument: str) -> str:
                 if field is not None:
                     if filled_password and same > 1:
                         raise Stop(4, f"password not accepted on {here}")
-                    field.fill(secret)
+                    fill_secret(field, secret)
                     filled_password = True
                     submit(page, field)
                     continue
@@ -223,6 +244,9 @@ def main(argv: list[str]) -> int:
     except Stop as e:
         note(str(e))
         return e.code
+    except Exception as e:  # noqa: BLE001 - only the type: Playwright's messages can hold filled values
+        note(f"failed with {type(e).__name__}")
+        return 1
 
 
 if __name__ == "__main__":

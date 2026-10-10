@@ -64,7 +64,11 @@ struct AccountIntegrationTests {
     }
 
     @Test func iosAgendaRoundTrip() async throws {
-        let session = try await AccountWorld.shared.phoneOrWatch()
+        let (session, via) = try await AccountWorld.shared.phoneOrWatch()
+        if via == .watch {
+            // Still runs the round trip (the agenda routes take either app's token), but never as a clean pass.
+            Issue.record("ran with watch token: iOS login unavailable")
+        }
         let server = try TestServer.requireBaseURL()
         let cloud = session.cloudClient
         let token = try await session.accessToken()
@@ -119,13 +123,16 @@ struct AccountIntegrationTests {
             Issue.record("the approved request did not hand over a device token")
             return
         }
-        let me = try await pairing.me(server: server, token: device.token)
-        #expect(me.deviceName == "E2E Watch")
-        #expect(me.user?.handle == AccountEnvironment.serverUser)
-        // The token is delivered once.
-        let second = try await pairing.poll(server: server, pollToken: request.pollToken)
-        #expect(second == .gone)
-        try await management.revokeDevice(device.deviceId)
+        try await withCleanup {
+            let me = try await pairing.me(server: server, token: device.token)
+            #expect(me.deviceName == "E2E Watch")
+            #expect(me.user?.handle == AccountEnvironment.serverUser)
+            // The token is delivered once.
+            let second = try await pairing.poll(server: server, pollToken: request.pollToken)
+            #expect(second == .gone)
+        } cleanup: {
+            try? await management.revokeDevice(device.deviceId)
+        }
     }
 
     @Test func deviceApprovalPushReachesFakeAPNs() async throws {
@@ -149,29 +156,44 @@ struct AccountIntegrationTests {
             events: ["device.approval"]
         )
         let serverPush = ServerPushClient(server: server, token: personal)
-        try await serverPush.setPushKey(pushKey)
+        // Leave nothing behind, whatever fails: the server's key and the relay's registration, then the request.
+        try await withCleanup {
+            try await serverPush.setPushKey(pushKey)
 
-        let outcome = await AccountPairing(session: watch).pair(server, deviceName: "E2E Push Watch")
-        guard case .pending(_, let request) = outcome else {
-            Issue.record("expected .pending, got \(outcome)")
-            return
+            let outcome = await AccountPairing(session: watch).pair(server, deviceName: "E2E Push Watch")
+            guard case .pending(_, let request) = outcome else {
+                Issue.record("expected .pending, got \(outcome)")
+                return
+            }
+            try await withCleanup {
+                let hexToken = apnsToken.map { String(format: "%02x", $0) }.joined()
+                let received = await FakeAPNs.waitForPush(in: URL(fileURLWithPath: log), deviceToken: hexToken)
+                let push = try #require(received, "the fake APNs got nothing for this device token")
+                #expect(push.topic == Self.phoneTopic)
+                #expect(push.category == "WC_DEVICE_APPROVAL")
+                #expect(push.event == "device.approval")
+                #expect(push.tag == tag)
+                #expect(push.requestID == request.requestId)
+                #expect(push.requestID.count == 4 && push.requestID.allSatisfy(\.isASCII) && push.requestID.allSatisfy(\.isNumber))
+            } cleanup: {
+                try? await ManagementClient(server: server, token: personal).deny(requestID: request.requestId)
+            }
+        } cleanup: {
+            try? await serverPush.clearPushKey()
+            try? await relay.unregister(pushKey: pushKey)
         }
-
-        let hexToken = apnsToken.map { String(format: "%02x", $0) }.joined()
-        let received = await FakeAPNs.waitForPush(in: URL(fileURLWithPath: log), deviceToken: hexToken)
-        let push = try #require(received, "the fake APNs got nothing for this device token")
-        #expect(push.topic == Self.phoneTopic)
-        #expect(push.category == "WC_DEVICE_APPROVAL")
-        #expect(push.event == "device.approval")
-        #expect(push.tag == tag)
-        #expect(push.requestID == request.requestId)
-        #expect(push.requestID.count == 4 && push.requestID.allSatisfy(\.isASCII) && push.requestID.allSatisfy(\.isNumber))
-
-        // Leave nothing behind: the request, the server's key and the relay's registration.
-        try await ManagementClient(server: server, token: personal).deny(requestID: request.requestId)
-        try await serverPush.clearPushKey()
-        try await relay.unregister(pushKey: pushKey)
     }
+}
+
+/// Runs `body`, then `cleanup` whether `body` returned or threw.
+func withCleanup(_ body: () async throws -> Void, cleanup: () async -> Void) async throws {
+    do {
+        try await body()
+    } catch {
+        await cleanup()
+        throw error
+    }
+    await cleanup()
 }
 
 // MARK: - Environment
@@ -292,30 +314,35 @@ actor AccountWorld {
         return try await watchTask!.value
     }
 
-    /// The phone's session, or the watch's when the phone login failed (the agenda routes take either; reported,
-    /// and `iosPKCELoginLinksServer` fails on its own then).
-    func phoneOrWatch() async throws -> AccountSession {
+    /// The phone's session, or the watch's ONLY when the provider's login page is down (`LoginUnavailable`, helper
+    /// exit 3): the agenda routes take either app's token. Any other phone error fails the caller.
+    func phoneOrWatch() async throws -> (AccountSession, Link.Via) {
         do {
-            return try await phone().session
-        } catch {
-            AccountEnvironment.report("agenda: the phone login failed (\(error)); using the watch login")
-            return try await watch()
+            return (try await phone().session, .ios)
+        } catch is LoginUnavailable {
+            AccountEnvironment.report("fallback: agenda with the watch login (the provider's login page is unavailable)")
+            return (try await watch(), .watch)
         }
     }
 
     /// Links the server user to the account: `wristcall pair --user <user>` + the Cloud's token for this server
     /// → `POST /v1/account/link` → a personal token. Uses the phone's login, as the app does; when that login
-    /// fails, the watch's (the server cannot tell them apart), so the watch and push tests still run.
+    /// page is down (`LoginUnavailable` only), the watch's (the server cannot tell them apart), so the watch and push
+    /// tests still run. Any other phone error, and any error of the link itself, propagates.
     func link() async throws -> Link {
         if linkTask == nil {
             linkTask = Task {
+                let session: AccountSession
+                let via: Link.Via
                 do {
-                    let phone = try await self.phone()
-                    return Link(account: try await Self.link(phone.session), via: .ios)
-                } catch {
-                    AccountEnvironment.report("link: the phone login failed (\(error)); linking with the watch login")
-                    return Link(account: try await Self.link(try await self.watch()), via: .watch)
+                    session = try await self.phone().session
+                    via = .ios
+                } catch is LoginUnavailable {
+                    AccountEnvironment.report("fallback: link with the watch login (the provider's login page is unavailable)")
+                    session = try await self.watch()
+                    via = .watch
                 }
+                return Link(account: try await Self.link(session), via: via)
             }
         }
         return try await linkTask!.value
@@ -376,10 +403,33 @@ actor AccountWorld {
 
 // MARK: - Browser helper
 
+/// The helper's exit 3: the provider's login page itself is down (an outage, not a defect of the flow).
+struct LoginUnavailable: Error, CustomStringConvertible {
+    let mode: String
+    var description: String { "browser helper (\(mode)): the provider's login page is unavailable" }
+}
+
 /// Runs `WRISTCALL_TEST_BROWSER <mode> -` with the argument on standard input; returns its standard output.
-/// Its standard error (page paths only) goes to the test's.
+/// Its standard error (page paths only) goes to the test's. Killed after `timeout` (the helper has its own 90 s).
 enum Browser {
-    static func run(_ mode: String, input: String, expecting: String? = nil) async throws -> String {
+    static func run(
+        _ mode: String, input: String, expecting: String? = nil, timeout: Duration = .seconds(180)
+    ) async throws -> String {
+        try await withThrowingTaskGroup(of: String?.self) { group in
+            group.addTask { try await runOnce(mode, input: input, expecting: expecting) }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                return nil
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next(), let output = first else {
+                throw AccountEnvironment.Failure(description: "browser helper (\(mode)) timed out")
+            }
+            return output
+        }
+    }
+
+    private static func runOnce(_ mode: String, input: String, expecting: String?) async throws -> String {
         guard let command = AccountEnvironment.browser, !command.isEmpty else {
             throw AccountEnvironment.Failure(description: "WRISTCALL_TEST_BROWSER not set")
         }
@@ -401,7 +451,9 @@ enum Browser {
                     continuation.resume(throwing: error)
                     return
                 }
-                stdin.fileHandleForWriting.write(Data((input + "\n").utf8))
+                // A helper that exits before reading (bad command, 127) must not kill the test run with SIGPIPE.
+                signal(SIGPIPE, SIG_IGN)
+                try? stdin.fileHandleForWriting.write(contentsOf: Data((input + "\n").utf8))
                 try? stdin.fileHandleForWriting.close()
             }
         } onCancel: {
@@ -409,9 +461,9 @@ enum Browser {
         }
         let output = String(decoding: stdout.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        if status == 3 { throw LoginUnavailable(mode: mode) }
         guard status == 0 else {
-            let reason = status == 3 ? "the provider's login page is unavailable" : "exit \(status)"
-            throw AccountEnvironment.Failure(description: "browser helper (\(mode)) failed: \(reason)")
+            throw AccountEnvironment.Failure(description: "browser helper (\(mode)) failed: exit \(status)")
         }
         if let expecting, output != expecting {
             throw AccountEnvironment.Failure(description: "browser helper (\(mode)) printed something else than \(expecting)")
