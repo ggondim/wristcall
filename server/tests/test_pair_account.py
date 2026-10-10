@@ -378,3 +378,34 @@ def test_public_url_outside_audience_is_a_warning(router, caplog):
     with make_client(account_config("attestation", public_url="HTTPS://TestServer/")):
         pass
     assert "central_account.audience" not in caplog.text
+
+
+def test_pair_account_pending_sends_approval_push(router, issuer):
+    import json
+    import time
+
+    from wristcall.config import PushConfig
+
+    relay = router.post("https://relay.test/v1/push/send").mock(return_value=httpx.Response(202))
+    cfg = account_config("approval", pairing_approval="manual").model_copy(
+        update={"push": PushConfig(relay_url="https://relay.test", timeout_s=0.5)}
+    )
+    key = "wc_push_" + "p" * 43
+    with make_client(cfg) as client:
+        pat = api_token(client)
+        assert client.put("/v1/push", headers=h(pat), json={"push_key": key}).status_code == 204
+        # A request without a target (pairing_approval: manual) has nobody to notify.
+        assert client.post("/v1/pair", json={"device_name": "Anon"}).status_code == 202
+        body = pending_request(client, issuer, pat, "Wrist\x07")
+        deadline = time.monotonic() + 2
+        while not relay.called and time.monotonic() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.05)
+        assert relay.call_count == 1
+        req = relay.calls.last.request
+        assert req.headers["authorization"] == f"Bearer {key}"
+        assert json.loads(req.content) == {
+            "event": "device.approval", "title": "New device",
+            "body": '"Wrist" wants to use your account. Open the app to approve it.',
+            "data": {"request_id": body["request_id"], "device_name": "Wrist", "expires_at": body["expires_at"]},
+        }

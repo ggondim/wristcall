@@ -327,17 +327,22 @@ from wristcall.delivery import DeliveryPolicy  # noqa: E402
 HOOK_URL = "https://hooks.example/in"
 
 
-@pytest.fixture
-def oneway():
+RELAY = "https://relay.test"
+
+
+def oneway_client(push=None):
     cfg = fake_config()
     cfg.limits.custom_endpoint_types.append("fake_stt")
     cfg.limits.max_one_way_call_s = 60  # the lowest allowed
+    cfg.push = push
     app = create_app(cfg, storage=open_sqlite_storage(":memory:"), delivery_policy=DeliveryPolicy(1.0, (0.0, 0.0)))
     with respx.mock(assert_all_called=False) as mock:
         mock.route(host="testserver").pass_through()
         hook = mock.post(HOOK_URL).mock(return_value=httpx.Response(204))
+        relay = mock.post(f"{RELAY}/v1/push/send").mock(return_value=httpx.Response(202, json={"status": "sent"}))
         with TestClient(app) as c:
             c.hook = hook
+            c.relay = relay
             for slug, call_type in (("note", "one-shot"), ("ideas", "monologue")):
                 run(c.app.state.agents.create(owner(c).id, {
                     "slug": slug, "call_type": call_type,
@@ -346,6 +351,11 @@ def oneway():
                     "vad": {"type": "energy"},
                 }))
             yield c
+
+
+@pytest.fixture
+def oneway():
+    yield from oneway_client()
 
 
 def wait_done(client, call_id: str, headers: dict) -> dict:
@@ -576,3 +586,42 @@ def test_watch_0_1_0_calling_a_one_way_first_agent_records_and_ends_normally(one
         ws.send_bytes(tone(500) + silence(3000))
         ws.send_json({"type": "session.end"})
     assert wait_done(oneway, ready["call_id"], auth(token))["status"] == "delivered"
+
+
+def test_one_way_call_end_sends_push():
+    from wristcall.config import PushConfig
+
+    key = "wc_push_" + "k" * 43
+    for client in oneway_client(PushConfig(relay_url=RELAY, timeout_s=0.5)):
+        token = pair(client)
+        assert client.put("/v1/push", headers=auth(token), json={"push_key": key}).status_code == 204
+        with client.websocket_connect("/v1/call", headers=auth(token)) as ws:
+            ws.send_json({**START, "agent": "note"})
+            call_id = ws.receive_json()["call_id"]
+            ws.send_bytes(tone(500))
+            ws.send_json({"type": "session.end"})
+        view = wait_done(client, call_id, auth(token))
+        assert (view["status"], view["error"]) == ("delivered", None)
+        deadline = time.monotonic() + 2
+        while not client.relay.called and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert client.relay.call_count == 1
+        req = client.relay.calls.last.request
+        assert req.headers["authorization"] == f"Bearer {key}"
+        assert json.loads(req.content) == {
+            "event": "call.finished", "title": "Delivered", "body": "note got your message.",
+            "data": {"call_id": call_id, "status": "delivered", "error": None, "agent_id": view["agent_id"]},
+            "collapse_id": call_id,
+        }
+
+
+def test_one_way_call_end_without_push_config_sends_nothing(oneway):
+    token = pair(oneway)
+    with oneway.websocket_connect("/v1/call", headers=auth(token)) as ws:
+        ws.send_json({**START, "agent": "note"})
+        call_id = ws.receive_json()["call_id"]
+        ws.send_bytes(tone(500))
+        ws.send_json({"type": "session.end"})
+    assert wait_done(oneway, call_id, auth(token))["status"] == "delivered"
+    time.sleep(0.05)
+    assert not oneway.relay.called

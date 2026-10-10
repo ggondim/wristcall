@@ -82,7 +82,7 @@ def normalize_code(raw: str) -> str | None:
     return cleaned if re.fullmatch(r"[0-9]{8}", cleaned) else None
 
 
-def _clean_name(device_name: str) -> str:
+def clean_device_name(device_name: str) -> str:
     printable = "".join(ch for ch in device_name if ord(ch) >= 0x20 and ord(ch) != 0x7F)
     return printable.strip()[:64] or "watch"
 
@@ -125,7 +125,7 @@ class PairingService:
         await self._st.pairing.discard_code(code)
 
     async def pair(self, code: str | None, device_name: str) -> Paired | Pending:
-        name = _clean_name(device_name)
+        name = clean_device_name(device_name)
         now = self._now()
         normalized = normalize_code(code) if code else None
         if normalized is not None:
@@ -145,7 +145,7 @@ class PairingService:
         approval=False (attestation): the device is created right away. approval=True: a request aimed at the user,
         who approves or denies it; the watch polls it like a manual one. DeviceLimit is checked first either way.
         """
-        name = _clean_name(device_name)
+        name = clean_device_name(device_name)
         await self._check_device_limit(user_id)
         if not approval:
             return await self._create_device(user_id, name)

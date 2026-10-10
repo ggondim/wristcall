@@ -30,9 +30,9 @@ from .history import History, check_key
 from .history_api import calls_router
 from .history_codec import HistoryCodec
 from .oneway import Background, OneWayCall
-from .pairing import DeviceLimit, Paired, PairingDenied, PairingGone, PairingService
+from .pairing import DeviceLimit, Paired, PairingDenied, PairingGone, PairingService, Pending, clean_device_name
 from .providers import ProviderError, check_providers
-from .push import push_router
+from .push import PushNotifier, push_router
 from .ratelimit import RateLimiter
 from .redelivery import Redelivery
 from .session import CallSession
@@ -122,6 +122,8 @@ def create_app(
     targets = warmup_targets(config, http_client)
     call_targets = [t for t in targets if t.config.on_call]
     after_calls = Background()
+    # Pushes run with the work after the calls: the shutdown gives them the same few seconds, then cancels them.
+    notifier = PushNotifier(store, config.push, http_client) if config.push else None
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -162,7 +164,12 @@ def create_app(
     app.include_router(
         management_router(config, auth, agents, pairing_svc, account, limiter=limiter, client_ip=client_ip)
     )
-    app.include_router(push_router(store, auth, config))
+
+    async def discard_at_relay(key: str) -> None:
+        if notifier is not None:
+            after_calls.spawn(notifier.discard(key))
+
+    app.include_router(push_router(store, auth, config, on_discarded=discard_at_relay if notifier else None))
 
     redelivery = Redelivery(history, agents, config, http_client, policy=delivery_policy, background=after_calls)
     app.include_router(calls_router(auth, agents, history, redelivery.start))
@@ -198,6 +205,12 @@ def create_app(
             status_code=202,
         )
 
+    async def notify_approval(notifier: PushNotifier, user_id: str, pending: Pending, device_name: str) -> None:
+        try:
+            await notifier.approval_requested(user_id, pending.request_id, device_name, pending.expires_at)
+        except Exception as e:  # noqa: BLE001 - the request is stored; a push failure only logs
+            log.warning("pairing request %s: push failed: %s", pending.request_id, type(e).__name__)
+
     @app.post("/v1/pair/account")
     async def pair_account(body: PairAccountBody, request: Request) -> Any:
         # Public: the central account's access token in the body is the only proof (no Authorization header).
@@ -228,10 +241,13 @@ def create_app(
             log.info("device paired via account: %s", result.device_id)
             return {"device_id": result.device_id, "token": result.token}
         log.info("pairing request for user %s", user.id)
-        return JSONResponse(
+        response = JSONResponse(
             {"request_id": result.request_id, "poll_token": result.poll_token, "expires_at": result.expires_at},
             status_code=202,
         )
+        if notifier is not None:  # in the background: the 202 does not wait for the relay
+            after_calls.spawn(notify_approval(notifier, user.id, result, clean_device_name(body.device_name)))
+        return response
 
     @app.post("/v1/pair/poll")
     async def poll(body: PollBody) -> Any:
@@ -309,6 +325,15 @@ def create_app(
             else:
                 await transport.send_json(protocol.error(protocol.ErrorCode.BAD_MESSAGE, "session already started", False))
 
+    async def finish_and_notify(call: OneWayCall) -> None:
+        record = await call.finish()
+        if notifier is None:
+            return
+        try:
+            await notifier.call_finished(record)
+        except Exception as e:  # noqa: BLE001 - the call is already in the history; a push failure only logs
+            log.warning("call %s: push failed: %s", record.id, type(e).__name__)
+
     async def one_way_call(ws: WebSocket, device_id: str, agent: Agent, providers: OneWayProviders) -> None:
         """Records until hang-up (or the limit); transcription and delivery go on after the WebSocket closes."""
         # Before the record exists: a VAD that fails to load must not leave a call stuck in "recording".
@@ -344,7 +369,7 @@ def create_app(
         finally:
             if warming is not None and not warming.done():
                 warming.cancel()
-            after_calls.spawn(call.finish())
+            after_calls.spawn(finish_and_notify(call))
             with suppress(Exception):
                 await ws.close(code=protocol.CLOSE_NORMAL)
             log.info("call %s recorded", record.id)
