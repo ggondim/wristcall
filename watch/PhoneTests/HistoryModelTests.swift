@@ -272,8 +272,9 @@ struct HistoryModelTests {
         #expect(a.deleteAllRequests == ["notes"])
         #expect(b.deleteAllRequests.isEmpty)
         #expect(model.notice == "Deleted 2 calls.")
-        // The list is read again for the filter that is on.
-        #expect(a.queries.count >= 2)
+        // The list is read again, from its first page, for the filter that is on.
+        #expect(a.queries.count == 2)
+        #expect(a.queries.last?.before == nil)
     }
 
     @Test func deleteAllOfAServerHasNoAgent() async {
@@ -463,5 +464,98 @@ extension HistoryModelTests {
         #expect(model.filter.until == nil)
         model.setPeriod(.anytime, now: now)
         #expect(model.filter.since == nil)
+    }
+}
+
+// MARK: Answers that arrive late
+
+extension HistoryModelTests {
+    @Test func staleReloadIsDiscarded() async {
+        let a = FakeServerAPI()
+        a.respond = { $0.text == "old" ? CallPage(calls: [.sample(id: "old1")]) : CallPage(calls: [.sample(id: "new1")]) }
+        let slow = Gate()
+        a.hold = { $0.text == "old" ? slow : nil }
+        let model = await model([(home, a)])
+
+        model.filter.text = "old"
+        let first = Task { await model.reload() }
+        #expect(await slow.reached())
+        model.filter.text = "new"
+        await model.reload()
+        #expect(model.items.map(\.call.id) == ["new1"])
+        #expect(!model.isLoading)
+
+        await slow.open()
+        await first.value
+        #expect(model.items.map(\.call.id) == ["new1"])
+        #expect(model.failures.isEmpty)
+        #expect(!model.isLoading)
+    }
+
+    @Test func reloadCommittingDuringLoadMoreDropsTheLoadMore() async {
+        let a = FakeServerAPI()
+        a.respond = { query in
+            switch (query.text, query.before) {
+            case ("x", _): CallPage(calls: [.sample(id: "x1")])
+            case (_, nil): CallPage(calls: [.sample(id: "a1", at: 300)], nextBefore: "300:a1")
+            default: CallPage(calls: [.sample(id: "a2", at: 100)], nextBefore: "100:a2")
+            }
+        }
+        let slow = Gate()
+        a.hold = { $0.before != nil ? slow : nil }
+        let model = await model([(home, a)])
+        await model.reload()
+        #expect(model.canLoadMore)
+
+        let more = Task { await model.loadMore() }
+        #expect(await slow.reached())
+        model.filter.text = "x"
+        await model.reload()
+        #expect(model.items.map(\.call.id) == ["x1"])
+        #expect(!model.canLoadMore)
+
+        await slow.open()
+        await more.value
+        #expect(model.items.map(\.call.id) == ["x1"])
+        #expect(!model.canLoadMore)
+        #expect(!model.isLoadingMore)
+    }
+
+    @Test func loadMoreStartedDuringReloadIsIgnored() async {
+        let a = FakeServerAPI()
+        a.respond = { query in
+            switch (query.text, query.before) {
+            case ("y", _): CallPage(calls: [.sample(id: "y1")])
+            case (_, nil): CallPage(calls: [.sample(id: "a1", at: 300)], nextBefore: "300:a1")
+            default: CallPage(calls: [.sample(id: "a2", at: 100)])
+            }
+        }
+        let slow = Gate()
+        a.hold = { $0.text == "y" ? slow : nil }
+        let model = await model([(home, a)])
+        await model.reload()
+
+        model.filter.text = "y"
+        let reload = Task { await model.reload() }
+        #expect(await slow.reached())
+        #expect(model.isLoading)
+        await model.loadMore()
+        #expect(a.queries.allSatisfy { $0.before == nil })
+
+        await slow.open()
+        await reload.value
+        #expect(model.items.map(\.call.id) == ["y1"])
+        #expect(!model.canLoadMore)
+    }
+
+    @Test func removedServerClearsTheFilter() async {
+        let (a, b) = twoServers()
+        let model = await model([(home, a), (lab, b)])
+        model.selectServer("gone")
+        model.filter.agentID = "notes"
+        await model.reload()
+        #expect(model.filter.serverID == nil)
+        #expect(model.filter.agentID == nil)
+        #expect(model.items.map(\.call.id) == ["a1", "b1", "a2"])
     }
 }

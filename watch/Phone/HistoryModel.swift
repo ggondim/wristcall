@@ -102,11 +102,14 @@ final class HistoryModel {
 
     /// First page of every server the filter covers, in parallel.
     func reload() async {
+        // Bumping here invalidates every answer still in flight, load more included.
         generation += 1
         let mine = generation
         isLoading = true
         defer { if generation == mine { isLoading = false } }
 
+        // A server that was removed cannot stay chosen.
+        if let chosen = filter.serverID, !state.servers.contains(where: { $0.id == chosen }) { selectServer(nil) }
         let filter = filter
         let servers = servers(for: filter)
         let results = await Self.fetch(servers.map { ($0.id, state.api(for: $0), query(filter, before: nil)) })
@@ -142,7 +145,8 @@ final class HistoryModel {
 
     /// The next page of every server that still has one, joined into the list.
     func loadMore() async {
-        guard !isLoadingMore, let loaded = loadedFilter else { return }
+        // While a reload runs, the cursors and the filter on hand are about to be replaced.
+        guard !isLoadingMore, !isLoading, let loaded = loadedFilter else { return }
         let mine = generation
         let ids = cursors.keys.sorted()
         let jobs = ids.compactMap { id -> (String, any ServerAPI, HistoryQuery)? in

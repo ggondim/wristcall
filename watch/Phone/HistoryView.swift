@@ -9,7 +9,8 @@ struct HistoryView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            HistoryContent(model: model, serverIDs: state.servers.map(\.id), showsServer: state.servers.count > 1)
+            HistoryContent(model: model, serverIDs: state.servers.map(\.id), showsServer: state.servers.count > 1,
+                           listIsVisible: path.isEmpty)
                 .navigationTitle("History")
                 .navigationDestination(for: String.self) { id in
                     CallDetailView(itemID: id)
@@ -39,6 +40,8 @@ private struct HistoryContent: View {
     @Bindable var model: HistoryModel
     let serverIDs: [String]
     let showsServer: Bool
+    /// `false` while a call is open: its screen shows the errors then, not this one.
+    let listIsVisible: Bool
     @Environment(AppState.self) private var state
     @State private var lastSearched = ""
     @State private var loaded = false
@@ -65,7 +68,7 @@ private struct HistoryContent: View {
                         if model.isLoadingMore { Spacer(); ProgressView() }
                     }
                 }
-                .disabled(model.isLoadingMore)
+                .disabled(model.isLoading || model.isLoadingMore)
             }
         }
         .overlay { emptyState }
@@ -98,7 +101,7 @@ private struct HistoryContent: View {
             Text("Every call of \(model.filter.agentID == nil ? "this server" : "this agent") is deleted, not only the ones the search or period shows. This can't be undone.")
         }
         .alert("History", isPresented: Binding(
-            get: { model.error != nil || model.notice != nil },
+            get: { listIsVisible && (model.error != nil || model.notice != nil) },
             set: { if !$0 { model.error = nil; model.notice = nil } }
         )) {
             Button("OK") { model.error = nil; model.notice = nil }

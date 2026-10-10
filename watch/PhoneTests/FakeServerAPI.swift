@@ -172,9 +172,21 @@ final class FakeServerAPI: ServerAPI, @unchecked Sendable {
 
     init(pages: [CallPage] = []) { self.pages = pages }
 
+    /// Overrides `pages` for a query (tests that need different answers for different searches).
+    var respond: (@Sendable (HistoryQuery) -> CallPage)?
+    /// Holds the answer to a query until the returned gate opens: the answer is computed first, so it can
+    /// arrive after a newer one (a slow network).
+    var hold: (@Sendable (HistoryQuery) -> Gate?)?
+
     func calls(_ query: HistoryQuery) async throws -> CallPage {
         queries.append(query)
         if let callsError { throw callsError }
+        let page = respond?(query) ?? pageFromPages(query)
+        if let gate = hold?(query) { await gate.wait() }
+        return page
+    }
+
+    private func pageFromPages(_ query: HistoryQuery) -> CallPage {
         guard let before = query.before else { return pages.first ?? CallPage(calls: []) }
         guard let index = pages.firstIndex(where: { $0.nextBefore == before }), pages.indices.contains(index + 1)
         else { return CallPage(calls: []) }
@@ -224,4 +236,32 @@ final class FakeServerAPI: ServerAPI, @unchecked Sendable {
         pushKeys = []
     }
     func linkAccount(accountToken: String) async throws -> AccountLink { throw APIError.notFound }
+}
+
+/// A door a fake answer waits at until the test opens it; `reached()` says an answer is waiting.
+actor Gate {
+    private var isOpen = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private var arrived = 0
+
+    func wait() async {
+        arrived += 1
+        if isOpen { return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiting.forEach { $0.resume() }
+        waiting = []
+    }
+
+    /// Returns once an answer is held at the gate (gives up after 5 s so a broken test fails, not hangs).
+    func reached() async -> Bool {
+        for _ in 0..<1000 {
+            if arrived > 0 { return true }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return false
+    }
 }
