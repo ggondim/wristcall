@@ -115,10 +115,17 @@ def busy(page) -> bool:
     """True while a form is submitting: login v2 disables its submit button until the server action answers.
     A disabled button over an empty field only means "type something" (v2 does that too), so it is not busy."""
     target = visible(page, "button[type=submit]:not([name=skip])")
-    return target is not None and target.evaluate(
-        "b => b.disabled && !!b.form && [...b.form.querySelectorAll('input')]"
-        ".filter(i => i.type !== 'hidden' && i.offsetParent !== null).every(i => i.value)"
-    )
+    if target is None:
+        return False
+    try:
+        return target.evaluate(
+            "b => b.disabled && !!b.form && [...b.form.querySelectorAll('input')]"
+            ".filter(i => i.type !== 'hidden' && i.offsetParent !== null)"
+            ".every(i => (i.type === 'checkbox' || i.type === 'radio') ? i.checked : !!i.value)",
+            timeout=2_000,
+        )
+    except Exception:  # noqa: BLE001 - the page changed under us; the next round looks again
+        return False
 
 
 def fill_secret(field, secret: str) -> None:
@@ -214,6 +221,9 @@ def run(mode: str, argument: str) -> str:
                     raise Stop(4, "the device request was denied")
 
                 if busy(page):
+                    # The answer window counts from when the form goes idle, not from the submit.
+                    sent_user = sent_user and now
+                    sent_password = sent_password and now
                     page.wait_for_timeout(500)  # not time.sleep: Playwright delivers events (the callback) only here
                     continue
 
