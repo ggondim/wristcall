@@ -130,8 +130,11 @@ test("account: sign in, link, agenda, approval, sign out, delete", async ({ page
   await test.step("sign out", async () => {
     await page.goto("/settings")
     await expect(page.getByText("Signed in", { exact: true })).toBeVisible()
+    // The sign-out must reach the provider: the page asks Zitadel's end_session endpoint.
+    const endSession = page.waitForRequest((r) => new URL(r.url()).pathname === "/oidc/v1/end_session", { timeout: 60_000 })
     await page.getByRole("button", { name: "Sign out" }).click()
-    // end_session at Zitadel, then back to the site's start page.
+    expect((await endSession).method(), "the end_session request fired").toBe("GET")
+    // Then back to the site's start page.
     await page.waitForURL(`${ORIGIN}/`, { timeout: 60_000 })
     await page.goto("/settings")
     await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible()
@@ -151,6 +154,7 @@ test("account: sign in, link, agenda, approval, sign out, delete", async ({ page
     await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible()
     // The agenda is gone with the account: the old token still names it, and the Cloud answers with an empty one.
     const after = await request.get(`${env.cloud}/v1/servers`, { headers: bearer(token) })
-    if (after.status() === 200) expect((await after.json()).servers).toEqual([])
+    expect([200, 401, 404], "GET /v1/servers after the deletion").toContain(after.status())
+    if (after.status() === 200) expect(((await after.json()) as { servers: unknown[] }).servers).toEqual([])
   })
 })

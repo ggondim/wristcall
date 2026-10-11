@@ -8,6 +8,9 @@ const skip = serverSkipReason(env)
 
 test.skip(skip !== null, skip ?? "")
 
+// The worker is blocked so that the route on config.json below keeps applying to every request.
+test.use({ serviceWorkers: "block" })
+
 test("manage a server with a personal token", async ({ page }) => {
   // The built site is served with the Cloud address of the other specs; this one runs as a site without accounts.
   await page.route("**/config.json", (route) => route.fulfill({ json: { cloudUrl: "" } }))
@@ -71,6 +74,8 @@ test("manage a server with a personal token", async ({ page }) => {
   await test.step("open the history", async () => {
     await page.getByRole("link", { name: "History" }).click()
     await expect(page.getByRole("heading", { name: "History" })).toBeVisible()
+    // Either the calls or the empty state, never a blank screen.
+    await expect(page.getByRole("list", { name: "Calls" }).or(page.getByRole("heading", { name: "No history yet" }))).toBeVisible()
   })
 
   await test.step("remove the server", async () => {
