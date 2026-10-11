@@ -67,6 +67,15 @@ describe("parsePush", () => {
     expect([long.title.length, long.subtitle.length, long.body.length]).toEqual([100, 64, 300])
   })
 
+  test("expiry is a whole number of seconds", () => {
+    const fractional = parsePush(JSON.stringify({ ...approval, data: { ...approval.data, expires_at: 1_800_000_300.789 } }))!
+    expect(fractional.expiresAt).toBe(1_800_000_300)
+    expect(clickTarget(notificationFor(fractional).options.data)).toBe("/approvals?server=srv-1&request=0423&expires=1800000300")
+    // A value past the safe range would print in exponent form.
+    expect(parsePush(JSON.stringify({ ...approval, data: { ...approval.data, expires_at: 1e300 } }))).toBeNull()
+    expect(clickTarget({ tag: "srv-1", requestId: "0423", expiresAt: 5.9 })).toBe("/approvals?server=srv-1&request=0423&expires=5")
+  })
+
   test("expiry is always in seconds", () => {
     const millis = parsePush(JSON.stringify({ ...approval, data: { ...approval.data, expires_at: 1_800_000_300_000 } }))!
     expect(millis.expiresAt).toBe(1_800_000_300)
@@ -130,6 +139,7 @@ describe("parseWorkerMessage", () => {
     expect(parseWorkerMessage({ kind: "open", target: "/approvals" })).toEqual({ kind: "open", target: "/approvals" })
     const full = "/approvals?server=srv-1&request=0423&expires=5"
     expect(parseWorkerMessage({ kind: "open", target: full })).toEqual({ kind: "open", target: full })
+    expect(parseWorkerMessage({ kind: "open", target: full + ".5" })).toBeNull()
   })
 
   test("a target that is not an approvals address is dropped", () => {

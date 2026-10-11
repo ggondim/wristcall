@@ -111,12 +111,20 @@ describe("subscription", () => {
 
   test("subscribedWith compares the key bytes", () => {
     expect(subscribedWith(fakeSubscription(vapid()), vapid())).toBe(true)
-    expect(subscribedWith(fakeSubscription(vapid()), vapid(4, 64))).toBe(false)
+    expect(subscribedWith(fakeSubscription(vapid()), vapid(4, 64))).toBe(true) // the Cloud's key is unusable: nothing to compare
     const other = new Uint8Array(65).fill(9)
     other[0] = 4
     const otherKey = btoa(String.fromCharCode(...other)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
     expect(subscribedWith(fakeSubscription(vapid()), otherKey)).toBe(false)
-    expect(subscribedWith(fakeSubscription(null), vapid())).toBe(false)
+    // A browser that does not report the key (Safari, some versions) keeps its subscription.
+    expect(subscribedWith(fakeSubscription(null), vapid())).toBe(true)
+    expect(subscribedWith({ endpoint: "x" } as unknown as PushSubscription, vapid())).toBe(true)
+  })
+
+  test("currentSubscription keeps a subscription whose key the browser does not report", async () => {
+    const unknown = fakeSubscription(null)
+    expect(await currentSubscription({ pushManager: { getSubscription: async () => unknown } } as unknown as ServiceWorkerRegistration, vapid())).toBe(unknown)
+    expect(unknown.unsubscribe).not.toHaveBeenCalled()
   })
 
   test("currentSubscription keeps one for the Cloud's key and drops one for another", async () => {

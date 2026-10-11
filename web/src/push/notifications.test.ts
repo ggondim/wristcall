@@ -136,7 +136,7 @@ describe("NotificationsModel", () => {
   test("overlapping refreshes end with one more run", async () => {
     const { model, syncAll } = setup()
     await Promise.all([model.refresh(), model.refresh(), model.refresh()])
-    expect(syncAll.mock.calls.length).toBeLessThanOrEqual(2)
-    expect(syncAll.mock.calls.length).toBeGreaterThanOrEqual(1)
+    // The first run, plus one more for the calls that came in while it ran.
+    expect(syncAll).toHaveBeenCalledTimes(2)
   })
 })

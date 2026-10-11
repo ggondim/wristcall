@@ -249,6 +249,24 @@ describe("PushSync.forget", () => {
 })
 
 describe("PushSync.accountDeleted", () => {
+  test("servers that hang are forgotten at the same time", async () => {
+    await store.put(server({ id: "a", pushKey: "wc_push_a", pushEndpoint: "e" }))
+    await store.put(server({ id: "b", addedAt: 2, pushKey: "wc_push_b", pushEndpoint: "e" }))
+    let started = 0
+    const release: Array<() => void> = []
+    const hang = (): Promise<void> => {
+      started++
+      return new Promise((resolve) => release.push(resolve))
+    }
+    const hanging = { clearPushKey: hang } as unknown as ServerClient
+    const all = new PushSync(store, relay, () => hanging, CLOUD)
+    const done = all.accountDeleted()
+    await vi.waitFor(() => expect(started).toBe(2)) // both started before either finished
+    release.forEach((resolve) => resolve())
+    await done
+    expect((await store.list()).map((s) => s.pushKey)).toEqual([null, null])
+  })
+
   test("every key is undone, and nothing is registered again", async () => {
     await store.put(server({ id: "a", pushKey: "wc_push_a", pushEndpoint: "https://fcm.googleapis.com/a" }))
     await store.put(server({ id: "b", addedAt: 2, pushKey: "wc_push_b", pushEndpoint: "https://fcm.googleapis.com/a" }))

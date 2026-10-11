@@ -196,6 +196,8 @@ describe("service worker", () => {
     expect([...devCaches.stores.keys()]).toEqual(["wristcall-shell-dev"])
     expect([...devCaches.stores.get("wristcall-shell-dev")!.entries.keys()].sort()).toEqual(["/", "/index.html", "/manifest.webmanifest"])
   })
+})
+
 describe("service worker push", () => {
   const approval = JSON.stringify({
     v: 1,
@@ -317,5 +319,4 @@ describe("service worker push", () => {
     expect(postMessage).not.toHaveBeenCalled()
     expect(openWindow).toHaveBeenCalledWith("/approvals")
   })
-})
 })

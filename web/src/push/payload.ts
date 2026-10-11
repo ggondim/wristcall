@@ -40,10 +40,12 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-/** Unix seconds from a finite, non-negative number; a milliseconds value is brought down to seconds. */
+/** Whole Unix seconds from a finite, non-negative number (a fraction is dropped; milliseconds are brought down). */
 function seconds(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return null
-  return value > MILLISECONDS ? Math.floor(value / 1000) : value
+  const whole = Math.floor(value > MILLISECONDS ? value / 1000 : value)
+  // Beyond the safe range a number prints in exponent form, which the app's address check would refuse.
+  return Number.isSafeInteger(whole) ? whole : null
 }
 
 /**
@@ -110,7 +112,7 @@ export function clickTarget(data: unknown): string {
   return `${APPROVALS}?server=${encodeURIComponent(tag)}&request=${requestId}&expires=${expiresAt}`
 }
 
-const OPEN_TARGET = /^\/approvals(\?server=[A-Za-z0-9_.:%-]{1,200}&request=[0-9]{4}&expires=[0-9]+(\.[0-9]+)?)?$/
+const OPEN_TARGET = /^\/approvals(\?server=[A-Za-z0-9_.:%-]{1,200}&request=[0-9]{4}&expires=[0-9]+)?$/
 
 /** A message from the worker, or `null` for anything else (a window only does what the worker may ask). */
 export function parseWorkerMessage(data: unknown): WorkerMessage | null {

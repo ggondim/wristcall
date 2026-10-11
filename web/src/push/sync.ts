@@ -74,7 +74,8 @@ export class PushSync {
       } catch {
         return
       }
-      for (const server of servers) await this.#forget(server, false)
+      // In parallel: servers that hang must not add their waits up while "Delete account" is busy.
+      await Promise.allSettled(servers.map((server) => this.#forget(server, false)))
     })
   }
 

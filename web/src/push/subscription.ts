@@ -61,15 +61,18 @@ export function base64UrlToBytes(value: string): Uint8Array<ArrayBuffer> {
   return bytes
 }
 
-/** Whether a subscription was made with this VAPID key (a Cloud that changed its key leaves old ones dead). */
+/**
+ * Whether a subscription may be kept for this VAPID key. It is dropped only when its key is known and differs (a Cloud
+ * that changed its key leaves old ones dead); a browser that does not report the key gets the benefit of the doubt.
+ */
 export function subscribedWith(subscription: PushSubscription, vapidPublicKey: string): boolean {
   const used = subscription.options?.applicationServerKey
-  if (used === null || used === undefined) return false
+  if (used === null || used === undefined) return true
   let wanted: Uint8Array
   try {
     wanted = base64UrlToBytes(vapidPublicKey)
   } catch {
-    return false
+    return true // Nothing to compare with: leave the subscription alone.
   }
   const have = new Uint8Array(used)
   return have.length === wanted.length && have.every((byte, index) => byte === wanted[index])
