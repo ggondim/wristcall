@@ -2,6 +2,7 @@ import type { AgentDetail } from "../api/server"
 import type { AccountModel } from "../models/account"
 import { AddServerModel } from "../models/addServer"
 import { ApprovalsModel } from "../models/approvals"
+import { HistoryModel } from "../models/history"
 import type { AccountLink, ServersModel } from "../models/servers"
 import type { NotificationsModel } from "../push/notifications"
 import { SettingsView } from "./AccountView"
@@ -10,10 +11,12 @@ import { AgentsScreen } from "./AgentsView"
 import { ApproveWatchSignInView } from "./ApproveWatchSignInView"
 import { ApprovalsView } from "./ApprovalsView"
 import { CallbackView } from "./CallbackView"
+import { CallDetailView } from "./CallDetailView"
 import { DevicesScreen } from "./DevicesView"
+import { HistoryView } from "./HistoryView"
 import { ServerDetailView } from "./ServerDetailView"
 import { ServersView } from "./ServersView"
-import { onNavigate, parseAgentsTarget, parseApprovalTarget, parseDevicesTarget, parseRoute, type Route } from "./route"
+import { onNavigate, parseAgentsTarget, parseApprovalTarget, parseDevicesTarget, parseHistoryTarget, parseRoute, type Route } from "./route"
 import { Tabs } from "./Tabs"
 import { useEffect, useMemo, useState } from "preact/hooks"
 import type { Model } from "./useModel"
@@ -36,26 +39,11 @@ export interface AppProps {
   onAgentsChanged?: (serverId: string, agents: AgentDetail[]) => void
 }
 
-function titleOf(route: Route): string {
-  switch (route.tab) {
-    case "servers":
-      return "Servers"
-    case "approvals":
-      return "Approvals"
-    case "history":
-      return "History"
-    case "settings":
-      return "Settings"
-    case "callback":
-      return "Signing in"
-  }
-}
-
-// The screens arrive with their own tasks; each route renders its title until then.
 function Screen({
   route,
   servers,
   approvals,
+  history,
   session,
   account,
   notifications,
@@ -64,6 +52,7 @@ function Screen({
   route: Route
   servers: ServersModel
   approvals: ApprovalsModel
+  history: HistoryModel
   session: AccountLink | null
   account: AccountModel | null
   notifications: NotificationsModel | null
@@ -80,16 +69,13 @@ function Screen({
     return <ServerDetailView model={servers} id={decodeId(route.path.slice("/servers/".length))} account={session} />
   }
   if (route.tab === "approvals") return <ApprovalsView model={approvals} />
-  if (route.tab === "callback") return <CallbackView model={account} />
-  if (route.tab === "settings") {
-    if (route.path === "/settings/watch" && account !== null) return <ApproveWatchSignInView model={account} />
-    return <SettingsView account={account} notifications={notifications} />
+  if (route.tab === "history") {
+    const call = parseHistoryTarget(route.path)
+    return call === null ? <HistoryView model={history} servers={servers} /> : <CallDetailView model={history} target={call} />
   }
-  return (
-    <main class="screen">
-      <h1>{titleOf(route)}</h1>
-    </main>
-  )
+  if (route.tab === "callback") return <CallbackView model={account} />
+  if (route.path === "/settings/watch" && account !== null) return <ApproveWatchSignInView model={account} />
+  return <SettingsView account={account} notifications={notifications} />
 }
 
 function decodeId(segment: string): string {
@@ -114,6 +100,7 @@ export function App({ badge, approvals: given, servers, session = null, account 
     return off
   }, [])
   const approvals = useMemo(() => given ?? new ApprovalsModel(servers), [given, servers])
+  const historyModel = useMemo(() => new HistoryModel(servers), [servers])
   // A notification opens `/approvals?server=&request=&expires=`: the model checks the request and highlights it.
   useEffect(() => {
     if (route.tab !== "approvals") return
@@ -125,7 +112,7 @@ export function App({ badge, approvals: given, servers, session = null, account 
   }, [route, search, approvals])
   return (
     <>
-      <Screen route={route} servers={servers} approvals={approvals} session={session} account={account} notifications={notifications} onAgentsChanged={onAgentsChanged} />
+      <Screen route={route} servers={servers} approvals={approvals} history={historyModel} session={session} account={account} notifications={notifications} onAgentsChanged={onAgentsChanged} />
       {route.tab === "callback" ? null : <Tabs route={route} badge={badge} />}
     </>
   )

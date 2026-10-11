@@ -39,9 +39,36 @@ export interface ApprovalRequest {
   device_name: string
   expires_at: number
 }
+export interface CallEntry {
+  role: "user" | "agent" | string
+  text?: string | null
+  /** Why the text is missing or partial: `stt_failed`, `responder_failed`, `tts_failed`, `unreadable`. */
+  error?: string | null
+  at?: number
+}
+
+export interface CallAgent {
+  id: string
+  slug: string
+  display_name: string
+}
+
 export interface CallRecord {
   id: string
   status: string
+  agent_id?: string | null
+  /** `conversation`, `one-shot` or `monologue`. */
+  call_type?: string
+  error?: string | null
+  text?: string | null
+  attempts?: number
+  last_http_status?: number | null
+  /** Unix seconds. */
+  created_at?: number
+  /** Unix seconds; null keeps the call until the user deletes it. */
+  expires_at?: number | null
+  agent?: CallAgent | null
+  entries?: CallEntry[]
   [field: string]: unknown
 }
 export interface CallsPage {
@@ -176,6 +203,21 @@ export class ServerClient {
 
   async deleteCall(id: string): Promise<void> {
     await this.#send(`calls/${segment(id)}`, "DELETE", undefined, undefined, HISTORY_TIMEOUT_MS)
+  }
+
+  /** `DELETE /v1/calls?agent=` or `?all=true`; the number of calls deleted. A blank agent is refused here (it would read as "all"). */
+  async deleteCalls(q: { agent: string } | { all: true }): Promise<number> {
+    const params = new URLSearchParams()
+    if ("all" in q) {
+      params.set("all", "true")
+    } else {
+      const agent = q.agent.trim()
+      if (agent === "") throw new Error("Choose an agent.")
+      params.set("agent", agent)
+    }
+    const reply = await this.#send<{ deleted?: unknown }>("calls", "DELETE", undefined, params, HISTORY_TIMEOUT_MS)
+    const deleted = reply?.deleted
+    return typeof deleted === "number" && Number.isFinite(deleted) ? deleted : 0
   }
 
   async redeliver(id: string): Promise<CallRecord> {

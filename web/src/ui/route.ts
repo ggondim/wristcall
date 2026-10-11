@@ -23,6 +23,8 @@ export function parseRoute(pathname: string): Route {
   if (head === "servers" && id && rest[0] === "devices" && (rest.length === 1 || (rest.length === 2 && rest[1] === "code"))) {
     return { tab: "servers", path: `/servers/${parts.slice(1).join("/")}` }
   }
+  // /history/:server/:call
+  if (head === "history" && id && rest.length === 1 && rest[0] !== "") return { tab: "history", path: `/history/${id}/${rest[0]}` }
   if (rest.length > 0) return FALLBACK
   switch (path) {
     case "/":
@@ -125,4 +127,21 @@ export function parseApprovalTarget(search: string): ApprovalTarget | null {
   const raw = params.get("expires")
   const expires = raw === null || raw.trim() === "" ? null : Number(raw)
   return { serverId, requestId, expiresAt: expires !== null && Number.isFinite(expires) ? expires : null }
+}
+
+/** The call a history detail path names. Ids are decoded. */
+export interface HistoryTarget {
+  serverId: string
+  callId: string
+}
+
+export function historyPath(serverId: string, callId: string): string {
+  return `/history/${encodeURIComponent(serverId)}/${encodeURIComponent(callId)}`
+}
+
+/** The detail screen `/history/<server>/<call>` names, or null for the list and anything else. */
+export function parseHistoryTarget(path: string): HistoryTarget | null {
+  const [head, server, call, ...rest] = path.split("/").slice(1)
+  if (head !== "history" || !server || !call || rest.length > 0) return null
+  return { serverId: decoded(server), callId: decoded(call) }
 }

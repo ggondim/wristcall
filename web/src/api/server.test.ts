@@ -138,6 +138,24 @@ describe("ServerClient", () => {
     expect(q).toBe("😀".repeat(500))
   })
 
+  test("deleteCallsSendsAgentOrAll", async () => {
+    const fetchMock = mockFetch(() => ok({ deleted: 3 }))
+    const client = new ServerClient(BASE, "wc_pat_x", fetchMock)
+    expect(await client.deleteCalls({ agent: " notes " })).toBe(3)
+    expect(fetchMock.lastInit().method).toBe("DELETE")
+    let url = new URL(fetchMock.lastUrl())
+    expect([url.pathname, url.searchParams.get("agent"), url.searchParams.has("all")]).toEqual(["/v1/calls", "notes", false])
+    expect(await client.deleteCalls({ all: true })).toBe(3)
+    url = new URL(fetchMock.lastUrl())
+    expect([url.searchParams.get("all"), url.searchParams.has("agent")]).toEqual(["true", false])
+  })
+
+  test("deleteCallsRefusesBlankAgentWithoutCalling", async () => {
+    const fetchMock = mockFetch(() => ok({ deleted: 9 }))
+    await expect(new ServerClient(BASE, "wc_pat_x", fetchMock).deleteCalls({ agent: "  " })).rejects.toThrow("Choose an agent.")
+    expect(fetchMock.calls).toHaveLength(0)
+  })
+
   test("exportReadsFilename", async () => {
     const withHeader = mockFetch(
       () => new Response("# calls", { headers: { "Content-Disposition": 'attachment; filename="wristcall-calls.md"' } }),
