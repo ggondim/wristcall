@@ -20,13 +20,16 @@ export interface AgentsState {
 /** The agents of one server: what the list shows, and what changes it. */
 export class AgentsModel extends BaseModel<AgentsState> {
   readonly #client: ServerClient
-  readonly #listeners = new Set<(agents: AgentDetail[]) => void>()
+  readonly #serverId: string
+  readonly #listeners = new Set<(serverId: string, agents: AgentDetail[]) => void>()
   /** A later `load` wins over an earlier one that answers after it. */
   #loads = 0
 
-  constructor(client: ServerClient) {
+  /** `serverId` is the saved server's local id: the agenda mirror files the agents under it. */
+  constructor(client: ServerClient, serverId: string) {
     super({ agents: [], providers: [], customEndpoints: false, error: null, loaded: false, providersLoaded: false })
     this.#client = client
+    this.#serverId = serverId
   }
 
   /** Reads agents (in server order) and providers. A failure keeps what was on screen and sets `error`. */
@@ -97,7 +100,7 @@ export class AgentsModel extends BaseModel<AgentsState> {
   }
 
   /** Calls `listener` with the list each time it was read or changed. The agenda sync hangs here. Returns the unsubscribe. */
-  onAgentsChanged(listener: (agents: AgentDetail[]) => void): () => void {
+  onAgentsChanged(listener: (serverId: string, agents: AgentDetail[]) => void): () => void {
     this.#listeners.add(listener)
     return () => {
       this.#listeners.delete(listener)
@@ -113,7 +116,7 @@ export class AgentsModel extends BaseModel<AgentsState> {
   #emit(): void {
     for (const listener of [...this.#listeners]) {
       try {
-        listener(this.state.agents)
+        listener(this.#serverId, this.state.agents)
       } catch {
         // One listener's failure reaches neither the others nor the screen.
       }

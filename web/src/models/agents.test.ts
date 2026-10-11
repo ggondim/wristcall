@@ -65,7 +65,7 @@ const sent = (fetchMock: MockFetch, method: string) => fetchMock.calls.filter((c
 describe("AgentsModel", () => {
   test("loadSortsByPositionAndReadsProviders", async () => {
     const fetchMock = fakeServer([agent({ id: "ag_b", position: 1 }), agent({ id: "ag_a", position: 0 })])
-    const model = new AgentsModel(client(fetchMock))
+    const model = new AgentsModel(client(fetchMock), "home")
     await model.load()
     expect(model.state.agents.map((a) => a.id)).toEqual(["ag_a", "ag_b"])
     expect(model.state.providers).toEqual(PROVIDERS)
@@ -76,7 +76,7 @@ describe("AgentsModel", () => {
 
   test("moveSendsOnePatch", async () => {
     const fetchMock = fakeServer([agent({ id: "ag_a" }), agent({ id: "ag_b", position: 1 }), agent({ id: "ag_c", position: 2 })])
-    const model = new AgentsModel(client(fetchMock))
+    const model = new AgentsModel(client(fetchMock), "home")
     await model.load()
     await model.move("ag_c", -1)
     const patches = sent(fetchMock, "PATCH")
@@ -94,7 +94,7 @@ describe("AgentsModel", () => {
   test("moveReloadsAndShowsTheErrorWhenRefused", async () => {
     const list = [agent({ id: "ag_a" }), agent({ id: "ag_b", position: 1 })]
     const fetchMock = fakeServer(list, (method) => (method === "PATCH" ? ok({ error: "invalid", message: "position: out of range" }, 400) : null))
-    const model = new AgentsModel(client(fetchMock))
+    const model = new AgentsModel(client(fetchMock), "home")
     await model.load()
     await model.move("ag_b", -1)
     expect(model.state.agents.map((a) => a.id)).toEqual(["ag_a", "ag_b"])
@@ -103,17 +103,17 @@ describe("AgentsModel", () => {
 
   test("removeDeletesAndNotifiesListeners", async () => {
     const fetchMock = fakeServer([agent({ id: "ag_a" }), agent({ id: "ag_b", position: 1 })])
-    const model = new AgentsModel(client(fetchMock))
+    const model = new AgentsModel(client(fetchMock), "home")
     await model.load()
     const seen: string[][] = []
-    const off = model.onAgentsChanged((agents) => seen.push(agents.map((a) => a.id)))
+    const off = model.onAgentsChanged((serverId, agents) => seen.push([serverId, ...agents.map((a) => a.id)]))
     model.onAgentsChanged(() => {
       throw new Error("a broken listener")
     })
     await model.remove("ag_a")
     expect(sent(fetchMock, "DELETE")[0]!.url).toBe("https://s.example/v1/agents/ag_a")
     expect(model.state.agents.map((a) => a.id)).toEqual(["ag_b"])
-    expect(seen).toEqual([["ag_b"]])
+    expect(seen).toEqual([["home", "ag_b"]])
     off()
     await model.load()
     expect(seen).toHaveLength(1)
@@ -126,7 +126,7 @@ describe("AgentsModel", () => {
       list.pop() // gone on the server meanwhile
       return ok({ error: "not_found", message: "agent not found: ag_b" }, 404)
     })
-    const model = new AgentsModel(client(fetchMock))
+    const model = new AgentsModel(client(fetchMock), "home")
     await model.load()
     await model.remove("ag_b")
     expect(model.state.agents.map((a) => a.id)).toEqual(["ag_a"])
@@ -148,7 +148,7 @@ describe("AgentsModel", () => {
       }
       return ok({ providers: PROVIDERS, custom_endpoints: false })
     })
-    const model = new AgentsModel(client(fetchMock))
+    const model = new AgentsModel(client(fetchMock), "home")
     await model.load()
     slow = true
     const reading = model.load()
@@ -161,7 +161,7 @@ describe("AgentsModel", () => {
   test("aFailedLoadKeepsTheListAndShowsTheError", async () => {
     let down = false
     const fetchMock = fakeServer([agent()], () => (down ? ok({ error: "x", message: "The server is unavailable." }, 503) : null))
-    const model = new AgentsModel(client(fetchMock))
+    const model = new AgentsModel(client(fetchMock), "home")
     await model.load()
     down = true
     await model.load()

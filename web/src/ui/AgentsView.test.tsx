@@ -72,6 +72,17 @@ describe("AgentsScreen", () => {
     expect(JSON.parse(patch.init.body as string)).toEqual({ position: 0 })
   })
 
+  test("agentsScreenTellsTheAgendaWhichServerChanged", async () => {
+    const { servers } = await setup([agent("ag_a", "Alpha"), agent("ag_b", "Beta", { position: 1 })])
+    const seen: string[] = []
+    render(<AgentsScreen servers={servers} target={{ serverId: "s1", screen: "list" }} onAgentsChanged={(id, agents) => seen.push(`${id}:${agents.map((a) => a.id).join(",")}`)} />)
+    await screen.findByText("Alpha")
+    await waitFor(() => expect(seen).toEqual(["s1:ag_a,ag_b"]))
+    fireEvent.click(screen.getByRole("button", { name: "Delete Alpha" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Delete agent" }))
+    await waitFor(() => expect(seen).toEqual(["s1:ag_a,ag_b", "s1:ag_b"]))
+  })
+
   test("showsTheEmptyState", async () => {
     const { servers } = await setup([])
     render(<AgentsScreen servers={servers} target={{ serverId: "s1", screen: "list" }} />)

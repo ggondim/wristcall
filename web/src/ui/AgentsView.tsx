@@ -10,7 +10,16 @@ import { agentsPath, type AgentsTarget } from "./route"
 import { useModel } from "./useModel"
 
 /** The agents screens of one server (list, new, edit): finds the saved server, then reads its agents once for all three. */
-export function AgentsScreen({ servers, target }: { servers: ServersModel; target: AgentsTarget }) {
+export function AgentsScreen({
+  servers,
+  target,
+  onAgentsChanged,
+}: {
+  servers: ServersModel
+  target: AgentsTarget
+  /** Told each time the list is read or changed (the account agenda mirrors it, long after this screen is gone). */
+  onAgentsChanged?: (serverId: string, agents: AgentDetail[]) => void
+}) {
   const [model, setModel] = useState<AgentsModel | "missing" | null>(null)
   const serverId = target.serverId
   useEffect(() => {
@@ -21,7 +30,8 @@ export function AgentsScreen({ servers, target }: { servers: ServersModel; targe
       .then((client) => {
         if (!live) return
         if (client === null) return setModel("missing")
-        const agents = new AgentsModel(client)
+        const agents = new AgentsModel(client, serverId)
+        if (onAgentsChanged !== undefined) agents.onAgentsChanged(onAgentsChanged)
         setModel(agents)
         void agents.load()
       })
@@ -29,7 +39,7 @@ export function AgentsScreen({ servers, target }: { servers: ServersModel; targe
     return () => {
       live = false
     }
-  }, [servers, serverId])
+  }, [servers, serverId, onAgentsChanged])
 
   const back = `/servers/${encodeURIComponent(serverId)}`
   if (model === null) {

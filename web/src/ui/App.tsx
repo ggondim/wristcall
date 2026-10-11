@@ -1,3 +1,4 @@
+import type { AgentDetail } from "../api/server"
 import type { AccountModel } from "../models/account"
 import { AddServerModel } from "../models/addServer"
 import { ApprovalsModel } from "../models/approvals"
@@ -28,6 +29,8 @@ export interface AppProps {
   session?: AccountLink | null
   /** The account screens (Settings, the sign-in callback); null when the site runs without accounts. */
   account?: AccountModel | null
+  /** Told each time an agents screen has a new list for a server (the account agenda mirrors it). */
+  onAgentsChanged?: (serverId: string, agents: AgentDetail[]) => void
 }
 
 function titleOf(route: Route): string {
@@ -52,19 +55,21 @@ function Screen({
   approvals,
   session,
   account,
+  onAgentsChanged,
 }: {
   route: Route
   servers: ServersModel
   approvals: ApprovalsModel
   session: AccountLink | null
   account: AccountModel | null
+  onAgentsChanged?: (serverId: string, agents: AgentDetail[]) => void
 }) {
   const addServer = useMemo(() => new AddServerModel(servers, session), [servers, session])
   if (route.tab === "servers") {
     if (route.path === "/" || route.path === "/servers") return <ServersView model={servers} />
     if (route.path === "/servers/add") return <AddServerView model={addServer} />
     const agents = parseAgentsTarget(route.path)
-    if (agents !== null) return <AgentsScreen servers={servers} target={agents} />
+    if (agents !== null) return <AgentsScreen servers={servers} target={agents} onAgentsChanged={onAgentsChanged} />
     const devices = parseDevicesTarget(route.path)
     if (devices !== null) return <DevicesScreen servers={servers} approvals={approvals} target={devices} />
     return <ServerDetailView model={servers} id={decodeId(route.path.slice("/servers/".length))} account={session} />
@@ -90,7 +95,7 @@ function decodeId(segment: string): string {
   }
 }
 
-export function App({ badge, approvals: given, servers, session = null, account = null }: AppProps) {
+export function App({ badge, approvals: given, servers, session = null, account = null, onAgentsChanged }: AppProps) {
   const [route, setRoute] = useState<Route>(() => parseRoute(location.pathname))
   const [search, setSearch] = useState(() => location.search)
   useEffect(() => {
@@ -115,7 +120,7 @@ export function App({ badge, approvals: given, servers, session = null, account 
   }, [route, search, approvals])
   return (
     <>
-      <Screen route={route} servers={servers} approvals={approvals} session={session} account={account} />
+      <Screen route={route} servers={servers} approvals={approvals} session={session} account={account} onAgentsChanged={onAgentsChanged} />
       {route.tab === "callback" ? null : <Tabs route={route} badge={badge} />}
     </>
   )

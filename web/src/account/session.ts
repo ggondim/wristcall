@@ -61,6 +61,11 @@ export class AccountSession {
     return this.#state
   }
 
+  /** The Cloud's client: the agenda mirror calls it with this session's access token. */
+  get cloudClient(): CloudClient {
+    return this.#cloud
+  }
+
   /** The Cloud's address: what a linked server names as its account service (`health.account.issuer`). */
   get cloudUrl(): string {
     return this.#cloud.url
