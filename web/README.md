@@ -28,8 +28,7 @@ docker run -p 8080:8080 -e WRISTCALL_WEB_CLOUD_URL=https://cloud.example.com ghc
 
 The image is nginx without root and serves the site on port 8080. Put TLS in front of it: a PWA, its service worker and
 Web Push need `https` (only `localhost` is exempt). `WRISTCALL_WEB_CLOUD_URL` is the address of your wristcall Cloud:
-empty (the default) hides everything that needs an account, `https://host[:port]`, or `http://localhost[:port]` for
-development. Anything else stops the container at start. The container writes the address to `/config.json`, which the
+empty (the default) hides everything that needs an account, `https://host[:port]`, `http://localhost[:port]` or `http://127.0.0.1[:port]` for development. Anything else stops the container at start. The container writes the address to `/config.json`, which the
 page reads when it opens, so one image fits any deployment. The Cloud address is the site operator's decision: not the
 user's and not a server's.
 
@@ -79,9 +78,11 @@ Web Push also needs the Cloud's VAPID key (`WRISTCALL_CLOUD_VAPID_PRIVATE_KEY`) 
   public name behind TLS asks nothing.
 - Credentials (personal tokens, the account's refresh token) live in the browser's storage (IndexedDB), on this
   device. Anyone who can use the browser profile can use them, and a script that runs in the page could read them: the
-  site ships a strict Content Security Policy (no inline script) for that reason, and loads nothing from a CDN. The access token of the account session stays in memory.
+  site ships a strict Content Security Policy (no inline script) for that reason, and loads nothing from a CDN. The access token of the account session stays in memory. After the
+  first server is saved the app asks the browser for persistent storage (`navigator.storage.persist()`), so the data
+  is not evicted when the device is short of space; a browser may refuse, and then the data can still be erased.
 - On iOS the Safari tab and the installed app have separate storage: servers added in the tab do not appear in the
-  installed app (install first, then add your servers). In a Safari tab, Intelligent Tracking Prevention erases the
+  installed app (install first, then add your servers: the installed app is the one to rely on). In a Safari tab, Intelligent Tracking Prevention erases the
   storage of a site not used for 7 days; the installed app is exempt. With an account, "From your account" lists the
   servers of the agenda that have no token on this device, so adding them again is one step.
 - The service worker keeps only the app's own files, so the site opens offline, but every screen needs the server.
@@ -122,10 +123,18 @@ worker:
 
 The two account specs sign in at the real identity provider as a test user, so they need that setup. The variables
 (`WRISTCALL_E2E_SERVER`, `_CLOUD`, `_PAT`, `_USER`, `_CLI`, `_CONFIG`, `_CLOUD_LOG`, `_ZITADEL_USER`,
-`_ZITADEL_PASSWORD_FILE`) are read in `e2e/env.ts`; a spec whose variables are missing skips with the reason. The
-Cloud must run with `WRISTCALL_CLOUD_PUSH_FAKE=1`, a VAPID key, its log at INFO level (the push spec reads it) and
-`WRISTCALL_CLOUD_CORS_ORIGINS=http://localhost:5173`; the built `dist/config.json` must point to that Cloud. The
-maintainer's script does all of it. The specs never print tokens, passwords or push keys, and the test config records
+`_ZITADEL_PASSWORD_FILE`) are read in `e2e/env.ts`; a spec whose variables are missing skips with the reason.
+
+The Cloud of a local run needs: `WRISTCALL_CLOUD_CLIENT_PWA` (the PWA's client id; without it the verifier refuses the
+PWA's token and `DELETE /v1/account` answers `403`), `WRISTCALL_CLOUD_ALLOW_LOOPBACK_AUDIENCE=1` (so per-server tokens
+can name `http://127.0.0.1:8765`), `WRISTCALL_CLOUD_PUBLIC_URL` on loopback (`http://127.0.0.1:8090`) with a signing key
+(`WRISTCALL_CLOUD_SIGNING_KEY_FILE`), `WRISTCALL_CLOUD_PUSH_FAKE=1`, a VAPID key
+(`WRISTCALL_CLOUD_VAPID_PRIVATE_KEY_FILE` and `_SUBJECT`), its log at INFO level (the push spec reads it, through
+`WRISTCALL_E2E_CLOUD_LOG`) and `WRISTCALL_CLOUD_CORS_ORIGINS=http://localhost:5173`. The server needs
+`server.cors_origins: [http://localhost:5173]`, a `central_account` that names the local Cloud, and `push.relay_url`.
+The built `dist/config.json` must point to the local Cloud (`{"cloudUrl": "http://127.0.0.1:8090"}`). The maintainers'
+runner script that sets all of this up is not in this repository. The three specs are chained projects: if the push spec
+fails, the account spec is skipped. The specs never print tokens, passwords or push keys, and the test config records
 no trace, screenshot or video, because the sign-in page would end up in them.
 
 ## Image
