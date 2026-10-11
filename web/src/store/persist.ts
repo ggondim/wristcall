@@ -18,3 +18,20 @@ export function persistOnFirstServer(servers: { onChange(listener: (event: Serve
   })
   return stop
 }
+
+/**
+ * On opening: if servers are saved and the browser has not granted persistent storage, asks again. The first-add request
+ * can be refused (Chrome decides by heuristic, such as the app being installed), and nothing else would ever ask again.
+ * Best effort; every error is ignored.
+ */
+export async function persistWhenServersExist(storage: { list(): Promise<readonly unknown[]> }): Promise<void> {
+  try {
+    const manager = globalThis.navigator?.storage
+    if (typeof manager?.persist !== "function" || typeof manager.persisted !== "function") return
+    if ((await manager.persisted()) !== false) return
+    if ((await storage.list()).length === 0) return
+    await manager.persist()
+  } catch {
+    // Not available, refused, or the database could not be read: nothing to do.
+  }
+}

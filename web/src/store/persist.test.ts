@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest"
 import type { ServerChange } from "../models/servers"
-import { persistOnFirstServer } from "./persist"
+import { persistOnFirstServer, persistWhenServersExist } from "./persist"
 
 const server = { id: "a", name: "A", url: "https://a.example", token: "t", addedAt: 1 } as ServerChange["server"]
 
@@ -58,5 +58,40 @@ describe("persistOnFirstServer", () => {
     const other = fakeServers()
     persistOnFirstServer(other)
     expect(() => other.emit({ kind: "added", server })).not.toThrow()
+  })
+})
+
+describe("persistWhenServersExist", () => {
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis.navigator, "storage")
+  })
+
+  const saved = { list: async () => [server] }
+
+  test("asks again when servers are saved and storage is not persistent", async () => {
+    const persist = vi.fn().mockResolvedValue(true)
+    stubStorage({ persist, persisted: vi.fn().mockResolvedValue(false) })
+    await persistWhenServersExist(saved)
+    expect(persist).toHaveBeenCalledTimes(1)
+  })
+
+  test("does not ask when already persistent, when no server is saved, or where persisted is missing", async () => {
+    const persist = vi.fn().mockResolvedValue(true)
+    stubStorage({ persist, persisted: vi.fn().mockResolvedValue(true) })
+    await persistWhenServersExist(saved)
+    stubStorage({ persist, persisted: vi.fn().mockResolvedValue(false) })
+    await persistWhenServersExist({ list: async () => [] })
+    stubStorage({ persist })
+    await persistWhenServersExist(saved)
+    expect(persist).not.toHaveBeenCalled()
+  })
+
+  test("ignores errors from the database and from the browser", async () => {
+    const persist = vi.fn().mockRejectedValue(new Error("no"))
+    stubStorage({ persist, persisted: vi.fn().mockResolvedValue(false) })
+    await expect(persistWhenServersExist(saved)).resolves.toBeUndefined()
+    await expect(persistWhenServersExist({ list: () => Promise.reject(new Error("db")) })).resolves.toBeUndefined()
+    stubStorage({ persist, persisted: () => { throw new Error("sync") } })
+    await expect(persistWhenServersExist(saved)).resolves.toBeUndefined()
   })
 })

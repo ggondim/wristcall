@@ -12,7 +12,7 @@ headers, so a browser cannot call them) and, for the account features, Cloud 0.3
 
 What it does:
 
-- Servers: add one with its address and a personal token (`wristcall users tokens add --name web`), or with a pairing
+- Servers: add one with its address and a personal token (`wristcall users tokens add --name browser`), or with a pairing
   code when you are signed in; rename, remove.
 - Agents: list, create, edit and delete.
 - Devices: paired watches, requests to approve or deny, pairing codes.
@@ -71,8 +71,8 @@ Web Push also needs the Cloud's VAPID key (`WRISTCALL_CLOUD_VAPID_PRIVATE_KEY`) 
   Home Screen) and opened from there. In a Safari tab the app explains it and asks for nothing. The permission prompt
   always comes from a tap on "Turn on notifications".
 - A server on plain `http://` on your local network does not work from a site served over `https`: browsers block
-  mixed content. Put the server behind TLS (a reverse proxy with a real certificate). `http://localhost`,
-  `http://127.0.0.1` and `http://[::1]` are the exception.
+  mixed content. Put the server behind TLS (a reverse proxy with a real certificate). `http://localhost` and
+  `http://127.0.0.1` are the exception (the app does not accept `http://[::1]`).
 - Chrome 142 and later (Local Network Access): a public site that calls a server on a private address asks for the
   permission for access to devices on the local network. The user must allow it once. A server with a
   public name behind TLS asks nothing.

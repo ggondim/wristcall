@@ -22,7 +22,8 @@ async function run<T>(
 ): Promise<T> {
   const headers: Record<string, string> = { Accept: opts.accept ?? "application/json" }
   if (opts.bearer !== undefined) headers.Authorization = `Bearer ${opts.bearer}`
-  const init: RequestInit = { method: opts.method ?? "GET", headers, cache: "no-store", credentials: "omit" }
+  // A reply that redirects is an error: a credential never follows a redirect (a server or the Cloud does not redirect an API call).
+  const init: RequestInit = { method: opts.method ?? "GET", headers, cache: "no-store", credentials: "omit", redirect: "error" }
   if (opts.json !== undefined) {
     headers["Content-Type"] = "application/json"
     init.body = JSON.stringify(opts.json)

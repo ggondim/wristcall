@@ -72,9 +72,6 @@ export class AgendaSync implements AgendaControl {
   /** The Cloud's limit for names (Unicode scalars). */
   static readonly textLimit = 64
 
-  /** The session ended (the refresh token was refused) while syncing. */
-  onSignedOut: (() => void) | null = null
-
   readonly #session: AgendaSession
   readonly #servers: AgendaServers
   readonly #store: AgendaStore
@@ -101,11 +98,6 @@ export class AgendaSync implements AgendaControl {
   /** The last failure, for the screen; cleared by the next success. */
   get notice(): string | null {
     return this.#notice
-  }
-
-  /** The bumped-on-`invalidate` counter (tests). */
-  get generation(): number {
-    return this.#generation
   }
 
   onNoticeChange(listener: () => void): () => void {
@@ -251,12 +243,8 @@ export class AgendaSync implements AgendaControl {
   }
 
   #signedOut(): void {
+    // The session itself tells the account model (`AccountSession` ends it when the refresh token is refused).
     this.#setNotice(null)
-    try {
-      this.onSignedOut?.()
-    } catch {
-      // As above.
-    }
   }
 
   #enqueue(work: (generation: number) => Promise<void>): void {

@@ -64,7 +64,7 @@ describe("ServerClient", () => {
     expect(JSON.parse(fetchMock.lastInit().body as string)).toEqual({ token: "srv-token", code: "12345678" })
   })
 
-  test("server: link with a token, push key and unlink use the personal token", async () => {
+  test("server: link with a token, push key use the personal token", async () => {
     const fetchMock = mockFetch(() => new Response(null, { status: 204 }))
     const client = new ServerClient(BASE, "wc_pat_x", fetchMock)
     await client.setPushKey("wc_push_k")
@@ -72,8 +72,6 @@ describe("ServerClient", () => {
     expect(JSON.parse(fetchMock.lastInit().body as string)).toEqual({ push_key: "wc_push_k" })
     await client.clearPushKey()
     expect(fetchMock.lastInit().method).toBe("DELETE")
-    await client.unlink()
-    expect(fetchMock.lastUrl()).toBe("https://s.example/v1/account/link")
     await client.linkWithToken("srv-token").catch(() => {})
     expect((fetchMock.lastInit().headers as Record<string, string>).Authorization).toBe("Bearer wc_pat_x")
   })

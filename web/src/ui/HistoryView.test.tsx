@@ -6,7 +6,7 @@ import { json, savedServer, serversWith, type Handler } from "../test/fakeServer
 import { App } from "./App"
 import { CallDetailView } from "./CallDetailView"
 import { HistoryView, SEARCH_DEBOUNCE_MS } from "./HistoryView"
-import { historyPath, parseHistoryTarget, parseRoute } from "./route"
+import { historyPath, parseHistoryServer, parseHistoryTarget, parseRoute } from "./route"
 import { BaseModel } from "./useModel"
 
 const home = savedServer({ id: "home", name: "Home", url: "https://home.example.com" })
@@ -60,6 +60,10 @@ describe("history routes", () => {
     expect(parseHistoryTarget(historyPath("a/b", "c 1"))).toEqual({ serverId: "a/b", callId: "c 1" })
     expect(parseHistoryTarget("/history")).toBeNull()
     expect(parseHistoryTarget("/history/home")).toBeNull()
+    expect(parseHistoryServer("/history/a%2Fb")).toBe("a/b")
+    expect(parseHistoryServer("/history")).toBeNull()
+    expect(parseHistoryServer("/history/home/c1")).toBeNull()
+    expect(parseHistoryServer("/servers/home")).toBeNull()
   })
 })
 
@@ -290,5 +294,17 @@ describe("App history routes", () => {
     expect(await screen.findByRole("heading", { name: "Call" })).toBeTruthy()
     await screen.findByText("said c1")
     expect(screen.getAllByRole("link", { name: "History" }).some((a) => a.getAttribute("href") === "/history")).toBe(true)
+  })
+
+  test("serverAddressShowsOnlyThatServersHistory", async () => {
+    const { servers } = serversWith([home, work], {
+      "home.example.com": fake([record("c1", now - 120)]),
+      "work.example.com": fake([record("c2", now - 60)]),
+    })
+    history.replaceState(null, "", "/history/work")
+    render(<App badge={new Badge()} servers={servers} />)
+    await screen.findByText("said c2")
+    expect(screen.queryByText("said c1")).toBeNull()
+    expect((screen.getByLabelText("Server") as HTMLSelectElement).value).toBe("work")
   })
 })

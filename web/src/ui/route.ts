@@ -145,3 +145,10 @@ export function parseHistoryTarget(path: string): HistoryTarget | null {
   if (head !== "history" || !server || !call || rest.length > 0) return null
   return { serverId: decoded(server), callId: decoded(call) }
 }
+
+/** The server a `/history/<server>` address names (the "History" link of a server's detail screen), or null for anything else. */
+export function parseHistoryServer(path: string): string | null {
+  const [head, server, ...rest] = path.split("/").slice(1)
+  if (head !== "history" || !server || rest.length > 0) return null
+  return decoded(server)
+}

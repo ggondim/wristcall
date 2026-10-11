@@ -211,6 +211,7 @@ async function postForm(
       body: new URLSearchParams(fields).toString(),
       cache: "no-store",
       credentials: "omit",
+      redirect: "error", // the code and refresh token are in this body: it is never re-sent to another address
       signal: controller.signal,
     }
     if (options.keepalive) init.keepalive = true

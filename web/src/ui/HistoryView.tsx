@@ -43,7 +43,7 @@ function HistoryRow({ item, showsServer }: { item: HistoryItem; showsServer: boo
 }
 
 /** The History tab: the calls of every server in one list, with search, filters, export and "delete all". */
-export function HistoryView({ model, servers }: { model: HistoryModel; servers: ServersModel }) {
+export function HistoryView({ model, servers, serverId = null }: { model: HistoryModel; servers: ServersModel; serverId?: string | null }) {
   const { items, loading, loadingMore, more, loaded, error, notice, failures, filter, period, agents, exported } = useModel(model)
   const { rows } = useModel(servers)
   const [text, setText] = useState(filter.q)
@@ -53,9 +53,11 @@ export function HistoryView({ model, servers }: { model: HistoryModel; servers: 
 
   useEffect(() => {
     model.clearMessages()
-    void model.load()
+    // `/history/<server>` (the link on a server's screen) opens that server's history; a server that is gone is dropped by the reload.
+    if (serverId !== null && serverId !== model.state.filter.serverId) void model.setFilter({ serverId })
+    else void model.load()
     return () => model.discardExport()
-  }, [model])
+  }, [model, serverId])
 
   // Typing waits for a pause; any other change (server, agent, period) reads at once.
   useEffect(() => {

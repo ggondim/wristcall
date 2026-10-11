@@ -10,7 +10,7 @@ newline='
 '
 
 fail() {
-  echo "40-wristcall-config: WRISTCALL_WEB_CLOUD_URL must be empty, https://host[:port], or http://localhost[:port] (got an invalid value)" >&2
+  echo "40-wristcall-config: WRISTCALL_WEB_CLOUD_URL must be empty, https://host[:port], http://localhost[:port] or http://127.0.0.1[:port] (got an invalid value)" >&2
   exit 1
 }
 

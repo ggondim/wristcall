@@ -11,7 +11,7 @@ import { defaultServerClient, openServerStorage, ServersModel } from "./models/s
 import { parseWorkerMessage } from "./push/payload"
 import { NotificationsModel } from "./push/notifications"
 import { PushSync } from "./push/sync"
-import { persistOnFirstServer } from "./store/persist"
+import { persistOnFirstServer, persistWhenServersExist } from "./store/persist"
 import { ServerStore } from "./store/servers"
 import { App } from "./ui/App"
 import { navigate } from "./ui/route"
@@ -58,6 +58,7 @@ async function start(): Promise<void> {
   const agenda = session === null || !(storage instanceof ServerStore) ? null : new AgendaSync(session, servers, storage)
   if (agenda !== null) servers.onChange((event) => agenda.serverChanged(event))
   persistOnFirstServer(servers)
+  void persistWhenServersExist(storage) // servers saved in an earlier session, and storage still not persistent
   // Push: the Cloud is the relay (never one a server names). A server leaving takes its key along, and so does
   // deleting the account.
   const push =

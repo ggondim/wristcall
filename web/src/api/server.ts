@@ -172,10 +172,6 @@ export class ServerClient {
     return json(this.#url("account/link"), { method: "POST", json: { token: serverToken, code } }, this.#fetch)
   }
 
-  async unlink(): Promise<void> {
-    await this.#send("account/link", "DELETE")
-  }
-
   async setPushKey(pushKey: string): Promise<void> {
     await this.#send("push", "PUT", { push_key: pushKey })
   }

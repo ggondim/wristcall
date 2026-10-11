@@ -16,7 +16,7 @@ import { DevicesScreen } from "./DevicesView"
 import { HistoryView } from "./HistoryView"
 import { ServerDetailView } from "./ServerDetailView"
 import { ServersView } from "./ServersView"
-import { onNavigate, parseAgentsTarget, parseApprovalTarget, parseDevicesTarget, parseHistoryTarget, parseRoute, type Route } from "./route"
+import { onNavigate, parseAgentsTarget, parseApprovalTarget, parseDevicesTarget, parseHistoryServer, parseHistoryTarget, parseRoute, type Route } from "./route"
 import { Tabs } from "./Tabs"
 import { useEffect, useMemo, useState } from "preact/hooks"
 import type { Model } from "./useModel"
@@ -71,7 +71,7 @@ function Screen({
   if (route.tab === "approvals") return <ApprovalsView model={approvals} />
   if (route.tab === "history") {
     const call = parseHistoryTarget(route.path)
-    return call === null ? <HistoryView model={history} servers={servers} /> : <CallDetailView model={history} target={call} />
+    return call === null ? <HistoryView model={history} servers={servers} serverId={parseHistoryServer(route.path)} /> : <CallDetailView model={history} target={call} />
   }
   if (route.tab === "callback") return <CallbackView model={account} />
   if (route.path === "/settings/watch" && account !== null) return <ApproveWatchSignInView model={account} />
@@ -109,6 +109,8 @@ export function App({ badge, approvals: given, servers, session = null, account 
     void approvals.focus(target.serverId, target.requestId, target.expiresAt)
     // Read once: a relaunch or reload of this address must not focus the same request again.
     history.replaceState(null, "", "/approvals")
+    // The stored query is spent too: a second tap on the same target arrives as a new query and must focus again.
+    setSearch("")
   }, [route, search, approvals])
   return (
     <>

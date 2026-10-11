@@ -155,6 +155,7 @@ describe("token endpoint", () => {
     expect(init.method).toBe("POST")
     expect((init.headers as Record<string, string>)["Content-Type"]).toBe("application/x-www-form-urlencoded")
     expect(init.credentials).toBe("omit")
+    expect(init.redirect).toBe("error")
     const body = form(init)
     expect(Object.fromEntries(body)).toEqual({
       grant_type: "authorization_code",

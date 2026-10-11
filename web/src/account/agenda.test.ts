@@ -191,18 +191,14 @@ describe("AgendaSync", () => {
     expect(w.writes().length).toBeGreaterThan(0)
   })
 
-  test("agendaSignedOutNotifies: a refused session tells the app and leaves no notice", async () => {
+  test("agendaSignedOut: a refused session leaves no notice", async () => {
     const w = world([saved()])
-    const told: string[] = []
-    w.agenda.onSignedOut = () => told.push("signedOut")
     w.session.tokenError = new OidcError("signed_out", "Your session ended. Sign in again.")
     w.agenda.pushAll()
     await w.agenda.idle()
-    expect(told).toEqual(["signedOut"])
     expect(w.agenda.notice).toBeNull()
     expect(w.calls).toEqual([])
     expect(await w.agenda.fromAccount()).toEqual([])
-    expect(told).toEqual(["signedOut", "signedOut"])
   })
 
   test("a failing Cloud only sets the notice, and the next success clears it", async () => {

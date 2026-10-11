@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen } from "@testing-library/preact"
-import { afterEach, beforeEach, describe, expect, test } from "vitest"
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import { App, navigate, parseRoute } from "./App"
 import { BaseModel } from "./useModel"
+import { ApprovalsModel } from "../models/approvals"
 import { ServersModel } from "../models/servers"
 
 class FakeBadge extends BaseModel<{ count: number }> {
@@ -112,5 +113,21 @@ describe("App", () => {
     history.replaceState(null, "", "/approvals")
     render(<App badge={new FakeBadge(1)} servers={servers} />)
     expect(screen.getByRole("link", { name: /Servers/ }).getAttribute("aria-current")).toBe("page")
+  })
+})
+
+describe("notification target", () => {
+  test("a second tap on the same target focuses again", () => {
+    const approvals = new ApprovalsModel(servers)
+    const focus = vi.spyOn(approvals, "focus").mockResolvedValue(undefined)
+    const target = "/approvals?server=s1&request=1234&expires=2000000000"
+    history.replaceState(null, "", target)
+    render(<App badge={new FakeBadge(0)} approvals={approvals} servers={servers} />)
+    expect(focus).toHaveBeenCalledTimes(1)
+    expect(focus).toHaveBeenLastCalledWith("s1", "1234", 2000000000)
+    expect(location.search).toBe("")
+    act(() => navigate(target))
+    expect(focus).toHaveBeenCalledTimes(2)
+    expect(location.search).toBe("")
   })
 })

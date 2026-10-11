@@ -23,10 +23,20 @@ describe("http", () => {
     expect(headers["Content-Type"]).toBe("application/json")
     expect(fetchMock.lastInit().body).toBe('{"slug":"a"}')
     expect(fetchMock.lastInit().credentials).toBe("omit")
+    expect(fetchMock.lastInit().redirect).toBe("error")
     await request("https://s.example/v1/health", {}, fetchMock)
     const bare = fetchMock.lastInit().headers as Record<string, string>
     expect(bare.Authorization).toBeUndefined()
     expect(bare["Content-Type"]).toBeUndefined()
+  })
+
+  test("http: a redirect is refused, not followed, so the token goes nowhere else", async () => {
+    // A real fetch rejects with a TypeError when `redirect: "error"` meets a redirect; the stand-in does the same.
+    const fetchMock = mockFetch((_url, init) => {
+      if (init?.redirect === "error") throw new TypeError("redirect")
+      return new Response("{}")
+    })
+    await expect(json("https://s.example/v1/agents", { bearer: "wc_pat_x" }, fetchMock)).rejects.toBeInstanceOf(NetworkError)
   })
 
   test("http: a 204 has no body", async () => {
