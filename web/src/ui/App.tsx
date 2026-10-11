@@ -3,6 +3,7 @@ import type { AccountModel } from "../models/account"
 import { AddServerModel } from "../models/addServer"
 import { ApprovalsModel } from "../models/approvals"
 import type { AccountLink, ServersModel } from "../models/servers"
+import type { NotificationsModel } from "../push/notifications"
 import { SettingsView } from "./AccountView"
 import { AddServerView } from "./AddServerView"
 import { AgentsScreen } from "./AgentsView"
@@ -29,6 +30,8 @@ export interface AppProps {
   session?: AccountLink | null
   /** The account screens (Settings, the sign-in callback); null when the site runs without accounts. */
   account?: AccountModel | null
+  /** Notifications of this device (Settings); null when the site has no Cloud or the Cloud sends no Web Push. */
+  notifications?: NotificationsModel | null
   /** Told each time an agents screen has a new list for a server (the account agenda mirrors it). */
   onAgentsChanged?: (serverId: string, agents: AgentDetail[]) => void
 }
@@ -55,6 +58,7 @@ function Screen({
   approvals,
   session,
   account,
+  notifications,
   onAgentsChanged,
 }: {
   route: Route
@@ -62,6 +66,7 @@ function Screen({
   approvals: ApprovalsModel
   session: AccountLink | null
   account: AccountModel | null
+  notifications: NotificationsModel | null
   onAgentsChanged?: (serverId: string, agents: AgentDetail[]) => void
 }) {
   const addServer = useMemo(() => new AddServerModel(servers, session), [servers, session])
@@ -78,7 +83,7 @@ function Screen({
   if (route.tab === "callback") return <CallbackView model={account} />
   if (route.tab === "settings") {
     if (route.path === "/settings/watch" && account !== null) return <ApproveWatchSignInView model={account} />
-    return <SettingsView account={account} />
+    return <SettingsView account={account} notifications={notifications} />
   }
   return (
     <main class="screen">
@@ -95,7 +100,7 @@ function decodeId(segment: string): string {
   }
 }
 
-export function App({ badge, approvals: given, servers, session = null, account = null, onAgentsChanged }: AppProps) {
+export function App({ badge, approvals: given, servers, session = null, account = null, notifications = null, onAgentsChanged }: AppProps) {
   const [route, setRoute] = useState<Route>(() => parseRoute(location.pathname))
   const [search, setSearch] = useState(() => location.search)
   useEffect(() => {
@@ -120,7 +125,7 @@ export function App({ badge, approvals: given, servers, session = null, account 
   }, [route, search, approvals])
   return (
     <>
-      <Screen route={route} servers={servers} approvals={approvals} session={session} account={account} onAgentsChanged={onAgentsChanged} />
+      <Screen route={route} servers={servers} approvals={approvals} session={session} account={account} notifications={notifications} onAgentsChanged={onAgentsChanged} />
       {route.tab === "callback" ? null : <Tabs route={route} badge={badge} />}
     </>
   )

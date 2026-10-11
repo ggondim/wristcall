@@ -1,6 +1,8 @@
 import { useEffect, useState } from "preact/hooks"
 import type { AccountModel } from "../models/account"
+import type { NotificationsModel } from "../push/notifications"
 import { Link } from "./Link"
+import { NotificationsSetting } from "./NotificationsSetting"
 import { useModel } from "./useModel"
 
 /** Said by the iPhone app too: what deleting does and does not touch. */
@@ -97,12 +99,13 @@ export function AccountSection({ model }: { model: AccountModel }) {
   )
 }
 
-/** Settings: the account section appears only when the site has a Cloud. */
-export function SettingsView({ account }: { account: AccountModel | null }) {
+/** Settings: the account section appears only when the site has a Cloud, and notifications only when it also sends Web Push. */
+export function SettingsView({ account, notifications = null }: { account: AccountModel | null; notifications?: NotificationsModel | null }) {
   return (
     <main class="screen">
       <h1>Settings</h1>
       {account !== null ? <AccountSection model={account} /> : null}
+      {notifications !== null ? <NotificationsSetting model={notifications} /> : null}
     </main>
   )
 }
