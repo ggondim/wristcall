@@ -17,6 +17,8 @@ export interface E2eEnv {
   zitadelUser: string
   zitadelPasswordFile: string
   zitadelIssuer: string
+  /** The Cloud's log file (INFO level), for the push spec to see the relay send. */
+  cloudLog: string
 }
 
 function value(name: string): string {
@@ -34,6 +36,7 @@ export function e2eEnv(): E2eEnv {
     zitadelUser: value("WRISTCALL_E2E_ZITADEL_USER"),
     zitadelPasswordFile: value("WRISTCALL_E2E_ZITADEL_PASSWORD_FILE"),
     zitadelIssuer: (value("WRISTCALL_E2E_ZITADEL_ISSUER") || "https://auth.trigram.com.br").replace(/\/+$/, ""),
+    cloudLog: value("WRISTCALL_E2E_CLOUD_LOG"),
   }
 }
 
@@ -54,6 +57,11 @@ export function accountSkipReason(env: E2eEnv): string | null {
     ["WRISTCALL_E2E_ZITADEL_PASSWORD_FILE", env.zitadelPasswordFile],
   ].filter(([, v]) => v === "")
   return missing.length === 0 ? null : `${missing.map(([n]) => n).join(", ")} not set`
+}
+
+/** Why the push spec cannot run (it needs the account specs' setting and the Cloud's log), or null. */
+export function pushSkipReason(env: E2eEnv): string | null {
+  return accountSkipReason(env) ?? (env.cloudLog === "" ? "WRISTCALL_E2E_CLOUD_LOG not set" : null)
 }
 
 /** The test user's password; read when needed and never logged. */

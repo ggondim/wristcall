@@ -589,8 +589,12 @@ Missing or invalid token: `401 {"error":"unauthorized"}`. The central account ro
 
 ## Management apps
 
-Apps that manage a server (the iPhone app, a PWA) use the [Management API](#management-api) and nothing else
-from the server. Their credential for a server is a **personal token** (`wc_pat_...`); a device token is refused
+Apps that manage a server (the iPhone app, the web app/PWA in `web/`) use the [Management API](#management-api) and
+nothing else from the server. A browser app calls it from its own origin, so the server owner lists that origin in
+`server.cors_origins` (see [Browsers (CORS)](#browsers-cors); the Cloud has the same setting,
+`WRISTCALL_CLOUD_CORS_ORIGINS`). The PWA's account client id goes in `central_account.clients` like the iPhone's.
+
+Their credential for a server is a **personal token** (`wc_pat_...`); a device token is refused
 (`403`), so an app never confuses it with a watch token. The app checks a pasted token with `GET /v1/providers`
 before saving it. With `central_account` an app can instead exchange a pairing code (`wristcall pair --user
 <handle>`) and its account login for a personal token through `POST /v1/account/link`.
