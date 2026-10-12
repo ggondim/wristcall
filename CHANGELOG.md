@@ -1,8 +1,33 @@
 # Changelog
 
-Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each component follows [SemVer](https://semver.org/) on its own: the server is published by the `server-vX.Y.Z` tag (Docker image); the Cloud (`cloud/`) by the `cloud-vX.Y.Z` tag (Docker image); the watch app is marked by the `watch-vX.Y.Z` tag and the iPhone app by the `ios-vX.Y.Z` tag; neither has a published binary (build them with Xcode, see [watch/README.md](watch/README.md)).
+Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each component follows [SemVer](https://semver.org/) on its own: the server is published by the `server-vX.Y.Z` tag (Docker image); the Cloud (`cloud/`) by the `cloud-vX.Y.Z` tag (Docker image); the web app (`web/`) by the `web-vX.Y.Z` tag (Docker image); the watch app is marked by the `watch-vX.Y.Z` tag and the iPhone app by the `ios-vX.Y.Z` tag; neither has a published binary (build them with Xcode, see [watch/README.md](watch/README.md)).
 
-## [cloud-0.3.0] - Unreleased
+## [web-0.1.0] - 2026-10-11
+
+First release of the web app (`web/`, tag `web-v0.1.0`, image `ghcr.io/ggondim/wristcall-web`). It is meant for servers
+0.7.0 (older ones send no CORS headers) and, for the account features, Cloud 0.3.0.
+
+### Added
+
+- A PWA (TypeScript, Vite, Preact) that manages wristcall servers from a browser: servers (personal token or pairing
+  code), agents, devices and requests to approve, pairing codes and the call history, like the iPhone app.
+- Central account (when the site is given a Cloud, `WRISTCALL_WEB_CLOUD_URL`): sign in with PKCE, mirror servers to
+  the account, approve the watch's device code sign-in, sign out and delete the account.
+- Web Push device approval notifications through the Cloud's relay (installed on the Home Screen on iOS 16.4 or later).
+  A tap opens the Approvals screen with the request highlighted; the notification has no buttons.
+- Offline app shell (service worker), strict Content Security Policy (no inline script, nothing from a CDN) and an
+  nginx image without root (port 8080) that writes `/config.json` from `WRISTCALL_WEB_CLOUD_URL`.
+- End to end tests with Playwright against a local server, a local Cloud and the real identity provider
+  (`npm run e2e`).
+
+### Known limitations
+
+- App icons are placeholders (the repository has no app icon yet).
+- The watch sign-in code accepts a space in the middle (the watch app does not).
+- Web Push on iOS needs the site installed on the Home Screen; a server on plain `http` on the local network does not
+  work from an `https` site. See [web/README.md](web/README.md).
+
+## [cloud-0.3.0] - 2026-10-11
 
 ### Added
 
@@ -12,12 +37,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
   organization is left alone. If Zitadel fails, the agenda is already deleted and the call answers
   `503 account_unavailable`; the app shows the error and a retry finishes. Without the variables only the agenda is
   deleted, as before.
+- CORS for listed browser origins (`WRISTCALL_CLOUD_CORS_ORIGINS`, a comma separated list of exact origins; empty:
+  no CORS, as before), so the wristcall PWA can call the API. Methods `GET`, `POST`, `PUT`, `PATCH`, `DELETE`; request
+  headers `Authorization` and `Content-Type`; no credentials; `Retry-After` is exposed. See "Browsers (CORS)" in
+  [cloud/README.md](cloud/README.md).
 
 ### Changed
 
 - iPhone app (next release): the "Delete account" confirmation says the sign-in is deleted too.
 - The end-to-end browser helper (`tools/e2e/zitadel_browser.py`) drives Zitadel's login v2: the iPhone sign-in
   (PKCE) is now verified against the real identity provider by the account e2e.
+
+## [0.7.0] - 2026-10-11
+
+### Added
+
+- CORS for listed browser origins: `server.cors_origins` in `wristcall.yaml` (exact origins, `https` or `http` on
+  loopback; empty by default: no CORS, as before), so the wristcall PWA can call the management API. Methods `GET`,
+  `POST`, `PUT`, `PATCH`, `DELETE`; request headers `Authorization` and `Content-Type`; no credentials;
+  `Content-Disposition` is exposed (the export's file name). A server on plain `http` outside localhost cannot be
+  used from a PWA served over `https` (mixed content). See "Browsers (CORS)" in [docs/protocol.md](docs/protocol.md).
 
 ## [ios-0.1.0] - 2026-10-10
 

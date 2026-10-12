@@ -5,6 +5,7 @@ server:
   directory_url: https://wristcall-pair.trigram.com.br   # the project's public directory; delete the line to type the URL on the watch
   pairing_approval: code        # code: only the code from `wristcall pair` | manual: accepts requests and approves them in the CLI
   data_dir: /data
+  # cors_origins: [https://app.wristcall.trigram.com.br]   # browsers allowed to call the management API (the wristcall PWA)
 
 # Central account (wristcall Cloud, OIDC). Optional: without it the server works on its own.
 # Apps exchange their login for a token made for this server only (its URL below), signed by the Cloud.

@@ -5,6 +5,8 @@ server:
   public_url: ${WRISTCALL_TEST_SERVER}
   pairing_approval: code
   data_dir: ${WRISTCALL_TEST_DATA_DIR}
+  # The wristcall PWA served by `npm run dev` (web/) calls this server from the browser.
+  cors_origins: [http://localhost:5173]
 
 providers:
   demo-stt:

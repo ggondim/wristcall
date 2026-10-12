@@ -9,8 +9,8 @@ the watch, transcribes it, asks your agent and sends back the spoken answer. Eac
 stage is a provider you can swap through configuration: any OpenAI compatible
 API works (OpenAI, Speaches, openedai-speech, LiteLLM, Ollama, vLLM).
 
-Status: server, reference client, pairing directory, watch app and iPhone app are ready. Both apps are
-built and installed with Xcode; see [watch/README.md](watch/README.md).
+Status: server, reference client, pairing directory, watch app, iPhone app and web app are ready. The watch and iPhone
+apps are built and installed with Xcode; see [watch/README.md](watch/README.md).
 
 ## Run the server in 5 minutes
 
@@ -344,10 +344,26 @@ but only until its next launch; removing a server in the app clears that server'
 The iPhone sign-in (PKCE) and the watch's device code sign-in were verified against the real identity provider by
 Kit integration tests driving its login page in a browser, not through the watch or iPhone screens.
 
+## Web app (PWA)
+
+The web app (`web/`, tag `web-vX.Y.Z`, image `ghcr.io/ggondim/wristcall-web`) manages your servers from a browser: add
+a server with its address and a personal token, create, edit and delete agents, approve or deny watches waiting to
+pair, make pairing codes, and read, search, export and redeliver the call history of all servers. Like the iPhone app
+it does not make calls. It is a static site you host (nginx image, TLS in front) and it calls your servers straight
+from the browser.
+
+It needs two things from you: list its address in `server.cors_origins` of each server (server 0.7.0; by default a server
+accepts no browser origin) and, for the account features, in `WRISTCALL_CLOUD_CORS_ORIGINS` of the Cloud, with the
+Cloud's address in the site's `WRISTCALL_WEB_CLOUD_URL`. With a Cloud it signs in with the central account, mirrors your
+servers to it, approves the watch's device code sign-in and, installed on the Home Screen of an iPhone (or in a desktop
+or Android browser), notifies you when a watch asks to sign in. A server on plain `http` on your local network cannot
+be used from a site served over `https`. Setup, limits and the end to end tests are in [web/README.md](web/README.md).
+
 ## Documentation
 
 - Client ↔ server protocol: [docs/protocol.md](docs/protocol.md)
 - Watch and iPhone apps (build, test, install): [watch/README.md](watch/README.md)
+- Web app (PWA): [web/README.md](web/README.md)
 - Pairing directory: [directory/README.md](directory/README.md)
 - wristcall Cloud (central account, per-server tokens, push relay): [cloud/README.md](cloud/README.md)
 - History: [CHANGELOG.md](CHANGELOG.md)
