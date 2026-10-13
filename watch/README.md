@@ -128,8 +128,9 @@ deletes the wristcall account: the server list in the Cloud and, with Cloud 0.3.
 only until its next launch; it then registers them again for every server that accepts the account (remove the
 server in the app to stop its notifications for good).
 
-The default build has `WRISTCALL_CLOUD_URL` empty: no account features show and nothing talks to a Cloud until you
-set one. The iPhone sign-in could not be verified against the real identity provider, whose hosted login page
+The default build uses the project's Cloud (`WRISTCALL_CLOUD_URL` = `https://wristcall-cloud.trigram.com.br`, in
+`Config/Base.xcconfig`); set it empty in `Config/Local.xcconfig` and no account features show and nothing talks to a
+Cloud. The iPhone sign-in could not be verified against the real identity provider, whose hosted login page
 (login v2) was down when this was built; the watch's device code sign-in was verified against the real identity provider by a Kit integration test
 (`watchDeviceFlowPairsWithApproval`), not through the watch or iPhone screens.
 
