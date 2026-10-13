@@ -332,8 +332,8 @@ all servers in one list. It does not make calls; the watch does. The watch app i
 
 With the wristcall Cloud in the build, the iPhone also signs in with the central account (Authorization Code
 with PKCE), mirrors your servers and agents to the account, and lets the watch sign in with a device code that
-you approve on the phone. The default build has no Cloud (`WRISTCALL_CLOUD_URL` empty), so those parts stay
-hidden until a Cloud is deployed and set. Push notifications for device approvals, App Store distribution and
+you approve on the phone. The default build uses the project's Cloud (`WRISTCALL_CLOUD_URL` =
+`https://wristcall-cloud.trigram.com.br`); set it empty in `watch/Config/Local.xcconfig` to build without an account. Push notifications for device approvals, App Store distribution and
 Sign in with Apple need a paid Apple Developer account; a free Apple ID builds everything else. There is no
 published binary: build it with Xcode, see [watch/README.md](watch/README.md#iphone-app).
 

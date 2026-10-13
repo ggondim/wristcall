@@ -11,10 +11,10 @@ BUNDLE_ID_PREFIX = io.github.ggondim
 DEVELOPMENT_TEAM =
 CODE_SIGN_STYLE = Automatic
 
-// The wristcall Cloud the apps talk to for the account (sign in, agenda). Empty: no account, the apps
-// work with servers and tokens alone. The production URL goes here at deploy time; a local one can go
-// in Config/Local.xcconfig or `make ... CLOUD_URL=http://127.0.0.1:8090` (`$()` keeps `//` from
-// starting a comment in an xcconfig).
-WRISTCALL_CLOUD_URL =
+// The wristcall Cloud the apps talk to for the account (sign in, agenda): the project's production
+// Cloud. Empty means no account, the apps work with servers and tokens alone. Another one (a local
+// Cloud) can go in Config/Local.xcconfig or `make ... CLOUD_URL=http://127.0.0.1:8090` (`$()` keeps
+// `//` from starting a comment in an xcconfig).
+WRISTCALL_CLOUD_URL = https:/$()/wristcall-cloud.trigram.com.br
 
 #include? "Local.xcconfig"

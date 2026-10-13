@@ -2,6 +2,15 @@
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each component follows [SemVer](https://semver.org/) on its own: the server is published by the `server-vX.Y.Z` tag (Docker image); the Cloud (`cloud/`) by the `cloud-vX.Y.Z` tag (Docker image); the web app (`web/`) by the `web-vX.Y.Z` tag (Docker image); the watch app is marked by the `watch-vX.Y.Z` tag and the iPhone app by the `ios-vX.Y.Z` tag; neither has a published binary (build them with Xcode, see [watch/README.md](watch/README.md)).
 
+## [Unreleased]
+
+### Changed
+
+- Watch and iPhone apps: the default build points at the project's Cloud, `https://wristcall-cloud.trigram.com.br`
+  (`WRISTCALL_CLOUD_URL` in `watch/Config/Base.xcconfig`), now that it is deployed and passed the end to end tests
+  against it. Set it empty in `watch/Config/Local.xcconfig` for a build without an account. The push build keeps a
+  local Cloud.
+
 ## [web-0.1.0] - 2026-10-11
 
 First release of the web app (`web/`, tag `web-v0.1.0`, image `ghcr.io/ggondim/wristcall-web`). It is meant for servers
