@@ -7,15 +7,16 @@ app. It does not make calls; the watch does.
 It is a static site (TypeScript, Vite, Preact) that talks to your servers and, optionally, to the wristcall Cloud
 straight from the browser. There is no backend of its own: the site stores your server list and credentials in the
 browser and sends them only to the servers you added. Version 0.2.0, published as the image
-`ghcr.io/ggondim/wristcall-web` by the `web-vX.Y.Z` tag. It is meant for servers 0.7.0 (older ones send no CORS
-headers, so a browser cannot call them) and, for the account features, Cloud 0.3.0.
+`ghcr.io/ggondim/wristcall-web` by the `web-vX.Y.Z` tag. It is meant for servers 0.7.0 or later (older ones send no
+CORS headers, so a browser cannot call them) and, for the account features, Cloud 0.3.0. Server links (`/link`) and
+link codes need server 0.8.0.
 
 What it does:
 
 - Servers: add one with its address and a personal token (`wristcall users tokens add --name browser`), or with a pairing
   code when you are signed in; rename, remove.
-- Server links: `/link` opens the QR code a server shows (`wristcall link`, or its startup log), asks you to confirm the
-  host and connects the server to your account, or hands the same link to the iPhone app with "Open in wristcall".
+- Server links: `/link` opens the QR code a server 0.8.0 shows (`wristcall link`, or its startup log), asks you to
+  confirm the host and connects the server to your account.
 - Agents: list, create, edit and delete.
 - Devices: paired watches, requests to approve or deny, pairing codes.
 - History: the calls of every server in one list, with search, filters, export and redelivery.
@@ -64,11 +65,14 @@ A server with `central_account` shows a QR code with `https://<this site>/link#v
   /v1/server-tokens`, then `POST /v1/account/link`), and the server joins the list;
 - signed out: "Sign in to connect here" keeps the link in this tab (for 15 minutes, as long as the code) and comes back
   to it after the sign-in;
-- always offers "Open in wristcall", the same link for the iPhone app (`wristcall://link#…`), rebuilt from the checked
-  values. A site without a Cloud only offers this.
+- without a Cloud: "This site can't connect servers. Use the wristcall app."
+
+The hand-off to the iPhone app ("Open in wristcall", the same link as `wristcall://link#…`, rebuilt from the checked
+values) is built but hidden: `APP_OPENS_LINKS` in `src/models/link.ts` stays `false` until the iPhone app registers
+the `wristcall` scheme.
 
 Connecting from the browser needs the site in the server's `server.cors_origins`, like any other call; without it the
-page says so and the app is the way to go. The "Pairing code" field of "Add server" also takes the link code (26
+page says so. The "Pairing code" field of "Add server" also takes the link code (26
 characters, typed with or without spaces and hyphens), for when the QR code cannot be scanned.
 
 ## Differences from the iPhone app

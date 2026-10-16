@@ -192,7 +192,7 @@ describe("AddServerModel.addWithCode", () => {
   test("addWithCodeChecksTheCodeShape", async () => {
     const { model, f } = await setup()
     for (const code of ["", "1234567", "123456789", "1234abcd"]) {
-      expect(await model.addWithCode(HOME, code)).toEqual({ ok: false, message: "Enter the 8-digit code." })
+      expect(await model.addWithCode(HOME, code)).toEqual({ ok: false, message: "Enter the 8-digit code or the link code." })
     }
     expect(f.calls).toHaveLength(0)
   })
@@ -315,7 +315,7 @@ describe("AddServerModel.addWithCode", () => {
   test("addWithCodeRefusesWhatIsNeitherCode", async () => {
     const { model, f } = await setup()
     for (const code of ["K7Q2MZXW4RQT6PZJ3H5N2C7VB", "K7Q2MZXW4RQT6PZJ3H5N2C7VB1", "1234 567a"]) {
-      expect(await model.addWithCode(HOME, code)).toEqual({ ok: false, message: "Enter the 8-digit code." })
+      expect(await model.addWithCode(HOME, code)).toEqual({ ok: false, message: "Enter the 8-digit code or the link code." })
     }
     expect(f.calls).toHaveLength(0)
   })

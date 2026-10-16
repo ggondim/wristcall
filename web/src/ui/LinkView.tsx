@@ -3,7 +3,7 @@ import { canonical } from "../lib/address"
 import { userMessage } from "../lib/errors"
 import type { AccountModel } from "../models/account"
 import type { AddServerModel } from "../models/addServer"
-import { appLinkURL, linkFragment, parseLinkFragment, savePendingLink, takePendingLink, type ServerLink } from "../models/link"
+import { APP_OPENS_LINKS, appLinkURL, linkFragment, parseLinkFragment, savePendingLink, takePendingLink, type ServerLink } from "../models/link"
 import { Link } from "./Link"
 import { navigate } from "./route"
 import { useModel } from "./useModel"
@@ -23,7 +23,10 @@ function readLink(): ServerLink | null {
   return parseLinkFragment(hash !== "" ? hash : (pending ?? ""))
 }
 
-/** `/link`: a server link (a QR code from `wristcall link`). Connects it with the account here, or hands it to the app. */
+/**
+ * `/link`: a server link (a QR code from `wristcall link`). Connects it with the account here, or hands it to the app
+ * once the app opens links (`APP_OPENS_LINKS`).
+ */
 export function LinkView({ model, account }: { model: AddServerModel; account: AccountModel | null }) {
   const [link] = useState(readLink)
   if (link === null) {
@@ -111,11 +114,19 @@ function Confirm({ link, model, account }: { link: ServerLink; model: AddServerM
             <SignIn account={account} link={link} />
           )
         ) : null}
-        <a class="button quiet" href={appLinkURL(link)}>
-          Open in wristcall
-        </a>
+        {APP_OPENS_LINKS ? (
+          <a class="button quiet" href={appLinkURL(link)}>
+            Open in wristcall
+          </a>
+        ) : null}
       </div>
-      {account === null ? <p class="footnote">This site has no wristcall account: open the link in the wristcall app to connect the server.</p> : null}
+      {account === null ? (
+        <p class="footnote">
+          {APP_OPENS_LINKS
+            ? "This site has no wristcall account: open the link in the wristcall app to connect the server."
+            : "This site can't connect servers. Use the wristcall app."}
+        </p>
+      ) : null}
     </main>
   )
 }

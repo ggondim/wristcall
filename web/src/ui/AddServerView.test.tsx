@@ -70,7 +70,11 @@ describe("AddServerView", () => {
     const signedIn = await world({ signedIn: true })
     render(<AddServerView model={new AddServerModel(signedIn.servers, signedIn.session)} />)
     fireEvent.click(screen.getByRole("button", { name: "Pairing code" }))
-    expect(screen.getByLabelText("Pairing code")).toBeTruthy()
+    const field = screen.getByLabelText("Pairing code")
+    // Takes the 8 digits or a link code (letters), so the keyboard is not numeric.
+    expect(field.getAttribute("placeholder")).toBe("8-digit or link code")
+    expect(field.getAttribute("inputmode")).toBe("text")
+    expect(field.getAttribute("autocapitalize")).toBe("characters")
     expect(screen.queryByLabelText("Personal token")).toBeNull()
   })
 

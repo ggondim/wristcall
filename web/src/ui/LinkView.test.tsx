@@ -11,11 +11,21 @@ import { mockFetch } from "../test/mockFetch"
 import { App } from "./App"
 import { BaseModel } from "./useModel"
 
+// APP_OPENS_LINKS is a constant: the mock reads it from `flags`, so each test picks the value.
+const flags = vi.hoisted(() => ({ appOpensLinks: false }))
+vi.mock("../models/link", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../models/link")>()),
+  get APP_OPENS_LINKS() {
+    return flags.appOpensLinks
+  },
+}))
+
 const CLOUD = "https://cloud.example.com"
 const CODE = "K7Q2MZXW4RQT6PZJ3H5N2C7VBQ"
 const HASH = `#v=1&s=https://home.example.com&c=${CODE}`
 const APP_HREF = `wristcall://link#v=1&s=https://home.example.com&c=${CODE}`
 const BAD_LINK = "This link is not valid. Scan the QR code again."
+const NO_CONNECT = "This site can't connect servers. Use the wristcall app."
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
 const health = { status: "ok", version: "0.8.0", protocol: 1, account: { issuer: CLOUD, device_credential: "x" }, push: null }
 
@@ -60,7 +70,10 @@ async function world(opts: { signedIn?: boolean; cloud?: boolean; over?: Handler
   return { store, servers, session, account, calls, assigned, f, view }
 }
 
-beforeEach(() => history.replaceState(null, "", `/link${HASH}`))
+beforeEach(() => {
+  flags.appOpensLinks = false
+  history.replaceState(null, "", `/link${HASH}`)
+})
 afterEach(() => {
   history.replaceState(null, "", "/")
   sessionStorage.clear()
@@ -96,7 +109,20 @@ describe("LinkView", () => {
     expect(location.pathname).toBe("/link")
   })
 
-  test("offers the app", async () => {
+  test("ships with the app hand-off off", async () => {
+    const actual = await vi.importActual<typeof import("../models/link")>("../models/link")
+    expect(actual.APP_OPENS_LINKS).toBe(false)
+  })
+
+  test("does not offer the app while it cannot open links", async () => {
+    await world()
+    await screen.findByText("Server 0.8.0")
+    expect(screen.queryByRole("link", { name: "Open in wristcall" })).toBeNull()
+    expect(screen.getByRole("button", { name: "Connect" })).toBeTruthy()
+  })
+
+  test("offers the app once it opens links", async () => {
+    flags.appOpensLinks = true
     await world()
     expect(screen.getByRole("link", { name: "Open in wristcall" }).getAttribute("href")).toBe(APP_HREF)
   })
@@ -115,7 +141,6 @@ describe("LinkView", () => {
     await world()
     expect(screen.getByRole("heading", { name: "Connect to home.example.com?" })).toBeTruthy()
     expect(await screen.findByRole("button", { name: "Connect" })).toBeTruthy()
-    expect(screen.getByRole("link", { name: "Open in wristcall" }).getAttribute("href")).toBe(APP_HREF)
     expect(takePendingLink()).toBeNull() // taken once
   })
 
@@ -129,6 +154,7 @@ describe("LinkView", () => {
   })
 
   test("server unreachable from this site", async () => {
+    flags.appOpensLinks = true
     const blocked = mockFetch(() => {
       throw new TypeError("Failed to fetch")
     })
@@ -142,11 +168,20 @@ describe("LinkView", () => {
 
   test("site without a Cloud", async () => {
     const { f } = await world({ cloud: false })
-    expect(screen.getByRole("link", { name: "Open in wristcall" }).getAttribute("href")).toBe(APP_HREF)
+    expect(screen.getByText(NO_CONNECT)).toBeTruthy()
+    expect(screen.queryByRole("link", { name: "Open in wristcall" })).toBeNull()
     expect(screen.getByText("Only connect servers you trust")).toBeTruthy()
     expect(screen.queryByRole("button", { name: "Connect" })).toBeNull()
     expect(screen.queryByRole("button", { name: "Sign in to connect here" })).toBeNull()
     expect((f as ReturnType<typeof mockFetch>).calls).toHaveLength(0)
+  })
+
+  test("site without a Cloud, once the app opens links", async () => {
+    flags.appOpensLinks = true
+    await world({ cloud: false })
+    expect(screen.getByRole("link", { name: "Open in wristcall" }).getAttribute("href")).toBe(APP_HREF)
+    expect(screen.getByText("This site has no wristcall account: open the link in the wristcall app to connect the server.")).toBeTruthy()
+    expect(screen.queryByText(NO_CONNECT)).toBeNull()
   })
 
   test.each([`/link#v=2&s=https://home.example.com&c=${CODE}`, "/link#v=1&s=%ZZ&c=x", "/link"])("bad link %s", async (address) => {

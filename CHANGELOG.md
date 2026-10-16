@@ -19,11 +19,14 @@ For servers 0.8.0 (link codes) and Cloud 0.3.0 or later.
 
 - `/link`: opens the QR code of a server (`https://<site>/link#v=1&s=<server>&c=<link code>`, see "Link URL" in
   [docs/protocol.md](docs/protocol.md#link-url)). The page reads the fragment once and drops it from the address bar,
-  shows the server's host and version with "Only connect servers you trust", and either connects the server to the
-  signed-in account ("Connect", the same calls as "Add server" with a code) or hands the link to the iPhone app ("Open
-  in wristcall", `wristcall://link#…`). Signed out, "Sign in to connect here" keeps the link in the tab for 15 minutes
-  and the sign-in comes back to it. Without a Cloud only the app link is offered.
-- "Add server" with a code also takes a link code (26 characters, any case, with spaces or hyphens).
+  shows the server's host and version with "Only connect servers you trust", and connects the server to the signed-in
+  account ("Connect", the same calls as "Add server" with a code). Signed out, "Sign in to connect here" keeps the link
+  in the tab for 15 minutes and the sign-in comes back to it. Without a Cloud the page says "This site can't connect
+  servers. Use the wristcall app." The hand-off to the iPhone app ("Open in wristcall", `wristcall://link#…`) is built
+  but hidden behind `APP_OPENS_LINKS = false` until the iPhone app registers the `wristcall` scheme.
+- "Add server" with a code also takes a link code (26 characters, any case, with spaces or hyphens): the field says
+  "8-digit or link code", opens a text keyboard in capitals, and a bad code reads "Enter the 8-digit code or the link
+  code."
 
 ## [0.8.0] - 2026-10-16
 

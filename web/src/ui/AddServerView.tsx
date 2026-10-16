@@ -138,9 +138,10 @@ export function AddServerView({ model }: { model: AddServerModel }) {
             <input
               type="text"
               name="code"
-              placeholder="8-digit code"
+              placeholder="8-digit or link code"
               value={code}
-              inputMode="numeric"
+              inputMode="text"
+              autocapitalize="characters"
               autocomplete="one-time-code"
               spellcheck={false}
               onInput={(event) => setCode(event.currentTarget.value)}
