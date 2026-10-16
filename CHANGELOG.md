@@ -11,6 +11,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
   against it. Set it empty in `watch/Config/Local.xcconfig` for a build without an account. The push build keeps a
   local Cloud.
 
+## [cloud-0.3.1] - 2026-10-15
+
+### Changed
+
+- `/v1/config` also lists the organization scope (`urn:zitadel:iam:org:id:<WRISTCALL_CLOUD_ZITADEL_ORG_ID>`) when the
+  organization is set, so the Zitadel login shows the wristcall branding and texts. The apps already sign in with the
+  Cloud's scopes, so they need no update.
+
 ## [web-0.1.0] - 2026-10-11
 
 First release of the web app (`web/`, tag `web-v0.1.0`, image `ghcr.io/ggondim/wristcall-web`). It is meant for servers

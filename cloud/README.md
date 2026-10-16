@@ -54,7 +54,7 @@ agenda):
 
 | Variable | Default | |
 |---|---|---|
-| `WRISTCALL_CLOUD_ZITADEL_ORG_ID` | | Zitadel organization whose users the Cloud may delete (wristcall's: `394311486572333063`) |
+| `WRISTCALL_CLOUD_ZITADEL_ORG_ID` | | Zitadel organization whose users the Cloud may delete (wristcall's: `394311486572333063`); also adds its org scope to `/v1/config`, so the login shows the org's branding |
 | `WRISTCALL_CLOUD_ZITADEL_CLIENT_ID` | | client id of the Cloud's machine user there (`wristcall-cloud`), which needs the organization role `ORG_USER_MANAGER` and nothing else |
 | `WRISTCALL_CLOUD_ZITADEL_CLIENT_SECRET` / `_FILE` | | that machine user's client secret |
 

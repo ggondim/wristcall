@@ -175,6 +175,10 @@ def public_config(
     scopes = list(BASE_SCOPES)
     if config.project_id:
         scopes.append(f"urn:zitadel:iam:org:project:id:{config.project_id}:aud")
+    if config.zitadel_org_id:
+        # The login shows the org's branding and texts only when the request names the org (project private
+        # labeling does not reach the hosted login v2, zitadel#10692).
+        scopes.append(f"urn:zitadel:iam:org:id:{config.zitadel_org_id}")
     return {
         "issuer": config.issuer,
         "project_id": config.project_id,
