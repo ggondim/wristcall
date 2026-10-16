@@ -5,6 +5,7 @@ import { openDb } from "../store/db"
 import { ServerStore, type SavedServer } from "../store/servers"
 import { FakeSession, ISSUER } from "../test/fakeAccount"
 import { AccountModel, normalizeWatchCode, watchSignInUrl, type AgendaControl } from "./account"
+import { savePendingLink, takePendingLink } from "./link"
 import { ServersModel } from "./servers"
 
 
@@ -140,6 +141,19 @@ describe("sign in", () => {
     expect(location.pathname).toBe("/auth/callback")
     expect(location.search).toBe("")
     expect(w.calls).not.toContain("agenda.pushAll")
+  })
+
+  test("completeSignIn: a server link waiting for the sign-in opens again, still pending", async () => {
+    const w = await world({ state: "signedOut" })
+    const hash = "#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ"
+    savePendingLink(hash)
+    try {
+      await w.model.completeSignIn(location.href)
+      expect(location.pathname + location.search + location.hash).toBe("/link")
+      expect(takePendingLink()).toBe(hash) // the link screen takes it
+    } finally {
+      sessionStorage.clear()
+    }
   })
 
   test("completeSignIn: called twice runs once", async () => {

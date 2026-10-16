@@ -6,7 +6,7 @@ app. It does not make calls; the watch does.
 
 It is a static site (TypeScript, Vite, Preact) that talks to your servers and, optionally, to the wristcall Cloud
 straight from the browser. There is no backend of its own: the site stores your server list and credentials in the
-browser and sends them only to the servers you added. Version 0.1.0, published as the image
+browser and sends them only to the servers you added. Version 0.2.0, published as the image
 `ghcr.io/ggondim/wristcall-web` by the `web-vX.Y.Z` tag. It is meant for servers 0.7.0 (older ones send no CORS
 headers, so a browser cannot call them) and, for the account features, Cloud 0.3.0.
 
@@ -14,6 +14,8 @@ What it does:
 
 - Servers: add one with its address and a personal token (`wristcall users tokens add --name browser`), or with a pairing
   code when you are signed in; rename, remove.
+- Server links: `/link` opens the QR code a server shows (`wristcall link`, or its startup log), asks you to confirm the
+  host and connects the server to your account, or hands the same link to the iPhone app with "Open in wristcall".
 - Agents: list, create, edit and delete.
 - Devices: paired watches, requests to approve or deny, pairing codes.
 - History: the calls of every server in one list, with search, filters, export and redelivery.
@@ -23,7 +25,7 @@ What it does:
 ## Run it
 
 ```sh
-docker run -p 8080:8080 -e WRISTCALL_WEB_CLOUD_URL=https://cloud.example.com ghcr.io/ggondim/wristcall-web:0.1.0
+docker run -p 8080:8080 -e WRISTCALL_WEB_CLOUD_URL=https://cloud.example.com ghcr.io/ggondim/wristcall-web:0.2.0
 ```
 
 The image is nginx without root and serves the site on port 8080. Put TLS in front of it: a PWA, its service worker and
@@ -50,6 +52,24 @@ The server and the Cloud send no CORS headers by default, so nothing opens by it
 [docs/protocol.md](../docs/protocol.md) and in [cloud/README.md](../cloud/README.md). For the watch to sign in through
 the app, a server needs `central_account` with `device_credential: approval` and the PWA's client id in `clients`.
 Web Push also needs the Cloud's VAPID key (`WRISTCALL_CLOUD_VAPID_PRIVATE_KEY`) and `push.relay_url` on the server.
+
+## Server links (`/link`)
+
+A server with `central_account` shows a QR code with `https://<this site>/link#v=1&s=<server>&c=<link code>` (format in
+"Link URL" of [docs/protocol.md](../docs/protocol.md#link-url)). The phone's camera opens this page, which:
+
+- reads the fragment once and removes it from the address bar, then shows the server's host and version and asks you
+  to confirm it ("Only connect servers you trust": a link is as trustworthy as whoever showed it);
+- signed in: "Connect" links your account to the server's user, like "Add server" with a code (`POST
+  /v1/server-tokens`, then `POST /v1/account/link`), and the server joins the list;
+- signed out: "Sign in to connect here" keeps the link in this tab (for 15 minutes, as long as the code) and comes back
+  to it after the sign-in;
+- always offers "Open in wristcall", the same link for the iPhone app (`wristcall://link#…`), rebuilt from the checked
+  values. A site without a Cloud only offers this.
+
+Connecting from the browser needs the site in the server's `server.cors_origins`, like any other call; without it the
+page says so and the app is the way to go. The "Pairing code" field of "Add server" also takes the link code (26
+characters, typed with or without spaces and hyphens), for when the QR code cannot be scanned.
 
 ## Differences from the iPhone app
 

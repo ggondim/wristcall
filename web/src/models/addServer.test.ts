@@ -302,6 +302,48 @@ describe("AddServerModel.addWithCode", () => {
     expect(result.ok ? "" : result.message).toContain("https://app.example.com")
     expect((session as ReturnType<typeof link>).serverToken).not.toHaveBeenCalled()
   })
+
+  test("addWithCodeTakesALinkCode", async () => {
+    const { model, store, f } = await setup()
+    const result = await model.addWithCode(HOME, " k7q2-mzxw 4rqt6pzj3h5n2c7vbq ")
+    expect(result.ok).toBe(true)
+    const call = f.calls.find((c) => c.url.endsWith("/v1/account/link"))!
+    expect(JSON.parse(call.init.body as string)).toEqual({ token: SERVER_TOKEN, code: "K7Q2MZXW4RQT6PZJ3H5N2C7VBQ" })
+    expect(await store.list()).toHaveLength(1)
+  })
+
+  test("addWithCodeRefusesWhatIsNeitherCode", async () => {
+    const { model, f } = await setup()
+    for (const code of ["K7Q2MZXW4RQT6PZJ3H5N2C7VB", "K7Q2MZXW4RQT6PZJ3H5N2C7VB1", "1234 567a"]) {
+      expect(await model.addWithCode(HOME, code)).toEqual({ ok: false, message: "Enter the 8-digit code." })
+    }
+    expect(f.calls).toHaveLength(0)
+  })
+})
+
+describe("AddServerModel.health", () => {
+  test("healthAnswersWithoutAToken", async () => {
+    const { model, f } = await setup()
+    expect((await model.health(`${HOME}/`)).version).toBe("0.7.0")
+    expect(f.calls.map((c) => c.url)).toEqual([`${HOME}/v1/health`])
+    expect(bearer(f.calls[0]!.init)).toBeUndefined()
+  })
+
+  test("healthExplainsBlockedOrigin", async () => {
+    const blocked = mockFetch(() => {
+      throw new TypeError("Failed to fetch")
+    })
+    const { model } = await setup({ fetch: blocked })
+    await expect(model.health(HOME)).rejects.toThrow(
+      "Can't reach this server from this site. If it is online, its owner must add https://app.example.com to server.cors_origins.",
+    )
+  })
+
+  test("healthRefusesABadAddress", async () => {
+    const { model, f } = await setup()
+    await expect(model.health("http://home.example.com")).rejects.toThrow("Use an https:// address (http:// only for localhost).")
+    expect(f.calls).toHaveLength(0)
+  })
 })
 
 describe("ServersModel remove and link", () => {

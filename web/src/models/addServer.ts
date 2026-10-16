@@ -3,6 +3,7 @@ import { ApiError, NetworkError, userMessage } from "../lib/errors"
 import { ServerClient, type Health } from "../api/server"
 import type { CloudServer } from "../api/cloud"
 import type { SavedServer } from "../store/servers"
+import { normalizeLinkCode } from "./link"
 import {
   accountServerToken,
   ALREADY_ADDED,
@@ -98,8 +99,10 @@ export class AddServerModel {
   async addWithCode(address: string, code: string, name = ""): Promise<AddResult> {
     const url = parseServerAddress(address)
     if (url === null) return fail(BAD_ADDRESS)
+    // An 8-digit pairing code (`wristcall pair`) or a link code (`wristcall link`, a QR code): the server tells them apart.
     const digits = code.replace(/\s+/g, "")
-    if (!/^[0-9]{8}$/.test(digits)) return fail(BAD_CODE_FORMAT)
+    const sent = /^[0-9]{8}$/.test(digits) ? digits : normalizeLinkCode(code)
+    if (sent === null) return fail(BAD_CODE_FORMAT)
     const session = this.#session
     if (session === null || session.state !== "signedIn") return fail(SIGN_IN_FIRST)
     const clean = cleanName(name, url) // before the code is spent
@@ -115,7 +118,7 @@ export class AddServerModel {
     }
     let apiToken: string
     try {
-      const reply = await client.linkWithCode(serverToken, digits)
+      const reply = await client.linkWithCode(serverToken, sent)
       if (reply.linked !== true || typeof reply.api_token !== "string" || !reply.api_token.startsWith(PAT_PREFIX)) {
         return fail(MALFORMED_REPLY)
       }
@@ -128,6 +131,13 @@ export class AddServerModel {
     } catch {
       return fail(NOT_SAVED)
     }
+  }
+
+  /** `GET /v1/health` of an address, without a token. A blocked request says which origin the server must allow. */
+  health(address: string): Promise<Health> {
+    const url = parseServerAddress(address)
+    if (url === null) return Promise.reject(new Error(BAD_ADDRESS))
+    return this.#health(this.#clientFor(url, null))
   }
 
   async #health(client: ServerClient): Promise<Health> {
