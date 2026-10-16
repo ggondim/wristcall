@@ -169,9 +169,12 @@ Routes and error codes: [docs/protocol.md](docs/protocol.md#central-account-opti
 
 ### Link QR code
 
-With `central_account` set, the app links its account to a user of this server by scanning a QR code: no pairing code
-and no token to type. The code inside the QR is single use and valid for 15 minutes; whoever uses it first becomes
-the owner of that user (the app gets its API token), and `wristcall users unlink <handle>` undoes the link.
+With `central_account` set, a Cloud account links to a user of this server from a QR code: no pairing code and no
+token to type. The box in the log says "Scan this QR code with your iPhone camera:"; the camera opens the link in the
+web app, which connects the server to the signed-in account (the iPhone app does not open these links yet). The code
+inside the QR is single use and valid for 15 minutes; whoever uses it first becomes the owner of that user (it gets
+its API token), and `wristcall users unlink <handle>` undoes the link. Only the newest code of a user works: a new
+code, or linking with one, cancels the earlier ones.
 
 - The QR only exists with `central_account` configured, which stays optional and off by default. `server.public_url`
   must be one of the `central_account.audience` items, or the app could not get a token this server accepts.
@@ -182,7 +185,8 @@ the owner of that user (the app gets its API token), and `wristcall users unlink
   new server logs a hint to set it; a server in use logs nothing.
 - `wristcall link [--user <handle>]` prints a fresh QR and link at any time, for the only user or the named one
   (`docker compose exec wristcall wristcall link`). It exits 1 with an error, and prints no link, when
-  `central_account` is missing or `server.public_url` is outside the audience.
+  `central_account` is missing or `server.public_url` is outside the audience. For a user already linked it notes
+  that the new code replaces that link.
 - The QR is drawn with block characters in the compact form, so on a light terminal background it may look inverted.
   The link printed below it always works: open it on the phone instead.
 - Linking from the web app (PWA) needs its origin, `https://wristcall-app.trigram.com.br`, in `server.cors_origins`.

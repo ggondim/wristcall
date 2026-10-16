@@ -121,6 +121,10 @@ class PairingStore(Protocol):
         """Marks a valid link code as used and returns its user; None if unknown, used or expired. At most once."""
         ...
 
+    async def discard_link_codes(self, user_id: str) -> None:
+        """Deletes the user's unused link codes, so only the newest one (or none, after linking) works."""
+        ...
+
     async def add_request(
         self, poll_hash: str, request_id: str, device_name: str, now: float, expires_at: float,
         target_user_id: str | None = None,

@@ -53,6 +53,28 @@ def test_link_code_is_single_use(client, issuer):
     assert linked_user(client) is not None
 
 
+def test_stale_link_code_is_refused_after_linking_with_the_newest(client, issuer):
+    # Two startups of a new server: each prints a code. Linking with the newest kills the earlier one,
+    # so a code left in the log cannot re-link the owner to another account.
+    api_token(client)  # creates the owner
+    storage = client.app.state.storage
+    owner = run(storage.users.by_handle("owner"))
+    stale = issue(client)
+    links = LinkService(storage, "https://testserver")
+    newest = run(links.issue(owner.id)).code
+    assert link(client, issuer.token(), code=newest).status_code == 200
+    r = link(client, issuer.token(sub="someone-else"), code=stale)
+    assert r.status_code == 401 and r.json()["error"] == "invalid_code"
+    assert linked_user(client).id == owner.id
+
+
+def test_claiming_a_link_code_drops_the_users_other_codes(client, issuer):
+    first, second = issue(client), issue(client)  # added straight to the storage, side by side
+    assert link(client, issuer.token(), code=second).status_code == 200
+    r = link(client, issuer.token(sub="someone-else"), code=first)
+    assert r.status_code == 401 and r.json()["error"] == "invalid_code"
+
+
 def test_link_code_expires(client, issuer):
     code = issue(client, expires_in=-1)
     r = link(client, issuer.token(), code=code)
@@ -91,7 +113,7 @@ def test_link_log_names_the_kind_never_the_code(client, issuer, caplog):
 
 # ---------- link URL, QR and startup ----------
 
-CODE = "K7Q2M9XW4R8T6PZJ3H5N2C7VBQ"
+CODE = "K7Q2MZXW4RQT6PZJ3H5N2C7VBQ"
 STARTUP_AGAIN = "docker compose exec wristcall wristcall link"
 
 
@@ -122,7 +144,7 @@ async def startup(st, cfg, links=None):
 
 def test_link_url_format():
     assert link_url("https://home.example.com", CODE) == (
-        "https://wristcall-app.trigram.com.br/link#v=1&s=https://home.example.com&c=K7Q2M9XW4R8T6PZJ3H5N2C7VBQ"
+        "https://wristcall-app.trigram.com.br/link#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ"
     )
     assert link_url("https://h.example:8443/wc", CODE).endswith("#v=1&s=https://h.example:8443/wc&c=" + CODE)
     assert "s=https://h.example/a%3Fb&" in link_url("https://h.example/a?b", CODE)
@@ -140,7 +162,7 @@ def test_render_invite_has_qr_and_copy():
     lines = text.splitlines()
     for line in (
         "Connect this server to your iPhone",
-        "Open wristcall on your iPhone, tap Scan QR code and point it here:",
+        "Scan this QR code with your iPhone camera:",
         "Or open this link on your iPhone:",
         url,
         "Works once, for 15 minutes. New code: wristcall link",
@@ -158,7 +180,7 @@ async def test_startup_prints_qr_on_a_new_server(st):
     assert "Connect this server to your iPhone" in first and STARTUP_AGAIN in first
     (c1,), (c2,) = codes_in(first), codes_in(second)
     assert c1 != c2 and "https://wristcall-app.trigram.com.br/link#v=1&s=https://testserver&c=" in first
-    assert await st.pairing.claim_link_code(hash_secret(c1), time.time()) == user.id
+    assert await st.pairing.claim_link_code(hash_secret(c1), time.time()) is None  # replaced by the restart's code
     assert await st.pairing.claim_link_code(hash_secret(c2), time.time()) == user.id
 
 
@@ -243,3 +265,22 @@ async def test_link_service_purges_and_stores_only_the_hash(st):
     clock[0] += LINK_TTL_S + 1
     await links.issue(user.id)
     assert link_codes(st) == 1  # the expired one was purged first
+
+
+@pytest.mark.parametrize("kind", ["sqlite", "memory"])
+async def test_issuing_again_leaves_only_the_newest_code(kind):
+    from memory_storage import MemoryStorage
+
+    store = open_sqlite_storage(":memory:") if kind == "sqlite" else MemoryStorage()
+    try:
+        users = UserService(store)
+        ana, bob = await users.create("ana"), await users.create("bob")
+        links = LinkService(store, "https://testserver")
+        bobs = await links.issue(bob.id)
+        first, second = await links.issue(ana.id), await links.issue(ana.id)
+        now = time.time()
+        assert await store.pairing.claim_link_code(hash_secret(first.code), now) is None
+        assert await store.pairing.claim_link_code(hash_secret(second.code), now) == ana.id
+        assert await store.pairing.claim_link_code(hash_secret(bobs.code), now) == bob.id  # other users keep theirs
+    finally:
+        await store.close()

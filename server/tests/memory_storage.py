@@ -186,6 +186,11 @@ class _Pairing:
         c["used_at"] = now
         return c["user_id"]
 
+    async def discard_link_codes(self, user_id):
+        self.link_codes = {
+            k: v for k, v in self.link_codes.items() if v["user_id"] != user_id or v["used_at"] is not None
+        }
+
     async def add_request(self, poll_hash, request_id, device_name, now, expires_at, target_user_id=None):
         self.requests[poll_hash] = {
             "request_id": request_id, "device_name": device_name, "user_id": None, "status": "pending",

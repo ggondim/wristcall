@@ -86,6 +86,8 @@ class AccountService:
             user_id = await self._st.pairing.claim_link_code(hash_secret(long), now)
             if user_id is None:
                 raise AccountError("invalid_code", "invalid or expired code")
+            # Linked: the user's other codes (earlier startups, `wristcall link`) must not re-link it elsewhere.
+            await self._st.pairing.discard_link_codes(user_id)
             return user_id, await self._link(user_id, identity)
         normalized = normalize_code(code) if isinstance(code, str) else None
         user_id = await self._st.pairing.claim_code(normalized, now, self._max_attempts) if normalized else None

@@ -171,8 +171,9 @@ wristcall://link#v=1&s=<server URL>&c=<link code>
 ```
 
 The `https` form is the one in the QR (a phone camera always opens it); the page is the web app, which links in the
-browser or hands the same fragment to the app with the `wristcall://link#…` scheme. Everything travels in the
-fragment, never in a query, so it is not sent to the web app's host.
+browser. The `wristcall://link#…` form carries the same fragment for the iPhone app, which does not register that
+scheme yet, so the web app does not offer it for now. Everything travels in the fragment, never in a query, so it is
+not sent to the web app's host.
 
 | Key | Value |
 |---|---|
@@ -192,6 +193,9 @@ answers are the same as with an 8-digit pairing code (`200 {"linked":true,"issue
 and the errors above), with two differences: a wrong link code is `401 invalid_code` without counting as a failed
 attempt against the 8-digit codes (128 random bits cannot be guessed; the per-IP budget still applies), and the
 server accepts the code in lower case and with spaces or hyphens, for people who copy it from the log.
+
+Only the newest link code of a user is valid: issuing a new one (a restart of a new server, `wristcall link`) or
+linking with one deletes that user's other unused codes, which then get `401 invalid_code`.
 
 The code gives a full API token of its user to whoever uses it first: treat the QR, the link and the log lines that
 show them as secrets until the code is used or expires. `wristcall users unlink <handle>` undoes a link made by

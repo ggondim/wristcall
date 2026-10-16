@@ -92,6 +92,8 @@ class LinkService:
             raise UserError("user not found")
         now = self._now()
         await self._st.pairing.purge(now)
+        # Only the newest QR works: a code left in an earlier startup log must not link this user later.
+        await self._st.pairing.discard_link_codes(user.id)
         code = new_link_code()
         expires_at = now + LINK_TTL_S
         await self._st.pairing.add_link_code(hash_secret(code), user.id, expires_at)
@@ -107,7 +109,7 @@ def render_invite(invite: LinkInvite, again: str, user_line: bool = False) -> st
     if user_line:
         lines.append(f"For user {invite.user.handle}.")
     lines += [
-        "Open wristcall on your iPhone, tap Scan QR code and point it here:",
+        "Scan this QR code with your iPhone camera:",
         qr.getvalue().rstrip("\n"),
         "Or open this link on your iPhone:",
         invite.url,

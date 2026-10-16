@@ -186,7 +186,10 @@ def link(config: ConfigOpt = DEFAULT_CONFIG, user: UserOpt = None) -> None:
         owner = await target_user(ctx.storage, ctx.users, user)
         return await LinkService(ctx.storage, canonical_public_url(ctx.cfg)).issue(owner.id)
 
-    typer.echo(render_invite(_run(config, body), CLI_AGAIN, user_line=True))
+    invite = _run(config, body)
+    if invite.user.central_subject:
+        typer.echo(f"note: {invite.user.handle} is already linked; using this code replaces that link.", err=True)
+    typer.echo(render_invite(invite, CLI_AGAIN, user_line=True))
 
 
 # ---------- devices ----------

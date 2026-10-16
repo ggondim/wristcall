@@ -456,6 +456,21 @@ def test_cli_link_prints_qr(tmp_path):
     assert claimed_by(tmp_path, out) == handle_id(tmp_path, "bob")
 
 
+def test_cli_link_notes_a_user_already_linked(tmp_path):
+    cfg = with_central_account(write_config(tmp_path))
+    first = invoke(cfg, "link")
+    assert first.exit_code == 0 and "already linked" not in first.stderr
+    store = open_sqlite_storage(tmp_path / "data")
+    try:
+        run(store.users.link_central(handle_id(tmp_path, "owner"), "https://issuer.test#someone"))
+    finally:
+        run(store.close())
+    r = invoke(cfg, "link")
+    assert r.exit_code == 0
+    assert "note: owner is already linked; using this code replaces that link." in r.stderr.splitlines()
+    assert claimed_by(tmp_path, r.stdout) == handle_id(tmp_path, "owner")  # the code is still issued
+
+
 def test_cli_link_creates_owner_on_an_empty_server(tmp_path):
     cfg = with_central_account(write_config(tmp_path, profiles=False))
     out = ok(cfg, "link")

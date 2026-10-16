@@ -82,6 +82,22 @@ async def test_purge_deletes_expired_link_codes(storage):
     assert await storage.pairing.claim_link_code("new", 10.0) == "u_a"
 
 
+async def test_discard_link_codes_drops_only_that_users_unused_codes(storage):
+    await storage.users.create("u_a", "alice", "Alice", 1.0)
+    await storage.users.create("u_b", "bob", "Bob", 1.0)
+    await storage.pairing.add_link_code("used", "u_a", 100.0)
+    assert await storage.pairing.claim_link_code("used", 10.0) == "u_a"
+    await storage.pairing.add_link_code("a1", "u_a", 100.0)
+    await storage.pairing.add_link_code("a2", "u_a", 100.0)
+    await storage.pairing.add_link_code("b1", "u_b", 100.0)
+    await storage.pairing.discard_link_codes("u_a")
+    assert await storage.pairing.claim_link_code("a1", 10.0) is None
+    assert await storage.pairing.claim_link_code("a2", 10.0) is None
+    assert await storage.pairing.claim_link_code("used", 10.0) is None
+    assert await storage.pairing.claim_link_code("b1", 10.0) == "u_b"
+    await storage.pairing.discard_link_codes("u_missing")  # nothing to drop: no error
+
+
 async def test_deleting_a_user_deletes_their_link_codes(storage):
     await storage.users.create("u_a", "alice", "Alice", 1.0)
     await storage.pairing.add_link_code("mine", "u_a", 9e9)

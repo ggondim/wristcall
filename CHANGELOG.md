@@ -34,20 +34,30 @@ For servers 0.8.0 (link codes) and Cloud 0.3.0 or later.
 - The startup log shows the QR code and link on a new server (`central_account` set, `public_url` in the audience,
   nobody linked, no user or a single user with no API token and no device). A server already in use gets a hint.
 - `wristcall link [--user <handle>]` prints a fresh QR code and link; it refuses (exit 1) when `central_account` is
-  missing or `server.public_url` is outside `central_account.audience`.
+  missing or `server.public_url` is outside `central_account.audience`. For a user already linked it prints a note on
+  stderr (the new code replaces that link) and still issues the code.
+- Only the newest link code of a user works: issuing a new one (a restart of a new server, `wristcall link`) or linking
+  with one deletes that user's other unused codes.
 - Dependency `segno` (pure Python) to draw the QR code.
 
 ### Changed
 
 - `POST /v1/account/link` also accepts the long link code, besides the 8 digit pairing code. A wrong long code is
   `401 invalid_code` and does not count as an attempt on pairing codes.
-- A server with `central_account` and no users creates the user `owner` at startup, as the `profiles` import does.
+- A server creates the user `owner` at startup when `central_account` is set, `server.public_url` is in
+  `central_account.audience` and there are no users, as the `profiles` import does; `wristcall link` does the same on
+  a server without users.
 - Docs: the web app origin is `https://wristcall-app.trigram.com.br` (it was `app.wristcall.trigram.com.br`).
 
 ### Security
 
 - The code in the QR gives the owner's API token to whoever uses it first. It is printed only on a new server and sits
   in the server log: whoever can read the log can use it. A server already in use never prints a code at startup.
+
+### Upgrade note
+
+- Back up `data_dir` first. The database migrates to schema 7 on start (the new `link_codes` table). Rolling back to
+  0.7.x needs that backup: 0.7.x refuses the newer schema.
 
 ## [cloud-0.4.0] - 2026-10-16
 

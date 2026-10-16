@@ -242,6 +242,9 @@ class _Pairing:
         )
         return rows[0]["user_id"] if rows else None
 
+    async def discard_link_codes(self, user_id: str) -> None:
+        self._db.execute("DELETE FROM link_codes WHERE user_id = ? AND used_at IS NULL", (user_id,))
+
     async def add_request(
         self, poll_hash: str, request_id: str, device_name: str, now: float, expires_at: float,
         target_user_id: str | None = None,
