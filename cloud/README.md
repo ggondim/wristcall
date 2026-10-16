@@ -3,8 +3,9 @@
 The central account API: lets a user sign in with the central account (OIDC, `auth.trigram.com.br`) and keep the
 list of their wristcall servers in one place. It also issues the per-server tokens that prove the central account to
 a server, and relays push notifications (Web Push and APNs) for servers that have no push credentials of their own.
-It is a separate service from `server/`, with its own package (`wristcall-cloud`), its own MongoDB database and its
-own release cycle.
+Since 0.4.0 the Cloud also owns the account itself: apps create a silent account from a key made on the device, and
+each device gets its own session (see [Accounts and sessions](#accounts-and-sessions)). It is a separate service from
+`server/`, with its own package (`wristcall-cloud`), its own MongoDB database and its own release cycle.
 
 ## Configuration
 
@@ -12,7 +13,7 @@ Everything comes from the environment:
 
 | Variable | Default | |
 |---|---|---|
-| `WRISTCALL_CLOUD_MONGO_URL` | (required) | `mongodb://` or `mongodb+srv://` URL |
+| `WRISTCALL_CLOUD_MONGO_URL` / `_FILE` | (required) | `mongodb://` or `mongodb+srv://` URL (it carries the password), inline or the path of a file that holds it, not both. The admin CLI reads the same variables |
 | `WRISTCALL_CLOUD_DATABASE` | `wristcall_cloud` | |
 | `WRISTCALL_CLOUD_ISSUER` | `https://auth.trigram.com.br` | must be https (http only for localhost); trailing slash removed |
 | `WRISTCALL_CLOUD_CLIENT_IOS` / `_PWA` / `_WATCH` | | OIDC client ids; at least one is required |
@@ -28,6 +29,24 @@ Per-server tokens (the first two go together; without them the token routes answ
 | `WRISTCALL_CLOUD_PUBLIC_URL` | | the Cloud's own URL, the `iss` of every per-server token. It must already be canonical: https, lowercase host, no default port, no trailing slash (http only for localhost), and differ from `WRISTCALL_CLOUD_ISSUER` |
 | `WRISTCALL_CLOUD_SIGNING_KEY` / `_FILE` | | EC P-256 private key (PEM) the tokens are signed with; inline or a file path, not both |
 | `WRISTCALL_CLOUD_ALLOW_LOOPBACK_AUDIENCE` | `0` | `1` lets clients ask tokens for `http://localhost` and friends (development only) |
+
+Accounts and sessions (all optional; they need the two per-server token variables above, because the same key signs
+the access tokens, and without them `sessions.enabled` in `/v1/config` is `false`):
+
+| Variable | Default | |
+|---|---|---|
+| `WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS` | `0` | `1` keeps Zitadel tokens working on the routes that existed in 0.3.x. See [Transition flag](#transition-flag) |
+| `WRISTCALL_CLOUD_ZITADEL_MAX_AGE` | `600` | seconds; the oldest a Zitadel token may be (`now - iat`) when it is exchanged at `POST /v1/devices` |
+| `WRISTCALL_CLOUD_ACCESS_TOKEN_TTL` | `3600` | seconds an access token lives |
+| `WRISTCALL_CLOUD_ACCOUNTS_PER_IP_HOUR` | `3` | silent accounts one client address may create per hour |
+| `WRISTCALL_CLOUD_ACCOUNTS_PER_IP_DAY` | `10` | the same, per day |
+| `WRISTCALL_CLOUD_ACCOUNTS_PER_DAY` | `200` | silent accounts created in the last 24 hours, all clients together; above it `POST /v1/accounts` answers `429` |
+| `WRISTCALL_CLOUD_ACCOUNTS_ALERT_PER_DAY` | `100` | a warning is logged above this many in 24 hours; must not exceed `WRISTCALL_CLOUD_ACCOUNTS_PER_DAY` |
+| `WRISTCALL_CLOUD_SESSION_ATTEMPTS_PER_MINUTE` | `20` | per client address, on the routes that take a secret to guess: account key, enroll code, web session creation, invite code |
+| `WRISTCALL_CLOUD_MAX_DEVICES` | `10` | devices per account |
+| `WRISTCALL_CLOUD_MAX_ENROLL_CODES` | `5` | open enroll codes per account |
+| `WRISTCALL_CLOUD_ACCOUNT_IDLE_DAYS` | `90` | an anonymous account (no identity, no plan) unused for this long is deleted (checked every 6 hours); a device unused for this long cannot refresh its session |
+| `WRISTCALL_CLOUD_CLIENT_COUNTRY_HEADER` | | header the reverse proxy puts the client's country in (`CF-IPCountry` behind Cloudflare). It is recorded on web sessions, so the iPhone can show it before approving. Without it the country is `null`; nothing breaks |
 
 Push relay (all optional; a channel exists only when its credentials are set):
 
@@ -81,29 +100,47 @@ The APNs key is the `.p8` file from the Apple developer account, used as it is.
 
 ## Authentication
 
-Requests carry the central account access token: `Authorization: Bearer <token>`. The token is verified locally
-against the issuer's published keys (signature, issuer, time claims); its audience must be one of the configured
-client ids or the project id (`WRISTCALL_CLOUD_PROJECT_ID`, which Zitadel puts in `aud` when the app asks for the
-project audience scope), and the client it was issued to must be one of the configured client ids. The account is
-identified as `<issuer>#<subject>`. A missing or bad token is `401 unauthorized`; the issuer being unreachable with
-no cached keys is `503 account_unavailable`.
+Requests carry a Cloud account access token: `Authorization: Bearer <token>`. A missing or bad token is
+`401 unauthorized`.
+
+**Account access token.** The Cloud signs it (ES256, header `typ` `wc-account+jwt`, with the key of the per-server
+tokens; `iss` and `aud` are `WRISTCALL_CLOUD_PUBLIC_URL`). Claims: `sub` the account id, `did` the device id, `plt`
+the device platform. It lives 3600 seconds (`WRISTCALL_CLOUD_ACCESS_TOKEN_TTL`) and works on every account route.
+Every request checks that the device still exists, so a device that was removed or revoked stops at once, not when
+the token expires. Servers do not accept it (they require `typ` `wc-server+jwt` and their own URL as `aud`), and the
+Cloud refuses to issue a per-server token for its own URL.
+
+**Zitadel token.** The central account access token from the identity provider. It is verified locally against the
+issuer's published keys (signature, issuer, time claims); its audience must be one of the configured client ids or the
+project id (`WRISTCALL_CLOUD_PROJECT_ID`, which Zitadel puts in `aud` when the app asks for the project audience scope),
+and the client it was issued to must be one of the configured client ids. It is taken in two places only:
+
+- `POST /v1/devices`, to exchange it for a device session, and only if it was issued at most
+  `WRISTCALL_CLOUD_ZITADEL_MAX_AGE` seconds ago (`401 stale_token` otherwise: the app signs in again).
+- The routes that already existed in 0.3.x, and only while the [transition flag](#transition-flag) is on.
+
+The identity provider being unreachable with no cached keys is `503 account_unavailable`. Without a signing key the
+Cloud issues no sessions, so without the transition flag no route accepts a token at all.
 
 **Security: the Zitadel token is not bound to this API.** The Cloud accepts the same watch, iOS and PWA client ids
 that wristcall servers 0.5.0 accept. A central access token given to a server operator (when the user pairs or links
 there) can therefore be replayed here by that operator until it expires: a malicious self-hosted operator could read
-the user's agenda and add or delete servers (for example a phishing "Home" entry). Only `DELETE /v1/account` is
-restricted (iOS and PWA clients). Servers 0.6.0 never receive the Zitadel token, only a per-server token (below),
-which the Cloud API does not accept: see "Before deploying".
+the user's agenda and add or delete servers (for example a phishing "Home" entry) while the transition flag is on, and,
+for the first `WRISTCALL_CLOUD_ZITADEL_MAX_AGE` seconds, exchange the token for a device of the user's account
+(`POST /v1/devices`). Servers 0.6.0 never receive the Zitadel token, only a per-server token (below), which the Cloud
+API does not accept: see "Before deploying".
 
-**Account deletion.** With the `WRISTCALL_CLOUD_ZITADEL_*` variables, `DELETE /v1/account` also deletes the user
-named by the token's `sub` at Zitadel (`DELETE /management/v1/users/{id}` with `x-zitadel-orgid`), signed in as the
-machine user (client credentials, token cached until a minute before it expires). The call is scoped to the
-organization: a user of another organization of the instance (who may sign in to the apps too) is not found there
-and is left alone, as is one already deleted (a warning is logged: for every user it means a wrong organization id).
-After the deletion Zitadel refuses the user's refresh token, and its end-session page sends the app straight back.
+**Account deletion.** With the `WRISTCALL_CLOUD_ZITADEL_*` variables, `DELETE /v1/account` also deletes the users
+behind the account's Zitadel identities at Zitadel (`DELETE /management/v1/users/{id}` with `x-zitadel-orgid`), signed
+in as the machine user (client credentials, token cached until a minute before it expires). The call is scoped to the
+organization: a user of another organization of the instance (who may sign in to the apps too) is not found there and
+is left alone, as is one already deleted (a warning is logged: for every user it means a wrong organization id). After
+the deletion Zitadel refuses the user's refresh token, and its end-session page sends the app straight back. Devices,
+identities, codes, web sessions and the plan go with the account, so every account access token stops working at once.
 Known gaps: the app's confirmation says the sign-in is deleted even when the Cloud lacks these variables or the user
-belongs to another organization; and an access token issued before the deletion (the watch's, say) stays valid until
-it expires, so a call with it in that window records an empty account again, which nothing deletes later.
+belongs to another organization; and, while the transition flag is on, a Zitadel token issued before the deletion
+stays valid until it expires, so a call with it in that window records an empty account again, which nothing
+deletes later.
 
 `src/wristcall_cloud/oidc.py` is a copy of `server/src/wristcall/oidc.py` (only the user agent differs); keep
 both in sync.
@@ -114,15 +151,17 @@ Errors are always `{"error": code, "message": ...}`. Request bodies are limited 
 that is not a JSON object is `422 invalid`.
 
 - `GET /v1/health`: `{"status": "ok", "version": ...}`.
-- `GET /v1/config` (public): what an app needs to sign in: `issuer`, `project_id`, `clients` and `scopes`.
+- `GET /v1/config` (public): what an app needs to sign in: `issuer`, `project_id`, `clients` and `scopes`; the
+  `push` and `server_tokens` fields below; and `sessions`: `{"enabled", "zitadel_max_age_s", "legacy_zitadel_tokens"}`
+  (`enabled` is whether the Cloud issues account sessions).
 
-All the routes below need the account token. The account is created on first use. A resource of another account
-answers `404 not_found`, never `403`.
+All the routes below need an account token (an access token; a Zitadel token only while the transition flag is on,
+and then the account is created on first use). A resource of another account answers `404 not_found`, never `403`.
 
 | Route | Body | Answers |
 |---|---|---|
-| `GET /v1/account` | | `200 {"account", "created_at", "servers"}` |
-| `DELETE /v1/account` | | `204`, deletes the account, its servers and (when configured) the user at the identity provider; `403 forbidden` unless the token was issued to the iOS or PWA client; `503 account_unavailable` when the provider fails (the agenda is already gone; the same call again finishes) |
+| `GET /v1/account` | | `200 {"account", "created_at", "servers", "plan", "identities", "key_set"}`: `plan` is `{"plan", "source", "expires_at"}` or `null`, `identities` the kinds linked (`["zitadel"]`), `key_set` whether the account has an account key |
+| `DELETE /v1/account` | | `204`, deletes the account, its servers, devices, identities and plan, and (when configured) the Zitadel users behind it; `403 forbidden` unless the device is an app or the web app (for a Zitadel token: unless it was issued to the iOS or PWA client); `503 account_unavailable` when the provider fails (the agenda is already gone; the same call again finishes) |
 | `GET /v1/servers` | | `200 {"servers": [Server]}` by creation |
 | `POST /v1/servers` | `{name, url, kind?, linked?}` | `201 Server`; `409 conflict` for a repeated URL; `403 limit` over `WRISTCALL_CLOUD_MAX_SERVERS` |
 | `GET /v1/servers/{id}` | | `200 Server`; `404` |
@@ -143,11 +182,14 @@ characters); it is normalized (scheme and host in lowercase, no trailing slash) 
 ### Per-server tokens
 
 The Cloud is an OIDC issuer of its own (`WRISTCALL_CLOUD_PUBLIC_URL`) whose tokens are meant for one server. An app
-asks for a token for the exact URL it is about to connect to, with its central account token, and gives that token
-to that server only. The server checks signature, issuer, `aud` (its own URL), `typ` and expiry; the Cloud API
-refuses these tokens, and servers refuse Zitadel tokens, so a token cannot be replayed at another server or at the
-Cloud. Tokens are ES256, `typ` `wc-server+jwt`, valid for 300 seconds, with `sub` the account (`<issuer>#<subject>`)
-and `client_id` the app the account token was issued to. Neither the audience nor the token reach the log.
+asks for a token for the exact URL it is about to connect to, with its account token, and gives that token to that
+server only. The server checks signature, issuer, `aud` (its own URL), `typ` and expiry; the Cloud API refuses
+these tokens, and servers refuse Zitadel tokens, so a token cannot be replayed at another server or at the Cloud.
+Tokens are ES256, `typ` `wc-server+jwt`, valid for 300 seconds, with `sub` the account id (`acc_...` for accounts made
+by 0.4.0, `<issuer>#<subject>` for older ones; opaque to servers) and `client_id` the OIDC client of the app that
+asked. With an account session the client comes from the device platform (`ios`, `ipados` and `macos`: the iOS client;
+`watchos`: the watch client; `web`: the PWA client), left out when that client is not configured; with a Zitadel token
+it is the client the token was issued to. Neither the audience nor the token reach the log.
 
 | Route | Auth | Answers |
 |---|---|---|
@@ -200,6 +242,185 @@ push service (a Web Push payload is encrypted for the browser, but the push serv
 sees the alert of an APNs message). The transcript of a call never does: only what a server puts in the notification is sent. The Cloud does not
 log titles, bodies, labels, keys, device tokens or endpoints.
 
+## Accounts and sessions
+
+Since 0.4.0 the Cloud owns the account. An app creates a silent account from a key it makes on the device, with no
+sign-in, and every device then has a session of its own. Signing in with Zitadel is optional and adds an identity to
+the account. All the routes here answer `404 not_configured` when the Cloud has no signing key.
+
+### Model
+
+- **Account.** New accounts have an id `acc_` plus 26 lowercase base32 characters (128 bits). Accounts that existed in
+  0.3.x keep their id (`<issuer>#<subject>`) and get a Zitadel identity from the [migration](#data-and-migration).
+- **Account key.** 32 random bytes made by the app, sent as base64url without padding (43 characters, in its canonical
+  form). The Cloud keeps only its SHA-256. It is the proof of ownership for a silent account: the iPhone, iPad and
+  Mac keep it in iCloud Keychain, so a new Apple device signs back in with it (`POST /v1/devices`). One key per
+  account, and a key belongs to one account.
+- **Device.** One session per device, with a platform: `ios`, `ipados`, `macos` (the apps), `watchos` or `web` (the
+  PWA). A session is an access token (1 hour) and a rotating refresh token. A refresh token can be used once: using
+  it again (a lost response that was resent, or a stolen copy) signs the device out at once, and it must sign in
+  again.
+- **Identity.** A Zitadel user linked to an account, unique by `(kind, issuer, subject)`. An identity belongs to one
+  account and accounts are never merged.
+- **Plan.** A beta entitlement, `full` or `custom`, one per account. See [Admin CLI](#admin-cli).
+
+### Secret formats
+
+Secrets are stored only as SHA-256 digests, and never reach a log, an error response or an exception message.
+
+| Secret | Format |
+|---|---|
+| account key | 43 characters, base64url of 32 bytes, no padding |
+| access token | ES256 JWT, `typ` `wc-account+jwt`, claims `iss` and `aud` (`WRISTCALL_CLOUD_PUBLIC_URL`), `sub`, `did`, `plt`, `iat`, `exp`, `jti`; not stored |
+| refresh token | `wcr_` plus 43 characters |
+| enroll code | `wce_` plus 26 lowercase base32 characters; single use, 600 seconds |
+| web session | id `ws_` plus 16 hex characters; approve key `wck_` plus 43 characters; poll key `wcp_` plus 43 characters; 300 seconds |
+| invite code | `WC-XXXX-XXXX-XXXX`, 12 uppercase base32 characters; case, spaces and hyphens do not count when redeeming; single use |
+
+### Platform rules
+
+- **App** is `ios`, `ipados` or `macos`. **Manager** is an app or `web`.
+- Only an app can set or rotate the account key, create enroll codes, and inspect or approve a web session.
+- Only a manager can delete the account, remove another device or redeem an invite. Any device can list the devices,
+  remove itself and ask for per-server tokens.
+- The watch (`watchos`) is the least privileged device. It cannot do any of the above, but it can still read and
+  change the agenda (servers and agents) like in 0.3.x.
+- A Zitadel token can be exchanged only for a device that fits its client: the iOS client for `ios`, `ipados` or
+  `macos`, the watch client for `watchos`, the PWA client for `web` (`403 forbidden` otherwise). On the 0.3.x routes a
+  Zitadel token from a client the Cloud does not know counts as the watch.
+
+### Routes
+
+A device in a request body is `{"name": 1 to 64 characters, "platform", "public_key"?: up to 1024 characters,
+"attestation"?: accepted and ignored}`; other fields are ignored. A session answer (`201` or `200`) is
+`{"account", "device", "access_token", "refresh_token", "expires_at"}` (`expires_at` is the access token's, in Unix
+seconds); `POST /v1/devices` adds `"key_set"` (whether the account has an account key).
+
+"Account" in the Auth column is `Authorization: Bearer <access_token>`; "app" and "manager" are the platform rules
+above.
+
+| Route | Auth | Body and answer | Errors |
+|---|---|---|---|
+| `POST /v1/accounts` | none | `{account_key, device}` creates a silent account and its first device: `201` session | `409 key_in_use`, `422 invalid`, `429 rate_limited` (with `Retry-After`) |
+| `POST /v1/devices` | none (the key) or `Bearer <Zitadel token>` | `{account_key, account?, device}` or `{device}`: `201` session and `key_set`. With the key alone the Cloud finds the account (a repeated `POST /v1/accounts` is recovered this way); `account`, if given, must match. With a Zitadel token it finds or creates the account of that identity. The app asks Zitadel for a new token before the exchange | `401 unauthorized`, `401 stale_token`, `403 forbidden` (client does not fit the platform), `403 limit`, `422 invalid`, `429`, `503 account_unavailable` |
+| `POST /v1/session/refresh` | none | `{refresh_token, assertion?}`: `200` session with a new refresh token (`assertion` is ignored) | `401 unauthorized` (unknown, expired or idle), `401 revoked` (reuse: the device is gone) |
+| `GET /v1/devices` | account | `200 {"devices": [{id, name, platform, created_at, last_seen_at, current}]}` | |
+| `DELETE /v1/devices/{id}` | account (manager, or any device for its own id) | `204` | `403 forbidden`, `404 not_found` |
+| `PUT /v1/account/key` | account (app) | `{account_key}`: `204`; sets the key when there is none, the same key again is `204` | `409 key_exists`, `409 key_in_use`, `422` |
+| `POST /v1/account/key/rotate` | account (app) | `{account_key, new_account_key}`: `200 {"revoked": n}`. Every other device, every open enroll code and every approved web session of the account goes | `401 unauthorized` (wrong current key), `409 key_in_use`, `409 no_key` (use `PUT /v1/account/key`), `422`, `429` |
+| `POST /v1/devices/enroll-codes` | account (app) | `201 {"code", "expires_at"}`: single use, 600 seconds, creates only a `watchos` device | `403 limit` (5 open) |
+| `POST /v1/devices/enroll` | none | `{code, device}`: `201` session | `404 invalid_code`, `403 forbidden` (platform is not `watchos`; the code is not spent), `403 limit` (the code is spent), `422`, `429` |
+| `POST /v1/web-sessions` | none | `{device: {name, platform?: "web"}}`: `201 {"id", "approve_key", "poll_key", "expires_at"}` (300 seconds) | `422`, `429` |
+| `GET /v1/web-sessions/{id}` | `Bearer <poll_key>` | `200 {"status": "pending", "expires_at"}`, or `200 {"status": "approved", ...session}` once (then it is gone). Poll every 2 seconds or more | `401 unauthorized` (no bearer), `404 not_found` (unknown, expired or wrong key), `403 limit`, `429` (more than 1 poll per second for the same session id) |
+| `POST /v1/web-sessions/{id}/inspect` | account (app) | `{approve_key}`: `200 {"name", "user_agent", "country", "created_at", "expires_at"}`; `country` is an ISO 3166 code or `null`. The app shows it with "Only approve a code you opened yourself" | `403 forbidden`, `404 not_found`, `422` |
+| `POST /v1/web-sessions/{id}/approve` | account (app) | `{approve_key}`: `200 {"approved": true}` | `403 forbidden`, `403 limit`, `404 not_found`, `422` |
+| `POST /v1/entitlements/redeem` | account (manager) | `{code}`: `200 {"plan", "source", "expires_at"}` | `404 invalid_code`, `409 already_entitled` (the invite is not spent), `403 forbidden`, `422`, `429` |
+
+Every route that takes an account token can also answer `401 unauthorized`, and the ones that read a body `422 invalid`
+(the message names the field, never its value).
+
+Things worth knowing:
+
+- **Enrolling the watch.** The app asks for an enroll code, hands it to the watch (WatchConnectivity), and the watch
+  calls `POST /v1/devices/enroll`. A leaked code can only create a `watchos` device, which cannot rotate the key or
+  delete the account. An enroll that hits the device limit still spends the code; the app makes another one.
+- **Web sessions.** The PWA shows a QR code with the session id and the approve key, and keeps the poll key to itself.
+  The iPhone inspects the session (name, user agent, country, time), the user approves, and the PWA gets its tokens on
+  the first poll after the approval; nothing is kept in clear in the database. The poll is limited per session id (1 a
+  second), not per address, so someone who saw the QR code can make the PWA's polls answer `429` (nothing leaks,
+  and the PWA tries again). A session that is not approved in 300 seconds is gone.
+- **Sign out everywhere.** `POST /v1/account/key/rotate` with the same key as both the current and the new key signs
+  out every other device and drops the open enroll codes.
+- **A lost refresh response.** The device is signed out (no grace window). A device with the account key signs in
+  again by itself; the PWA and a watch enrolled by code need to be approved or enrolled again.
+- **Concurrent refreshes.** One device does one refresh at a time (the app and its extensions share the token).
+
+### Limits
+
+| What | Limit | Answer |
+|---|---|---|
+| silent accounts per client address | 3 an hour, 10 a day | `429 rate_limited` with `Retry-After` |
+| silent accounts, all clients | 200 in 24 hours (a warning is logged above 100) | `429` with `Retry-After: 3600` |
+| attempts per client address on `POST /v1/devices`, `POST /v1/devices/enroll`, `POST /v1/web-sessions`, `POST /v1/account/key/rotate` and `POST /v1/entitlements/redeem` | 20 a minute | `429` with `Retry-After` |
+| polls of one web session | 1 a second | `429` with `Retry-After: 1` |
+| devices per account | 10 | `403 limit` |
+| open enroll codes per account | 5 | `403 limit` |
+
+The limits per address and per web session are kept in memory (one replica; the counters restart with the process,
+which is accepted). An IPv4 address counts whole and an IPv6 address by its /64, which one client usually holds. The
+global count of new accounts is read from the database, so it survives a restart. Only silent accounts count: signing
+in with Zitadel is already a barrier. Set `WRISTCALL_CLOUD_CLIENT_IP_HEADER` behind a proxy, or every client shares
+the proxy's address and the limits hit the first users of a mobile network.
+
+An anonymous account (no identity, no plan) unused for `WRISTCALL_CLOUD_ACCOUNT_IDLE_DAYS` is deleted with its
+agenda, and so is a device unused for that long (checked every 6 hours). Accounts from 0.3.x and accounts with a
+Zitadel identity are never deleted by this.
+
+## Transition flag
+
+`WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS=1` keeps the Cloud working for the app builds that predate account sessions: the
+PWA 0.1.0, the iPhone app `ios-v0.1.0` and the watch app `watch-v0.4.0`. With it on, a Zitadel token is accepted on
+the routes that existed in 0.3.x (`GET` and `DELETE /v1/account`, the servers and agents routes, `GET /v1/agents`,
+`POST /v1/server-tokens`), with the same answers as 0.3.1 and the same account (`sub` of the per-server token
+included). The account is created on first use, as before, with the id `<issuer>#<subject>`. The routes of
+[Accounts and sessions](#accounts-and-sessions) never take a Zitadel token, except the exchange at `POST /v1/devices`.
+
+The default is off. Turn it off once the v3 apps of the iPhone and the PWA are published: from then on a Zitadel
+token only works for the exchange, and old builds get `401`. The Cloud logs a warning at every start while it is on,
+and `/v1/config` reports it (`sessions.legacy_zitadel_tokens`).
+
+## Admin CLI
+
+`wristcall-cloud admin` works straight on the database, for beta plans, invite codes and numbers. It needs
+`WRISTCALL_CLOUD_MONGO_URL` (or `_FILE`) and, if it is not the default, `WRISTCALL_CLOUD_DATABASE`; nothing else of the
+service configuration. Output is one `key: value` line per item on stdout; errors go to stderr.
+
+| Command | What it does |
+|---|---|
+| `admin show <account>` | account, kind, created_at, last_seen_at, devices, identities, plan (and plan_expires_at) |
+| `admin grant <account> --plan full\|custom [--days N]` | gives the account a beta plan, replacing any; without `--days` it has no end |
+| `admin revoke <account>` | takes the plan away (`revoked: true` or `false`) |
+| `admin invites create --plan full\|custom [--count N] [--days N]` | prints `N` new single-use codes (1 to 1000, default 1) that can be redeemed for `--days` days (default 30). This is the only time the codes exist in clear |
+| `admin stats` | counts: accounts, anonymous_24h, devices, identities, entitlements |
+
+Exit codes: `0` done, `1` no such account, `2` bad usage or configuration, `3` the database failed (only the exception
+type is printed).
+
+In a container, with the connection string in a secret (the service then sets `WRISTCALL_CLOUD_MONGO_URL_FILE`, not
+`WRISTCALL_CLOUD_MONGO_URL`: both together are a configuration error, and the service does not start):
+
+```sh
+docker exec <container> wristcall-cloud admin stats
+docker exec <container> wristcall-cloud admin grant acc_xxxxxxxxxxxxxxxxxxxxxxxxxx --plan full --days 30
+docker exec <container> wristcall-cloud admin invites create --plan full --count 5
+```
+
+## Data and migration
+
+Collections of the `wristcall_cloud` database (`WRISTCALL_CLOUD_DATABASE`):
+
+| Collection | Holds |
+|---|---|
+| `accounts` | the 0.3.x collection, with new optional fields: `kind` (`anonymous` or `zitadel`; none on accounts from 0.3.x), `key_hash`, `key_set_at`, `last_seen_at` |
+| `servers` | unchanged (the agenda) |
+| `identities` | `(kind, issuer, subject)` to account, unique |
+| `devices` | one per session: account, name, platform, refresh token digests, `last_seen_at` |
+| `enroll_codes`, `web_sessions`, `invites` | digests of the secrets. Expired enroll codes and web sessions are dropped by TTL indexes (an hour after they expire); invites are kept, an expired one just cannot be redeemed |
+| `entitlements` | the plan, one per account (`_id` is the account) |
+| `meta` | `_id: "schema"`, `version: 2`, `migrated_at` |
+
+The push registrations keep their collection, unchanged.
+
+**Migration.** At every start, before serving, the Cloud creates the indexes and then looks for accounts whose id is
+`<issuer>#<subject>` and creates the Zitadel identity of each one that has none. That is all: no account is changed.
+It is idempotent (a second start creates nothing), and the log says how many identities were created. Then it writes
+`meta.schema` `version` 2.
+
+**Going back to 0.3.1.** 0.3.1 ignores the new collections and fields, so going back needs no restore of the database.
+The accounts, servers and agents are intact. Going forward again later creates only the identities that are missing.
+Account sessions do not work while 0.3.1 runs (it does not know them), so apps that only have a session cannot use
+the Cloud until 0.4.0 is back.
+
 ## Browsers (CORS)
 
 A browser app (the wristcall PWA) can call the Cloud only from an origin listed in `WRISTCALL_CLOUD_CORS_ORIGINS`.
@@ -217,8 +438,9 @@ failure.
 
 ## Rate limiting
 
-Account routes: the service does not limit request rates itself. The reverse proxy of the deployment (Traefik) is
-expected to, per client address, in front of every route.
+The routes that create an account or a device, or take a secret, limit themselves (see [Limits](#limits)). The other
+account routes (the agenda, `GET /v1/account`, per-server tokens) do not: the reverse proxy of the deployment (Traefik)
+is expected to limit them, per client address, in front of every route.
 
 The push relay limits itself, in memory (one replica; the counters restart with the process, which is accepted):
 `WRISTCALL_CLOUD_PUSH_PER_MINUTE` and `_PER_DAY` per push key, and `WRISTCALL_CLOUD_REGISTRATIONS_PER_MINUTE` per
@@ -235,6 +457,11 @@ shares the proxy's address.
   user is linked: there they can pair a device (in `attestation` mode) or send approval requests to the user. So
   upgrade every 0.5.0 server with `central_account` to 0.6.0, or unlink its users, **before** setting
   `WRISTCALL_CLOUD_SIGNING_KEY`. Apps must never send a login token to a server, only per-server tokens.
+- **The transition flag.** While PWA 0.1.0 and the iPhone app `ios-v0.1.0` are in use, set
+  `WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS=1`, or they get `401`. Turn it off once the v3 apps are published (see
+  [Transition flag](#transition-flag)).
+- **Client address and country.** The account limits are per client address: set `WRISTCALL_CLOUD_CLIENT_IP_HEADER`.
+  Behind Cloudflare also set `WRISTCALL_CLOUD_CLIENT_COUNTRY_HEADER=CF-IPCountry`, so web sessions show a country.
 - **Rate limit at the proxy (Traefik).** `POST /v1/push/registrations` is anonymous, and `POST /v1/push/send` with
   random keys costs one MongoDB lookup each before it is refused (the per key limit only counts known keys). Besides
   the Cloud's own limits, put a limit per client address on both in Traefik, and set
