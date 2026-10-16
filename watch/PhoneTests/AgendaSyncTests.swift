@@ -31,6 +31,12 @@ struct AgendaSyncTests {
         return (AgendaSync(session: session, state: state), state)
     }
 
+    @Test func snapshotCopiesTheAgentColor() {
+        let colored = AgentDetail(id: "ag1", slug: "a", displayName: "A", color: .indigo)
+        let plain = AgentDetail(id: "ag2", slug: "b", displayName: "B")
+        #expect(AgendaSync.snapshot([colored, plain]).map(\.color) == [.indigo, nil])
+    }
+
     func agents(_ count: Int) -> [AgentDetail] {
         (0..<count).map { AgentDetail(id: "ag\($0)", slug: "agent-\($0)", displayName: "Agent \($0)", icon: "waveform", callType: "one-shot") }
     }

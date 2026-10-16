@@ -24,6 +24,8 @@ public struct AgentDetail: Decodable, Sendable, Equatable, Identifiable {
     public var effectiveRetentionDays: JSONValue?
     public var createdAt: Double
     public var updatedAt: Double
+    /// The accent color; `nil` when the server sent none (or one this client does not know).
+    public var color: AgentColor?
 
     /// `one-shot` and `monologue` agents record and never answer.
     public var isOneWay: Bool { callType == "one-shot" || callType == "monologue" }
@@ -33,7 +35,8 @@ public struct AgentDetail: Decodable, Sendable, Equatable, Identifiable {
         turnEnd: String = "auto", position: Int = 0, language: String = "en", stt: JSONValue? = nil,
         action: JSONValue? = nil, tts: JSONValue? = nil, systemPrompt: String = "", fallbackMessage: String = "",
         vad: [String: JSONValue] = [:], timeouts: [String: JSONValue] = [:], retentionDays: JSONValue = .null,
-        effectiveRetentionDays: JSONValue? = nil, createdAt: Double = 0, updatedAt: Double = 0
+        effectiveRetentionDays: JSONValue? = nil, createdAt: Double = 0, updatedAt: Double = 0,
+        color: AgentColor? = nil
     ) {
         self.id = id
         self.slug = slug
@@ -54,10 +57,11 @@ public struct AgentDetail: Decodable, Sendable, Equatable, Identifiable {
         self.effectiveRetentionDays = effectiveRetentionDays
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.color = color
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, slug, icon, position, language, stt, action, tts, vad, timeouts
+        case id, slug, icon, position, language, stt, action, tts, vad, timeouts, color
         case displayName = "display_name"
         case callType = "call_type"
         case turnEnd = "turn_end"
@@ -92,6 +96,7 @@ public struct AgentDetail: Decodable, Sendable, Equatable, Identifiable {
             ? try container.decode(JSONValue.self, forKey: .effectiveRetentionDays) : nil
         createdAt = try container.decode(Double.self, forKey: .createdAt)
         updatedAt = try container.decode(Double.self, forKey: .updatedAt)
+        color = container.decodeAgentColor(forKey: .color)
     }
 }
 

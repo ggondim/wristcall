@@ -159,8 +159,8 @@ public struct ManagementClient: Sendable {
 
     /// A route that answers `204`.
     private func sendEmpty(_ url: URL, method: String) async throws {
-        let (status, data, _) = try await http.send(http.request(url, method: method, bearer: token))
-        guard status == 204 else { throw APIHTTP.error(status: status, data: data) }
+        let (status, data, headers) = try await http.send(http.request(url, method: method, bearer: token))
+        guard status == 204 else { throw APIHTTP.error(status: status, data: data, headers: headers) }
     }
 
     private struct AgentList: Decodable { var agents: [AgentDetail] }
@@ -187,8 +187,8 @@ extension ManagementClient: CustomStringConvertible, CustomDebugStringConvertibl
 extension APIHTTP {
     /// Sends `request` and decodes the body when the status is `expected`; any other status is an `APIError`.
     func run<T: Decodable>(_ request: URLRequest, expecting expected: Int) async throws -> T {
-        let (status, data, _) = try await send(request)
-        guard status == expected else { throw Self.error(status: status, data: data) }
+        let (status, data, headers) = try await send(request)
+        guard status == expected else { throw Self.error(status: status, data: data, headers: headers) }
         return try decode(data)
     }
 }

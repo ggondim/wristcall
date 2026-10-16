@@ -272,7 +272,7 @@ final class AgendaSync {
     static func snapshot(_ agents: [AgentDetail]) -> [CloudAgent] {
         agents.prefix(agentLimit).map {
             CloudAgent(id: $0.id, slug: $0.slug, displayName: cut($0.displayName, or: $0.slug), icon: $0.icon,
-                       callType: $0.callType)
+                       callType: $0.callType, color: $0.color)
         }
     }
 

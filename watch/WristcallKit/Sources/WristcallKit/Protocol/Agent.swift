@@ -55,6 +55,8 @@ public struct Agent: Decodable, Sendable, Hashable, Identifiable {
     public var callType: CallType
     /// The mode `session.start` gets when the user does not pick one.
     public var turnEnd: TurnEnd
+    /// The accent color; `nil` when the server sent none (or one this client does not know).
+    public var color: AgentColor?
 
     public static let defaultIcon = "waveform"
 
@@ -64,7 +66,8 @@ public struct Agent: Decodable, Sendable, Hashable, Identifiable {
         displayName: String,
         icon: String = Agent.defaultIcon,
         callType: CallType = .conversation,
-        turnEnd: TurnEnd = .auto
+        turnEnd: TurnEnd = .auto,
+        color: AgentColor? = nil
     ) {
         self.id = id
         self.slug = slug
@@ -72,6 +75,7 @@ public struct Agent: Decodable, Sendable, Hashable, Identifiable {
         self.icon = icon
         self.callType = callType
         self.turnEnd = turnEnd
+        self.color = color
     }
 
     /// A 0.2.x server has only profiles: each one is a plain conversation agent (id = slug = name).
@@ -80,7 +84,7 @@ public struct Agent: Decodable, Sendable, Hashable, Identifiable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, slug, icon
+        case id, slug, icon, color
         case displayName = "display_name"
         case callType = "call_type"
         case turnEnd = "turn_end"
@@ -95,6 +99,7 @@ public struct Agent: Decodable, Sendable, Hashable, Identifiable {
         callType = try container.decodeIfPresent(CallType.self, forKey: .callType) ?? .conversation
         // A mode this client does not know is the server's default, not a reason to drop the agent.
         turnEnd = try container.decodeIfPresent(String.self, forKey: .turnEnd).flatMap(TurnEnd.init(rawValue:)) ?? .auto
+        color = container.decodeAgentColor(forKey: .color)
     }
 }
 

@@ -22,8 +22,14 @@ public enum APIError: Error, Sendable, Equatable {
     case conflict(code: String, message: String)
     /// `422`: the `message` of the error body, or the first `detail[].msg` of the FastAPI validation reply.
     case invalid(String)
+    /// `401 revoked`: the session or token was revoked on purpose.
+    case revoked
+    /// `401 stale_token`: the token is too old for a sensitive action; sign in again.
+    case staleToken
     /// `429`.
     case rateLimited
+    /// `429` with a `Retry-After` (seconds): try again after that long.
+    case retryLater(TimeInterval)
     /// `502` and `503` (`account_unavailable`, `directory`).
     case unavailable(String)
     /// A status the API does not define for the route.
@@ -43,16 +49,29 @@ public enum APIError: Error, Sendable, Equatable {
         case .notFound: "Not found."
         case .notConfigured: "This server has no account set up."
         case .conflict(_, let text): text.isEmpty ? "The server reported a conflict." : text
+        case .revoked: "This login was revoked. Sign in again."
+        case .staleToken: "The login is too old for this action. Sign in again."
         case .rateLimited: "Too many attempts. Try again in a minute."
+        case .retryLater(let seconds): Self.retryMessage(seconds)
         case .unexpectedStatus(let status): "Unexpected reply from the server (\(status))."
         case .network: "Could not reach the server."
         case .malformedResponse: "The server sent a reply the app does not understand."
         }
     }
 
+    private static func retryMessage(_ seconds: TimeInterval) -> String {
+        let minutes = max(1, Int((seconds / 60).rounded(.up)))
+        return "Too many attempts. Try again in \(minutes) \(minutes == 1 ? "minute" : "minutes")."
+    }
+
     /// Maps a non-success reply. The body is `{"error": code, "message": text}`, or FastAPI's
     /// `{"detail": [{"msg": text}]}` for a request it rejected before the route ran.
     public static func error(status: Int, data: Data) -> APIError {
+        error(status: status, data: data, headers: [:])
+    }
+
+    /// Same, reading `Retry-After` from `headers` (lowercased names, as `APIHTTP.send` returns them).
+    public static func error(status: Int, data: Data, headers: [String: String]) -> APIError {
         let body = (try? JSONDecoder().decode(ErrorBody.self, from: data))
         let code = body?.error
         let message = body?.message
@@ -60,6 +79,8 @@ public enum APIError: Error, Sendable, Equatable {
         case 401:
             switch code {
             case "invalid_code": return .invalidCode
+            case "revoked": return .revoked
+            case "stale_token": return .staleToken
             case "invalid_account_token": return .invalidAccountToken
             default: return .unauthorized
             }
@@ -70,12 +91,19 @@ public enum APIError: Error, Sendable, Equatable {
             default: return .forbidden(message ?? "Not allowed with this token.")
             }
         case 404:
-            return code == "not_configured" ? .notConfigured : .notFound
+            switch code {
+            case "not_configured": return .notConfigured
+            case "invalid_code": return .invalidCode
+            default: return .notFound
+            }
         case 409:
             return .conflict(code: code ?? "conflict", message: message ?? "")
         case 422:
             return .invalid(message ?? body?.detail?.first?.msg ?? "The server rejected the request.")
         case 429:
+            if let seconds = headers["retry-after"].flatMap({ TimeInterval($0.trimmingCharacters(in: .whitespaces)) }), seconds >= 0 {
+                return .retryLater(seconds)
+            }
             return .rateLimited
         case 502, 503:
             return .unavailable(message ?? "The server is unavailable. Try again later.")
