@@ -1,7 +1,8 @@
 """`wristcall-cloud admin`: beta entitlements, invite codes and numbers, straight on the database.
 
 One line per item, `key: value`, on stdout; errors go to stderr. Exit codes: 0 done, 1 no such account,
-2 bad usage or configuration, 3 the database failed. The invite codes `invites create` prints are the only time
+2 bad usage or configuration, 3 the database failed
+(only the exception type is printed). The invite codes `invites create` prints are the only time
 they exist in clear: nothing here logs one.
 """
 

@@ -383,18 +383,29 @@ class AccountStore:
         (the `<issuer>#<subject>` ones from 0.3.x) and `zitadel` ones never go.
         """
         await self.devices.delete_many({"last_seen_at": {"$lt": before}})
-        deleted = 0
         cursor = self.accounts.find({"kind": "anonymous", "last_seen_at": {"$lt": before}}, {"_id": 1})
+        deleted = 0
         async for doc in cursor:
-            account = doc["_id"]
-            if await self.identities.count_documents({"account": account}, limit=1):
-                continue
-            if await self.entitlement(account, now=now) is not None:
-                continue
-            await self.db["servers"].delete_many({"account": account})
-            await self.delete_account_data(account)
-            deleted += 1
+            if await self._purge_account(doc["_id"], before, now=now):
+                deleted += 1
         return deleted
+
+    async def _purge_account(self, account: str, before: float, *, now: float | None = None) -> bool:
+        """Deletes an idle anonymous account and what is its own; False when it is not (or no longer) one.
+
+        The account is claimed first, by a delete that holds only while it is still anonymous and idle: one that
+        was used since it was found (a touch) loses nothing. The identity and entitlement are checked right before.
+        """
+        if await self.identities.count_documents({"account": account}, limit=1):
+            return False
+        if await self.entitlement(account, now=now) is not None:
+            return False
+        claim = await self.accounts.delete_one({"_id": account, "kind": "anonymous", "last_seen_at": {"$lt": before}})
+        if claim.deleted_count != 1:
+            return False
+        await self.db["servers"].delete_many({"account": account})
+        await self.delete_account_data(account)
+        return True
 
     async def delete_account_data(self, account: str) -> None:
         """Deletes the account's devices, identities, enroll codes, web sessions and entitlement, then the account."""

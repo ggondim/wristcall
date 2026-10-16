@@ -76,6 +76,39 @@ async def test_purge_idle_accounts_never_takes_zitadel_accounts(store):
     assert await store.get_account(result) is not None
 
 
+async def test_purge_claims_the_account_before_deleting(store, mongo_db):
+    """An account found idle that is used before its turn comes loses nothing."""
+    touched = await anonymous(store, "touched", seen=LONG_AGO)
+    linked = await anonymous(store, "linked", seen=LONG_AGO)
+    granted = await anonymous(store, "granted", seen=LONG_AGO)
+    for account in (touched, linked, granted):
+        await mongo_db["servers"].insert_one({"_id": "srv_" + account, "account": account, "url": "https://a.test"})
+    await store.touch(touched, now=NOW)  # active again after the scan found it
+    await store.add_identity(linked, "zitadel", ISSUER, "late", now=NOW)
+    await store.grant(granted, "full", days=None, now=NOW)
+
+    for account in (touched, linked, granted):
+        assert await store._purge_account(account, IDLE, now=NOW) is False
+        assert await store.get_account(account) is not None
+        assert await mongo_db["servers"].find_one({"account": account}) is not None
+    assert await store.identities_of(linked) and await store.entitlement(granted, now=NOW)
+
+
+async def test_purge_idle_accounts_skips_one_touched_during_the_scan(store, mongo_db, monkeypatch):
+    victim = await anonymous(store, "victim", seen=LONG_AGO)
+    idle = await anonymous(store, "idle", seen=LONG_AGO)
+    original = store._purge_account
+
+    async def purge(account, before, *, now=None):
+        if account == victim:
+            await store.touch(victim, now=NOW)  # used between the find and its turn
+        return await original(account, before, now=now)
+
+    monkeypatch.setattr(store, "_purge_account", purge)
+    assert await store.purge_idle_accounts(IDLE, now=NOW) == 1
+    assert await store.get_account(victim) is not None and await store.get_account(idle) is None
+
+
 async def test_purge_idle_devices(store):
     account = await anonymous(store, "owner", seen=NOW)
     old, _ = await store.add_device(account, device("old"), max_devices=10, now=LONG_AGO)
@@ -176,7 +209,13 @@ async def test_admin_stats(store, capsys):
 
 
 def test_admin_usage_errors_exit_2(capsys):
-    for argv in ([], ["grant", "acc_x"], ["grant", "acc_x", "--plan", "gold"], ["invites", "create", "--plan", "full", "--count", "0"]):
+    bad = (
+        [],
+        ["grant", "acc_x"],
+        ["grant", "acc_x", "--plan", "gold"],
+        ["invites", "create", "--plan", "full", "--count", "0"],
+    )
+    for argv in bad:
         assert admin.main(argv, {"WRISTCALL_CLOUD_MONGO_URL": "mongodb://localhost:1"}) == 2
     assert capsys.readouterr().err
 
