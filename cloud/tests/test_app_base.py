@@ -58,6 +58,21 @@ def test_config_without_project_id_has_no_project_scope(mongo_db, fake_verifier)
     assert body["scopes"] == ["openid", "profile", "offline_access"]
 
 
+def test_config_names_the_zitadel_org_so_the_login_shows_its_branding(mongo_db, fake_verifier):
+    from wristcall_cloud.app import create_app
+    from wristcall_cloud.store import Store
+
+    cfg = CloudConfig(
+        mongo_url=mongo_url(), issuer=ISSUER, clients={"ios": "client-ios"}, project_id="1234",
+        zitadel_org_id="org-1", zitadel_client_id="wristcall-cloud", zitadel_client_secret="s",
+    )
+    for c in serve(create_app(cfg, store=Store(mongo_db), verifier=fake_verifier), mongo_db):
+        body = c.get("/v1/config").json()
+    assert body["scopes"] == [
+        "openid", "profile", "offline_access", "urn:zitadel:iam:org:project:id:1234:aud", "urn:zitadel:iam:org:id:org-1",
+    ]
+
+
 def test_config_from_env_requires_mongo_and_a_client():
     cfg = config_from_env(BASE_ENV)
     assert cfg.mongo_url == "mongodb://localhost:27017"
