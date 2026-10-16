@@ -462,6 +462,21 @@ def test_cli_link_creates_owner_on_an_empty_server(tmp_path):
     assert "For user owner." in out.splitlines() and link_code_in(out)
 
 
+@pytest.mark.parametrize("public_url", ["https://elsewhere.example.test", "http://192.168.1.5:8080"])
+def test_cli_link_refuses_a_public_url_outside_the_audience(tmp_path, public_url):
+    cfg = with_central_account(write_config(tmp_path))
+    data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    data["server"]["public_url"] = public_url
+    cfg.write_text(yaml.safe_dump(data), encoding="utf-8")
+    r = invoke(cfg, "link")
+    assert r.exit_code == 1 and "central_account.audience" in r.stderr and "link#" not in r.output
+    store = open_sqlite_storage(tmp_path / "data")
+    try:
+        assert store.db.query("SELECT COUNT(*) FROM link_codes")[0][0] == 0
+    finally:
+        run(store.close())
+
+
 def test_cli_link_needs_central_account(tmp_path):
     r = invoke(write_config(tmp_path), "link")
     assert r.exit_code == 1 and "central_account" in r.stderr and "link#" not in r.output

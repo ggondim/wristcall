@@ -176,7 +176,11 @@ def link(config: ConfigOpt = DEFAULT_CONFIG, user: UserOpt = None) -> None:
         typer.echo("error: linking with a QR code needs central_account in wristcall.yaml (see the README)", err=True)
         raise typer.Exit(1)
     if not public_url_in_audience(cfg):
-        typer.echo("warning: server.public_url is not in central_account.audience: the app's link will fail.", err=True)
+        # The app asks the Cloud for a token made for public_url, which this server would refuse: no code.
+        typer.echo(
+            "error: server.public_url is not in central_account.audience, so the app could not link with it", err=True
+        )
+        raise typer.Exit(1)
 
     async def body(ctx: Ctx):
         owner = await target_user(ctx.storage, ctx.users, user)
