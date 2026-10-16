@@ -4,7 +4,7 @@ import Foundation
 /// per-server tokens. Every route but `/v1/config` takes the account's access token. Errors are `APIError`.
 public struct CloudClient: Sendable {
     public let cloud: URL
-    private let http: APIHTTP
+    let http: APIHTTP
 
     public init(cloud: URL, session: URLSession = .shared, timeout: TimeInterval = 15) {
         self.cloud = cloud
@@ -78,18 +78,18 @@ public struct CloudClient: Sendable {
 
     // MARK: - Plumbing
 
-    private func url(_ path: String) -> URL { cloud.appending(path: path) }
+    func url(_ path: String) -> URL { cloud.appending(path: path) }
 
     /// One path segment per server id: an id can never add segments (`/` is percent-encoded).
     private func server(_ id: String) -> URL { url("v1/servers").appending(component: id) }
 
-    private func expect<T: Decodable>(_ success: Int, _ request: URLRequest) async throws -> T {
+    func expect<T: Decodable>(_ success: Int, _ request: URLRequest) async throws -> T {
         let (status, data, headers) = try await http.send(request)
         guard status == success else { throw APIHTTP.error(status: status, data: data, headers: headers) }
         return try http.decode(data)
     }
 
-    private func expectNoContent(_ request: URLRequest) async throws {
+    func expectNoContent(_ request: URLRequest) async throws {
         let (status, data, headers) = try await http.send(request)
         guard status == 204 else { throw APIHTTP.error(status: status, data: data, headers: headers) }
     }
