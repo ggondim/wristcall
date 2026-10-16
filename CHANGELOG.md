@@ -11,6 +11,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
   against it. Set it empty in `watch/Config/Local.xcconfig` for a build without an account. The push build keeps a
   local Cloud.
 
+## [0.8.0] - 2026-10-16
+
+### Added
+
+- Link code: a single use code (16 random bytes, valid 15 minutes, only its SHA-256 stored) that links a Cloud account
+  to a user without typing a pairing code or a token. Format in [docs/protocol.md](docs/protocol.md#link-url).
+- The startup log shows the QR code and link on a new server (`central_account` set, `public_url` in the audience,
+  nobody linked, no user or a single user with no API token and no device). A server already in use gets a hint.
+- `wristcall link [--user <handle>]` prints a fresh QR code and link; it refuses (exit 1) when `central_account` is
+  missing or `server.public_url` is outside `central_account.audience`.
+- Dependency `segno` (pure Python) to draw the QR code.
+
+### Changed
+
+- `POST /v1/account/link` also accepts the long link code, besides the 8 digit pairing code. A wrong long code is
+  `401 invalid_code` and does not count as an attempt on pairing codes.
+- A server with `central_account` and no users creates the user `owner` at startup, as the `profiles` import does.
+- Docs: the web app origin is `https://wristcall-app.trigram.com.br` (it was `app.wristcall.trigram.com.br`).
+
+### Security
+
+- The code in the QR gives the owner's API token to whoever uses it first. It is printed only on a new server and sits
+  in the server log: whoever can read the log can use it. A server already in use never prints a code at startup.
+
 ## [cloud-0.4.0] - 2026-10-16
 
 ### Added

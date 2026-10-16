@@ -20,7 +20,7 @@ origins in `wristcall.yaml`:
 
 ```yaml
 server:
-  cors_origins: [https://app.wristcall.trigram.com.br]
+  cors_origins: [https://wristcall-app.trigram.com.br]
 ```
 
 Each entry is an exact origin, `scheme://host[:port]`: `https`, or `http` only for `localhost`, `127.0.0.1` and

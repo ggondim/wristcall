@@ -167,6 +167,30 @@ A user has to be linked first: with an API token (`POST /v1/account/link` from t
 the app sends a pairing code from `wristcall pair`). Remove the link with `wristcall users unlink <handle>`.
 Routes and error codes: [docs/protocol.md](docs/protocol.md#central-account-optional).
 
+### Link QR code
+
+With `central_account` set, the app links its account to a user of this server by scanning a QR code: no pairing code
+and no token to type. The code inside the QR is single use and valid for 15 minutes; whoever uses it first becomes
+the owner of that user (the app gets its API token), and `wristcall users unlink <handle>` undoes the link.
+
+- The QR only exists with `central_account` configured, which stays optional and off by default. `server.public_url`
+  must be one of the `central_account.audience` items, or the app could not get a token this server accepts.
+- Startup prints the QR when the server is new: nobody is linked yet and there is either no user (an `owner` user is
+  created for it) or exactly one user with no API token and no device. It prints again on every restart while the
+  server stays new, so read it from `docker logs`. A server already in use but unlinked only logs a hint to run
+  `wristcall link`; with several users the hint says `wristcall link --user <handle>`. Without `central_account` a
+  new server logs a hint to set it; a server in use logs nothing.
+- `wristcall link [--user <handle>]` prints a fresh QR and link at any time, for the only user or the named one
+  (`docker compose exec wristcall wristcall link`). It exits 1 with an error, and prints no link, when
+  `central_account` is missing or `server.public_url` is outside the audience.
+- The QR is drawn with block characters in the compact form, so on a light terminal background it may look inverted.
+  The link printed below it always works: open it on the phone instead.
+- Linking from the web app (PWA) needs its origin, `https://wristcall-app.trigram.com.br`, in `server.cors_origins`.
+  The iPhone app does not need CORS.
+- Whoever uses the code first gets the owner's API token, and the code sits in the server log while the server is
+  new: whoever can read the log can use it. Do not share logs of a new server.
+- Format of the link: [docs/protocol.md](docs/protocol.md#link-url).
+
 Know before you turn it on:
 - A pairing code now also links a login and returns a management API token to whoever links first. Do not
   show codes in public places.
@@ -300,6 +324,7 @@ With more than one user, add `--user <handle>` to `pair`, `devices list|approve|
 |---|---|
 | `wristcall serve` | starts the server (default in the container) |
 | `wristcall pair [--user]` | generates an 8 digit code for a user, valid for 10 minutes |
+| `wristcall link [--user]` | shows a QR code and link to link the app's account to a user (15 minutes, single use; needs `central_account`) |
 | `wristcall devices list` | lists paired watches (and their user) and pending requests |
 | `wristcall devices approve <id> [--user]` | approves a request for a user (requests aimed at another user are not matched) |
 | `wristcall devices deny <id>` | denies a pending request: the watch is told on its next check |
