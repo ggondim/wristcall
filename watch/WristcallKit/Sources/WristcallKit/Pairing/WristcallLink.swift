@@ -19,7 +19,7 @@ public enum WristcallLink: Sendable, Equatable {
     public static let scheme = "wristcall"
 
     /// The link `url` stands for, or `nil` if it is not a well formed wristcall link: another host or scheme,
-    /// another path, parameters in the query instead of the fragment, a repeated key, an invalid `%` escape, a
+    /// another path or form, parameters in the query instead of the fragment, a repeated key, an invalid `%` escape, a
     /// version other than 1, or a server address that is not `https`.
     public static func parse(_ url: URL) -> WristcallLink? {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
@@ -53,11 +53,8 @@ public enum WristcallLink: Sendable, Equatable {
             guard host == webHost, path.hasPrefix("/") else { return nil }
             return Kind(rawValue: String(path.dropFirst()))
         case scheme:
-            // `wristcall://link#…` has the kind as host; `wristcall:///link#…` and `wristcall:/link#…` as path.
-            if host.isEmpty {
-                guard path.hasPrefix("/") else { return nil }
-                return Kind(rawValue: String(path.dropFirst()))
-            }
+            // Host form only: `wristcall://link#…`. `wristcall:/link`, `wristcall:///link` and `wristcall:link`
+            // are refused, like a trailing slash or a trailing dot in the host.
             guard path.isEmpty else { return nil }
             return Kind(rawValue: host)
         default:
@@ -68,7 +65,8 @@ public enum WristcallLink: Sendable, Equatable {
     // MARK: - Fragment
 
     /// `key=value` pairs on `&`, split at the first `=`, values percent-decoded (`+` stays a plus). `nil` for an
-    /// empty fragment, a pair without `=` or with an empty key, a repeated key or an invalid `%` escape.
+    /// empty fragment, an empty segment (a leading, doubled or trailing `&`), a pair without `=` or with an empty
+    /// key, a repeated key, or a value that does not decode (an invalid `%` escape or invalid UTF-8 such as `%FF`).
     /// Not `URLComponents.percentEncodedQuery = fragment`: that traps on an invalid escape such as `c=%`.
     private static func split(_ fragment: String) -> [String: String]? {
         guard !fragment.isEmpty else { return nil }

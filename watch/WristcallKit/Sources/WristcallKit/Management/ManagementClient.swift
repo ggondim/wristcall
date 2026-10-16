@@ -109,20 +109,21 @@ public struct ManagementClient: Sendable {
     /// carries a personal token (`apiToken`).
     public static func linkAccount(server: URL, serverToken: String, code: PairingCode,
                                    session: URLSession = .shared) async throws -> AccountLink {
-        let http = APIHTTP(session: session)
-        let request = try http.request(
-            server.appending(path: "v1/account/link"), method: "POST",
-            json: LinkBody(token: serverToken, code: code.digits))
-        return try await http.run(request, expecting: 200)
+        try await linkAccount(server: server, serverToken: serverToken, code: code.digits, session: session)
     }
 
     /// Same call with the single-use code from a link URL (`WristcallLink.server`) as the local proof.
     public static func linkAccount(server: URL, serverToken: String, code: LinkCode,
                                    session: URLSession = .shared) async throws -> AccountLink {
+        try await linkAccount(server: server, serverToken: serverToken, code: code.value, session: session)
+    }
+
+    private static func linkAccount(server: URL, serverToken: String, code: String,
+                                    session: URLSession) async throws -> AccountLink {
         let http = APIHTTP(session: session)
         let request = try http.request(
             server.appending(path: "v1/account/link"), method: "POST",
-            json: LinkBody(token: serverToken, code: code.value))
+            json: LinkBody(token: serverToken, code: code))
         return try await http.run(request, expecting: 200)
     }
 

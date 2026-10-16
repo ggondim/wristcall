@@ -10,6 +10,12 @@ struct WristcallLinkTests {
         return WristcallLink.parse(url)
     }
 
+    /// For negative cases: a URL that fails to build must fail the test, not pass as "rejected".
+    private func rejects(_ text: String, sourceLocation: SourceLocation = #_sourceLocation) throws {
+        let url = try #require(URL(string: text), sourceLocation: sourceLocation)
+        #expect(WristcallLink.parse(url) == nil, sourceLocation: sourceLocation)
+    }
+
     private func server(_ url: String) -> WristcallLink {
         .server(url: URL(string: url)!, code: LinkCode(Self.code)!)
     }
@@ -21,8 +27,6 @@ struct WristcallLinkTests {
         "https://wristcall-app.trigram.com.br/link#v=1&s=https%3A%2F%2Fhome.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
         "https://wristcall-app.trigram.com.br/link#c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ&s=https://home.example.com&v=1",
         "wristcall://link#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
-        "wristcall:///link#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
-        "wristcall:/link#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
     ])
     func parsesServerLinks(text: String) {
         #expect(parse(text) == server("https://home.example.com"))
@@ -40,6 +44,16 @@ struct WristcallLinkTests {
     @Test func acceptsATypedCodeSpelling() {
         let text = "wristcall://link#v=1&s=https://home.example.com&c=k7q2-mzxw4rqt6pzj3h5n2c7vbq"
         #expect(parse(text) == server("https://home.example.com"))
+    }
+
+    @Test func plusIsALiteralPlus() {
+        let text = "wristcall://link#v=1&s=https://home.example.com/a+b&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ"
+        guard case .server(let url, _)? = parse(text) else {
+            Issue.record("expected a server link")
+            return
+        }
+        #expect(url.path == "/a+b")
+        #expect(url == URL(string: "https://home.example.com/a+b"))
     }
 
     @Test func schemeAndHostAreCaseInsensitive() {
@@ -78,6 +92,14 @@ struct WristcallLinkTests {
         "wristcall://link#v=1&s=ftp://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
         "wristcall://link#v=1&s=&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
         "wristcall://link#v=1&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
+        // well formed escapes that are not valid UTF-8 reach the decode failure
+        "wristcall://link#v=1&s=https://home.example.com&c=%C3%28",
+        "wristcall://link#v=1&s=%FF&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
+        "wristcall://link#v=1&s=https://home.example.com/%FF&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
+        // empty segments: a trailing, doubled or leading ampersand
+        "wristcall://link#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ&",
+        "wristcall://link#v=1&&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
+        "wristcall://link#&v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
         // duplicates and malformed pairs
         "wristcall://link#v=1&v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
         "wristcall://link#v=1&s=https://home.example.com&s=https://other.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
@@ -86,8 +108,8 @@ struct WristcallLinkTests {
         "wristcall://link#",
         "wristcall://link",
     ])
-    func rejectsBadServerLinks(text: String) {
-        #expect(parse(text) == nil)
+    func rejectsBadServerLinks(text: String) throws {
+        try rejects(text)
     }
 
     @Test(arguments: [
@@ -104,13 +126,25 @@ struct WristcallLinkTests {
         "https://wristcall-app.trigram.com.br/#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
         "https://wristcall-app.trigram.com.br/link/extra#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
         "wristcall://link/extra#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
+        // only the strict forms: host form for the scheme, no port, userinfo, trailing slash or trailing dot
+        "wristcall:/link#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
+        "wristcall:///link#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
+        "wristcall:link#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
+        "wristcall://link/#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
+        "wristcall://link.#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
+        "wristcall://link:443#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
+        "wristcall://user@link#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
+        "https://wristcall-app.trigram.com.br/link/#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
+        "https://wristcall-app.trigram.com.br:443/link#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
+        "https://wristcall-app.trigram.com.br./link#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
+        "https://user@wristcall-app.trigram.com.br/link#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
         // parameters in the query instead of the fragment
         "https://wristcall-app.trigram.com.br/link?v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
         "wristcall://link?v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
         "https://wristcall-app.trigram.com.br/link?x=1#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ",
     ])
-    func rejectsWrongPlaces(text: String) {
-        #expect(parse(text) == nil)
+    func rejectsWrongPlaces(text: String) throws {
+        try rejects(text)
     }
 
     // MARK: - Web session links
@@ -118,7 +152,6 @@ struct WristcallLinkTests {
     @Test(arguments: [
         "https://wristcall-app.trigram.com.br/approve#w=ws_0123456789abcdef&k=xyz",
         "wristcall://approve#w=ws_0123456789abcdef&k=xyz",
-        "wristcall:///approve#w=ws_0123456789abcdef&k=xyz",
         "https://wristcall-app.trigram.com.br/approve#k=xyz&w=ws_0123456789abcdef",
     ])
     func parsesWebSessionLinks(text: String) {
@@ -145,6 +178,12 @@ struct WristcallLinkTests {
         "wristcall://approve#w=ws_0123456789abcdef&k=x%20z",
         "wristcall://approve#w=ws_0123456789abcdef&k=%",
         "wristcall://approve#w=%&k=xyz",
+        "wristcall://approve#w=ws_0123456789abcdef&k=%FF",
+        "wristcall://approve#w=ws_0123456789abcdef&k=xyz&",
+        "wristcall:/approve#w=ws_0123456789abcdef&k=xyz",
+        "wristcall:///approve#w=ws_0123456789abcdef&k=xyz",
+        "wristcall://approve/#w=ws_0123456789abcdef&k=xyz",
+        "https://wristcall-app.trigram.com.br/approve/#w=ws_0123456789abcdef&k=xyz",
         "wristcall://approve#w=ws_0123456789abcdef",
         "wristcall://approve#k=xyz",
         "wristcall://approve#w=ws_0123456789abcdef&w=ws_0123456789abcdef&k=xyz",
@@ -154,8 +193,8 @@ struct WristcallLinkTests {
         "http://wristcall-app.trigram.com.br/approve#w=ws_0123456789abcdef&k=xyz",
         "https://wristcall-app.trigram.com.br/approve/x#w=ws_0123456789abcdef&k=xyz",
     ])
-    func rejectsBadWebSessionLinks(text: String) {
-        #expect(parse(text) == nil)
+    func rejectsBadWebSessionLinks(text: String) throws {
+        try rejects(text)
     }
 
     @Test func percentEncodedKeyDecodesBeforeValidation() {
