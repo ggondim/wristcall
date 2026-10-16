@@ -3,7 +3,8 @@ or with a Zitadel token on the routes of 0.3.x while the transition flag is on; 
 (push/api.py), whose keys are their own credentials.
 
 Every error is `{"error": code, "message": ...}`. Request bodies are capped at MAX_BODY bytes. Rate limiting is
-left to the reverse proxy of the deployment (see README), except for the push relay's own limits (push/limits.py).
+left to the reverse proxy of the deployment (see README), except for the push relay's own limits (push/limits.py)
+and those of the account routes (limits.py, sessions_api.py).
 """
 
 import asyncio
@@ -38,6 +39,7 @@ from .config import (
     vapid_identity,
 )
 from .identity import IdentityUnavailable, ZitadelUsers
+from .limits import AccountCreationLimiter, AttemptLimiter, PollLimiter
 from .oidc import OidcVerifier
 from .push.api import push_error_response
 from .push.api import router as push_router
@@ -47,6 +49,7 @@ from .push.limits import RegistrationLimiter, SendLimiter
 from .push.registry import PushError, purge_idle_loop
 from .push.webpush import WebPushChannel
 from .session_tokens import MANAGER_PLATFORMS, AccountTokens
+from .sessions_api import router as sessions_router
 from .signing import SigningKey, server_token_claims
 from .store import Store, open_store, public_server
 
@@ -472,6 +475,9 @@ def create_app(
     app.state.channels = channels
     app.state.send_limiter = SendLimiter(config.push_per_minute, config.push_per_day)
     app.state.registration_limiter = RegistrationLimiter(config.registrations_per_minute_per_ip)
+    app.state.account_limiter = AccountCreationLimiter(config.accounts_per_ip_hour, config.accounts_per_ip_day)
+    app.state.attempt_limiter = AttemptLimiter(config.session_attempts_per_minute)
+    app.state.poll_limiter = PollLimiter()
     if config.push_fake:
         log.warning("push: fake channel, nothing is delivered (WRISTCALL_CLOUD_PUSH_FAKE)")
     app.add_middleware(BodyLimit, limit=MAX_BODY)
@@ -517,6 +523,7 @@ def create_app(
         )
 
     app.include_router(router)
+    app.include_router(sessions_router)
     app.include_router(push_router)
 
     @app.get("/v1/health")
