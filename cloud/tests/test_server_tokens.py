@@ -37,7 +37,13 @@ def signing_key() -> SigningKey:
 
 @pytest.fixture
 def config() -> CloudConfig:
-    return CloudConfig(mongo_url=mongo_url(), issuer=ISSUER, clients=dict(CLIENTS), public_url="https://cloud.test")
+    return CloudConfig(
+        mongo_url=mongo_url(),
+        issuer=ISSUER,
+        clients=dict(CLIENTS),
+        public_url="https://cloud.test",
+        legacy_zitadel_tokens=True,
+    )
 
 
 @pytest.fixture
@@ -204,10 +210,14 @@ def test_response_shape_and_expiry(client):
 def test_server_tokens_write_nothing(client, mongo_db):
     from pymongo import MongoClient
 
-    assert client.post("/v1/server-tokens", json={"audience": "https://h.test"}, headers=H_A).status_code == 200
+    # Signing in with a Zitadel token (transition flag) links its account and identity first; the token itself
+    # changes nothing after that.
+    assert client.get("/v1/servers", headers=H_A).status_code == 200
     with MongoClient(mongo_url(), serverSelectionTimeoutMS=5000) as sync:
         db = sync[mongo_db.name]
-        assert all(db[name].count_documents({}) == 0 for name in db.list_collection_names())
+        before = {name: list(db[name].find()) for name in db.list_collection_names()}
+        assert client.post("/v1/server-tokens", json={"audience": "https://h.test"}, headers=H_A).status_code == 200
+        assert {name: list(db[name].find()) for name in db.list_collection_names()} == before
 
 
 def test_jwks_is_cacheable(client, signing_key):

@@ -1,4 +1,5 @@
 import os
+import time
 import uuid
 
 import pytest
@@ -25,8 +26,16 @@ class FakeVerifier:
         self.tokens: dict[str, Identity] = {}
         self.down = False
 
-    def add(self, token: str, subject: str, client_id: str | None = "client-ios") -> Identity:
-        identity = Identity(issuer=ISSUER, subject=subject, client_id=client_id, expires_at=4102444800.0)
+    def add(
+        self, token: str, subject: str, client_id: str | None = "client-ios", issued_at: float | None = None
+    ) -> Identity:
+        identity = Identity(
+            issuer=ISSUER,
+            subject=subject,
+            client_id=client_id,
+            expires_at=4102444800.0,
+            issued_at=time.time() if issued_at is None else issued_at,
+        )
         self.tokens[token] = identity
         return identity
 
@@ -51,7 +60,9 @@ def mongo_db():
 
 @pytest.fixture
 def config() -> CloudConfig:
-    return CloudConfig(mongo_url=mongo_url(), issuer=ISSUER, clients=dict(CLIENTS), project_id="1234")
+    return CloudConfig(
+        mongo_url=mongo_url(), issuer=ISSUER, clients=dict(CLIENTS), project_id="1234", legacy_zitadel_tokens=True
+    )
 
 
 @pytest.fixture

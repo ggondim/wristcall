@@ -105,7 +105,9 @@ made for this server only:
 2. `POST {cloud}/v1/server-tokens {"audience": "<server URL>"}` with `Authorization: Bearer <login token>`, to the
    Cloud of its configuration. The audience is the exact URL the client itself uses to reach the server, never one
    the server announces. The Cloud answers `200 {"token","audience","expires_at"}`: a token valid for 5 minutes
-   (see [cloud/README.md](../cloud/README.md#per-server-tokens)).
+   (see [cloud/README.md](../cloud/README.md#per-server-tokens)). Since Cloud 0.4.0 the bearer token may also be a
+   Cloud account session instead of the login token; the server sees no difference (`sub` is an opaque account id
+   and `client_id` is the app's client).
 3. The client sends that token to `POST /v1/pair/account` or `POST /v1/account/link` of that server, and to no other.
 
 The server accepts only these per-server tokens: header `typ` `wc-server+jwt`, `iss` = its `issuer`, `aud` =

@@ -9,7 +9,8 @@ from pymongo import MongoClient
 
 from conftest import ISSUER, mongo_url, serve
 from wristcall_cloud import __version__
-from wristcall_cloud.app import Caller, current_account, json_object
+from wristcall_cloud.api_common import json_object
+from wristcall_cloud.auth import Caller, current_account
 from wristcall_cloud.config import CloudConfig, ConfigError, config_from_env
 
 BASE_ENV = {"WRISTCALL_CLOUD_MONGO_URL": "mongodb://localhost:27017", "WRISTCALL_CLOUD_CLIENT_IOS": "client-ios"}
@@ -44,6 +45,7 @@ def test_config_is_public_and_has_clients(client):
         "scopes": ["openid", "profile", "offline_access", "urn:zitadel:iam:org:project:id:1234:aud"],
         "server_tokens": False,
         "push": {"apns": False, "webpush": False, "vapid_public_key": None, "apns_topics": []},
+        "sessions": {"enabled": False, "zitadel_max_age_s": 600, "legacy_zitadel_tokens": True},
     }
 
 
@@ -355,3 +357,77 @@ def test_zitadel_variables_go_together(missing):
     with pytest.raises(ConfigError, match="WRISTCALL_CLOUD_ZITADEL_") as e:
         config_from_env(env)
     assert "s3cr3t-zitadel" not in str(e.value)
+
+
+SESSION_ENV = {
+    "WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS": "1",
+    "WRISTCALL_CLOUD_ZITADEL_MAX_AGE": "300",
+    "WRISTCALL_CLOUD_ACCESS_TOKEN_TTL": "1800",
+    "WRISTCALL_CLOUD_ACCOUNTS_PER_IP_HOUR": "5",
+    "WRISTCALL_CLOUD_ACCOUNTS_PER_IP_DAY": "15",
+    "WRISTCALL_CLOUD_ACCOUNTS_PER_DAY": "300",
+    "WRISTCALL_CLOUD_ACCOUNTS_ALERT_PER_DAY": "150",
+    "WRISTCALL_CLOUD_SESSION_ATTEMPTS_PER_MINUTE": "30",
+    "WRISTCALL_CLOUD_CLIENT_COUNTRY_HEADER": "CF-IPCountry",
+    "WRISTCALL_CLOUD_MAX_DEVICES": "8",
+    "WRISTCALL_CLOUD_MAX_ENROLL_CODES": "3",
+    "WRISTCALL_CLOUD_ACCOUNT_IDLE_DAYS": "30",
+}
+
+
+def test_config_from_env_reads_session_settings():
+    cfg = config_from_env({**BASE_ENV, **SESSION_ENV})
+    assert cfg.legacy_zitadel_tokens is True
+    assert cfg.zitadel_max_age_s == 300
+    assert cfg.access_token_ttl_s == 1800
+    assert cfg.accounts_per_ip_hour == 5
+    assert cfg.accounts_per_ip_day == 15
+    assert cfg.accounts_per_day == 300
+    assert cfg.accounts_alert_per_day == 150
+    assert cfg.session_attempts_per_minute == 30
+    assert cfg.client_country_header == "CF-IPCountry"
+    assert cfg.max_devices == 8
+    assert cfg.max_enroll_codes == 3
+    assert cfg.account_idle_days == 30
+    defaults = config_from_env(BASE_ENV)
+    assert (defaults.zitadel_max_age_s, defaults.access_token_ttl_s) == (600, 3600)
+    assert (defaults.accounts_per_ip_hour, defaults.accounts_per_ip_day) == (3, 10)
+    assert (defaults.accounts_per_day, defaults.accounts_alert_per_day) == (200, 100)
+    assert (defaults.session_attempts_per_minute, defaults.max_devices, defaults.max_enroll_codes) == (20, 10, 5)
+    assert (defaults.account_idle_days, defaults.client_country_header) == (90, None)
+
+
+def test_mongo_url_from_a_file(tmp_path):
+    path = tmp_path / "mongo-url"
+    path.write_text("mongodb://user:s3cr3t-file@db.example/x\n")
+    env = {"WRISTCALL_CLOUD_MONGO_URL_FILE": str(path), "WRISTCALL_CLOUD_CLIENT_IOS": "client-ios"}
+    assert config_from_env(env).mongo_url == "mongodb://user:s3cr3t-file@db.example/x"
+    path.write_text("postgres://admin:s3cr3t-file@db.example/x")
+    with pytest.raises(ConfigError, match="WRISTCALL_CLOUD_MONGO_URL") as e:
+        config_from_env(env)
+    assert "s3cr3t-file" not in str(e.value)
+    path.write_bytes(b"\xff\xfe")
+    with pytest.raises(ConfigError, match="WRISTCALL_CLOUD_MONGO_URL_FILE"):
+        config_from_env(env)
+
+
+def test_mongo_url_and_file_are_exclusive(tmp_path):
+    path = tmp_path / "mongo-url"
+    path.write_text("mongodb://localhost:27017")
+    with pytest.raises(ConfigError, match="WRISTCALL_CLOUD_MONGO_URL_FILE"):
+        config_from_env({**BASE_ENV, "WRISTCALL_CLOUD_MONGO_URL_FILE": str(path)})
+
+
+def test_alert_must_not_exceed_daily_cap():
+    env = {**BASE_ENV, "WRISTCALL_CLOUD_ACCOUNTS_PER_DAY": "50", "WRISTCALL_CLOUD_ACCOUNTS_ALERT_PER_DAY": "51"}
+    with pytest.raises(ConfigError, match="WRISTCALL_CLOUD_ACCOUNTS_ALERT_PER_DAY"):
+        config_from_env(env)
+    env["WRISTCALL_CLOUD_ACCOUNTS_ALERT_PER_DAY"] = "50"
+    assert config_from_env(env).accounts_alert_per_day == 50
+
+
+def test_legacy_flag_defaults_off():
+    assert CloudConfig(mongo_url="mongodb://localhost:27017").legacy_zitadel_tokens is False
+    assert config_from_env(BASE_ENV).legacy_zitadel_tokens is False
+    with pytest.raises(ConfigError, match="WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS"):
+        config_from_env({**BASE_ENV, "WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS": "maybe"})

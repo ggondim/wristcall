@@ -1,8 +1,10 @@
-"""HTTP API of the cloud. Callers authenticate with a central account access token (`Authorization: Bearer`), except
-on the push relay (push/api.py), whose keys are their own credentials.
+"""HTTP API of the cloud. Callers authenticate with an account session token (`Authorization: Bearer`, see auth.py),
+or with a Zitadel token on the routes of 0.3.x while the transition flag is on; except on the push relay
+(push/api.py), whose keys are their own credentials.
 
 Every error is `{"error": code, "message": ...}`. Request bodies are capped at MAX_BODY bytes. Rate limiting is
-left to the reverse proxy of the deployment (see README), except for the push relay's own limits (push/limits.py).
+left to the reverse proxy of the deployment (see README), except for the push relay's own limits (push/limits.py)
+and those of the account routes (limits.py, sessions_api.py).
 """
 
 import asyncio
@@ -10,7 +12,6 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass
 from typing import Any, Protocol
 
 import httpx
@@ -23,8 +24,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import __version__
+from .account_store import AccountStore, purge_idle_accounts_loop
 from .agenda import AgendaError, parse_agents, parse_new_server, parse_server_patch
+from .api_common import ApiError, json_object
 from .audience import AudienceError, is_loopback, normalize_audience
+from .auth import Caller, Verifier, current_account, require_platform
 from .config import (
     CloudConfig,
     ConfigError,
@@ -35,7 +39,8 @@ from .config import (
     vapid_identity,
 )
 from .identity import IdentityUnavailable, ZitadelUsers
-from .oidc import Identity, OidcError, OidcUnavailable, OidcVerifier
+from .limits import AccountCreationLimiter, AttemptLimiter, PollLimiter
+from .oidc import OidcVerifier
 from .push.api import push_error_response
 from .push.api import router as push_router
 from .push.apns import ApnsChannel
@@ -43,6 +48,9 @@ from .push.channels import Channel, FakeChannel
 from .push.limits import RegistrationLimiter, SendLimiter
 from .push.registry import PushError, purge_idle_loop
 from .push.webpush import WebPushChannel
+from .session_tokens import MANAGER_PLATFORMS, AccountTokens
+from .sessions_api import entitlement_response
+from .sessions_api import router as sessions_router
 from .signing import SigningKey, server_token_claims
 from .store import Store, open_store, public_server
 
@@ -52,31 +60,12 @@ MAX_BODY = 64 * 1024
 BASE_SCOPES = ["openid", "profile", "offline_access"]
 
 
-class Verifier(Protocol):
-    async def verify(self, token: str) -> Identity: ...
-
-
 class Users(Protocol):
     async def delete(self, user_id: str) -> bool: ...
 
 
-@dataclass(frozen=True)
-class Caller:
-    key: str  # "<issuer>#<subject>": the account's id in this service
-    client_id: str | None
-    subject: str  # the user's id at the issuer
-
-
-class ApiError(Exception):
-    def __init__(self, code: str, message: str, status: int) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.status = status
-
-
-def _error(code: str, message: str, status: int) -> JSONResponse:
-    return JSONResponse({"error": code, "message": message}, status_code=status)
+def _error(code: str, message: str, status: int, headers: dict[str, str] | None = None) -> JSONResponse:
+    return JSONResponse({"error": code, "message": message}, status_code=status, headers=headers)
 
 
 class BodyTooLarge(HTTPException):
@@ -132,37 +121,12 @@ class BodyLimit:
         await _error("too_large", BodyTooLarge().detail, 413)(scope, receive, send)
 
 
-async def current_account(request: Request, authorization: str | None = Header(default=None)) -> Caller:
-    """Dependency: the central account behind the bearer token. The token never reaches a log or a response."""
-    scheme, _, token = (authorization or "").partition(" ")
-    token = token.strip()
-    if scheme.lower() != "bearer" or not token:
-        raise ApiError("unauthorized", "missing or invalid token", 401)
-    verifier: Verifier = request.app.state.verifier
-    try:
-        identity = await verifier.verify(token)
-    except OidcUnavailable as e:
-        log.warning("central account unavailable: %s", e)
-        raise ApiError("account_unavailable", "the central account is unavailable; try again later", 503) from None
-    except OidcError as e:
-        log.info("token rejected: %s", e)
-        raise ApiError("unauthorized", "missing or invalid token", 401) from None
-    return Caller(key=f"{identity.issuer}#{identity.subject}", client_id=identity.client_id, subject=identity.subject)
-
-
-async def json_object(request: Request) -> dict[str, Any]:
-    """The request body as a JSON object (422 `invalid` otherwise); size already capped by BodyLimit."""
-    try:
-        body = await request.json()
-    except (ValueError, RecursionError):
-        raise ApiError("invalid", "body must be valid JSON", 422) from None
-    if not isinstance(body, dict):
-        raise ApiError("invalid", "body must be a JSON object", 422)
-    return body
-
-
 def get_store(request: Request) -> Store:
     return request.app.state.store
+
+
+def get_accounts(request: Request) -> AccountStore:
+    return request.app.state.accounts
 
 
 def public_config(
@@ -172,6 +136,7 @@ def public_config(
     channels: dict[str, Channel] | None = None,
     vapid_public_key: str | None = None,
 ) -> dict[str, Any]:
+    """`server_tokens`: the Cloud has a signing key, which also signs the account session tokens."""
     scopes = list(BASE_SCOPES)
     if config.project_id:
         scopes.append(f"urn:zitadel:iam:org:project:id:{config.project_id}:aud")
@@ -190,6 +155,11 @@ def public_config(
             "webpush": "webpush" in (channels or {}),
             "vapid_public_key": vapid_public_key if "webpush" in (channels or {}) else None,
             "apns_topics": list(config.apns_topics) if "apns" in (channels or {}) else [],
+        },
+        "sessions": {
+            "enabled": server_tokens,
+            "zitadel_max_age_s": config.zitadel_max_age_s,
+            "legacy_zitadel_tokens": config.legacy_zitadel_tokens,
         },
     }
 
@@ -230,32 +200,52 @@ def _not_found() -> ApiError:
 async def get_account(request: Request, caller: Caller = Depends(current_account)) -> dict[str, Any]:
     store = get_store(request)
     account = await store.touch_account(caller.key)
+    identities = await get_accounts(request).identities_of(caller.key)
     return {
         "account": caller.key,
         "created_at": account["created_at"],
         "servers": await store.count_servers(caller.key),
+        "plan": await _plan(get_accounts(request), caller.key),
+        "identities": [identity["kind"] for identity in identities],
+        "key_set": "key_hash" in account,
     }
+
+
+async def _plan(accounts: AccountStore, account: str) -> dict[str, Any] | None:
+    """The account's entitlement while it has not expired."""
+    doc = await accounts.entitlement(account)
+    return None if doc is None else entitlement_response(doc)
 
 
 @router.delete("/v1/account", status_code=204)
 async def delete_account(request: Request, caller: Caller = Depends(current_account)) -> Response:
-    clients = request.app.state.config.clients
-    # Only the apps may delete the account; a token issued to the watch (or anyone else) may not.
-    if caller.client_id is None or caller.client_id not in (clients.get("ios"), clients.get("pwa")):
-        raise ApiError("forbidden", "this client cannot delete the account", 403)
-    await get_store(request).delete_account(caller.key)
-    # Then the user at the issuer (decision 23). If that fails the agenda is already gone, but the token still works:
-    # the app shows the error and a retry deletes the user (an empty agenda deletes again without harm).
+    # Only the apps (and the web app) may delete the account; the watch (or a token of an unknown client) may not.
+    require_platform(caller, MANAGER_PLATFORMS)
+    config: CloudConfig = request.app.state.config
+    accounts = get_accounts(request)
+    # The agenda first, but not the account document: until the end the account, its devices and its identities
+    # stay, so the same token retries after a failure below (an empty agenda deletes again without harm).
+    await get_store(request).servers.delete_many({"account": caller.key})
+    # Then the users at the issuer (decision 23). If that fails nothing else is deleted: the app shows the error
+    # and retries.
     users: Users | None = request.app.state.users
     if users is not None:
-        try:
-            deleted = await users.delete(caller.subject)
-        except IdentityUnavailable as e:
-            log.warning("account deleted, its sign-in not: %s", e)
-            raise ApiError("account_unavailable", "the sign-in could not be deleted; try again later", 503) from None
-        if not deleted:
-            # Expected for a user of another organization; for every user it means a wrong WRISTCALL_CLOUD_ZITADEL_ORG_ID.
-            log.warning("account deleted; its sign-in is not a user of the Cloud's organization (left alone)")
+        for identity in await accounts.identities_of(caller.key):
+            if identity["kind"] != "zitadel" or identity["issuer"] != config.issuer:
+                continue
+            try:
+                deleted = await users.delete(identity["subject"])
+            except IdentityUnavailable as e:
+                log.warning("account agenda deleted, its sign-in not: %s", e)
+                raise ApiError(
+                    "account_unavailable", "the sign-in could not be deleted; try again later", 503
+                ) from None
+            if not deleted:
+                # Expected for a user of another organization; for every user it means a wrong
+                # WRISTCALL_CLOUD_ZITADEL_ORG_ID.
+                log.warning("account deleted; its sign-in is not a user of the Cloud's organization (left alone)")
+    # Devices, identities, codes, web sessions and entitlement; the account document last.
+    await accounts.delete_account_data(caller.key)
     return Response(status_code=204)
 
 
@@ -376,7 +366,7 @@ async def _stop(task: asyncio.Task[None]) -> None:
     except asyncio.CancelledError:
         pass
     except Exception as e:  # the task died earlier; what is closed after it must close all the same
-        log.warning("push purge task had stopped (%s)", type(e).__name__)
+        log.warning("a purge task had stopped (%s)", type(e).__name__)
 
 
 def create_app(
@@ -453,10 +443,23 @@ def create_app(
                 stack.push_async_callback(mongo.close)
             app.state.store = current
             await current.ensure_indexes()
+            accounts = AccountStore(current.db)
+            await accounts.ensure_indexes()
+            created = await accounts.migrate()
+            log.info("migration: %d identities created", created)
+            app.state.accounts = accounts
+            if config.legacy_zitadel_tokens:
+                log.warning("legacy Zitadel tokens accepted on account routes (WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS)")
             purger = asyncio.create_task(
                 purge_idle_loop(current, every_s=config.push_cleanup_every_s, idle_s=config.push_idle_days * 86400)
             )
             stack.push_async_callback(_stop, purger)
+            account_purger = asyncio.create_task(
+                purge_idle_accounts_loop(
+                    accounts, every_s=config.account_cleanup_every_s, idle_s=config.account_idle_days * 86400
+                )
+            )
+            stack.push_async_callback(_stop, account_purger)
             yield
 
     app = FastAPI(title="wristcall-cloud", version=__version__, lifespan=lifespan)
@@ -464,9 +467,19 @@ def create_app(
     app.state.verifier = verifier
     app.state.users = users
     app.state.signing_key = signing_key
+    # Set again by the lifespan (on the Store it opens); set here too for an app driven without its lifespan.
+    app.state.accounts = AccountStore(store.db) if store is not None else None
+    app.state.account_tokens = (
+        AccountTokens(signing_key, config.public_url, ttl_s=config.access_token_ttl_s)
+        if signing_key is not None
+        else None
+    )
     app.state.channels = channels
     app.state.send_limiter = SendLimiter(config.push_per_minute, config.push_per_day)
     app.state.registration_limiter = RegistrationLimiter(config.registrations_per_minute_per_ip)
+    app.state.account_limiter = AccountCreationLimiter(config.accounts_per_ip_hour, config.accounts_per_ip_day)
+    app.state.attempt_limiter = AttemptLimiter(config.session_attempts_per_minute)
+    app.state.poll_limiter = PollLimiter()
     if config.push_fake:
         log.warning("push: fake channel, nothing is delivered (WRISTCALL_CLOUD_PUSH_FAKE)")
     app.add_middleware(BodyLimit, limit=MAX_BODY)
@@ -486,7 +499,8 @@ def create_app(
 
     @app.exception_handler(ApiError)
     async def api_error(_request: Request, e: ApiError) -> JSONResponse:
-        return _error(e.code, e.message, e.status)
+        headers = {"Retry-After": str(e.retry_after)} if e.retry_after is not None else None
+        return _error(e.code, e.message, e.status, headers)
 
     @app.exception_handler(AgendaError)
     async def agenda_error(_request: Request, e: AgendaError) -> JSONResponse:
@@ -511,6 +525,7 @@ def create_app(
         )
 
     app.include_router(router)
+    app.include_router(sessions_router)
     app.include_router(push_router)
 
     @app.get("/v1/health")

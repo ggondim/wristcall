@@ -65,6 +65,25 @@ class CloudConfig:
     zitadel_client_secret: str | None = field(default=None, repr=False)
     # Browser origins allowed to call the API (the wristcall PWA); empty: no CORS headers at all.
     cors_origins: tuple[str, ...] = ()
+    # Accounts and sessions. While on, a Zitadel token still works on the routes that existed before the Cloud
+    # had its own sessions (transition for old app builds); a Zitadel token is only taken in the exchange
+    # (POST /v1/devices) if issued at most zitadel_max_age_s ago.
+    legacy_zitadel_tokens: bool = False
+    zitadel_max_age_s: int = 600
+    access_token_ttl_s: int = 3600
+    # Anti-abuse: silent accounts per client IP and in total (a log alert above the alert threshold).
+    accounts_per_ip_hour: int = 3
+    accounts_per_ip_day: int = 10
+    accounts_per_day: int = 200
+    accounts_alert_per_day: int = 100
+    # Attempts per minute per IP on the secret-guessing routes (key, code, web session, invite).
+    session_attempts_per_minute: int = 20
+    # Header the proxy puts the client's country in (Cloudflare: CF-IPCountry); None: no country is recorded.
+    client_country_header: str | None = None
+    max_devices: int = 10  # per account
+    max_enroll_codes: int = 5  # open ones per account
+    account_idle_days: int = 90  # an anonymous account (no identity, no plan) unused this long is deleted
+    account_cleanup_every_s: int = 21600
 
 
 class ConfigError(Exception):
@@ -109,6 +128,21 @@ def _secret(env: Mapping[str, str], name: str) -> bytes | None:
     if not data.strip():
         raise ConfigError(f"{file_name} is empty")
     return data
+
+
+def _mongo_url(env: Mapping[str, str]) -> str:
+    """The MongoDB URL, inline or from a file (it carries the password); checked for its scheme only."""
+    name = "WRISTCALL_CLOUD_MONGO_URL"
+    data = _secret(env, name)
+    if data is None:
+        raise ConfigError(f"{name} is required")
+    try:
+        url = data.decode().strip()
+    except UnicodeDecodeError:
+        raise ConfigError(f"{name}_FILE must be text") from None
+    if not url.startswith(("mongodb://", "mongodb+srv://")):
+        raise ConfigError(f"{name} must be a mongodb:// or mongodb+srv:// URL")
+    return url
 
 
 def _https_url(env: Mapping[str, str], name: str, default: str | None) -> str | None:
@@ -300,12 +334,13 @@ def _cors_origins(env: Mapping[str, str]) -> tuple[str, ...]:
     return tuple(origins)
 
 
+def admin_settings(env: Mapping[str, str]) -> tuple[str, str]:
+    """What the admin CLI needs from the environment: the MongoDB URL and the database name."""
+    return _mongo_url(env), _get(env, "WRISTCALL_CLOUD_DATABASE") or CloudConfig.database
+
+
 def config_from_env(env: Mapping[str, str]) -> CloudConfig:
-    mongo_url = _get(env, "WRISTCALL_CLOUD_MONGO_URL")
-    if mongo_url is None:
-        raise ConfigError("WRISTCALL_CLOUD_MONGO_URL is required")
-    if not mongo_url.startswith(("mongodb://", "mongodb+srv://")):
-        raise ConfigError("WRISTCALL_CLOUD_MONGO_URL must be a mongodb:// or mongodb+srv:// URL")
+    mongo_url = _mongo_url(env)
     clients = {kind: value for kind, var in CLIENT_VARS.items() if (value := _get(env, var)) is not None}
     if not clients:
         raise ConfigError("at least one of " + ", ".join(CLIENT_VARS.values()) + " is required")
@@ -323,6 +358,12 @@ def config_from_env(env: Mapping[str, str]) -> CloudConfig:
     apns_team_id = _get(env, "WRISTCALL_CLOUD_APNS_TEAM_ID")
     apns_provider_token(apns_key_pem, apns_key_id, apns_team_id, apns_topics)
     zitadel_org_id, zitadel_client_id, zitadel_client_secret = _zitadel(env)
+    accounts_per_day = _positive_int(env, "WRISTCALL_CLOUD_ACCOUNTS_PER_DAY", CloudConfig.accounts_per_day)
+    accounts_alert_per_day = _positive_int(
+        env, "WRISTCALL_CLOUD_ACCOUNTS_ALERT_PER_DAY", CloudConfig.accounts_alert_per_day
+    )
+    if accounts_alert_per_day > accounts_per_day:
+        raise ConfigError("WRISTCALL_CLOUD_ACCOUNTS_ALERT_PER_DAY must not exceed WRISTCALL_CLOUD_ACCOUNTS_PER_DAY")
     return CloudConfig(
         mongo_url=mongo_url,
         database=_get(env, "WRISTCALL_CLOUD_DATABASE") or CloudConfig.database,
@@ -354,4 +395,20 @@ def config_from_env(env: Mapping[str, str]) -> CloudConfig:
         zitadel_client_id=zitadel_client_id,
         zitadel_client_secret=zitadel_client_secret,
         cors_origins=_cors_origins(env),
+        legacy_zitadel_tokens=_flag(env, "WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS"),
+        zitadel_max_age_s=_positive_int(env, "WRISTCALL_CLOUD_ZITADEL_MAX_AGE", CloudConfig.zitadel_max_age_s),
+        access_token_ttl_s=_positive_int(env, "WRISTCALL_CLOUD_ACCESS_TOKEN_TTL", CloudConfig.access_token_ttl_s),
+        accounts_per_ip_hour=_positive_int(
+            env, "WRISTCALL_CLOUD_ACCOUNTS_PER_IP_HOUR", CloudConfig.accounts_per_ip_hour
+        ),
+        accounts_per_ip_day=_positive_int(env, "WRISTCALL_CLOUD_ACCOUNTS_PER_IP_DAY", CloudConfig.accounts_per_ip_day),
+        accounts_per_day=accounts_per_day,
+        accounts_alert_per_day=accounts_alert_per_day,
+        session_attempts_per_minute=_positive_int(
+            env, "WRISTCALL_CLOUD_SESSION_ATTEMPTS_PER_MINUTE", CloudConfig.session_attempts_per_minute
+        ),
+        client_country_header=_header_name(env, "WRISTCALL_CLOUD_CLIENT_COUNTRY_HEADER"),
+        max_devices=_positive_int(env, "WRISTCALL_CLOUD_MAX_DEVICES", CloudConfig.max_devices),
+        max_enroll_codes=_positive_int(env, "WRISTCALL_CLOUD_MAX_ENROLL_CODES", CloudConfig.max_enroll_codes),
+        account_idle_days=_positive_int(env, "WRISTCALL_CLOUD_ACCOUNT_IDLE_DAYS", CloudConfig.account_idle_days),
     )
