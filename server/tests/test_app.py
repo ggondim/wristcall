@@ -625,3 +625,42 @@ def test_one_way_call_end_without_push_config_sends_nothing(oneway):
     assert wait_done(oneway, call_id, auth(token))["status"] == "delivered"
     time.sleep(0.05)
     assert not oneway.relay.called
+
+
+def test_startup_logs_the_link_qr_on_a_new_server(caplog):
+    from test_pair_account import account_config
+
+    import re
+
+    from wristcall.pairing import hash_secret
+
+    # A new server: exactly one user, not linked, with no API token and no device.
+    store = open_sqlite_storage(":memory:")
+    ana = run(UserService(store).create("ana"))
+    caplog.set_level(logging.INFO, logger="wristcall.link")
+    with TestClient(create_app(account_config("attestation", public_url="https://testserver"), storage=store)):
+        (user,) = run(store.users.list())
+        assert user.id == ana.id and user.central_subject is None
+        assert run(store.tokens.list(ana.id)) == [] and run(store.devices.list(ana.id)) == []
+    (record,) = [r for r in caplog.records if r.name == "wristcall.link"]
+    message = record.getMessage()
+    assert "https://wristcall-app.trigram.com.br/link#v=1&s=https://testserver&c=" in message
+    assert "New code: docker compose exec wristcall wristcall link" in message
+    code = re.search(r"&c=([A-Z2-7]{26})", message).group(1)
+    assert run(store.pairing.claim_link_code(hash_secret(code), time.time())) == ana.id
+
+
+def test_startup_survives_a_failing_link_invite(monkeypatch, caplog):
+    from test_pair_account import account_config
+
+    async def broken(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("wristcall.app.startup_invite", broken)
+    caplog.set_level(logging.WARNING, logger="wristcall")
+    with TestClient(create_app(account_config("attestation", public_url="https://testserver"), storage=open_sqlite_storage(":memory:"))) as c:
+        assert c.get("/v1/health").status_code == 200
+    assert any(
+        r.name == "wristcall.app" and r.levelno == logging.WARNING and "could not prepare the link QR code" in r.getMessage()
+        for r in caplog.records
+    )

@@ -14,6 +14,7 @@ import { CallbackView } from "./CallbackView"
 import { CallDetailView } from "./CallDetailView"
 import { DevicesScreen } from "./DevicesView"
 import { HistoryView } from "./HistoryView"
+import { LinkView } from "./LinkView"
 import { ServerDetailView } from "./ServerDetailView"
 import { ServersView } from "./ServersView"
 import { onNavigate, parseAgentsTarget, parseApprovalTarget, parseDevicesTarget, parseHistoryServer, parseHistoryTarget, parseRoute, type Route } from "./route"
@@ -74,6 +75,7 @@ function Screen({
     return call === null ? <HistoryView model={history} servers={servers} serverId={parseHistoryServer(route.path)} /> : <CallDetailView model={history} target={call} />
   }
   if (route.tab === "callback") return <CallbackView model={account} />
+  if (route.tab === "link") return <LinkView model={addServer} account={account} />
   if (route.path === "/settings/watch" && account !== null) return <ApproveWatchSignInView model={account} />
   return <SettingsView account={account} notifications={notifications} />
 }
@@ -115,7 +117,7 @@ export function App({ badge, approvals: given, servers, session = null, account 
   return (
     <>
       <Screen route={route} servers={servers} approvals={approvals} history={historyModel} session={session} account={account} notifications={notifications} onAgentsChanged={onAgentsChanged} />
-      {route.tab === "callback" ? null : <Tabs route={route} badge={badge} />}
+      {route.tab === "callback" || route.tab === "link" ? null : <Tabs route={route} badge={badge} />}
     </>
   )
 }

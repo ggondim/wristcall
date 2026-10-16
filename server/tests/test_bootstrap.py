@@ -5,7 +5,7 @@ import threading
 import pytest
 
 from wristcall.agents import AgentSpec
-from wristcall.bootstrap import IMPORT_MARK, bootstrap, profile_slug
+from wristcall.bootstrap import IMPORT_MARK, bootstrap, create_owner, profile_slug
 from wristcall.config import parse_config
 from wristcall.pairing import hash_secret
 from wristcall.storage import open_sqlite_storage
@@ -92,6 +92,13 @@ async def test_import_into_the_existing_user(st):
     report = await bootstrap(st, config(PROD_PROFILES))
     assert report.owner_created is None
     assert [a.slug for a in await st.agents.list("u_g")] == ["default"]
+
+
+async def test_create_owner_returns_the_one_another_process_created(st):
+    first, created = await create_owner(st, 1.0)
+    assert (first.handle, first.display_name, created) == ("owner", "Owner", True)
+    again, created = await create_owner(st, 2.0)  # Conflict on the handle: read back, not a second user
+    assert (again, created) == (first, False) and len(await st.users.list()) == 1
 
 
 async def test_no_profiles_no_user(st):

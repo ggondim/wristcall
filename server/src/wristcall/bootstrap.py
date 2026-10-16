@@ -41,18 +41,25 @@ def profile_slug(name: str) -> str:
     return slug if SLUG.fullmatch(slug) else "agent"
 
 
+async def create_owner(storage: Storage, now: float) -> tuple[User, bool]:
+    """The `owner` user of a server without users, and whether this call created it. Another process (the server
+    and a CLI command starting together) may create it first: then that one is returned."""
+    try:
+        return await storage.users.create(new_user_id(), OWNER_HANDLE, "Owner", now), True
+    except Conflict:  # another process created it first
+        user = await storage.users.by_handle(OWNER_HANDLE)
+        assert user is not None
+        return user, False
+
+
 async def _owner(storage: Storage, now: float, report: BootstrapReport) -> User:
     users = await storage.users.list()
     if users:
         return users[0]
-    try:
-        user = await storage.users.create(new_user_id(), OWNER_HANDLE, "Owner", now)
+    user, created = await create_owner(storage, now)
+    if created:
         report.owner_created = user.handle
-        return user
-    except Conflict:  # another process created it first
-        user = await storage.users.by_handle(OWNER_HANDLE)
-        assert user is not None
-        return user
+    return user
 
 
 async def import_profiles(storage: Storage, config: AppConfig, now: float, report: BootstrapReport) -> None:

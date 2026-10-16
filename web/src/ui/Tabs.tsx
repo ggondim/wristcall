@@ -11,7 +11,7 @@ const TABS: { id: Tab; label: string; path: string }[] = [
 
 /** Which tab a route belongs to: the approvals screen is opened by the badge on the Servers tab, which stays current. */
 function tabOf(route: Route): Tab | null {
-  if (route.tab === "callback") return null
+  if (route.tab === "callback" || route.tab === "link") return null
   return route.tab === "approvals" ? "servers" : route.tab
 }
 

@@ -203,6 +203,7 @@ class _Pairing:
     async def purge(self, now: float) -> None:
         self._db.execute("DELETE FROM pairing_codes WHERE expires_at < ?", (now,))
         self._db.execute("DELETE FROM pairing_requests WHERE expires_at < ?", (now,))
+        self._db.execute("DELETE FROM link_codes WHERE expires_at < ?", (now,))
 
     async def add_code(self, code: str, user_id: str, expires_at: float) -> bool:
         try:
@@ -227,6 +228,22 @@ class _Pairing:
 
     async def count_failed_attempt(self, now: float) -> None:
         self._db.execute("UPDATE pairing_codes SET attempts = attempts + 1 WHERE used_at IS NULL AND expires_at > ?", (now,))
+
+    async def add_link_code(self, code_hash: str, user_id: str, expires_at: float) -> None:
+        self._db.execute(
+            "INSERT INTO link_codes (code_hash, user_id, expires_at) VALUES (?, ?, ?)", (code_hash, user_id, expires_at)
+        )
+
+    async def claim_link_code(self, code_hash: str, now: float) -> str | None:
+        rows = self._db.query(
+            "UPDATE link_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL AND expires_at > ? "
+            "RETURNING user_id",
+            (now, code_hash, now),
+        )
+        return rows[0]["user_id"] if rows else None
+
+    async def discard_link_codes(self, user_id: str) -> None:
+        self._db.execute("DELETE FROM link_codes WHERE user_id = ? AND used_at IS NULL", (user_id,))
 
     async def add_request(
         self, poll_hash: str, request_id: str, device_name: str, now: float, expires_at: float,

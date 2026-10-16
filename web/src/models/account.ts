@@ -5,6 +5,7 @@ import { canonical, parseServerAddress } from "../lib/address"
 import { ApiError, NetworkError, TimeoutError } from "../lib/errors"
 import { replaceRoute } from "../ui/route"
 import { BaseModel } from "../ui/useModel"
+import { hasPendingLink } from "./link"
 import type { ServersModel } from "./servers"
 
 export type AccountScreen = "unavailable" | "signedOut" | "signingIn" | "signedIn" | { failed: string }
@@ -149,7 +150,7 @@ export class AccountModel extends BaseModel<AccountState> {
 
   /**
    * The callback route: trades the code (once, even if called twice), clears it from the address bar and opens
-   * Settings. A failure stays on the callback route, without the query, and shows the reason.
+   * Settings, or the server link that waited for the sign-in. A failure stays on the callback route, without the query, and shows the reason.
    */
   completeSignIn(href: string): Promise<void> {
     this.#completing ??= this.#complete(href).finally(() => {
@@ -171,7 +172,8 @@ export class AccountModel extends BaseModel<AccountState> {
       return
     }
     this.set({ screen: "signedIn" })
-    replaceRoute("/settings")
+    // A server link opened before the sign-in: its screen takes it (`takePendingLink`).
+    replaceRoute(hasPendingLink() ? "/link" : "/settings")
     this.agenda?.pushAll()
   }
 

@@ -66,7 +66,7 @@ Push relay (all optional; a channel exists only when its credentials are set):
 | `WRISTCALL_CLOUD_CLIENT_IP_HEADER` | | header the reverse proxy puts the client address in (for example `X-Forwarded-For`); its last value counts. Without it, the address of the connection is used |
 | `WRISTCALL_CLOUD_PUSH_IDLE_DAYS` | `180` | registrations without a send for this long are deleted (checked every 6 hours) |
 | `WRISTCALL_CLOUD_PUSH_FAKE` | `0` | `1` replaces both channels by one that delivers nothing, for end to end tests on one machine. It is refused unless `WRISTCALL_CLOUD_PUBLIC_URL` is a loopback URL, and when VAPID or APNs credentials are set as well, the fake channel is the one used |
-| `WRISTCALL_CLOUD_CORS_ORIGINS` | | comma separated browser origins allowed to call the API (the wristcall PWA's, for example `https://app.wristcall.trigram.com.br`). Exact `scheme://host[:port]`: `https`, or `http` only for `localhost`, `127.0.0.1` and `[::1]`; no path, trailing slash, `*` or user. Empty: no CORS, as before. See [Browsers (CORS)](#browsers-cors) |
+| `WRISTCALL_CLOUD_CORS_ORIGINS` | | comma separated browser origins allowed to call the API (the wristcall PWA's, for example `https://wristcall-app.trigram.com.br`). Exact `scheme://host[:port]`: `https`, or `http` only for `localhost`, `127.0.0.1` and `[::1]`; no path, trailing slash, `*` or user. Empty: no CORS, as before. See [Browsers (CORS)](#browsers-cors) |
 
 Account deletion at the identity provider (the three go together; without them `DELETE /v1/account` deletes only the
 agenda):
