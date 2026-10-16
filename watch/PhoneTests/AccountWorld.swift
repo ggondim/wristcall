@@ -47,6 +47,8 @@ final class AccountWorld: Sendable {
         var zitadelSignInFailure: Int?
         var refuseSessionRefresh = false
         var enrollLimit = false
+        /// `GET /v1/account` answers this status when set.
+        var accountReadFailure: Int?
         var entries: [Entry] = []
         var nextID = 1
         var refuseRefresh = false
@@ -135,6 +137,11 @@ final class AccountWorld: Sendable {
     var refuseSessionRefresh: Bool {
         get { box.state.withLock { $0.refuseSessionRefresh } }
         set { box.state.withLock { $0.refuseSessionRefresh = newValue } }
+    }
+
+    var accountReadFailure: Int? {
+        get { box.state.withLock { $0.accountReadFailure } }
+        set { box.state.withLock { $0.accountReadFailure = newValue } }
     }
 
     /// Enroll codes get `403 limit`.
@@ -337,6 +344,9 @@ final class AccountWorld: Sendable {
         case ("GET", "/v1/account"):
             guard let account = bearerAccount(request) else { return revoked }
             return box.state.withLock { state in
+                if let status = state.accountReadFailure {
+                    return StubHost.Reply(status, #"{"error":"unavailable","message":"down"}"#)
+                }
                 guard let record = state.accounts[account] else { return revoked }
                 let identities = record.identities.map { "\"\($0)\"" }.joined(separator: ",")
                 return StubHost.Reply(200, #"{"account":"\#(account)","created_at":1,"servers":\#(record.servers),"plan":\#(record.plan ?? "null"),"identities":[\#(identities)],"key_set":\#(record.keySet)}"#)
@@ -509,5 +519,18 @@ extension StoredAccountKey {
     /// A new key of `account`, stored `age` seconds ago.
     static func of(_ account: String, age: TimeInterval = 0) -> StoredAccountKey {
         StoredAccountKey(account: account, key: .generate(), createdAt: Date().addingTimeInterval(-age))
+    }
+}
+
+/// A web sheet that waits at `gate` before it answers like `FakeWeb.approving()`.
+@MainActor
+final class GatedWeb: WebAuthenticator {
+    let gate = Gate()
+    private let inner = FakeWeb.approving()
+    var opened: Int { inner.opened.count }
+
+    func authenticate(url: URL, callbackScheme: String) async throws -> URL {
+        await gate.wait()
+        return try await inner.authenticate(url: url, callbackScheme: callbackScheme)
     }
 }

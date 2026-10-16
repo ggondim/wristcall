@@ -258,6 +258,31 @@ struct AccountModelTests {
         #expect(try rig.keys.keys().count == 2)
     }
 
+    @Test func lateKeyNeedsAFreshAccountRead() async throws {
+        world.addAccount("acc_1")
+        let rig = AccountRig(world, session: world.storedSession("acc_1"))
+        let model = await rig.started()
+        #expect(model.info?.isEmpty == true)
+        // A key arrives, but the account can't be read: the old (empty) `info` must not delete it.
+        let other = AccountKey.generate()
+        world.addAccount("acc_2", key: other, AccountWorld.Account(servers: 2))
+        try rig.keys.save(other, account: "acc_2")
+        world.accountReadFailure = 503
+
+        await model.start()
+
+        #expect(requests("DELETE", "/v1/account").isEmpty)
+        #expect(requests("POST", "/v1/devices").isEmpty)
+        #expect(world.account("acc_1") != nil)
+        #expect(try rig.sessions.load()?.account == "acc_1")
+
+        // Read again: now it moves over.
+        world.accountReadFailure = nil
+        await model.start()
+        #expect(requests("DELETE", "/v1/account").count == 1)
+        #expect(try rig.sessions.load()?.account == "acc_2")
+    }
+
     @Test func rateLimitedStartRetriesAfterTheDelay() async throws {
         world.signUpReplies = [StubHost.Reply(429, #"{"error":"rate_limited","message":"slow down"}"#, headers: ["Retry-After": "2"])]
         let rig = AccountRig(world)
@@ -354,6 +379,32 @@ struct AccountModelTests {
         #expect(try rig.tokens.load() == nil)
     }
 
+    @Test func startDuringRestoreWaitsForIt() async throws {
+        let web = GatedWeb()
+        let rig = await readyRig(web: web)
+        let model = rig.model
+        let restore = Task { try await model.restoreWithEmail() }
+        #expect(await web.gate.reached())
+        let before = world.cloud.requests.count
+
+        // The web sheet brings the app back to the foreground, which starts the account: it waits for the restore.
+        await model.start()
+        #expect(world.cloud.requests.count == before)
+        let late = Task { await model.start() }
+        await web.gate.open()
+        try await restore.value
+        await late.value
+        await model.start()
+
+        #expect(web.opened == 1)
+        #expect(requests("POST", "/v1/devices").count == 1)
+        #expect(requests("POST", "/v1/accounts").isEmpty)
+        #expect(model.state == .ready)
+        #expect(model.info?.account == AccountWorld.zitadelAccount)
+        #expect(try rig.sessions.load()?.account == AccountWorld.zitadelAccount)
+        #expect(try rig.keys.keys().map(\.account) == [AccountWorld.zitadelAccount])
+    }
+
     @Test func failedRestoreKeepsTheCurrentAccount() async throws {
         let rig = await readyRig()
         let model = rig.model
@@ -416,6 +467,9 @@ struct AccountModelTests {
         linked.linked = true
         let rig = await readyRig(servers: [linked], makeAPI: { _, _ in fake })
         let model = rig.model
+        // An account left behind by a restore: its key is not this account's to delete.
+        let other = AccountKey.generate()
+        try rig.keys.save(other, account: "acc_left")
         OnboardingStore.finish(in: rig.defaults)
         DeadKeys.mark(.of("acc_old"), defaults: rig.defaults)
         try rig.keys.savePending(.generate())
@@ -430,7 +484,8 @@ struct AccountModelTests {
         #expect(fake.calls.contains("unlinkAccount"))
         let delete = try #require(requests("DELETE", "/v1/account").first)
         #expect(delete.headers["Authorization"] == "Bearer at-acc_1-0")
-        #expect(try rig.keys.keys().isEmpty)
+        #expect(try rig.keys.keys().map(\.account) == ["acc_left"])
+        #expect(try rig.keys.keys().first?.key == other)
         #expect(try rig.keys.pending() == nil)
         #expect(try rig.sessions.load() == nil)
         #expect(!OnboardingStore.isDone(in: rig.defaults))
@@ -458,6 +513,24 @@ struct AccountModelTests {
         #expect(try rig.sessions.load() != nil)
         #expect(try rig.keys.keys().count == 1)
         #expect(model.appState.servers.count == 1)
+    }
+
+    @Test func deleteWithARefusedSessionSaysSo() async throws {
+        let rig = await readyRig()
+        let model = rig.model
+        try rig.sessions.save(world.storedSession("acc_1", expired: true))
+        world.refuseSessionRefresh = true
+
+        await model.deleteAccount()
+
+        #expect(model.error?.hasPrefix("Can't delete the account now.") == true)
+        #expect(requests("DELETE", "/v1/account").isEmpty)
+        #expect(world.account("acc_1") != nil)
+        // Back in with the key: the account is still there.
+        await model.start()
+        #expect(model.state == .ready)
+        #expect(model.error != nil)
+        #expect(try rig.keys.keys().map(\.account) == ["acc_1"])
     }
 
     @Test func revokedLinkKeepsServers() async throws {

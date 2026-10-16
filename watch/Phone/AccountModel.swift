@@ -152,16 +152,18 @@ final class AccountModel {
     /// for it. In order: the stored session; the 0.3.x Zitadel sign-in (moved over, then its tokens go); a
     /// stored key when this iPhone had an account before (never a new account: `.needsSignIn` instead); a
     /// new account. `429` and network failures wait (`.waiting`) and try again by themselves.
+    /// While an email restore runs it returns at once: the restore ends in its own state.
     func start() async {
-        guard session != nil else { return }
+        guard session != nil, !restoring else { return }
         await launchStart().value
     }
 
     /// Forgets the account this iPhone was in and starts again: with no key, a new account ("Start over").
     /// The old account stays in the Cloud.
     func startOver() async {
-        guard session != nil, state != .ready else { return }
+        guard session != nil, state != .ready, !restoring else { return }
         defaults.removeObject(forKey: Self.lastIDKey)
+        state = .starting
         await start()
     }
 
@@ -198,7 +200,8 @@ final class AccountModel {
     private func attempt() async -> Next {
         guard let session else { return .done }
         restartRequested = false
-        if state != .ready { state = .starting }
+        // A re-check from `.needsSignIn` (back in the foreground) keeps the restore screen up meanwhile.
+        if state != .ready, state != .needsSignIn { state = .starting }
         do {
             switch try await enter(session) {
             case .ready: await becameReady(session)
@@ -255,9 +258,10 @@ final class AccountModel {
         var mirror = state != .ready
         if enteredAccount(account) { mirror = true }
         state = .ready
-        await refreshAccount()
+        let read = await readAccount()
         guard state == .ready else { return }
-        if await adoptOlderKey(session) {
+        // C6 only on what the Cloud said just now: an old `info` may miss servers added since.
+        if read, await adoptOlderKey(session) {
             guard let account = await session.accountID else { return }
             _ = enteredAccount(account)
             mirror = true
@@ -303,9 +307,13 @@ final class AccountModel {
                 return false
             }
             do {
-                try await client.deleteAccount(accessToken: try await session.accessToken())
+                // Read again right before: a server added meanwhile (another device) keeps the account.
+                let token = try await session.accessToken()
+                let now = try await client.account(accessToken: token)
+                guard now.account == current.account, now.isEmpty else { throw CancellationError() }
+                try await client.deleteAccount(accessToken: token)
             } catch {
-                // The empty account stays for now: so does this iPhone. The extra device goes (best effort).
+                // The account stays for now: so does this iPhone. The extra device goes (best effort).
                 try? await client.revokeDevice(id: tokens.device, accessToken: tokens.accessToken)
                 return false
             }
@@ -330,7 +338,8 @@ final class AccountModel {
         hasLocalKey = false
         watchCode = nil
         state = .starting
-        if starting != nil {
+        if starting != nil || restoring {
+            // The run in flight (or the restore, when it ends) starts again.
             restartRequested = true
         } else {
             launchStart()
@@ -341,14 +350,21 @@ final class AccountModel {
 
     /// `GET /v1/account` into `info`, and whether this iPhone holds the account's key.
     func refreshAccount() async {
-        guard let session, state == .ready else { return }
+        _ = await readAccount()
+    }
+
+    /// `refreshAccount`; `true` when the Cloud answered (a failure keeps the last known `info`).
+    private func readAccount() async -> Bool {
+        guard let session, state == .ready else { return false }
+        var read = false
         do {
             info = try await session.cloudClient.account(accessToken: try await session.accessToken())
+            read = true
         } catch {
-            if await endIfRefused(error, unauthorized: true) { return }
-            // The last known `info` stays.
+            if await endIfRefused(error, unauthorized: true) { return false }
         }
         hasLocalKey = await localKey() != nil
+        return read
     }
 
     /// `POST /v1/entitlements/redeem`. An account that has a plan already (`409 already_entitled`) counts as
@@ -377,8 +393,17 @@ final class AccountModel {
     func restoreWithEmail(leavingCurrent: Bool = false) async throws {
         guard let session, let legacy else { throw AccountError.notConfigured }
         guard !restoring else { return }
+        // One at a time with `start()`: a start in flight finishes first, and none begins until the restore is
+        // done (the web sheet brings the app back to the foreground, which starts the account).
         restoring = true
-        defer { restoring = false }
+        defer {
+            restoring = false
+            if restartRequested {
+                restartRequested = false
+                launchStart()
+            }
+        }
+        await starting?.value
         // The confirmation's second call reuses the login of the first one: no second page.
         if !(await legacy.isSignedIn) {
             let config = try await legacy.config()
@@ -438,13 +463,14 @@ final class AccountModel {
     }
 
     /// Unlinks the linked servers (best effort, with their personal tokens), then `DELETE /v1/account` (the
-    /// Cloud deletes the agenda, the devices and the sign-ins). Then nothing of it stays here: keys (also on
-    /// the user's other devices), session, the last account, dead keys, onboarding, push keys (`accountDeleted`)
+    /// Cloud deletes the agenda, the devices and the sign-ins). Then nothing of it stays here: its key (also on
+    /// the user's other devices) and the pending key, session, the last account, dead keys, onboarding, push keys (`accountDeleted`)
     /// and the local servers. On failure the account stays and `error` says so. Nothing new is made until the
     /// next `start()`.
     func deleteAccount() async {
-        guard let session, state == .ready else { return }
+        guard let session, state == .ready, !restoring else { return }
         error = nil
+        let account = await session.accountID
         // First: a sync still running, or a change made meanwhile, must not add back what the deletion removes.
         agenda?.suspend()
         for server in appState.servers where server.linked {
@@ -453,12 +479,15 @@ final class AccountModel {
         do {
             try await session.cloudClient.deleteAccount(accessToken: try await session.accessToken())
         } catch {
+            self.error = "Can't delete the account now. " + Self.message(for: error)
             if await endIfRefused(error) { return }
             agenda?.resume()
-            self.error = "Can't delete the account now. " + Self.message(for: error)
             return
         }
-        try? keys.deleteAll()
+        // Only this account's key (and the pending one): other accounts' keys in iCloud Keychain are not its to
+        // delete (one left behind by a restore, say).
+        if let account { try? keys.delete(account: account) }
+        try? keys.clearPending()
         try? await session.signOut()
         defaults.removeObject(forKey: Self.lastIDKey)
         DeadKeys.forgetAll(defaults: defaults)
