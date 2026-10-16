@@ -231,6 +231,25 @@ class AccountStore:
             if doc is None or doc.get("key_hash") is None:
                 raise NoKey("account has no key")
             raise WrongKey("account key does not match")
+        return await self._drop_key_reach(account, keep_device)
+
+    async def reset_key(self, account: str, new_hash: str, keep_device: str, *, now: float | None = None) -> int:
+        """Sets the account key whether or not one exists (a fresh sign-in proved the account) and drops everything
+        the old key could reach, like rotate_key; returns how many devices went. Raises KeyInUse (`new_hash` is
+        another account's). A missing account is ignored (the caller has just authenticated it)."""
+        now = time.time() if now is None else now
+        try:
+            result = await self.accounts.update_one(
+                {"_id": account}, {"$set": {"key_hash": new_hash, "key_set_at": now}}
+            )
+        except DuplicateKeyError:
+            raise KeyInUse("account key already in use") from None
+        if result.matched_count != 1:
+            return 0
+        return await self._drop_key_reach(account, keep_device)
+
+    async def _drop_key_reach(self, account: str, keep_device: str) -> int:
+        """Deletes the account's devices but `keep_device`, its enroll codes and approved web sessions."""
         result = await self.devices.delete_many({"account": account, "_id": {"$ne": keep_device}})
         await self.enroll_codes.delete_many({"account": account})
         await self.web_sessions.delete_many({"account": account, "status": "approved"})
@@ -408,12 +427,14 @@ class AccountStore:
         return True
 
     async def delete_account_data(self, account: str) -> None:
-        """Deletes the account's devices, identities, enroll codes, web sessions and entitlement, then the account."""
-        await self.devices.delete_many({"account": account})
+        """Deletes the account's identities, enroll codes, web sessions and entitlement, then its devices, then the
+        account. The devices go last but one, so a failure midway leaves the caller's device (and its token) alive and
+        the deletion can be retried."""
         await self.identities.delete_many({"account": account})
         await self.enroll_codes.delete_many({"account": account})
         await self.web_sessions.delete_many({"account": account})
         await self.entitlements.delete_one({"_id": account})
+        await self.devices.delete_many({"account": account})
         await self.accounts.delete_one({"_id": account})
 
     # Enroll codes (an app adds a watch: a code only ever creates a device of its `platforms`)

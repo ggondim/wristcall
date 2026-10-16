@@ -283,6 +283,13 @@ def test_devices_attempts_are_limited_per_ip(config, mongo_db, fake_verifier, si
         assert 0 < int(r.headers["Retry-After"]) <= 60
 
 
+@pytest.mark.parametrize("name", ["two\nlines", "evil\u202egnp.exe", "iso\u2066late", "zero\u200dwidth", "tab\there"])
+def test_device_name_with_control_or_format_characters_is_422(client, name):
+    r = client.post("/v1/accounts", json={"account_key": new_key_b64(), "device": device(name=name)})
+    assert r.status_code == 422
+    assert r.json() == {"error": "invalid", "message": "device.name must not contain control or format characters"}
+
+
 # POST /v1/devices with a Zitadel token
 
 
@@ -619,6 +626,115 @@ def test_rotate_attempts_are_limited(config, mongo_db, fake_verifier, signing_ke
         assert r.status_code == 429 and r.json()["error"] == "rate_limited"
 
 
+def signed_in_phone(client, fake_verifier, subject: str = "a") -> dict[str, Any]:
+    """An iPhone device of the account of Zitadel user `subject`, added with a fresh sign-in."""
+    fake_verifier.add(f"enroll-{subject}", subject, client_id="client-ios")
+    r = client.post("/v1/devices", json={"device": device()}, headers=bearer(f"enroll-{subject}"))
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def reset_key(client, phone: dict[str, Any], token: str, new_key: str) -> Any:
+    return client.post(
+        "/v1/account/key/rotate",
+        json={"new_account_key": new_key, "zitadel_token": token},
+        headers=bearer(phone["access_token"]),
+    )
+
+
+def test_rotate_with_a_fresh_sign_in_resets_the_key(client, fake_verifier):
+    phone = signed_in_phone(client, fake_verifier)
+    # Someone else (a stolen sign-in) added a device and set the key first.
+    intruder = signed_in_phone(client, fake_verifier)
+    their_key = new_key_b64()
+    r = client.put("/v1/account/key", json={"account_key": their_key}, headers=bearer(intruder["access_token"]))
+    assert r.status_code == 204
+    their_pad = enroll_by_key(client, their_key, "ipados").json()
+    code = client.post("/v1/devices/enroll-codes", headers=bearer(intruder["access_token"])).json()["code"]
+
+    fake_verifier.add("fresh", "a", client_id="client-ios", issued_at=time.time() - 60)
+    new_key = new_key_b64()
+    r = reset_key(client, phone, "fresh", new_key)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"revoked": 2}
+    for other in (intruder, their_pad):
+        assert client.get("/v1/devices", headers=bearer(other["access_token"])).status_code == 401
+    assert client.get("/v1/devices", headers=bearer(phone["access_token"])).status_code == 200
+    assert client.post("/v1/devices/enroll", json={"code": code, "device": device("watchos")}).status_code == 404
+    assert enroll_by_key(client, their_key).status_code == 401
+    r = enroll_by_key(client, new_key)
+    assert r.status_code == 201 and r.json()["account"] == phone["account"]
+
+
+def test_rotate_with_a_fresh_sign_in_sets_a_missing_key(client, fake_verifier):
+    phone = signed_in_phone(client, fake_verifier)
+    assert phone["key_set"] is False
+    fake_verifier.add("fresh", "a", client_id="client-ios")
+    new_key = new_key_b64()
+    r = reset_key(client, phone, "fresh", new_key)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"revoked": 0}
+    assert client.get("/v1/account", headers=bearer(phone["access_token"])).json()["key_set"] is True
+    assert enroll_by_key(client, new_key).json()["account"] == phone["account"]
+
+
+def test_rotate_with_a_stale_sign_in_is_401(client, fake_verifier):
+    phone = signed_in_phone(client, fake_verifier)
+    fake_verifier.add("old", "a", client_id="client-ios", issued_at=time.time() - 601)
+    r = reset_key(client, phone, "old", new_key_b64())
+    assert r.status_code == 401
+    assert r.json() == {
+        "error": "stale_token",
+        "message": "sign in again: the sign-in token is older than 600 seconds",
+    }
+    assert client.get("/v1/account", headers=bearer(phone["access_token"])).json()["key_set"] is False
+
+
+def test_rotate_with_another_accounts_sign_in_is_403(client, fake_verifier):
+    phone = signed_in_phone(client, fake_verifier)
+    signed_in_phone(client, fake_verifier, "c")
+    fake_verifier.add("other", "c", client_id="client-ios")
+    fake_verifier.add("nobody", "d", client_id="client-ios")
+    for token in ("other", "nobody"):
+        r = reset_key(client, phone, token, new_key_b64())
+        assert r.status_code == 403
+        assert r.json() == {"error": "forbidden", "message": "this sign-in belongs to another account"}
+    # An account made from a key alone has no sign-in to reset it with.
+    keyed = create_account(client)
+    fake_verifier.add("fresh", "a", client_id="client-ios")
+    assert reset_key(client, keyed, "fresh", new_key_b64()).status_code == 403
+    assert client.get("/v1/account", headers=bearer(phone["access_token"])).json()["key_set"] is False
+
+
+@pytest.mark.parametrize("client_id", ["client-watch", "client-pwa", None])
+def test_rotate_with_a_watch_client_sign_in_is_403(client, fake_verifier, client_id):
+    phone = signed_in_phone(client, fake_verifier)
+    fake_verifier.add("not-ios", "a", client_id=client_id)
+    r = reset_key(client, phone, "not-ios", new_key_b64())
+    assert r.status_code == 403 and r.json()["error"] == "forbidden"
+    assert client.get("/v1/account", headers=bearer(phone["access_token"])).json()["key_set"] is False
+
+
+@pytest.mark.parametrize("proofs", [{}, {"account_key": "KEY", "zitadel_token": "fresh"}])
+def test_rotate_needs_exactly_one_proof(client, fake_verifier, proofs):
+    key = new_key_b64()
+    phone = create_account(client, key)
+    fake_verifier.add("fresh", "a", client_id="client-ios")
+    body = {"new_account_key": new_key_b64(), **{k: key if v == "KEY" else v for k, v in proofs.items()}}
+    r = client.post("/v1/account/key/rotate", json=body, headers=bearer(phone["access_token"]))
+    assert r.status_code == 422
+    assert r.json() == {"error": "invalid", "message": "send either account_key or zitadel_token"}
+    assert enroll_by_key(client, key).status_code == 201
+
+
+def test_rotate_with_an_account_token_as_sign_in_is_401(client, fake_verifier):
+    phone = signed_in_phone(client, fake_verifier)
+    r = reset_key(client, phone, phone["access_token"], new_key_b64())
+    assert r.status_code == 401 and r.json()["error"] == "unauthorized"
+    r = reset_key(client, phone, "unknown-token", new_key_b64())
+    assert r.status_code == 401 and r.json()["error"] == "unauthorized"
+
+
 def test_ipv6_limit_by_prefix(config, mongo_db, fake_verifier, signing_key):
     proxied = replace(config, client_ip_header="X-Forwarded-For")
     for c in served(proxied, mongo_db, fake_verifier, signing_key):
@@ -659,7 +775,15 @@ def test_secrets_never_reach_logs(client, fake_verifier, caplog):
         enroll_by_key(client, key)
         fake_verifier.add("zitadel-secret-token", "z", issued_at=time.time() - 601)
         client.post("/v1/devices", json={"device": device()}, headers=bearer("zitadel-secret-token"))
-        secrets += [key, new_key, "zitadel-secret-token"]
+        signed_in = signed_in_phone(client, fake_verifier, "y")
+        fake_verifier.add("zitadel-reset-token", "y", client_id="client-ios")
+        reset = new_key_b64()
+        assert reset_key(client, signed_in, "zitadel-reset-token", reset).status_code == 200
+        fake_verifier.add("zitadel-stale-reset", "y", issued_at=time.time() - 601)
+        assert reset_key(client, signed_in, "zitadel-stale-reset", new_key_b64()).status_code == 401
+        assert reset_key(client, pad, "zitadel-reset-token", new_key_b64()).status_code == 403
+        secrets += [key, new_key, reset, "zitadel-secret-token", "zitadel-reset-token", "zitadel-stale-reset"]
+        secrets += [signed_in["access_token"], signed_in["refresh_token"], "enroll-y"]
         for session in (phone, renewed, pad):
             secrets += [session["access_token"], session["refresh_token"]]
     assert caplog.records, "expected some logging to check"

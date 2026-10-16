@@ -1,5 +1,6 @@
 """What every route module shares: the API error, the JSON body, the client address and the `device` body."""
 
+import unicodedata
 from typing import Any
 
 from fastapi import Request
@@ -51,6 +52,10 @@ def parse_device(value: Any) -> dict[str, Any]:
     name = value.get("name")
     if not isinstance(name, str) or not name.strip() or len(name) > MAX_DEVICE_NAME:
         raise ApiError("invalid", f"device.name must be a string of 1 to {MAX_DEVICE_NAME} characters", 422)
+    # Control and format characters (newlines, bidi overrides, zero-width joiners) would garble or spoof the
+    # device lists; the message never echoes the name.
+    if any(unicodedata.category(ch)[0] == "C" for ch in name):
+        raise ApiError("invalid", "device.name must not contain control or format characters", 422)
     platform = value.get("platform")
     if platform not in PLATFORMS:
         raise ApiError("invalid", f"device.platform must be one of {', '.join(PLATFORMS)}", 422)

@@ -82,6 +82,12 @@ def _key_in_use() -> ApiError:
     return ApiError("key_in_use", "this account key belongs to another account", 409)
 
 
+def _stale_token(config: CloudConfig) -> ApiError:
+    return ApiError(
+        "stale_token", f"sign in again: the sign-in token is older than {config.zitadel_max_age_s} seconds", 401
+    )
+
+
 def session_response(
     account: str, device_doc: dict[str, Any], refresh_token: str, tokens: AccountTokens
 ) -> dict[str, Any]:
@@ -154,11 +160,7 @@ async def create_device(request: Request, authorization: str | None = Header(def
             raise ApiError("unauthorized", "sign in again to add a device", 401)
         identity = await zitadel_identity(request, token)
         if time.time() - identity.issued_at > config.zitadel_max_age_s:
-            raise ApiError(
-                "stale_token",
-                f"sign in again: the sign-in token is older than {config.zitadel_max_age_s} seconds",
-                401,
-            )
+            raise _stale_token(config)
         if device["platform"] not in _platforms_of_client(identity.client_id, config):
             raise ApiError("forbidden", "this app cannot add a device of that platform", 403)
         account = await accounts.resolve_zitadel(identity.issuer, identity.subject, legacy_id=False)
@@ -241,24 +243,54 @@ async def put_account_key(request: Request, caller: Caller = Depends(current_dev
     return Response(status_code=204)
 
 
+async def _check_reset_sign_in(request: Request, token: Any, caller: Caller) -> None:
+    """A key reset needs a fresh sign-in of the iOS app by a user of the caller's own account."""
+    if not isinstance(token, str) or not token:
+        raise ApiError("invalid", "zitadel_token must be a non-empty string", 422)
+    if AccountTokens.looks_like(token):
+        # An account session is not a sign-in token; never handed to the Zitadel verifier.
+        raise ApiError("unauthorized", "sign in again to reset the account key", 401)
+    identity = await zitadel_identity(request, token)
+    config = _config(request)
+    if time.time() - identity.issued_at > config.zitadel_max_age_s:
+        raise _stale_token(config)
+    if client_platform(identity.client_id, config.clients) not in APP_PLATFORMS:
+        raise ApiError("forbidden", "this app cannot reset the account key", 403)
+    if await _accounts(request).account_for_identity("zitadel", identity.issuer, identity.subject) != caller.key:
+        raise ApiError("forbidden", "this sign-in belongs to another account", 403)
+
+
 @router.post("/v1/account/key/rotate")
 async def rotate_account_key(request: Request, caller: Caller = Depends(current_device)) -> dict[str, Any]:
+    """Swaps the account key, proven by the current key (`account_key`) or by a fresh sign-in (`zitadel_token`);
+    the sign-in sets the key whether or not one exists, so a lost or hijacked key can be taken back."""
     require_platform(caller, APP_PLATFORMS)
     check_ip_limit(request, request.app.state.attempt_limiter)
     body = await json_object(request)
-    current_hash = _key_hash(body.get("account_key"))
+    by_key, by_sign_in = body.get("account_key") is not None, body.get("zitadel_token") is not None
+    if by_key == by_sign_in:
+        raise ApiError("invalid", "send either account_key or zitadel_token", 422)
+    current_hash = _key_hash(body.get("account_key")) if by_key else None
     new_hash = _key_hash(body.get("new_account_key"), "new_account_key")
     accounts = _accounts(request)
+    # current_device takes account tokens only, so the caller always has a device.
+    keep_device = caller.device or ""
     try:
-        # current_device takes account tokens only, so the caller always has a device.
-        revoked = await accounts.rotate_key(caller.key, current_hash, new_hash, keep_device=caller.device or "")
+        if current_hash is not None:
+            revoked = await accounts.rotate_key(caller.key, current_hash, new_hash, keep_device=keep_device)
+        else:
+            await _check_reset_sign_in(request, body.get("zitadel_token"), caller)
+            revoked = await accounts.reset_key(caller.key, new_hash, keep_device=keep_device)
     except WrongKey:
         raise ApiError("unauthorized", "account_key does not match", 401) from None
     except NoKey:
         raise ApiError("no_key", "this account has no account key; set one first", 409) from None
     except KeyInUse:
         raise _key_in_use() from None
-    log.info("account key rotated (%d devices signed out)", revoked)
+    if current_hash is not None:
+        log.info("account key rotated (%d devices signed out)", revoked)
+    else:
+        log.info("account key reset by a fresh sign-in (%d devices signed out)", revoked)
     return {"revoked": revoked}
 
 

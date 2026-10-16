@@ -160,6 +160,34 @@ async def test_rotate_key_to_a_key_of_another_account(store):
     assert len(await store.list_devices(acc)) == 2
 
 
+async def test_reset_key_replaces_and_revokes(store, mongo_db):
+    acc = (await store.create_account(h("theirs"), now=NOW))["_id"]
+    other = (await store.create_account(h("other"), now=NOW))["_id"]
+    keep, _ = await store.add_device(acc, device("keep"), max_devices=10, now=NOW)
+    await store.add_device(acc, device("pad", "ipados"), max_devices=10, now=NOW)
+    foreign, _ = await store.add_device(other, device(), max_devices=10, now=NOW)
+    await mongo_db["enroll_codes"].insert_many([{"_id": "c1", "account": acc}, {"_id": "c2", "account": other}])
+    await mongo_db["web_sessions"].insert_many(
+        [{"_id": "w1", "account": acc, "status": "approved"}, {"_id": "w2", "account": acc, "status": "pending"}]
+    )
+    with pytest.raises(KeyInUse):
+        await store.reset_key(acc, h("other"), keep["_id"], now=NOW + 1)
+    assert (await store.get_account(acc))["key_hash"] == h("theirs")
+    assert len(await store.list_devices(acc)) == 2
+    assert await store.reset_key(acc, h("mine"), keep["_id"], now=NOW + 5) == 1
+    doc = await store.get_account(acc)
+    assert doc["key_hash"] == h("mine") and doc["key_set_at"] == NOW + 5
+    assert await store.account_by_key(h("theirs")) is None
+    assert [d["_id"] for d in await store.list_devices(acc)] == [keep["_id"]]
+    assert await store.device(other, foreign["_id"]) is not None
+    assert [d["_id"] async for d in mongo_db["enroll_codes"].find()] == ["c2"]
+    assert [d["_id"] async for d in mongo_db["web_sessions"].find()] == ["w2"]
+    # No key yet: the reset sets one.
+    keyless = await store.resolve_zitadel(ISSUER, "z", legacy_id=False, now=NOW)
+    assert await store.reset_key(keyless, h("first"), "dev_none", now=NOW) == 0
+    assert (await store.get_account(keyless))["key_hash"] == h("first")
+
+
 async def test_count_created_since(store):
     await store.create_account(h("a"), now=NOW)
     await store.create_account(h("b"), now=NOW + 100)
@@ -354,6 +382,32 @@ async def test_delete_account_data_leaves_other_accounts(store, mongo_db):
     assert await mongo_db["entitlements"].find_one({"_id": b}) is not None
     assert await store.get_account(b) is not None
     assert len(await store.list_devices(b)) == 1 and len(await store.identities_of(b)) == 1
+
+
+async def test_delete_account_data_deletes_devices_after_the_rest(store, mongo_db, monkeypatch):
+    acc = (await store.create_account(h("a"), now=NOW))["_id"]
+    dev, _ = await store.add_device(acc, device(), max_devices=10, now=NOW)
+    await store.add_identity(acc, "apple", "https://appleid.apple.com", "sub", now=NOW)
+    await mongo_db["enroll_codes"].insert_one({"_id": "code", "account": acc})
+    await mongo_db["web_sessions"].insert_one({"_id": "web", "account": acc, "status": "approved"})
+    await mongo_db["entitlements"].insert_one({"_id": acc, "plan": "full"})
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError("database went away")
+
+    monkeypatch.setattr(store.devices, "delete_many", fail)
+    with pytest.raises(RuntimeError):
+        await store.delete_account_data(acc)
+    assert await store.identities_of(acc) == []
+    for name in ("enroll_codes", "web_sessions"):
+        assert await mongo_db[name].count_documents({"account": acc}) == 0
+    assert await mongo_db["entitlements"].find_one({"_id": acc}) is None
+    # The caller's device (and its token) survives, so DELETE /v1/account can be retried.
+    assert await store.device(acc, dev["_id"]) is not None
+    assert await store.get_account(acc) is not None
+    monkeypatch.undo()
+    await store.delete_account_data(acc)
+    assert await store.get_account(acc) is None and await store.list_devices(acc) == []
 
 
 # Enroll codes

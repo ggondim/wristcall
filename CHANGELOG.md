@@ -21,7 +21,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
   (`POST /v1/session/refresh`; using a refresh token twice signs the device out at once). Devices are listed and
   removed with `GET /v1/devices` and `DELETE /v1/devices/{id}`. New accounts have an `acc_` id.
 - Devices can be added with the account key or with a fresh Zitadel token (`POST /v1/devices`), and the account key can
-  be set and rotated (`PUT /v1/account/key`, `POST /v1/account/key/rotate`).
+  be set and rotated (`PUT /v1/account/key`, `POST /v1/account/key/rotate`). The rotation takes `new_account_key` and
+  exactly one proof: the current `account_key`, or a fresh `zitadel_token` of the iOS app for a user of the account,
+  which resets the key whether or not one exists (a lost iCloud Keychain, or a key set by someone else). Either way
+  every other device, open enroll code and approved web session of the account goes. New errors: `401 stale_token`,
+  `403 forbidden` (a sign-in of another account or of another app) and `422 invalid` (both proofs or neither).
+- Device names refuse control and format characters (newlines, bidi overrides, zero-width characters): `422 invalid`.
 - Enroll codes: an app creates a single use code and the watch enrolls itself with it
   (`POST /v1/devices/enroll-codes`, `POST /v1/devices/enroll`). A code only creates a `watchos` device.
 - Web sessions: the PWA opens a session, the iPhone inspects it (name, user agent, country, time) and approves it, and
@@ -32,7 +37,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 - Admin CLI: `wristcall-cloud admin show`, `grant`, `revoke`, `invites create` and `stats`, with exit codes 0 to 3.
 - Limits against abuse: silent accounts per client address (3 an hour, 10 a day, IPv6 by /64) and in total (200 a day,
   a warning above 100), attempts per minute on the routes that take a secret, 10 devices and 5 open enroll codes per
-  account, and one poll a second per web session. All of them are configurable.
+  account, and one poll a second per web session. All of them are configurable. `POST /v1/session/refresh` and polls
+  of web sessions with an unknown id are left to the reverse proxy.
 - Cleanup: an anonymous account (no identity, no plan) unused for 90 days is deleted, and so is a device unused for that
   long.
 - `WRISTCALL_CLOUD_MONGO_URL_FILE`: the MongoDB URL can come from a file (a Docker secret), like the other secrets.
@@ -49,8 +55,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 ### Deprecated
 
 - The Zitadel token as the credential for account routes. From 0.4.0 it is only taken in the exchange
-  (`POST /v1/devices`, if issued less than 10 minutes ago) and, while `WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS=1`, on the
-  routes that existed in 0.3.x. Turn the flag off once the v3 apps of the iPhone and the PWA are published.
+  (`POST /v1/devices`) and as the key reset proof (`POST /v1/account/key/rotate`), if issued less than 10 minutes
+  ago, and, while `WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS=1`, on the routes that existed in 0.3.x. Turn the flag off once the v3 apps of the iPhone and the PWA are published.
 
 ### Upgrade notes
 

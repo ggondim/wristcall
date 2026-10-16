@@ -291,7 +291,8 @@ Secrets are stored only as SHA-256 digests, and never reach a log, an error resp
 
 ### Routes
 
-A device in a request body is `{"name": 1 to 64 characters, "platform", "public_key"?: up to 1024 characters,
+A device in a request body is `{"name": 1 to 64 characters, with no control or format characters (newlines, bidi
+overrides, zero-width characters: `422 invalid`), "platform", "public_key"?: up to 1024 characters,
 "attestation"?: accepted and ignored}`; other fields are ignored. A session answer (`201` or `200`) is
 `{"account", "device", "access_token", "refresh_token", "expires_at"}` (`expires_at` is the access token's, in Unix
 seconds); `POST /v1/devices` adds `"key_set"` (whether the account has an account key).
@@ -307,7 +308,7 @@ above.
 | `GET /v1/devices` | account | `200 {"devices": [{id, name, platform, created_at, last_seen_at, current}]}` | |
 | `DELETE /v1/devices/{id}` | account (manager, or any device for its own id) | `204` | `403 forbidden`, `404 not_found` |
 | `PUT /v1/account/key` | account (app) | `{account_key}`: `204`; sets the key when there is none, the same key again is `204` | `409 key_exists`, `409 key_in_use`, `422` |
-| `POST /v1/account/key/rotate` | account (app) | `{account_key, new_account_key}`: `200 {"revoked": n}`. Every other device, every open enroll code and every approved web session of the account goes | `401 unauthorized` (wrong current key), `409 key_in_use`, `409 no_key` (use `PUT /v1/account/key`), `422`, `429` |
+| `POST /v1/account/key/rotate` | account (app) | `{new_account_key}` plus exactly one proof: `account_key` (the current key) or `zitadel_token` (a fresh Zitadel access token of the iOS app, for a user of this account). `200 {"revoked": n}`. Every other device, every open enroll code and every approved web session of the account goes. With `zitadel_token` the new key replaces the current one whether or not there is one (a reset) | `401 unauthorized` (wrong current key, or a bad sign-in token), `401 stale_token` (sign-in token older than `WRISTCALL_CLOUD_ZITADEL_MAX_AGE`), `403 forbidden` (the sign-in is of another account, or not of the iOS app), `409 key_in_use`, `409 no_key` (with `account_key` only; use `PUT /v1/account/key`), `422 invalid` (both proofs or neither), `429`, `503 account_unavailable` |
 | `POST /v1/devices/enroll-codes` | account (app) | `201 {"code", "expires_at"}`: single use, 600 seconds, creates only a `watchos` device | `403 limit` (5 open) |
 | `POST /v1/devices/enroll` | none | `{code, device}`: `201` session | `404 invalid_code`, `403 forbidden` (platform is not `watchos`; the code is not spent), `403 limit` (the code is spent), `422`, `429` |
 | `POST /v1/web-sessions` | none | `{device: {name, platform?: "web"}}`: `201 {"id", "approve_key", "poll_key", "expires_at"}` (300 seconds) | `422`, `429` |
@@ -331,6 +332,11 @@ Things worth knowing:
   and the PWA tries again). A session that is not approved in 300 seconds is gone.
 - **Sign out everywhere.** `POST /v1/account/key/rotate` with the same key as both the current and the new key signs
   out every other device and drops the open enroll codes.
+- **Taking the key back.** Whoever sets the key first is not its owner forever: a user who lost iCloud Keychain, or
+  whose key was set by someone holding a stolen sign-in, signs in with Zitadel again on the iPhone and calls
+  `POST /v1/account/key/rotate` with `zitadel_token` and a new key. The Cloud checks that the token is fresh, comes
+  from the iOS app and belongs to an identity of the caller's account, then sets the key and signs out every other
+  device. An account with no Zitadel identity can only rotate with its current key.
 - **A lost refresh response.** The device is signed out (no grace window). A device with the account key signs in
   again by itself; the PWA and a watch enrolled by code need to be approved or enrolled again.
 - **Concurrent refreshes.** One device does one refresh at a time (the app and its extensions share the token).
@@ -363,7 +369,8 @@ PWA 0.1.0, the iPhone app `ios-v0.1.0` and the watch app `watch-v0.4.0`. With it
 the routes that existed in 0.3.x (`GET` and `DELETE /v1/account`, the servers and agents routes, `GET /v1/agents`,
 `POST /v1/server-tokens`), with the same answers as 0.3.1 and the same account (`sub` of the per-server token
 included). The account is created on first use, as before, with the id `<issuer>#<subject>`. The routes of
-[Accounts and sessions](#accounts-and-sessions) never take a Zitadel token, except the exchange at `POST /v1/devices`.
+[Accounts and sessions](#accounts-and-sessions) never take a Zitadel token, except the exchange at `POST /v1/devices`
+and the key reset proof (`zitadel_token`) in the body of `POST /v1/account/key/rotate`.
 
 The default is off. Turn it off once the v3 apps of the iPhone and the PWA are published: from then on a Zitadel
 token only works for the exchange, and old builds get `401`. The Cloud logs a warning at every start while it is on,
@@ -440,7 +447,9 @@ failure.
 
 The routes that create an account or a device, or take a secret, limit themselves (see [Limits](#limits)). The other
 account routes (the agenda, `GET /v1/account`, per-server tokens) do not: the reverse proxy of the deployment (Traefik)
-is expected to limit them, per client address, in front of every route.
+is expected to limit them, per client address, in front of every route. Neither do `POST /v1/session/refresh` (a
+refresh token has 256 bits, guessing is not an option) and the polls of web sessions with an unknown id (only polls of
+the same id are limited): only the proxy limits those.
 
 The push relay limits itself, in memory (one replica; the counters restart with the process, which is accepted):
 `WRISTCALL_CLOUD_PUSH_PER_MINUTE` and `_PER_DAY` per push key, and `WRISTCALL_CLOUD_REGISTRATIONS_PER_MINUTE` per
@@ -457,7 +466,7 @@ shares the proxy's address.
   user is linked: there they can pair a device (in `attestation` mode) or send approval requests to the user. So
   upgrade every 0.5.0 server with `central_account` to 0.6.0, or unlink its users, **before** setting
   `WRISTCALL_CLOUD_SIGNING_KEY`. Apps must never send a login token to a server, only per-server tokens.
-- **The transition flag.** While PWA 0.1.0 and the iPhone app `ios-v0.1.0` are in use, set
+- **The transition flag.** While PWA 0.1.0, the iPhone app `ios-v0.1.0` and the watch app `watch-v0.4.0` are in use, set
   `WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS=1`, or they get `401`. Turn it off once the v3 apps are published (see
   [Transition flag](#transition-flag)).
 - **Client address and country.** The account limits are per client address: set `WRISTCALL_CLOUD_CLIENT_IP_HEADER`.
