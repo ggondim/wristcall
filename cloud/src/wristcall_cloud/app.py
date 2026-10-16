@@ -24,7 +24,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import __version__
-from .account_store import AccountStore
+from .account_store import AccountStore, purge_idle_accounts_loop
 from .agenda import AgendaError, parse_agents, parse_new_server, parse_server_patch
 from .api_common import ApiError, json_object
 from .audience import AudienceError, is_loopback, normalize_audience
@@ -366,7 +366,7 @@ async def _stop(task: asyncio.Task[None]) -> None:
     except asyncio.CancelledError:
         pass
     except Exception as e:  # the task died earlier; what is closed after it must close all the same
-        log.warning("push purge task had stopped (%s)", type(e).__name__)
+        log.warning("a purge task had stopped (%s)", type(e).__name__)
 
 
 def create_app(
@@ -454,6 +454,12 @@ def create_app(
                 purge_idle_loop(current, every_s=config.push_cleanup_every_s, idle_s=config.push_idle_days * 86400)
             )
             stack.push_async_callback(_stop, purger)
+            account_purger = asyncio.create_task(
+                purge_idle_accounts_loop(
+                    accounts, every_s=config.account_cleanup_every_s, idle_s=config.account_idle_days * 86400
+                )
+            )
+            stack.push_async_callback(_stop, account_purger)
             yield
 
     app = FastAPI(title="wristcall-cloud", version=__version__, lifespan=lifespan)

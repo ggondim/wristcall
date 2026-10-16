@@ -334,6 +334,11 @@ def _cors_origins(env: Mapping[str, str]) -> tuple[str, ...]:
     return tuple(origins)
 
 
+def admin_settings(env: Mapping[str, str]) -> tuple[str, str]:
+    """What the admin CLI needs from the environment: the MongoDB URL and the database name."""
+    return _mongo_url(env), _get(env, "WRISTCALL_CLOUD_DATABASE") or CloudConfig.database
+
+
 def config_from_env(env: Mapping[str, str]) -> CloudConfig:
     mongo_url = _mongo_url(env)
     clients = {kind: value for kind, var in CLIENT_VARS.items() if (value := _get(env, var)) is not None}

@@ -5,12 +5,15 @@ Secrets (account key, refresh tokens, enroll codes, web session keys, invite cod
 digests only; nothing here puts one in a message.
 """
 
+import asyncio
 import hmac
+import logging
 import re
 import secrets
 import time
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 
 from pymongo import ASCENDING, ReturnDocument
 from pymongo.asynchronous.collection import AsyncCollection
@@ -18,6 +21,8 @@ from pymongo.asynchronous.database import AsyncDatabase
 from pymongo.errors import DuplicateKeyError
 
 from .session_tokens import new_account_id, new_code, new_device_id, new_secret, secret_hash
+
+log = logging.getLogger("wristcall_cloud.accounts")
 
 SCHEMA_VERSION = 2
 TOUCH_INTERVAL_S = 3600
@@ -369,6 +374,28 @@ class AccountStore:
         result = await self.devices.delete_one({"_id": device_id, "account": account})
         return result.deleted_count == 1
 
+    async def purge_idle_accounts(self, before: float, *, now: float | None = None) -> int:
+        """Deletes the idle devices and idle anonymous accounts; returns how many accounts.
+
+        A device not seen since `before` could not refresh its token anyway, so it goes whatever its account is.
+        An account goes when it is `anonymous`, was not seen since `before`, has no identity and no valid
+        entitlement, with everything that is its own (the agenda's servers included). Accounts without `kind`
+        (the `<issuer>#<subject>` ones from 0.3.x) and `zitadel` ones never go.
+        """
+        await self.devices.delete_many({"last_seen_at": {"$lt": before}})
+        deleted = 0
+        cursor = self.accounts.find({"kind": "anonymous", "last_seen_at": {"$lt": before}}, {"_id": 1})
+        async for doc in cursor:
+            account = doc["_id"]
+            if await self.identities.count_documents({"account": account}, limit=1):
+                continue
+            if await self.entitlement(account, now=now) is not None:
+                continue
+            await self.db["servers"].delete_many({"account": account})
+            await self.delete_account_data(account)
+            deleted += 1
+        return deleted
+
     async def delete_account_data(self, account: str) -> None:
         """Deletes the account's devices, identities, enroll codes, web sessions and entitlement, then the account."""
         await self.devices.delete_many({"account": account})
@@ -573,6 +600,31 @@ class AccountStore:
         if expires_at is not None and expires_at <= now:
             return None
         return doc
+
+
+class _AccountPurger(Protocol):
+    async def purge_idle_accounts(self, before: float) -> int: ...
+
+
+async def purge_idle_accounts_loop(
+    store: _AccountPurger,
+    *,
+    every_s: float,
+    idle_s: float,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    now: Callable[[], float] = time.time,
+) -> None:
+    """Every `every_s`, deletes the idle anonymous accounts and devices (idle for `idle_s`). Runs until cancelled;
+    a failed round is logged and the next one tries again."""
+    while True:
+        await sleep(every_s)
+        try:
+            purged = await store.purge_idle_accounts(now() - idle_s)
+        except Exception as e:  # whatever went wrong, the next round tries again
+            log.warning("purging idle accounts failed (%s)", type(e).__name__)
+            continue
+        if purged:
+            log.info("purged %d idle accounts", purged)
 
 
 def _stale_filter(doc_id: str, now: float) -> dict[str, Any]:

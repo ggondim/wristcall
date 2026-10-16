@@ -3,6 +3,8 @@ import sys
 
 import uvicorn
 
+from . import admin
+from . import admin
 from .app import create_app
 from .config import ConfigError, config_from_env
 
@@ -14,6 +16,10 @@ def _port(raw: str) -> int:
 
 
 def main() -> None:
+    if sys.argv[1:2] == ["admin"]:
+        raise SystemExit(admin.main(sys.argv[2:], os.environ))
+    if sys.argv[1:2] == ["admin"]:
+        raise SystemExit(admin.main(sys.argv[2:], os.environ))
     try:
         config = config_from_env(os.environ)
         port = _port(os.environ.get("PORT", "").strip() or "8080")
