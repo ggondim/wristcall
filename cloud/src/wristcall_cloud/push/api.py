@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRoute
 from pymongo.errors import PyMongoError
 
+from ..api_common import client_ip
 from ..config import CloudConfig
 from ..store import Store
 from .channels import Channel, ChannelGone, ChannelUnavailable
@@ -94,17 +95,6 @@ def _store(request: Request) -> Store:
 
 def _retry_after(seconds: float) -> int:
     return max(1, math.ceil(seconds))
-
-
-def client_ip(request: Request, header: str | None) -> str:
-    """The client address: the last value of the proxy's header when one is configured (what the proxy itself
-    appended, on the same line or on a line of its own; anything before it came from the client), the connection's
-    address otherwise."""
-    if header:
-        value = ",".join(request.headers.getlist(header)).rpartition(",")[2].strip()
-        if value:
-            return value
-    return request.client.host if request.client else "unknown"
 
 
 async def _gone_unless_known(request: Request, authorization: str | None) -> tuple[str, dict[str, Any]]:

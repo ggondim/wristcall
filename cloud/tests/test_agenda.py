@@ -21,7 +21,9 @@ def tokens(fake_verifier):
 
 
 def limited_client(mongo_db, fake_verifier, **limits):
-    cfg = CloudConfig(mongo_url=mongo_url(), issuer=ISSUER, clients={"ios": "client-ios"}, **limits)
+    cfg = CloudConfig(
+        mongo_url=mongo_url(), issuer=ISSUER, clients={"ios": "client-ios"}, legacy_zitadel_tokens=True, **limits
+    )
     yield from serve(create_app(cfg, store=Store(mongo_db), verifier=fake_verifier), mongo_db)
 
 

@@ -9,7 +9,8 @@ from pymongo import MongoClient
 
 from conftest import ISSUER, mongo_url, serve
 from wristcall_cloud import __version__
-from wristcall_cloud.app import Caller, current_account, json_object
+from wristcall_cloud.api_common import json_object
+from wristcall_cloud.auth import Caller, current_account
 from wristcall_cloud.config import CloudConfig, ConfigError, config_from_env
 
 BASE_ENV = {"WRISTCALL_CLOUD_MONGO_URL": "mongodb://localhost:27017", "WRISTCALL_CLOUD_CLIENT_IOS": "client-ios"}
@@ -44,6 +45,7 @@ def test_config_is_public_and_has_clients(client):
         "scopes": ["openid", "profile", "offline_access", "urn:zitadel:iam:org:project:id:1234:aud"],
         "server_tokens": False,
         "push": {"apns": False, "webpush": False, "vapid_public_key": None, "apns_topics": []},
+        "sessions": {"enabled": False, "zitadel_max_age_s": 600, "legacy_zitadel_tokens": True},
     }
 
 
