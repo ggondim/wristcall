@@ -11,6 +11,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
   against it. Set it empty in `watch/Config/Local.xcconfig` for a build without an account. The push build keeps a
   local Cloud.
 
+## [cloud-0.4.1] - 2026-10-16
+
+### Added
+
+- Agenda agents take an optional `color` in `PUT /v1/servers/{id}/agents`: one of `red`, `orange`, `yellow`, `green`,
+  `mint`, `teal`, `blue`, `indigo`, `purple`, `pink` (lowercase), or `null`. `GET /v1/servers`, `GET /v1/servers/{id}`
+  and `GET /v1/agents` return it only when stored, so agents without a color keep the 0.4.0 shape. Any other value is
+  `422 invalid`; the message names `color`, not the value. The five other fields stay required.
+
 ## [0.8.1] - 2026-10-16
 
 ### Added

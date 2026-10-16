@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 SERVER_KINDS = ("self-hosted", "cloud")
 CALL_TYPES = ("conversation", "one-shot", "monologue")
+COLORS = ("red", "orange", "yellow", "green", "mint", "teal", "blue", "indigo", "purple", "pink")
 MAX_URL = 2048
 MAX_TEXT = 64
 
@@ -18,6 +19,7 @@ _ICON = re.compile(r"[a-z0-9.]+")
 _SERVER_FIELDS = {"name", "url", "kind", "linked"}
 _PATCH_FIELDS = {"name", "linked"}
 _AGENT_FIELDS = {"id", "slug", "display_name", "icon", "call_type"}
+_AGENT_OPTIONAL = {"color"}
 
 
 class AgendaError(Exception):
@@ -114,8 +116,8 @@ def parse_agents(body: dict[str, Any], limit: int) -> list[dict[str, str]]:
     for item in agents:
         if not isinstance(item, dict):
             raise AgendaError("each agent must be an object")
-        _no_extra(item, _AGENT_FIELDS, "agent")
-        if set(item) != _AGENT_FIELDS:
+        _no_extra(item, _AGENT_FIELDS | _AGENT_OPTIONAL, "agent")
+        if not _AGENT_FIELDS <= set(item):
             raise AgendaError("each agent needs id, slug, display_name, icon and call_type")
         call_type = item["call_type"]
         if call_type not in CALL_TYPES:
@@ -127,6 +129,11 @@ def parse_agents(body: dict[str, Any], limit: int) -> list[dict[str, str]]:
             "icon": _text(item["icon"], "icon", _ICON),
             "call_type": call_type,
         }
+        color = item.get("color")
+        if color is not None:
+            if not isinstance(color, str) or color not in COLORS:
+                raise AgendaError(f"color must be one of {', '.join(COLORS)}, or null")
+            agent["color"] = color
         if agent["id"] in seen:
             raise AgendaError("agent ids must be unique")
         seen.add(agent["id"])

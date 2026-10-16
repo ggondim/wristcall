@@ -229,6 +229,52 @@ def test_agents_limit_and_validation(client):
     assert put({"agents": [agent(1, icon="person.wave.2.fill", id="A_b-1")]}).status_code == 200
 
 
+def test_agents_accept_color(client):
+    sid = add_server(client)["id"]
+    r = client.put(f"/v1/servers/{sid}/agents", json={"agents": [agent(1, color="pink"), agent(2)]}, headers=H_A)
+    assert r.status_code == 200
+    assert r.json() == {"agents": [agent(1, color="pink"), agent(2)]}
+    got = client.get("/v1/agents", headers=H_A).json()["agents"]
+    assert got[0]["color"] == "pink"
+    assert "color" not in got[1]  # stored without a color: the key stays out for 0.4.0 clients
+    assert client.get(f"/v1/servers/{sid}", headers=H_A).json()["agents"][0]["color"] == "pink"
+    assert "color" in client.get("/v1/servers", headers=H_A).json()["servers"][0]["agents"][0]
+    for color in ("red", "orange", "yellow", "green", "mint", "teal", "blue", "indigo", "purple", "pink"):
+        assert client.put(f"/v1/servers/{sid}/agents", json={"agents": [agent(1, color=color)]}, headers=H_A).status_code == 200
+
+
+def test_agents_color_null_is_dropped(client):
+    sid = add_server(client)["id"]
+    r = client.put(f"/v1/servers/{sid}/agents", json={"agents": [agent(1, color=None)]}, headers=H_A)
+    assert r.status_code == 200
+    assert r.json() == {"agents": [agent(1)]}
+    assert "color" not in client.get("/v1/agents", headers=H_A).json()["agents"][0]
+
+
+@pytest.mark.parametrize("color", ["magenta", "Pink", "", 5, True, ["red"]])
+def test_agents_reject_unknown_color(client, color):
+    sid = add_server(client)["id"]
+    r = client.put(f"/v1/servers/{sid}/agents", json={"agents": [agent(1, color=color)]}, headers=H_A)
+    assert r.status_code == 422
+    assert r.json()["error"] == "invalid"
+    message = r.text
+    assert "color" in message
+    if isinstance(color, str) and color:
+        assert color not in message
+
+
+def test_agents_without_color_still_need_the_five_fields(client):
+    sid = add_server(client)["id"]
+    for missing in ("id", "slug", "display_name", "icon", "call_type"):
+        item = agent(1)
+        del item[missing]
+        r = client.put(f"/v1/servers/{sid}/agents", json={"agents": [item]}, headers=H_A)
+        assert r.status_code == 422, missing
+    item = agent(1, color="red")
+    del item["icon"]
+    assert client.put(f"/v1/servers/{sid}/agents", json={"agents": [item]}, headers=H_A).status_code == 422
+
+
 def test_agents_limit_follows_config(mongo_db, fake_verifier):
     for c in limited_client(mongo_db, fake_verifier, max_agents_per_server=2):
         sid = add_server(c)["id"]

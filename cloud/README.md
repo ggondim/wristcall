@@ -175,9 +175,11 @@ control characters. `url` is http or https with a host, without user, password, 
 characters); it is normalized (scheme and host in lowercase, no trailing slash) and unique per account. `kind` is
 `self-hosted` (default) or `cloud`; `linked` is a boolean (default `false`).
 
-`Agent` is `{id, slug, display_name, icon, call_type}`: `id` and `slug` are 1 to 64 characters of `A-Za-z0-9_-`,
+`Agent` is `{id, slug, display_name, icon, call_type, color?}`: `id` and `slug` are 1 to 64 characters of `A-Za-z0-9_-`,
 `display_name` 1 to 64 characters, `icon` an SF Symbol name (1 to 64 characters of `a-z0-9.`), `call_type` one of
-`conversation`, `one-shot`, `monologue`. Ids must be unique in the list and unknown fields are `422 invalid`.
+`conversation`, `one-shot`, `monologue`. `color` is optional: one of `red`, `orange`, `yellow`, `green`, `mint`,
+`teal`, `blue`, `indigo`, `purple`, `pink`, or `null` (accepted and dropped). It is returned only when stored, so an
+agent without a color has no `color` key. Ids must be unique in the list and unknown fields are `422 invalid`.
 
 ### Per-server tokens
 
