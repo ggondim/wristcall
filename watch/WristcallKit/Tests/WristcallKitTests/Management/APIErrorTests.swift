@@ -27,4 +27,20 @@ struct APIErrorTests {
         #expect(APIError.retryLater(0).message == "Too many attempts. Try again in 1 minute.")
         #expect(APIError.retryLater(61).message == "Too many attempts. Try again in 2 minutes.")
     }
+
+    @Test(arguments: ["inf", "-inf", "nan", "1e30", "infinity"])
+    func malformedRetryAfterNeverCrashes(value: String) {
+        let error = APIError.error(status: 429, data: Data(), headers: ["retry-after": value])
+        if case .retryLater = error {
+            #expect(!error.message.isEmpty)
+        } else {
+            #expect(error == .rateLimited)
+        }
+    }
+
+    @Test func extremeRetryLaterValuesAreClamped() {
+        #expect(APIError.retryLater(.infinity).message == "Too many attempts. Try again in 1440 minutes.")
+        #expect(APIError.retryLater(1e30).message == "Too many attempts. Try again in 1440 minutes.")
+        #expect(APIError.retryLater(.nan).message.hasPrefix("Too many attempts."))
+    }
 }

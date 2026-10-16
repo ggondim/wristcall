@@ -57,8 +57,9 @@ public enum ServerAddress {
     /// one. Never `url.host()`: it returns the Unicode host percent-encoded.
     public static func displayHost(_ url: URL) -> String {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let host = components.encodedHost?.lowercased()
-        else { return url.host(percentEncoded: false) ?? url.absoluteString }
+              let encoded = components.encodedHost?.lowercased()
+        else { return url.absoluteString }
+        let host = encoded.contains(":") && !encoded.hasPrefix("[") ? "[\(encoded)]" : encoded
         guard let port = components.port else { return host }
         return "\(host):\(port)"
     }

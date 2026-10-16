@@ -60,7 +60,9 @@ public enum APIError: Error, Sendable, Equatable {
     }
 
     private static func retryMessage(_ seconds: TimeInterval) -> String {
-        let minutes = max(1, Int((seconds / 60).rounded(.up)))
+        // Clamped first: a hostile or broken `Retry-After` (1e30) must not overflow the Int conversion.
+        let safe = seconds.isFinite ? min(max(seconds, 0), 86_400) : 86_400
+        let minutes = max(1, Int((safe / 60).rounded(.up)))
         return "Too many attempts. Try again in \(minutes) \(minutes == 1 ? "minute" : "minutes")."
     }
 
@@ -101,7 +103,9 @@ public enum APIError: Error, Sendable, Equatable {
         case 422:
             return .invalid(message ?? body?.detail?.first?.msg ?? "The server rejected the request.")
         case 429:
-            if let seconds = headers["retry-after"].flatMap({ TimeInterval($0.trimmingCharacters(in: .whitespaces)) }), seconds >= 0 {
+            if let seconds = headers["retry-after"].flatMap({ TimeInterval($0.trimmingCharacters(in: .whitespaces)) }),
+               seconds.isFinite, seconds >= 0
+            {
                 return .retryLater(seconds)
             }
             return .rateLimited

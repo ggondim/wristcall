@@ -48,4 +48,10 @@ struct ServerAddressTests {
         #expect(ServerAddress.canonical(parsed) == "https://xn--caf-dma.example")
         #expect(ServerAddress.displayHost(try #require(URL(string: "https://home.example.com:8443"))) == "home.example.com:8443")
     }
+
+    @Test func displayHostBracketsIPv6AndStaysASCII() throws {
+        #expect(ServerAddress.displayHost(try #require(URL(string: "http://[::1]:8443"))) == "[::1]:8443")
+        #expect(ServerAddress.displayHost(try #require(URL(string: "http://[::1]"))) == "[::1]")
+        #expect(ServerAddress.displayHost(try #require(URL(string: "https://Home.Example.com"))) == "home.example.com")
+    }
 }
