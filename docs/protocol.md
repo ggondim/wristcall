@@ -159,6 +159,44 @@ Rules:
 - `DELETE /v1/account/link` or `wristcall users unlink <handle>` removes the link. Devices already
   paired stay paired.
 
+### Link URL
+
+A server with `central_account` (0.8.0+) hands out a link code inside a URL, shown as a QR code: in its startup log
+while it is new (no user linked, a single user with no API token and no device yet) and by `wristcall link [--user
+<handle>]` at any time. Opening it links the person's Cloud account to that user without typing a code or a token.
+
+```
+https://wristcall-app.trigram.com.br/link#v=1&s=<server URL>&c=<link code>
+wristcall://link#v=1&s=<server URL>&c=<link code>
+```
+
+The `https` form is the one in the QR (a phone camera always opens it); the page is the web app, which links in the
+browser or hands the same fragment to the app with the `wristcall://link#…` scheme. Everything travels in the
+fragment, never in a query, so it is not sent to the web app's host.
+
+| Key | Value |
+|---|---|
+| `v` | `1`. A reader refuses other versions |
+| `s` | the server's `public_url` in canonical form (lowercase scheme and host, no default port, no trailing slash), percent-encoded except `:` and `/`. Always `https` |
+| `c` | the link code: 16 random bytes in base32 (RFC 4648, upper case, no `=`), 26 characters of `A`–`Z` and `2`–`7`. Single use, valid 15 minutes |
+
+Readers split the fragment by hand: on `&`, then on the first `=` of each pair, and percent-decode each value (`+`
+is a literal plus, never a space; an invalid `%` sequence makes the whole link invalid). They refuse a link whose `s`
+is not `https` or whose `c` is not a link code. Before linking, the client shows the server's host and asks the
+person to confirm it: a link is only as trustworthy as whoever showed it.
+
+Then, as in [Central account](#central-account-optional): the client checks `account.issuer` in `GET {s}/v1/health`
+against its own Cloud, asks that Cloud for a per-server token with `POST {cloud}/v1/server-tokens {"audience": "<s>"}`
+and sends `POST {s}/v1/account/link {"token": "<per-server token>", "code": "<c>"}` without `Authorization`. The
+answers are the same as with an 8-digit pairing code (`200 {"linked":true,"issuer","user":{"id","handle"},"api_token"}`
+and the errors above), with two differences: a wrong link code is `401 invalid_code` without counting as a failed
+attempt against the 8-digit codes (128 random bits cannot be guessed; the per-IP budget still applies), and the
+server accepts the code in lower case and with spaces or hyphens, for people who copy it from the log.
+
+The code gives a full API token of its user to whoever uses it first: treat the QR, the link and the log lines that
+show them as secrets until the code is used or expires. `wristcall users unlink <handle>` undoes a link made by
+someone else.
+
 ### Pairing with the account
 
 | Route | Body | Responses |

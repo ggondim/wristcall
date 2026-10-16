@@ -23,6 +23,7 @@ from .history import History, check_key
 from .history_api import RedeliveryError, resolve_agent_id
 from .history_codec import HistoryCodec, HistoryKeyError, new_key
 from .history_export import TimeError, export_json, export_markdown, parse_time
+from .link import CLI_AGAIN, LinkService, canonical_public_url, public_url_in_audience, render_invite, target_user
 from .pairing import DeviceLimit, NotFound, PairingService, format_code, issue_code
 from .providers import ProviderError
 from .redelivery import Redelivery
@@ -165,6 +166,23 @@ def pair(config: ConfigOpt = DEFAULT_CONFIG, user: UserOpt = None) -> None:
         typer.echo("On the watch: Pair > enter the code.")
     else:
         typer.echo(f"On the watch: Pair > Enter server URL > {_load(config).server.public_url} > enter the code.")
+
+
+@app.command()
+def link(config: ConfigOpt = DEFAULT_CONFIG, user: UserOpt = None) -> None:
+    """Shows a QR code and a link for the wristcall app to link its account to a user (15 minutes, single use)."""
+    cfg = _load(config)
+    if cfg.central_account is None:
+        typer.echo("error: linking with a QR code needs central_account in wristcall.yaml (see the README)", err=True)
+        raise typer.Exit(1)
+    if not public_url_in_audience(cfg):
+        typer.echo("warning: server.public_url is not in central_account.audience: the app's link will fail.", err=True)
+
+    async def body(ctx: Ctx):
+        owner = await target_user(ctx.storage, ctx.users, user)
+        return await LinkService(ctx.storage, canonical_public_url(ctx.cfg)).issue(owner.id)
+
+    typer.echo(render_invite(_run(config, body), CLI_AGAIN, user_line=True))
 
 
 # ---------- devices ----------

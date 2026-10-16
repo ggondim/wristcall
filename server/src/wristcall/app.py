@@ -22,7 +22,6 @@ from .agents import (
     build_one_way_providers,
 )
 from .api import management_router
-from .audience import AudienceError, normalize_audience
 from .auth import Authenticator, Principal
 from .bootstrap import bootstrap, log_report
 from .config import AppConfig
@@ -30,6 +29,7 @@ from .delivery import DeliveryPolicy
 from .history import History, check_key
 from .history_api import calls_router
 from .history_codec import HistoryCodec
+from .link import LinkService, canonical_public_url, public_url_in_audience, startup_invite
 from .oneway import Background, OneWayCall
 from .pairing import DeviceLimit, Paired, PairingDenied, PairingGone, PairingService, Pending, clean_device_name
 from .providers import ProviderError, check_providers
@@ -38,6 +38,7 @@ from .ratelimit import RateLimiter
 from .redelivery import Redelivery
 from .session import CallSession
 from .storage import Storage, open_sqlite_storage
+from .users import UserService
 from .vad import build_vad
 from .warmup import run_background, warm_all, warmup_targets
 
@@ -87,11 +88,7 @@ class _WsTransport:
 def _check_audience(config: AppConfig) -> None:
     """Not an error (the server may have another public name), but apps that reach it at `public_url` would
     ask the Cloud for tokens this server refuses."""
-    try:
-        public = normalize_audience(config.server.public_url)
-    except AudienceError:
-        public = None
-    if public not in config.central_account.audience:
+    if not public_url_in_audience(config):
         log.warning(
             "server.public_url is not in central_account.audience: apps reaching the server there cannot pair "
             "with the central account"
@@ -117,6 +114,7 @@ def create_app(
     auth = Authenticator(store)
     limiter = RateLimiter(limit=10, window_s=60)
     account = AccountService(store, config.central_account, http_client) if config.central_account else None
+    links = LinkService(store, canonical_public_url(config)) if config.central_account else None
     if config.central_account:
         _check_audience(config)
     history = History(store, HistoryCodec(config.history.key()), config.history)
@@ -130,6 +128,11 @@ def create_app(
     async def lifespan(_app: FastAPI):
         await check_key(store, history.codec)
         log_report(await bootstrap(store, config))
+        try:
+            if invite := await startup_invite(store, config, UserService(store), links):
+                logging.getLogger("wristcall.link").info("%s", invite)
+        except Exception:  # the QR is a convenience: the server starts without it
+            log.warning("could not prepare the link QR code; run `wristcall link` for one", exc_info=True)
         await history.apply_retention()
         purging = asyncio.create_task(purge_forever(history, config.history.purge_every_s))
         # Only the server does this (the CLI may run next to a live server): its own calls died with it.

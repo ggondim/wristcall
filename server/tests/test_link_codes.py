@@ -1,12 +1,21 @@
 """Single-use long link codes: POST /v1/account/link takes them next to the 8-digit pairing code."""
 
+import base64
 import re
 import time
 
+import pytest
+
+from conftest import fake_config
 from test_account import api_token, client, issuer, link, linked_user, new_code, router  # noqa: F401  (fixtures)
 from test_api import run
-from wristcall.link import LINK_TTL_S, new_link_code
+from test_pair_account import account_config
+from wristcall.link import (
+    LINK_TTL_S, LinkInvite, LinkService, link_url, new_link_code, render_invite, startup_invite, target_user,
+)
 from wristcall.pairing import hash_secret
+from wristcall.storage import User, open_sqlite_storage
+from wristcall.users import UserError, UserService
 
 
 def issue(client, *, expires_in: float = LINK_TTL_S) -> str:
@@ -78,3 +87,159 @@ def test_link_log_names_the_kind_never_the_code(client, issuer, caplog):
     with caplog.at_level("INFO", logger="wristcall.api"):
         assert link(client, issuer.token(), code=code).status_code == 200
     assert "(link code)" in caplog.text and code not in caplog.text
+
+
+# ---------- link URL, QR and startup ----------
+
+CODE = "K7Q2M9XW4R8T6PZJ3H5N2C7VBQ"
+STARTUP_AGAIN = "docker compose exec wristcall wristcall link"
+
+
+def link_codes(st) -> int:
+    return st.db.query("SELECT COUNT(*) FROM link_codes")[0][0]
+
+
+def codes_in(text: str) -> list[str]:
+    return re.findall(r"/link#v=1&s=[^&\s]+&c=([A-Z2-7]{26})", text)
+
+
+@pytest.fixture
+async def st():
+    s = open_sqlite_storage(":memory:")
+    yield s
+    await s.close()
+
+
+def central(**server):
+    return account_config("attestation", public_url="https://testserver", **server)
+
+
+async def startup(st, cfg, links=None):
+    if links is None and cfg.central_account:
+        links = LinkService(st, cfg.server.public_url)
+    return await startup_invite(st, cfg, UserService(st), links)
+
+
+def test_link_url_format():
+    assert link_url("https://home.example.com", CODE) == (
+        "https://wristcall-app.trigram.com.br/link#v=1&s=https://home.example.com&c=K7Q2M9XW4R8T6PZJ3H5N2C7VBQ"
+    )
+    assert link_url("https://h.example:8443/wc", CODE).endswith("#v=1&s=https://h.example:8443/wc&c=" + CODE)
+    assert "s=https://h.example/a%3Fb&" in link_url("https://h.example/a?b", CODE)
+    assert "s=https://h.example/a%20b&" in link_url("https://h.example/a b", CODE)
+
+
+def test_new_link_code_is_16_random_bytes_in_base32():
+    assert len(base64.b32decode(new_link_code() + "======")) == 16
+
+
+def test_render_invite_has_qr_and_copy():
+    user = User("u_1", "owner", "Owner", 1.0)
+    url = link_url("https://home.example.com", CODE)
+    text = render_invite(LinkInvite(user, CODE, url, time.time() + LINK_TTL_S), again="wristcall link")
+    lines = text.splitlines()
+    for line in (
+        "Connect this server to your iPhone",
+        "Open wristcall on your iPhone, tap Scan QR code and point it here:",
+        "Or open this link on your iPhone:",
+        url,
+        "Works once, for 15 minutes. New code: wristcall link",
+    ):
+        assert line in lines
+    assert len([ln for ln in lines if any(c in ln for c in "█▀▄")]) >= 20
+    assert "For user" not in text
+    with_user = render_invite(LinkInvite(user, CODE, url, 0.0), again="wristcall link", user_line=True)
+    assert "For user owner." in with_user.splitlines()
+
+
+async def test_startup_prints_qr_on_a_new_server(st):
+    user = await UserService(st).create("ana")
+    first, second = await startup(st, central()), await startup(st, central())
+    assert "Connect this server to your iPhone" in first and STARTUP_AGAIN in first
+    (c1,), (c2,) = codes_in(first), codes_in(second)
+    assert c1 != c2 and "https://wristcall-app.trigram.com.br/link#v=1&s=https://testserver&c=" in first
+    assert await st.pairing.claim_link_code(hash_secret(c1), time.time()) == user.id
+    assert await st.pairing.claim_link_code(hash_secret(c2), time.time()) == user.id
+
+
+@pytest.mark.parametrize("in_use", ["token", "device"])
+async def test_startup_has_no_code_when_the_owner_is_in_use(st, in_use):
+    users = UserService(st)
+    user = await users.create("owner")
+    if in_use == "token":
+        await users.issue_token(user.id, "cli")
+    else:
+        await st.devices.create("d_1", user.id, "Watch", hash_secret("device-token"), time.time())
+    text = await startup(st, central())
+    assert "wristcall link" in text and "link#" not in text and "--user" not in text
+    assert link_codes(st) == 0
+
+
+async def test_startup_audience_mismatch_does_nothing(st):
+    assert await startup(st, account_config("attestation", public_url="https://elsewhere.example.com")) is None
+    assert await startup(st, account_config("attestation")) is None  # http://testserver is no audience at all
+    assert await st.users.list() == [] and link_codes(st) == 0
+
+
+async def test_startup_creates_owner_when_there_are_no_users(st):
+    text = await startup(st, central())
+    (owner,) = await st.users.list()
+    assert (owner.handle, owner.display_name) == ("owner", "Owner")
+    (code,) = codes_in(text)
+    assert await st.pairing.claim_link_code(hash_secret(code), time.time()) == owner.id
+
+
+async def test_startup_is_silent_once_a_user_is_linked(st):
+    users = UserService(st)
+    ana = await users.create("ana")
+    bob = await users.create("bob")
+    await st.users.link_central(bob.id, "https://issuer.test#sub-1")
+    assert await startup(st, central()) is None
+    await st.users.delete(ana.id)
+    assert await startup(st, central()) is None
+    assert link_codes(st) == 0
+
+
+async def test_startup_hints_with_several_users(st):
+    users = UserService(st)
+    await users.create("ana")
+    await users.create("bob")
+    text = await startup(st, central())
+    assert "wristcall link --user <handle>" in text and "link#" not in text
+    assert link_codes(st) == 0
+
+
+async def test_startup_hints_without_central_account(st):
+    text = await startup(st, fake_config())
+    assert "central_account" in text and "README" in text and "link#" not in text
+    assert await st.users.list() == [] and link_codes(st) == 0
+    users = UserService(st)
+    owner = await users.create("owner")
+    assert "central_account" in await startup(st, fake_config())
+    await users.issue_token(owner.id, "cli")
+    assert await startup(st, fake_config()) is None
+
+
+async def test_target_user(st):
+    users = UserService(st)
+    owner = await target_user(st, users, None)
+    assert owner.handle == "owner" and await target_user(st, users, None) == owner
+    bob = await users.create("bob")
+    assert await target_user(st, users, "bob") == bob
+    with pytest.raises(UserError, match="several users"):
+        await target_user(st, users, None)
+    with pytest.raises(UserError, match="not found"):
+        await target_user(st, users, "zed")
+
+
+async def test_link_service_purges_and_stores_only_the_hash(st):
+    user = await UserService(st).create("ana")
+    clock = [1000.0]
+    links = LinkService(st, "https://testserver", now=lambda: clock[0])
+    old = await links.issue(user.id)
+    assert old.expires_at == 1000.0 + LINK_TTL_S and old.url == link_url("https://testserver", old.code)
+    assert old.user == user and link_codes(st) == 1
+    assert st.db.query("SELECT code_hash FROM link_codes")[0][0] == hash_secret(old.code)
+    clock[0] += LINK_TTL_S + 1
+    await links.issue(user.id)
+    assert link_codes(st) == 1  # the expired one was purged first

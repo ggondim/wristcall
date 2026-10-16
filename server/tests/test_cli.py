@@ -406,3 +406,62 @@ def test_configure_logging_installs_the_filter_and_uvicorn_keeps_it():
         assert any(isinstance(f, cli.HistoryQueryFilter) for f in access.filters)
     finally:
         access.filters[:] = before
+
+
+# ---------- link ----------
+
+
+def with_central_account(path):
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["central_account"] = {"issuer": "https://issuer.test", "audience": [data["server"]["public_url"]]}
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return path
+
+
+def link_code_in(output: str) -> str:
+    return re.search(r"/link#v=1&s=https://wc\.example\.test&c=([A-Z2-7]{26})$", output, re.M).group(1)
+
+
+def claimed_by(tmp_path, output: str) -> str | None:
+    import time
+
+    from wristcall.pairing import hash_secret
+
+    store = open_sqlite_storage(tmp_path / "data")
+    try:
+        return run(store.pairing.claim_link_code(hash_secret(link_code_in(output)), time.time()))
+    finally:
+        run(store.close())
+
+
+def handle_id(tmp_path, handle: str) -> str:
+    store = open_sqlite_storage(tmp_path / "data")
+    try:
+        return run(store.users.by_handle(handle)).id
+    finally:
+        run(store.close())
+
+
+def test_cli_link_prints_qr(tmp_path):
+    cfg = with_central_account(write_config(tmp_path))
+    out = ok(cfg, "link")
+    assert "Connect this server to your iPhone" in out
+    assert "Works once, for 15 minutes. New code: wristcall link" in out.splitlines()
+    assert "For user owner." in out.splitlines()
+    assert claimed_by(tmp_path, out) == handle_id(tmp_path, "owner")
+    ok(cfg, "users", "add", "bob")
+    assert invoke(cfg, "link").exit_code == 1
+    out = ok(cfg, "link", "--user", "bob")
+    assert "For user bob." in out.splitlines()
+    assert claimed_by(tmp_path, out) == handle_id(tmp_path, "bob")
+
+
+def test_cli_link_creates_owner_on_an_empty_server(tmp_path):
+    cfg = with_central_account(write_config(tmp_path, profiles=False))
+    out = ok(cfg, "link")
+    assert "For user owner." in out.splitlines() and link_code_in(out)
+
+
+def test_cli_link_needs_central_account(tmp_path):
+    r = invoke(write_config(tmp_path), "link")
+    assert r.exit_code == 1 and "central_account" in r.stderr and "link#" not in r.output

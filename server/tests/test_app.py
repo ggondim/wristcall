@@ -625,3 +625,28 @@ def test_one_way_call_end_without_push_config_sends_nothing(oneway):
     assert wait_done(oneway, call_id, auth(token))["status"] == "delivered"
     time.sleep(0.05)
     assert not oneway.relay.called
+
+
+def test_startup_logs_the_link_qr_on_a_new_server(caplog):
+    from test_pair_account import account_config
+
+    caplog.set_level(logging.INFO, logger="wristcall.link")
+    with TestClient(create_app(account_config("attestation", public_url="https://testserver"), storage=open_sqlite_storage(":memory:"))):
+        pass
+    (record,) = [r for r in caplog.records if r.name == "wristcall.link"]
+    message = record.getMessage()
+    assert "https://wristcall-app.trigram.com.br/link#v=1&s=https://testserver&c=" in message
+    assert "New code: docker compose exec wristcall wristcall link" in message
+
+
+def test_startup_survives_a_failing_link_invite(monkeypatch, caplog):
+    from test_pair_account import account_config
+
+    async def broken(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("wristcall.app.startup_invite", broken)
+    caplog.set_level(logging.WARNING, logger="wristcall")
+    with TestClient(create_app(account_config("attestation", public_url="https://testserver"), storage=open_sqlite_storage(":memory:"))) as c:
+        assert c.get("/v1/health").status_code == 200
+    assert any(r.levelno == logging.WARNING and "link" in r.getMessage() for r in caplog.records)
