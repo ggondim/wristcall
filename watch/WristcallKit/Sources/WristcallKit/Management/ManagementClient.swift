@@ -116,6 +116,16 @@ public struct ManagementClient: Sendable {
         return try await http.run(request, expecting: 200)
     }
 
+    /// Same call with the single-use code from a link URL (`WristcallLink.server`) as the local proof.
+    public static func linkAccount(server: URL, serverToken: String, code: LinkCode,
+                                   session: URLSession = .shared) async throws -> AccountLink {
+        let http = APIHTTP(session: session)
+        let request = try http.request(
+            server.appending(path: "v1/account/link"), method: "POST",
+            json: LinkBody(token: serverToken, code: code.value))
+        return try await http.run(request, expecting: 200)
+    }
+
     // MARK: - Plumbing
 
     private func url(_ path: String) -> URL {

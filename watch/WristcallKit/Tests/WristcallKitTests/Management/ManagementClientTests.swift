@@ -296,6 +296,29 @@ struct ManagementClientTests {
         #expect(try request.json()["token"] as? String == "jwt")
     }
 
+    @Test func linkWithALinkCodeSendsNoAuthorization() async throws {
+        let host = StubHost(replies: [(200, #"{"linked":true,"issuer":"https://cloud.test","user":{"id":"u_1","handle":"gus"},"api_token":"wc_pat_new"}"#)])
+        let code = try #require(LinkCode("k7q2-mzxw4rqt6pzj3h5n2c7vbq"))
+        let link = try await ManagementClient.linkAccount(
+            server: host.url, serverToken: "jwt", code: code, session: .stubbed())
+        #expect(link.apiToken == "wc_pat_new")
+        #expect(link.user == AccountLink.LinkedUser(id: "u_1", handle: "gus"))
+        let request = try #require(host.requests.first)
+        #expect(request.method == "POST")
+        #expect(request.path == "/v1/account/link")
+        #expect(request.headers["Authorization"] == nil)
+        #expect(try request.json()["code"] as? String == "K7Q2MZXW4RQT6PZJ3H5N2C7VBQ")
+        #expect(try request.json()["token"] as? String == "jwt")
+    }
+
+    @Test func linkWithAWrongLinkCodeIsInvalidCode() async throws {
+        let host = StubHost(replies: [(401, #"{"error":"invalid_code","message":"wrong or expired code"}"#)])
+        let code = try #require(LinkCode("K7Q2MZXW4RQT6PZJ3H5N2C7VBQ"))
+        await #expect(throws: APIError.invalidCode) {
+            try await ManagementClient.linkAccount(server: host.url, serverToken: "jwt", code: code, session: .stubbed())
+        }
+    }
+
     @Test func accountLinkHidesTheAPIToken() async throws {
         let host = StubHost(replies: [(200, #"{"linked":true,"issuer":"https://c","user":{"id":"u","handle":"h"},"api_token":"wc_pat_secret"}"#)])
         let link = try await ManagementClient.linkAccount(
