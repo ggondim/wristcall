@@ -11,7 +11,7 @@ struct LinkServerSection: View {
     @State private var error: String?
 
     var body: some View {
-        if account.state == .signedIn, state.healths[server.id]?.account != nil {
+        if account.state == .ready, state.healths[server.id]?.account != nil {
             Section {
                 Button {
                     Task { await link() }

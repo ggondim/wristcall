@@ -290,4 +290,18 @@ struct AccountBootstrapTests {
         #expect(entries[0].count == "acc_1:".count + 64)
         #expect(!entries[0].contains(stored.key.value))
     }
+
+    @Test func forgetAllDropsEveryDeadKey() {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let one = StoredAccountKey(account: "acc_1", key: .generate(), createdAt: Date())
+        let two = StoredAccountKey(account: "acc_2", key: .generate(), createdAt: Date())
+        DeadKeys.mark(one, defaults: defaults)
+        DeadKeys.mark(two, defaults: defaults)
+
+        DeadKeys.forgetAll(defaults: defaults)
+
+        #expect(!DeadKeys.isDead(one, defaults: defaults))
+        #expect(!DeadKeys.isDead(two, defaults: defaults))
+        #expect(defaults.stringArray(forKey: "account.deadKeys") == nil)
+    }
 }

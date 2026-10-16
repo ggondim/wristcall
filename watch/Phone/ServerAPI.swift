@@ -40,6 +40,8 @@ protocol ServerAPI: Sendable {
     /// `POST /v1/account/link`: links the signed-in account to the user of this token. `serverToken` is the
     /// Cloud's per-server token (never the account's access token).
     func linkAccount(serverToken: String) async throws -> AccountLink
+    /// `DELETE /v1/account/link`: the server's user is no longer linked to the account.
+    func unlinkAccount() async throws
     /// The same without a personal token: the pairing code proves the local user, and the reply carries a
     /// new personal token (`apiToken`). Sent without `Authorization`.
     func linkAccount(serverToken: String, code: PairingCode) async throws -> AccountLink
@@ -97,6 +99,8 @@ struct LiveServerAPI: ServerAPI {
     func linkAccount(serverToken: String) async throws -> AccountLink {
         try await management.linkAccount(serverToken: serverToken)
     }
+
+    func unlinkAccount() async throws { try await management.unlinkAccount() }
 
     func linkAccount(serverToken: String, code: PairingCode) async throws -> AccountLink {
         try await ManagementClient.linkAccount(server: server, serverToken: serverToken, code: code, session: session)

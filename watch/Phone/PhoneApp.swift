@@ -18,6 +18,8 @@ struct PhoneApp: App {
     @Environment(\.scenePhase) private var scenePhase
     /// The watch login code whose approval sheet the user closed (it does not come back for that code).
     @State private var dismissedWatchCode: String?
+    /// The launch read the servers: a start from the foreground may run.
+    @State private var launched = false
 
     init() {
         let state = AppState()
@@ -27,8 +29,17 @@ struct PhoneApp: App {
         _history = State(initialValue: HistoryModel(state: state))
         // The Cloud comes from the build only (never from a server); empty: no account at all.
         let cloud = AccountModel.cloudURL(fromInfoValue: Bundle.main.object(forInfoDictionaryKey: "WristcallCloudURL") as? String)
-        let session = cloud.map { AccountSession(cloud: $0, kind: .ios, store: KeychainTokenStore()) }
-        let account = AccountModel(cloudURL: cloud, session: session, web: LiveWebAuthenticator(), state: state)
+        // The device session is the account; the 0.3.x Zitadel tokens are only read to move them over (and by
+        // the email restore). The account keys live in the shared Keychain group (iCloud Keychain).
+        let session = cloud.map { DeviceSession(cloud: $0, store: KeychainDeviceSessionStore()) }
+        let legacy = cloud.map { AccountSession(cloud: $0, kind: .ios, store: KeychainTokenStore()) }
+        let group = (Bundle.main.object(forInfoDictionaryKey: "WristcallKeychainGroup") as? String)
+            .flatMap { $0.isEmpty || $0.contains("$(") ? nil : $0 }
+        let account = AccountModel(
+            cloudURL: cloud, session: session, keys: KeychainAccountKeyStore(accessGroup: group), legacy: legacy,
+            web: LiveWebAuthenticator(), state: state,
+            device: CloudDeviceInfo(name: String(UIDevice.current.name.prefix(64)), platform: .ios)
+        )
         _account = State(initialValue: account)
         let watchLink = Self.makeWatchLink()
         _watchLink = State(initialValue: watchLink)
@@ -78,6 +89,9 @@ struct PhoneApp: App {
                     // Back in the foreground: ask the servers for device approvals waiting for the owner.
                     guard phase == .active, !Self.isUnitTest else { return }
                     Task { await approvals.refresh() }
+                    // The account: a session revoked meanwhile, a key that arrived late, a wait that is over. Not
+                    // before the launch's own start, which reads the servers first (the mirror needs them).
+                    if launched { Task { await account.start() } }
                     // I2: a queued pairing code that expired while the app was away does not reach the watch.
                     watchLink.sweepExpiredTransfers()
                     #if WRISTCALL_PUSH
@@ -110,7 +124,8 @@ struct PhoneApp: App {
         await DebugLaunch.apply(to: state)
         #endif
         await approvals.refresh()
-        await account.restore()
+        launched = true
+        await account.start()
     }
 }
 

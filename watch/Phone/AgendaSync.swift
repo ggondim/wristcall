@@ -20,12 +20,13 @@ final class AgendaSync {
 
     /// Last failure, for the screen; cleared by the next success.
     private(set) var notice: String?
-    /// The session ended (refresh token refused) while syncing.
+    /// The session ended (refresh token refused) while syncing: the account model gets back in.
     @ObservationIgnored var onSignedOut: (@MainActor () async -> Void)?
     /// Bumped by `invalidate()`; a job of an older generation writes nothing.
     @ObservationIgnored private(set) var generation = 0
 
-    @ObservationIgnored private let session: AccountSession
+    /// The account's session on this device (the Cloud device session in the app).
+    @ObservationIgnored private let session: any CloudAccess
     @ObservationIgnored private let state: AppState
     /// The last job queued; each job waits for the one before it.
     @ObservationIgnored private var chain: Task<Void, Never>?
@@ -37,7 +38,7 @@ final class AgendaSync {
     /// While set (a deletion or sign out on its way), changes queue nothing.
     @ObservationIgnored private var suspended = false
 
-    init(session: AccountSession, state: AppState) {
+    init(session: any CloudAccess, state: AppState) {
         self.session = session
         self.state = state
     }

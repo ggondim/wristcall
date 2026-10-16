@@ -28,7 +28,7 @@ struct AddServerView: View {
     }
 
     /// The pairing code needs the account: without it, only the token is offered.
-    private var canUseCode: Bool { account.state == .signedIn }
+    private var canUseCode: Bool { account.state == .ready }
     private var current: Method { canUseCode ? method : .token }
 
     var body: some View {

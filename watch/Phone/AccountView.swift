@@ -1,13 +1,15 @@
 import SwiftUI
 
-/// The account part of Settings: sign in, sign out, delete. Hidden when the build has no Cloud.
+/// The account part of Settings: its state, restore by email, delete. Hidden when the build has no Cloud.
+/// (Settings gets its new layout later; this keeps the account reachable meanwhile.)
 struct AccountSection: View {
     @Environment(AccountModel.self) private var account
     @State private var confirmingDelete = false
     @State private var busy = false
+    @State private var restoreError: String?
 
-    static let deleteExplanation = "Deletes your wristcall account: your sign-in and your server list in wristcall "
-        + "Cloud. Your servers and their data stay as they are."
+    static let deleteExplanation = "Deletes your wristcall account: your server list in wristcall Cloud and the "
+        + "servers on this iPhone. Your servers and their data stay as they are."
 
     var body: some View {
         if account.state != .unavailable {
@@ -15,10 +17,6 @@ struct AccountSection: View {
                 content
             } header: {
                 Text("Account")
-            } footer: {
-                if account.state != .signedIn {
-                    Text("Sign in to add servers with a pairing code and to see them on your watch.")
-                }
             }
         }
     }
@@ -28,30 +26,39 @@ struct AccountSection: View {
         switch account.state {
         case .unavailable:
             EmptyView()
-        case .signedOut, .failed:
-            if case .failed(let message) = account.state {
-                Text(message).foregroundStyle(.red)
-            }
-            Button("Sign in") { Task { await account.signIn() } }
-        case .signingIn:
+        case .starting:
             HStack {
-                Text("Signing in…")
+                Text("Setting up your account…")
                 Spacer()
                 ProgressView()
             }
-        case .signedIn:
-            LabeledContent("wristcall Cloud", value: "Signed in")
+        case .waiting:
+            Text("Can't reach wristcall Cloud. Trying again soon.")
+                .foregroundStyle(.secondary)
+        case .needsSignIn:
+            Text("Signed in with email before? Sign in to bring your account here.")
+            if let restoreError {
+                Text(restoreError).foregroundStyle(.red)
+            }
+            Button("Sign in with email") { run { await restore() } }
+                .disabled(busy)
+        case .failed(let message):
+            Text(message).foregroundStyle(.red)
+            Button("Try again") { run { await account.start() } }
+                .disabled(busy)
+        case .ready:
+            LabeledContent("wristcall Cloud", value: "Ready")
             if let notice = account.agenda?.notice {
                 Text(notice).font(.footnote).foregroundStyle(.orange)
             }
             if let error = account.error {
                 Text(error).foregroundStyle(.red)
             }
-            NavigationLink("Approve watch sign-in") {
-                ApproveWatchSignInView()
+            if account.isMigratedAccount {
+                NavigationLink("Approve watch sign-in") {
+                    ApproveWatchSignInView()
+                }
             }
-            Button("Sign out") { run { await account.signOut() } }
-                .disabled(busy)
             Button("Delete account", role: .destructive) { confirmingDelete = true }
                 .disabled(busy)
                 .confirmationDialog("Delete account?", isPresented: $confirmingDelete, titleVisibility: .visible) {
@@ -60,6 +67,17 @@ struct AccountSection: View {
                 } message: {
                     Text(Self.deleteExplanation)
                 }
+        }
+    }
+
+    private func restore() async {
+        restoreError = nil
+        do {
+            try await account.restoreWithEmail()
+        } catch is CancellationError {
+            // The sheet was closed: nothing to say.
+        } catch {
+            restoreError = AccountModel.signInMessage(for: error)
         }
     }
 

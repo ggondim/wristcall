@@ -177,6 +177,11 @@ public struct DeadKeys {
         defaults.set(entries, forKey: defaultsKey)
     }
 
+    /// Forgets every refused key (the account was deleted: nothing of it is left to skip).
+    public static func forgetAll(defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: defaultsKey)
+    }
+
     private static func entry(for key: StoredAccountKey) -> String {
         let digest = SHA256.hash(data: Data(key.key.value.utf8))
         return key.account + ":" + digest.map { String(format: "%02x", $0) }.joined()

@@ -31,7 +31,7 @@ struct ServersView: View {
             }
             .sheet(isPresented: $adding) { AddServerView() }
             .sheet(item: $settingUp) { entry in AddServerView(initialURL: entry.url, initialName: entry.name) }
-            .task(id: PendingKey(signedIn: account.state == .signedIn, servers: state.servers.map(\.url))) {
+            .task(id: PendingKey(signedIn: account.state == .ready, servers: state.servers.map(\.url))) {
                 await loadPending()
             }
         // A tapped notification: the server of its tag, among the saved ones only (the list may still be
@@ -83,7 +83,7 @@ struct ServersView: View {
     }
 
     private func loadPending() async {
-        guard account.state == .signedIn, let agenda = account.agenda else {
+        guard account.state == .ready, let agenda = account.agenda else {
             pending = []
             return
         }
