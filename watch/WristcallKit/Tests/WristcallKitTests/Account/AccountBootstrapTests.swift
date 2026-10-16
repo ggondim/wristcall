@@ -111,9 +111,10 @@ struct AccountBootstrapTests {
         let (_, outcome) = try await bootstrap(host, store: store, waits: waits).run()
 
         #expect(outcome == .created)
-        // It had a key (a dead one), so it did not wait for iCloud to deliver another.
-        #expect(waits.value == 0)
+        // Its only key is dead, so it still waited once for iCloud to deliver a current one before starting over.
+        #expect(waits.value == 1)
         #expect(try store.keys().map(\.account).sorted() == ["acc_fresh", "acc_old"])
+        #expect(host.requests.map(\.path) == ["/v1/devices", "/v1/accounts"])
     }
 
     @Test func keyThatArrivesDuringTheWaitIsUsed() async throws {
@@ -192,14 +193,20 @@ struct AccountBootstrapTests {
     @Test func migrationRecoversALostKeyReply() async throws {
         let key = AccountKey.generate()
         let host = StubHost { request in
-            if request.method == "PUT" { return Self.keyExists }
-            return StubHost.Reply(201, Self.session(keySet: try request.json()["account_key"] == nil ? false : true))
+            switch request.method {
+            case "PUT": return Self.keyExists
+            case "DELETE": return StubHost.Reply(204, "")
+            default: return StubHost.Reply(201, Self.session(keySet: try request.json()["account_key"] == nil ? false : true))
+            }
         }
         let store = InMemoryAccountKeyStore(pending: key)
         let tokens = try await bootstrap(host, store: store).migrate(zitadelAccessToken: "ZITADEL-AT")
 
         #expect(tokens.account == "acc_abc")
-        #expect(host.requests.map(\.method) == ["POST", "PUT", "POST"])
+        #expect(host.requests.map(\.method) == ["POST", "PUT", "POST", "DELETE"])
+        // The confirming sign-in made a device nobody uses: it is signed out with its own token.
+        #expect(host.requests[3].path == "/v1/devices/dev_1")
+        #expect(host.requests[3].headers["Authorization"] == "Bearer AT-SECRET")
         #expect(try body(host.requests[1])["account_key"] as? String == key.value)
         let confirm = try body(host.requests[2])
         #expect(confirm["account_key"] as? String == key.value)
@@ -212,11 +219,14 @@ struct AccountBootstrapTests {
     @Test func migrationPromotesAPendingKeyWhoseReplyWasLost() async throws {
         // The `PUT` got through, its reply did not; on the next launch the account already says `key_set: true`.
         let key = AccountKey.generate()
-        let host = StubHost { _ in StubHost.Reply(201, Self.session(keySet: true)) }
+        let host = StubHost { request in
+            request.method == "DELETE" ? StubHost.Reply(204, "") : StubHost.Reply(201, Self.session(keySet: true))
+        }
         let store = InMemoryAccountKeyStore(pending: key)
         _ = try await bootstrap(host, store: store).migrate(zitadelAccessToken: "ZITADEL-AT")
 
-        #expect(host.requests.map(\.method) == ["POST", "POST"])
+        #expect(host.requests.map(\.method) == ["POST", "POST", "DELETE"])
+        #expect(host.requests[2].path == "/v1/devices/dev_1")
         #expect(try body(host.requests[1])["account_key"] as? String == key.value)
         #expect(try store.keys().first?.key == key)
         #expect(try store.pending() == nil)
@@ -232,6 +242,33 @@ struct AccountBootstrapTests {
 
         #expect(try store.keys().isEmpty)
         #expect(try store.pending() == key)
+    }
+
+    @Test func migrationKeepsTheSignInWhenTheKeyConfirmIsRefused() async throws {
+        let key = AccountKey.generate()
+        let host = StubHost { request in
+            switch request.method {
+            case "PUT": return Self.keyExists
+            default: return try request.json()["account_key"] == nil ? StubHost.Reply(201, Self.session(keySet: false)) : Self.unauthorized
+            }
+        }
+        let store = InMemoryAccountKeyStore(pending: key)
+        let tokens = try await bootstrap(host, store: store).migrate(zitadelAccessToken: "ZITADEL-AT")
+
+        #expect(tokens.account == "acc_abc")
+        #expect(host.requests.map(\.method) == ["POST", "PUT", "POST"])
+        #expect(try store.keys().isEmpty)
+        #expect(try store.pending() == key)
+    }
+
+    // MARK: - store
+
+    @Test func deleteAllClearsEverythingIncludingThePendingKey() throws {
+        let stored = StoredAccountKey(account: "acc_1", key: .generate(), createdAt: Date())
+        let store = InMemoryAccountKeyStore([stored], pending: .generate())
+        try store.deleteAll()
+        #expect(try store.keys().isEmpty)
+        #expect(try store.pending() == nil)
     }
 
     // MARK: - dead keys

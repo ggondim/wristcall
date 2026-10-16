@@ -31,5 +31,5 @@ public final class InMemoryAccountKeyStore: AccountKeyStore, Sendable {
     public func savePending(_ key: AccountKey) throws { state.withLock { $0.pending = key } }
     public func clearPending() throws { state.withLock { $0.pending = nil } }
     public func delete(account: String) throws { state.withLock { $0.stored.removeAll { $0.account == account } } }
-    public func deleteAll() throws { state.withLock { $0.stored.removeAll() } }
+    public func deleteAll() throws { state.withLock { $0.stored.removeAll(); $0.pending = nil } }
 }

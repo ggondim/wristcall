@@ -32,7 +32,7 @@ public protocol AccountKeyStore: Sendable {
     func clearPending() throws
     /// Deletes the synced key of `account` (and its copies on the user's other devices).
     func delete(account: String) throws
-    /// Deletes every synced key. The pending key stays.
+    /// Deletes every synced key and the pending key: nothing is left.
     func deleteAll() throws
 }
 
@@ -119,6 +119,7 @@ public struct KeychainAccountKeyStore: AccountKeyStore {
 
     public func deleteAll() throws {
         try remove(syncedQuery(account: nil))
+        try clearPending()
     }
 
     private func remove(_ query: [String: Any]) throws {

@@ -57,8 +57,10 @@ public struct AccountBootstrap: Sendable {
         if let tokens = try await enrollWithStoredKeys() { return (tokens, .enrolled) }
 
         let pending = try keys.pending()
-        if pending == nil, try keys.keys().isEmpty {
-            // First launch: the user's other devices may have an account whose key is still on its way.
+        if pending == nil {
+            // No usable key here (none stored, or every one refused): the user's other devices may have an account
+            // whose current key is still on its way through iCloud Keychain. Making a new account now would
+            // leave the user with two.
             await waitForKeys()
             if let tokens = try await enrollWithStoredKeys() { return (tokens, .enrolled) }
         }
@@ -92,7 +94,10 @@ public struct AccountBootstrap: Sendable {
             try await client.setAccountKey(key, accessToken: tokens.accessToken)
         } catch APIError.conflict(let code, _) where code == "key_exists" {
             // The `PUT` of a previous attempt got through and its reply did not: confirm the pending key is the one.
-            _ = try await client.enrollDevice(key: key, account: tokens.account, device: device)
+            // If the Cloud refuses it, the account's key is another one: the sign-in above still stands, and the
+            // pending key stays for whoever looks at it next.
+            do { try await confirmAndPromote(key, account: tokens.account) } catch APIError.unauthorized {}
+            return tokens
         }
         try promote(key, to: tokens.account)
         return tokens
@@ -113,10 +118,16 @@ public struct AccountBootstrap: Sendable {
     /// A `PUT` whose reply was lost leaves a pending key and, on the next attempt, an account that already has a
     /// key. If the pending key is the account's, promote it. Best effort: any failure leaves it for next time.
     private func recoverLostKeyReply(for account: String) async {
+        // A Keychain read error is deliberately swallowed too: this is a bonus step, not the migration.
         guard let key = try? keys.pending() else { return }
-        do {
-            _ = try await client.enrollDevice(key: key, account: account, device: device)
-            try promote(key, to: account)
-        } catch {}
+        do { try await confirmAndPromote(key, account: account) } catch {}
+    }
+
+    /// Proves `key` is `account`'s key by signing in with it, promotes it, and signs the extra device out again
+    /// (best effort: an unused device would count against the account's device limit).
+    private func confirmAndPromote(_ key: AccountKey, account: String) async throws {
+        let confirm = try await client.enrollDevice(key: key, account: account, device: device)
+        try promote(key, to: account)
+        try? await client.revokeDevice(id: confirm.device, accessToken: confirm.accessToken)
     }
 }
