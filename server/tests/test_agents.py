@@ -278,7 +278,8 @@ async def test_delete(svc):
 async def test_summary_has_no_endpoints_or_prompts(svc):
     a = await svc.create("u_a", {"slug": "one", "system_prompt": "secret plan"})
     assert agent_summary(a) == {
-        "id": a.id, "slug": "one", "display_name": "one", "icon": "waveform", "call_type": "conversation", "turn_end": "auto",
+        "id": a.id, "slug": "one", "display_name": "one", "icon": "waveform", "color": None, "call_type": "conversation",
+        "turn_end": "auto",
     }
 
 

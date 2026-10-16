@@ -74,6 +74,7 @@ class AgentRecord:
     spec: dict[str, Any]
     created_at: float
     updated_at: float
+    color: str | None = None
 
 
 @dataclass(frozen=True)

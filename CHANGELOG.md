@@ -11,6 +11,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
   against it. Set it empty in `watch/Config/Local.xcconfig` for a build without an account. The push build keeps a
   local Cloud.
 
+## [0.8.1] - 2026-10-16
+
+### Added
+
+- Agent `color`: one of `red`, `orange`, `yellow`, `green`, `mint`, `teal`, `blue`, `indigo`, `purple`, `pink`
+  (lowercase), or `null`. Set it with `color` in `POST`/`PATCH /v1/agents` or `--color` in `wristcall agents add` and
+  `agents edit`; it shows in the agent summary (`/v1/me`, `GET /v1/agents`, `session.ready`). An update without
+  `color` keeps it; there is no way to clear it. See [docs/protocol.md](docs/protocol.md#agents).
+
+### Changed
+
+- Database schema 8 (new `agents.color` column, null for existing agents). The server upgrades it on start; 0.8.0 does
+  not open a database after 0.8.1 has run (restore a backup to go back).
+
 ## [web-0.2.0] - 2026-10-16
 
 For servers 0.8.0 (link codes) and Cloud 0.3.0 or later.

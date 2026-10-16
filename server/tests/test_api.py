@@ -106,7 +106,7 @@ def test_validation_errors_do_not_echo_secrets(client):
 def test_device_token_lists_summaries_but_cannot_manage(client):
     d = device_token(client)
     listed = client.get("/v1/agents", headers=h(d)).json()["agents"]
-    assert set(listed[0]) == {"id", "slug", "display_name", "icon", "call_type", "turn_end"}
+    assert set(listed[0]) == {"id", "slug", "display_name", "icon", "color", "call_type", "turn_end"}
     assert set(client.get("/v1/agents/default", headers=h(d)).json()) == set(listed[0])
     for method, path, body in [
         ("post", "/v1/agents", {"slug": "x"}),
@@ -243,3 +243,32 @@ def test_deeply_nested_body_is_invalid(client):
             r = client.request(method.upper(), path, headers=headers, content=content)
             assert r.status_code == 422, (method, content[:8])
             assert r.json()["error"] == "invalid" and "detail" not in r.json()
+
+
+def test_create_agent_with_color(client):
+    t = api_token(client)
+    r = client.post("/v1/agents", headers=h(t), json={"slug": "inky", "color": "indigo"})
+    assert r.status_code == 201 and r.json()["color"] == "indigo"
+    assert client.get("/v1/agents/inky", headers=h(t)).json()["color"] == "indigo"
+    listed = {a["slug"]: a for a in client.get("/v1/agents", headers=h(t)).json()["agents"]}
+    assert listed["inky"]["color"] == "indigo"
+    assert listed["default"]["color"] is None
+
+
+@pytest.mark.parametrize("color", ["magenta", "Indigo", "INDIGO", "", 3])
+def test_agent_color_is_validated(client, color):
+    t = api_token(client)
+    r = client.post("/v1/agents", headers=h(t), json={"slug": "bad", "color": color})
+    assert r.status_code == 422
+    assert client.post("/v1/agents", headers=h(t), json={"slug": "ok"}).status_code == 201
+    assert client.patch("/v1/agents/ok", headers=h(t), json={"color": color}).status_code == 422
+
+
+def test_update_keeps_color_when_absent(client):
+    t = api_token(client)
+    client.post("/v1/agents", headers=h(t), json={"slug": "keep", "color": "mint"})
+    r = client.patch("/v1/agents/keep", headers=h(t), json={"display_name": "Kept"})
+    assert r.status_code == 200 and r.json()["color"] == "mint"
+    r = client.patch("/v1/agents/keep", headers=h(t), json={"color": "teal"})
+    assert r.status_code == 200 and r.json()["color"] == "teal"
+    assert client.get("/v1/agents/keep", headers=h(t)).json()["color"] == "teal"

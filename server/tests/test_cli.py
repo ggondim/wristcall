@@ -495,3 +495,16 @@ def test_cli_link_refuses_a_public_url_outside_the_audience(tmp_path, public_url
 def test_cli_link_needs_central_account(tmp_path):
     r = invoke(write_config(tmp_path), "link")
     assert r.exit_code == 1 and "central_account" in r.stderr and "link#" not in r.output
+
+
+def test_cli_agents_add_and_edit_take_a_color(tmp_path):
+    cfg = write_config(tmp_path)
+    ok(cfg, "agents", "add", "tinted", "--color", "yellow")
+    assert json.loads(ok(cfg, "agents", "show", "tinted"))["color"] == "yellow"
+    ok(cfg, "agents", "edit", "tinted", "--color", "teal")
+    assert json.loads(ok(cfg, "agents", "show", "tinted"))["color"] == "teal"
+    ok(cfg, "agents", "edit", "tinted", "--name", "Tinted")  # no --color keeps it
+    assert json.loads(ok(cfg, "agents", "show", "tinted"))["color"] == "teal"
+    assert invoke(cfg, "agents", "add", "bad", "--color", "magenta").exit_code == 1
+    assert invoke(cfg, "agents", "edit", "tinted", "--color", "magenta").exit_code == 1
+    assert json.loads(ok(cfg, "agents", "show", "tinted"))["color"] == "teal"
