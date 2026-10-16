@@ -148,8 +148,10 @@ class _Pairing:
     def __init__(self) -> None:
         self.codes: dict[str, dict] = {}
         self.requests: dict[str, dict] = {}
+        self.link_codes: dict[str, dict] = {}
 
     async def purge(self, now):
+        self.link_codes = {k: v for k, v in self.link_codes.items() if v["expires_at"] >= now}
         self.codes = {k: v for k, v in self.codes.items() if v["expires_at"] >= now}
         self.requests = {k: v for k, v in self.requests.items() if v["expires_at"] >= now}
 
@@ -173,6 +175,16 @@ class _Pairing:
         for c in self.codes.values():
             if c["used_at"] is None and c["expires_at"] > now:
                 c["attempts"] += 1
+
+    async def add_link_code(self, code_hash, user_id, expires_at):
+        self.link_codes[code_hash] = {"user_id": user_id, "expires_at": expires_at, "used_at": None}
+
+    async def claim_link_code(self, code_hash, now):
+        c = self.link_codes.get(code_hash)
+        if c is None or c["used_at"] is not None or c["expires_at"] <= now:
+            return None
+        c["used_at"] = now
+        return c["user_id"]
 
     async def add_request(self, poll_hash, request_id, device_name, now, expires_at, target_user_id=None):
         self.requests[poll_hash] = {
@@ -494,6 +506,7 @@ class MemoryStorage:
         self.agents.rows = {k: v for k, v in self.agents.rows.items() if v.user_id != user_id}
         self.calls._drop([c.id for c in self.calls.rows.values() if c.user_id == user_id])
         self.pairing.codes = {k: v for k, v in self.pairing.codes.items() if v["user_id"] != user_id}
+        self.pairing.link_codes = {k: v for k, v in self.pairing.link_codes.items() if v["user_id"] != user_id}
         self.pairing.requests = {
             k: v for k, v in self.pairing.requests.items() if user_id not in (v["user_id"], v["target_user_id"])
         }

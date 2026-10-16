@@ -113,6 +113,14 @@ class PairingStore(Protocol):
         """A wrong code was tried: every active code gets one attempt closer to being blocked."""
         ...
 
+    async def add_link_code(self, code_hash: str, user_id: str, expires_at: float) -> None:
+        """A long link code, stored by its SHA-256 only."""
+        ...
+
+    async def claim_link_code(self, code_hash: str, now: float) -> str | None:
+        """Marks a valid link code as used and returns its user; None if unknown, used or expired. At most once."""
+        ...
+
     async def add_request(
         self, poll_hash: str, request_id: str, device_name: str, now: float, expires_at: float,
         target_user_id: str | None = None,

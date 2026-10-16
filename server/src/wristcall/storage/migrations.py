@@ -149,6 +149,15 @@ MIGRATIONS: list[list[str]] = [
         )""",
         "CREATE INDEX push_targets_user ON push_targets (user_id)",
     ],
+    # 7: single-use long link codes (O4): only the SHA-256 of the code is stored. Rolling back to 0.7.x needs a backup.
+    [
+        """CREATE TABLE IF NOT EXISTS link_codes (
+          code_hash TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          expires_at REAL NOT NULL,
+          used_at REAL
+        )""",
+    ],
 ]
 
 LATEST = len(MIGRATIONS)

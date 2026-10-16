@@ -17,6 +17,7 @@ from .agents import AgentError, AgentService, agent_detail, agent_summary
 from .auth import Authenticator, Principal
 from .config import AppConfig
 from .directory_client import DirectoryClient, DirectoryError
+from .link import normalize_link_code
 from .pairing import DeviceLimit, NotFound, PairingService, issue_code
 from .providers import provider_kind
 from .ratelimit import RateLimiter
@@ -277,7 +278,8 @@ def management_router(
             user, api_token = await account.issue_app_token(user_id)
         except AccountError as e:
             return _account_error(e)
-        log.info("user %s linked to the central account (pairing code)", user_id)
+        kind = "link code" if normalize_link_code(code) else "pairing code"  # the format only, never the code
+        log.info("user %s linked to the central account (%s)", user_id, kind)
         return {
             "linked": True,
             "issuer": account.config.issuer,

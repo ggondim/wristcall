@@ -12,8 +12,9 @@ from collections.abc import Callable
 import httpx
 
 from .config import CentralAccountConfig
+from .link import normalize_link_code
 from .oidc import Identity, OidcError, OidcUnavailable, OidcVerifier, normalize_issuer
-from .pairing import normalize_code
+from .pairing import hash_secret, normalize_code
 from .storage import Conflict, Storage, User
 from .users import UserService
 
@@ -79,6 +80,13 @@ class AccountService:
         # The token is checked first: a bad token must not spend (or burn) the code.
         identity = await self.identify(token)
         now = self._now()
+        long = normalize_link_code(code) if isinstance(code, str) else None
+        if long is not None:
+            # A wrong long code is not a guess at the 8-digit codes: it does not count against them.
+            user_id = await self._st.pairing.claim_link_code(hash_secret(long), now)
+            if user_id is None:
+                raise AccountError("invalid_code", "invalid or expired code")
+            return user_id, await self._link(user_id, identity)
         normalized = normalize_code(code) if isinstance(code, str) else None
         user_id = await self._st.pairing.claim_code(normalized, now, self._max_attempts) if normalized else None
         if user_id is None:
