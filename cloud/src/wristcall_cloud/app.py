@@ -49,6 +49,7 @@ from .push.limits import RegistrationLimiter, SendLimiter
 from .push.registry import PushError, purge_idle_loop
 from .push.webpush import WebPushChannel
 from .session_tokens import MANAGER_PLATFORMS, AccountTokens
+from .sessions_api import entitlement_response
 from .sessions_api import router as sessions_router
 from .signing import SigningKey, server_token_claims
 from .store import Store, open_store, public_server
@@ -204,21 +205,16 @@ async def get_account(request: Request, caller: Caller = Depends(current_account
         "account": caller.key,
         "created_at": account["created_at"],
         "servers": await store.count_servers(caller.key),
-        "plan": await _plan(store, caller.key),
+        "plan": await _plan(get_accounts(request), caller.key),
         "identities": [identity["kind"] for identity in identities],
         "key_set": "key_hash" in account,
     }
 
 
-async def _plan(store: Store, account: str) -> dict[str, Any] | None:
+async def _plan(accounts: AccountStore, account: str) -> dict[str, Any] | None:
     """The account's entitlement while it has not expired."""
-    doc = await store.db["entitlements"].find_one({"_id": account})
-    if doc is None:
-        return None
-    expires_at = doc.get("expires_at")
-    if expires_at is not None and expires_at <= time.time():
-        return None
-    return {"plan": doc.get("plan"), "source": doc.get("source"), "expires_at": expires_at}
+    doc = await accounts.entitlement(account)
+    return None if doc is None else entitlement_response(doc)
 
 
 @router.delete("/v1/account", status_code=204)

@@ -1,12 +1,16 @@
 """AccountStore: accounts, identities, devices, enroll/web collections cleanup and the v2 migration."""
 
 import asyncio
+import re
+from datetime import UTC, datetime
 
 import pytest
 
 from wristcall_cloud.account_store import (
     SCHEMA_VERSION,
     AccountStore,
+    AlreadyEntitled,
+    CodeLimit,
     DeviceLimit,
     KeyExists,
     KeyInUse,
@@ -350,3 +354,165 @@ async def test_delete_account_data_leaves_other_accounts(store, mongo_db):
     assert await mongo_db["entitlements"].find_one({"_id": b}) is not None
     assert await store.get_account(b) is not None
     assert len(await store.list_devices(b)) == 1 and len(await store.identities_of(b)) == 1
+
+
+# Enroll codes
+
+
+async def test_enroll_code_single_use_and_expiry(store, mongo_db):
+    acc = (await store.create_account(h("k"), now=NOW))["_id"]
+    code, expires_at = await store.add_enroll_code(acc, max_open=5, now=NOW)
+    assert re.fullmatch(r"wce_[a-z2-7]{26}", code) and expires_at == NOW + 600
+    doc = await mongo_db["enroll_codes"].find_one()
+    assert doc["_id"] == h(code) and code not in str(doc)
+    assert (doc["account"], doc["platforms"], doc["created_at"]) == (acc, ["watchos"], NOW)
+    assert (await store.enroll_code(code, now=NOW + 1))["account"] == acc
+    # Reading does not spend it; the wrong platform does not either.
+    assert await store.take_enroll_code(code, "ios", now=NOW + 1) is None
+    assert await store.take_enroll_code(code, "watchos", now=NOW + 1) == acc
+    assert await store.take_enroll_code(code, "watchos", now=NOW + 2) is None
+    assert await store.enroll_code(code, now=NOW + 2) is None
+    late, _ = await store.add_enroll_code(acc, max_open=5, now=NOW)
+    assert await store.enroll_code(late, now=NOW + 600) is None
+    assert await store.take_enroll_code(late, "watchos", now=NOW + 600) is None
+    assert await store.enroll_code("wce_unknown", now=NOW) is None
+
+
+async def test_enroll_code_limit(store):
+    acc = (await store.create_account(h("k"), now=NOW))["_id"]
+    other = (await store.create_account(h("o"), now=NOW))["_id"]
+    for _ in range(2):
+        await store.add_enroll_code(acc, max_open=2, now=NOW)
+    with pytest.raises(CodeLimit):
+        await store.add_enroll_code(acc, max_open=2, now=NOW + 1)
+    await store.add_enroll_code(other, max_open=2, now=NOW + 1)
+    # Expired codes are not open any more.
+    await store.add_enroll_code(acc, max_open=2, now=NOW + 600)
+
+
+# Web sessions
+
+
+async def test_web_session_lifecycle(store, mongo_db):
+    acc = (await store.create_account(h("k"), now=NOW))["_id"]
+    web = {"name": "Chrome on macOS", "platform": "web"}
+    created = await store.add_web_session(web, "Mozilla/5.0", "BR", now=NOW)
+    assert re.fullmatch(r"ws_[0-9a-f]{16}", created["id"]) and created["expires_at"] == NOW + 300
+    assert created["approve_key"].startswith("wck_") and created["poll_key"].startswith("wcp_")
+    doc = await mongo_db["web_sessions"].find_one({"_id": created["id"]})
+    assert doc["approve_hash"] == h(created["approve_key"]) and doc["poll_hash"] == h(created["poll_key"])
+    assert created["approve_key"] not in str(doc) and created["poll_key"] not in str(doc)
+    assert (doc["device"], doc["user_agent"], doc["country"], doc["status"]) == (web, "Mozilla/5.0", "BR", "pending")
+    sid, approve, poll = created["id"], created["approve_key"], created["poll_key"]
+    seen = await store.web_session(sid, approve, now=NOW + 1)
+    assert seen["device"] == web and seen["created_at"] == NOW
+    pending = await store.take_web_session(sid, poll, now=NOW + 1)
+    assert pending["status"] == "pending"
+    assert await store.web_session(sid, approve, now=NOW + 2) is not None  # polling a pending one keeps it
+    assert await store.approve_web_session(sid, approve, acc, now=NOW + 3) is True
+    assert await store.approve_web_session(sid, approve, acc, now=NOW + 4) is False
+    assert await store.web_session(sid, approve, now=NOW + 4) is None  # no longer pending
+    approved = await store.take_web_session(sid, poll, now=NOW + 5)
+    assert (approved["status"], approved["account"]) == ("approved", acc)
+    assert await store.take_web_session(sid, poll, now=NOW + 6) is None
+    late = await store.add_web_session(web, "ua", None, now=NOW)
+    assert await store.web_session(late["id"], late["approve_key"], now=NOW + 300) is None
+    assert await store.approve_web_session(late["id"], late["approve_key"], acc, now=NOW + 300) is False
+    assert await store.take_web_session(late["id"], late["poll_key"], now=NOW + 300) is None
+
+
+async def test_web_session_wrong_keys(store):
+    acc = (await store.create_account(h("k"), now=NOW))["_id"]
+    created = await store.add_web_session({"name": "w", "platform": "web"}, "ua", None, now=NOW)
+    sid, approve, poll = created["id"], created["approve_key"], created["poll_key"]
+    assert await store.web_session(sid, poll, now=NOW) is None
+    assert await store.web_session("ws_0000000000000000", approve, now=NOW) is None
+    assert await store.approve_web_session(sid, poll, acc, now=NOW) is False
+    assert await store.take_web_session(sid, approve, now=NOW) is None
+    assert await store.approve_web_session(sid, approve, acc, now=NOW) is True
+    assert await store.take_web_session(sid, approve, now=NOW) is None  # the approve key never takes it
+    assert (await store.take_web_session(sid, poll, now=NOW))["account"] == acc
+
+
+# Invites and entitlements
+
+
+async def test_invite_single_use(store, mongo_db):
+    a = (await store.create_account(h("a"), now=NOW))["_id"]
+    b = (await store.create_account(h("b"), now=NOW))["_id"]
+    codes = await store.create_invites("full", 3, days=30, now=NOW)
+    assert len(set(codes)) == 3
+    assert all(re.fullmatch(r"WC-[A-Z2-7]{4}-[A-Z2-7]{4}-[A-Z2-7]{4}", c) for c in codes)
+    docs = await mongo_db["invites"].find().to_list(length=None)
+    assert all(re.fullmatch(r"inv_[0-9a-f]{16}", d["_id"]) and d["used_by"] is None for d in docs)
+    assert not any(c in str(docs) for c in codes)
+    assert docs[0]["expires_at"] == NOW + 30 * 86400
+    granted = await store.redeem_invite(codes[0], a, now=NOW + 1)
+    assert (granted["plan"], granted["source"], granted["expires_at"]) == ("full", "beta", None)
+    assert (await store.entitlement(a, now=NOW + 2))["plan"] == "full"
+    used = await mongo_db["invites"].find_one({"used_by": a})
+    assert used["used_at"] == NOW + 1 and granted["invite"] == used["_id"]
+    assert await store.redeem_invite(codes[0], b, now=NOW + 2) is None
+    with pytest.raises(AlreadyEntitled):
+        await store.redeem_invite(codes[1], a, now=NOW + 2)
+    assert await mongo_db["invites"].count_documents({"used_by": None}) == 2  # not spent
+    assert await store.redeem_invite(codes[1], b, now=NOW + 30 * 86400) is None  # expired
+    assert await store.redeem_invite("WC-AAAA-AAAA-AAAA", b, now=NOW) is None
+    with pytest.raises(ValueError):
+        await store.create_invites("gold", 1, days=30, now=NOW)
+
+
+async def test_invite_normalization(store, mongo_db):
+    acc = (await store.create_account(h("a"), now=NOW))["_id"]
+    await mongo_db["invites"].insert_one(
+        {
+            "_id": "inv_0000000000000000",
+            "code_hash": h("WCABCDEFGHIJKL"),
+            "plan": "custom",
+            "created_at": NOW,
+            "expires_at": NOW + 86400,
+            "used_by": None,
+            "used_at": None,
+        }
+    )
+    assert (await store.redeem_invite(" wc-abcd efgh-ijkl ", acc, now=NOW))["plan"] == "custom"
+    code = (await store.create_invites("full", 1, days=1, now=NOW))[0]
+    other = (await store.create_account(h("b"), now=NOW))["_id"]
+    assert (await store.redeem_invite(code.lower().replace("-", " "), other, now=NOW))["plan"] == "full"
+
+
+async def test_entitlement_expiry(store):
+    acc = (await store.create_account(h("a"), now=NOW))["_id"]
+    assert await store.entitlement(acc, now=NOW) is None
+    granted = await store.grant(acc, "custom", days=10, now=NOW)
+    assert (granted["plan"], granted["source"], granted["granted_at"]) == ("custom", "beta", NOW)
+    assert granted["expires_at"] == NOW + 10 * 86400
+    assert (await store.entitlement(acc, now=NOW + 10 * 86400 - 1))["plan"] == "custom"
+    assert await store.entitlement(acc, now=NOW + 10 * 86400) is None
+    # An expired entitlement does not block an invite.
+    code = (await store.create_invites("full", 1, days=30, now=NOW))[0]
+    assert (await store.redeem_invite(code, acc, now=NOW + 10 * 86400))["plan"] == "full"
+    forever = await store.grant(acc, "full", days=None, source="admin", now=NOW)
+    assert (forever["expires_at"], forever["source"]) == (None, "admin")
+    assert await store.entitlement(acc, now=NOW + 10**9) is not None
+    assert await store.revoke_entitlement(acc) is True
+    assert await store.revoke_entitlement(acc) is False
+    assert await store.entitlement(acc, now=NOW) is None
+    with pytest.raises(ValueError):
+        await store.grant(acc, "gold", days=None, now=NOW)
+
+
+async def test_ttl_indexes(store, mongo_db):
+    for name in ("enroll_codes", "web_sessions"):
+        index = (await mongo_db[name].index_information())["purge_at"]
+        assert index["key"] == [("purge_at", 1)] and index["expireAfterSeconds"] == 0
+    assert (await mongo_db["enroll_codes"].index_information())["account"]["key"] == [("account", 1)]
+    invites = (await mongo_db["invites"].index_information())["code_hash"]
+    assert invites["key"] == [("code_hash", 1)] and invites["unique"] is True
+    acc = (await store.create_account(h("a"), now=NOW))["_id"]
+    _, expires_at = await store.add_enroll_code(acc, max_open=5, now=NOW)
+    code_doc = await mongo_db["enroll_codes"].find_one()
+    assert code_doc["purge_at"] == datetime.fromtimestamp(expires_at + 3600, UTC)
+    session = await store.add_web_session({"name": "w", "platform": "web"}, "ua", None, now=NOW)
+    session_doc = await mongo_db["web_sessions"].find_one()
+    assert session_doc["purge_at"] == datetime.fromtimestamp(session["expires_at"] + 3600, UTC)

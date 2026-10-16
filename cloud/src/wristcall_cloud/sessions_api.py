@@ -1,18 +1,32 @@
-"""Account sessions: silent accounts made from an account key, devices enrolled by that key or by a fresh Zitadel
-token, rotating refresh tokens, the account's devices and its key.
+"""Account sessions: silent accounts made from an account key, devices enrolled by that key or by a fresh
+Zitadel token, rotating refresh tokens, the account's devices and its key; enroll codes (an app adds a watch),
+web sessions approved by an app, and beta invites.
 
 Every route here needs the signing key (it signs the access tokens): without one they answer 404 `not_configured`
-first. Secrets (account key, refresh tokens, Zitadel and access tokens) never reach a log or an error message.
+first. Secrets (account key, refresh tokens, enroll codes, web session keys, invite codes,
+Zitadel and access tokens) never reach a log or an error message.
 """
 
 import logging
+import re
 import time
+import unicodedata
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import Response
 
-from .account_store import AccountStore, DeviceLimit, KeyExists, KeyInUse, NoKey, RefreshReused, WrongKey
+from .account_store import (
+    AccountStore,
+    AlreadyEntitled,
+    CodeLimit,
+    DeviceLimit,
+    KeyExists,
+    KeyInUse,
+    NoKey,
+    RefreshReused,
+    WrongKey,
+)
 from .api_common import ApiError, json_object, parse_device
 from .auth import Caller, _bearer, client_platform, current_device, require_platform, zitadel_identity
 from .config import CloudConfig
@@ -24,6 +38,12 @@ log = logging.getLogger("wristcall_cloud.sessions")
 router = APIRouter()
 
 MAX_REFRESH_TOKEN = 128
+MAX_CODE = 64  # enroll codes and invites; longer is never a code
+MAX_WEB_KEY = 128
+MAX_USER_AGENT = 200
+_SESSION_ID = re.compile(r"ws_[0-9a-f]{16}")
+_COUNTRY = re.compile(r"[A-Z]{2}")
+_NO_COUNTRY = frozenset({"XX", "T1"})  # Cloudflare: unknown, Tor
 CAP_RETRY_AFTER_S = 3600
 
 
@@ -240,3 +260,190 @@ async def rotate_account_key(request: Request, caller: Caller = Depends(current_
         raise _key_in_use() from None
     log.info("account key rotated (%d devices signed out)", revoked)
     return {"revoked": revoked}
+
+
+def entitlement_response(doc: dict[str, Any]) -> dict[str, Any]:
+    """An entitlement as the API shows it (`GET /v1/account` too)."""
+    return {"plan": doc.get("plan"), "source": doc.get("source"), "expires_at": doc.get("expires_at")}
+
+
+def _code(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ApiError("invalid", "code must be a non-empty string", 422)
+    return value
+
+
+def _invalid_code() -> ApiError:
+    return ApiError("invalid_code", "unknown, used or expired code", 404)
+
+
+def _web_session_not_found() -> ApiError:
+    return ApiError("not_found", "web session not found", 404)
+
+
+# Enroll codes: an app hands a code to the watch (WatchConnectivity), which enrolls itself with it
+
+
+@router.post("/v1/devices/enroll-codes", status_code=201)
+async def create_enroll_code(request: Request, caller: Caller = Depends(current_device)) -> dict[str, Any]:
+    require_platform(caller, APP_PLATFORMS)
+    config = _config(request)
+    try:
+        code, expires_at = await _accounts(request).add_enroll_code(caller.key, max_open=config.max_enroll_codes)
+    except CodeLimit:
+        raise ApiError("limit", f"this account has {config.max_enroll_codes} open enroll codes", 403) from None
+    log.info("enroll code created")
+    return {"code": code, "expires_at": expires_at}
+
+
+@router.post("/v1/devices/enroll", status_code=201)
+async def enroll_with_code(request: Request) -> dict[str, Any]:
+    tokens = _require_signing_key(request)
+    check_ip_limit(request, request.app.state.attempt_limiter)
+    body = await json_object(request)
+    code = _code(body.get("code"))
+    device = parse_device(body.get("device"))
+    accounts = _accounts(request)
+    doc = None if len(code) > MAX_CODE else await accounts.enroll_code(code)
+    if doc is None:
+        log.info("enrollment with an unknown enroll code")
+        raise _invalid_code()
+    # Checked before spending: a code meant for the watch never makes an app device, and stays usable.
+    if device["platform"] not in doc["platforms"]:
+        raise ApiError("forbidden", "this code cannot add a device of that platform", 403)
+    account = await accounts.take_enroll_code(code, device["platform"])
+    if account is None:  # spent or expired in the meantime
+        raise _invalid_code()
+    try:
+        device_doc, refresh = await accounts.add_device(account, device, max_devices=_config(request).max_devices)
+    except DeviceLimit:
+        # The code is spent already (accepted: the app makes another one once a device is removed).
+        raise _device_limit() from None
+    await accounts.touch(account)
+    log.info("device enrolled by code (platform %s)", device["platform"])
+    return session_response(account, device_doc, refresh, tokens)
+
+
+# Web sessions: the web app shows a QR (session id and approve key), an app approves it, the web app polls with the
+# poll key (which never leaves it) and gets its session once
+
+
+def _user_agent(request: Request) -> str:
+    value = request.headers.get("user-agent", "")
+    return "".join(ch for ch in value if unicodedata.category(ch)[0] != "C")[:MAX_USER_AGENT]
+
+
+def _country(request: Request, header: str | None) -> str | None:
+    if not header:
+        return None
+    value = request.headers.get(header, "").strip()
+    return value if _COUNTRY.fullmatch(value) and value not in _NO_COUNTRY else None
+
+
+@router.post("/v1/web-sessions", status_code=201)
+async def create_web_session(request: Request) -> dict[str, Any]:
+    _require_signing_key(request)
+    check_ip_limit(request, request.app.state.attempt_limiter)
+    body = await json_object(request)
+    raw = body.get("device")
+    if isinstance(raw, dict) and "platform" not in raw:
+        raw = {**raw, "platform": "web"}
+    device = parse_device(raw)
+    if device["platform"] != "web":
+        raise ApiError("invalid", "device.platform must be web", 422)
+    country = _country(request, _config(request).client_country_header)
+    session = await _accounts(request).add_web_session(device, _user_agent(request), country)
+    log.info("web session created")
+    return session
+
+
+@router.get("/v1/web-sessions/{session_id}")
+async def poll_web_session(
+    session_id: str, request: Request, authorization: str | None = Header(default=None)
+) -> dict[str, Any]:
+    tokens = _require_signing_key(request)
+    poll_key = _bearer(authorization)
+    if not _SESSION_ID.fullmatch(session_id):
+        raise _web_session_not_found()
+    # No attempt limit (the poll key has 256 bits); one poll a second per session.
+    if request.app.state.poll_limiter.allow(session_id) is not None:
+        raise ApiError("rate_limited", "poll at most once a second", 429, retry_after=1)
+    accounts = _accounts(request)
+    doc = None if len(poll_key) > MAX_WEB_KEY else await accounts.take_web_session(session_id, poll_key)
+    if doc is None:
+        raise _web_session_not_found()
+    if doc["status"] == "pending":
+        return {"status": "pending", "expires_at": doc["expires_at"]}
+    # The approved session was taken (deleted) above, so at the device limit (a device added since the approval,
+    # which checked it) it is gone and the web app starts over (accepted: nothing secret was issued).
+    try:
+        device_doc, refresh = await accounts.add_device(
+            doc["account"], doc["device"], max_devices=_config(request).max_devices
+        )
+    except DeviceLimit:
+        raise _device_limit() from None
+    log.info("web session signed in")
+    return {"status": "approved", **session_response(doc["account"], device_doc, refresh, tokens)}
+
+
+async def _pending_web_session(request: Request, session_id: str, caller: Caller) -> tuple[dict[str, Any], str]:
+    """The pending session the body's approve key opens (404 otherwise), for an app."""
+    require_platform(caller, APP_PLATFORMS)
+    body = await json_object(request)
+    approve_key = body.get("approve_key")
+    if not isinstance(approve_key, str) or not approve_key:
+        raise ApiError("invalid", "approve_key must be a non-empty string", 422)
+    if not _SESSION_ID.fullmatch(session_id) or len(approve_key) > MAX_WEB_KEY:
+        raise _web_session_not_found()
+    doc = await _accounts(request).web_session(session_id, approve_key)
+    if doc is None:
+        raise _web_session_not_found()
+    return doc, approve_key
+
+
+@router.post("/v1/web-sessions/{session_id}/inspect")
+async def inspect_web_session(
+    session_id: str, request: Request, caller: Caller = Depends(current_device)
+) -> dict[str, Any]:
+    doc, _ = await _pending_web_session(request, session_id, caller)
+    return {
+        "name": doc["device"]["name"],
+        "user_agent": doc["user_agent"],
+        "country": doc["country"],
+        "created_at": doc["created_at"],
+        "expires_at": doc["expires_at"],
+    }
+
+
+@router.post("/v1/web-sessions/{session_id}/approve")
+async def approve_web_session(
+    session_id: str, request: Request, caller: Caller = Depends(current_device)
+) -> dict[str, Any]:
+    _, approve_key = await _pending_web_session(request, session_id, caller)
+    accounts = _accounts(request)
+    if await accounts.count_devices(caller.key) >= _config(request).max_devices:
+        raise _device_limit()
+    if not await accounts.approve_web_session(session_id, approve_key, caller.key):
+        raise _web_session_not_found()
+    log.info("web session approved")
+    return {"approved": True}
+
+
+# Beta invites
+
+
+@router.post("/v1/entitlements/redeem")
+async def redeem_invite(request: Request, caller: Caller = Depends(current_device)) -> dict[str, Any]:
+    require_platform(caller, MANAGER_PLATFORMS)
+    check_ip_limit(request, request.app.state.attempt_limiter)
+    body = await json_object(request)
+    code = _code(body.get("code"))
+    try:
+        doc = None if len(code) > MAX_CODE else await _accounts(request).redeem_invite(code, caller.key)
+    except AlreadyEntitled:
+        raise ApiError("already_entitled", "this account already has a plan", 409) from None
+    if doc is None:
+        log.info("redeem with an unknown invite")
+        raise _invalid_code()
+    log.info("invite redeemed (plan %s)", doc["plan"])
+    return entitlement_response(doc)
