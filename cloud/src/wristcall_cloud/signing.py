@@ -36,6 +36,10 @@ class SigningKey:
     def __repr__(self) -> str:
         return f"SigningKey(kid={self.kid!r})"
 
+    @property
+    def public_key(self) -> ec.EllipticCurvePublicKey:
+        return self._key.public_key()
+
     def jwk(self) -> dict[str, Any]:
         public = ECAlgorithm.to_jwk(self._key.public_key(), as_dict=True)
         return {
@@ -48,8 +52,8 @@ class SigningKey:
             "alg": ALGORITHM,
         }
 
-    def sign(self, claims: dict[str, Any]) -> str:
-        return jwt.encode(claims, self._key, algorithm=ALGORITHM, headers={"kid": self.kid, "typ": TOKEN_TYPE})
+    def sign(self, claims: dict[str, Any], *, typ: str = TOKEN_TYPE) -> str:
+        return jwt.encode(claims, self._key, algorithm=ALGORITHM, headers={"kid": self.kid, "typ": typ})
 
 
 def server_token_claims(

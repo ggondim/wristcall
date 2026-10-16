@@ -36,6 +36,7 @@ class Identity:
     subject: str
     client_id: str | None
     expires_at: float
+    issued_at: float = 0.0
 
 
 def normalize_issuer(issuer: str) -> str:
@@ -128,6 +129,7 @@ class OidcVerifier:
             subject=subject,
             client_id=client_id if isinstance(client_id, str) else None,
             expires_at=float(claims["exp"]),
+            issued_at=float(claims["iat"]),
         )
 
     def _fresh(self) -> bool:

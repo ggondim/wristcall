@@ -41,6 +41,12 @@ async def test_valid_token_gives_identity(issuer):
     assert identity.client_id == AUDIENCE
 
 
+async def test_identity_carries_issued_at(issuer):
+    iat = time.time() - 120
+    identity = await verifier().verify(issuer.token(iat=iat))
+    assert identity.issued_at == iat
+
+
 async def test_issuer_with_trailing_slash_is_normalized(issuer):
     assert (await verifier(issuer_url=ISSUER + "/").verify(issuer.token())).subject == "central-user-1"
 
