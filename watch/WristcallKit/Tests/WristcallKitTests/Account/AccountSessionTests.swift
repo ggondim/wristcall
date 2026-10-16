@@ -86,6 +86,34 @@ struct AccountSessionTests {
         #expect(await session.isSignedIn)
     }
 
+    @Test func freshAccessTokenAlwaysRefreshes() async throws {
+        let world = StubAccountWorld()
+        let store = InMemoryTokenStore(fresh)
+        let session = session(world, store: store)
+        #expect(try await session.freshAccessToken() == "new-at")
+        #expect(world.tokenRequests.count == 1)
+        #expect(try store.load()?.accessToken == "new-at")
+        // The ordinary path now finds a fresh token and does not refresh again.
+        #expect(try await session.accessToken() == "new-at")
+        #expect(world.tokenRequests.count == 1)
+    }
+
+    @Test func concurrentFreshAccessTokensShareOneRefresh() async throws {
+        let world = StubAccountWorld()
+        let session = session(world, store: InMemoryTokenStore(fresh))
+        async let first = session.freshAccessToken()
+        async let second = session.freshAccessToken()
+        #expect(try await [first, second] == ["new-at", "new-at"])
+        #expect(world.tokenRequests.count == 1)
+    }
+
+    @Test func freshAccessTokenWithoutTokensIsSignedOut() async throws {
+        let world = StubAccountWorld()
+        let session = session(world, store: InMemoryTokenStore())
+        await #expect(throws: AccountError.signedOut) { try await session.freshAccessToken() }
+        #expect(world.tokenRequests.isEmpty)
+    }
+
     @Test func noTokensIsSignedOut() async throws {
         let world = StubAccountWorld()
         let session = session(world, store: InMemoryTokenStore())
