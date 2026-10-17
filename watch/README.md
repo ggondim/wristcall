@@ -97,42 +97,51 @@ launch arguments:
 
 ## iPhone app
 
-`Phone/` is the iPhone app (tag `ios-vX.Y.Z`; first release 0.1.0). Its bundle id is `<BUNDLE_ID_PREFIX>.wristcall` and
+`Phone/` is the iPhone app (tag `ios-vX.Y.Z`; version 0.2.0). Its bundle id is `<BUNDLE_ID_PREFIX>.wristcall` and
 it embeds the watch app (`Wristcall.app/Watch/`). Apple refuses an embedded watch app whose version differs from the
-iPhone app's, so both bundles carry the same version (0.4.0, build 4), even though the iPhone app's own release is 0.1.0.
+iPhone app's, so both bundles carry the same version (0.5.0, build 5), even though the iPhone app's own release is 0.2.0.
+
+**No sign-up.** The first launch shows a welcome screen and a plan screen, no sign-in. The app makes a silent
+wristcall account on the Cloud: it keeps the account key in the iPhone's Keychain and in iCloud Keychain, so the account
+follows you to a new iPhone by itself when iCloud Keychain is on. An account that loses its key and its iCloud Keychain
+copy cannot be recovered.
 
 What it does (it makes no calls; the watch does):
 
-- **Servers.** Add one with its address and a personal token (`wristcall users tokens add --name iphone`), rename
-  it, remove it. Tokens live in the iPhone Keychain, readable after the first unlock and never synced. A pasted
-  device token, an empty one or one the server refuses saves nothing and says why.
-- **Agents.** List, create, edit, delete and reorder a server's agents (conversation, one-shot, monologue; custom
-  endpoints when the server allows them).
+- **Plan.** Wristcall Cloud is in an invite-only beta: "Redeem an invite code" (Settings, or the plan screen)
+  gives the account a plan. "Your own server" is always free and needs no code; "Not now" skips the choice. You can
+  change it any time in Settings.
+- **Agents.** The Agents tab lists the agents of every server you connected. Create (from a template, with a name, an
+  icon and a color), edit, delete and reorder them (conversation, one-shot, monologue; custom endpoints when the
+  server allows them).
+- **Connect your server.** Start the wristcall server and scan the QR code it prints the first time it runs ("Scan QR
+  code" on an empty Agents tab, or in Settings), or open its `wristcall://link#...` link (or the `https://<site>/link#...`
+  link of the web app) from anywhere on the iPhone. The app shows the server's host and "Only connect servers you
+  trust", and connects it to your account on "Connect"; the Apple Watch is set up automatically. `wristcall link` on the
+  server's host prints a new code. A personal token (`wristcall users tokens add --name iphone`) or an 8-digit pairing
+  code (`wristcall pair --user <you>`) still work from "Add server"; the pairing code now also sets up the watch. Tokens
+  live in the iPhone Keychain, readable after the first unlock and never synced.
+- **Approve web sign-ins.** Scanning the QR code of the web app's sign-in screen approves it from the iPhone. This works
+  once the web app shows that QR code; until then "Use on the web" in Settings stays hidden.
 - **Devices.** Watches paired with the server, pending requests to approve or deny (read on opening, on coming to the
-  foreground and every 10 seconds on the devices screen; the Servers tab badge counts them), pairing codes.
+  foreground and every 10 seconds on the devices screen), pairing codes, and the watches of your account.
 - **History.** The calls of every server in one list, with search, filters by server and agent, export (a file per
   server) and redelivery of failed one-way calls.
 - **Add to watch.** Makes a pairing code and sends the server address and code to the embedded watch app over
   WatchConnectivity; "Refresh watch" makes the watch read its agents again.
+- **Delete account.** Settings, "Delete account": deletes the wristcall account on the Cloud (the servers list and the
+  plan) and brings the welcome screen back. Servers and their tokens stay; push registrations at the relay are anonymous
+  and stay. In the push build the app drops its own push keys, but only until its next launch.
 
-With a Cloud in the build (`CLOUD_URL`), Settings offers the central account: "Sign in" opens the provider's
-page in the system web sheet (Authorization Code with PKCE, client `wristcall-ios`, redirect
-`wristcall://auth/callback`; not ephemeral, so the watch's login can be approved later without signing in again).
-Signed in, "Add server" also takes a pairing code (`wristcall pair --user <you>` on the server's host) when the
-server uses the same account, "Link account" links a saved server, and the servers (name, address, linked) and
-their agents are mirrored to the account's server list in the Cloud; servers there without a token on this
-iPhone show under "From your account". The watch signs in with the account through a device code, which the iPhone
-asks you to approve. "Sign out" revokes the refresh token and ends the provider's session; "Delete account"
-deletes the wristcall account: the server list in the Cloud and, with Cloud 0.3.0, the user at the identity provider
-(servers and tokens stay). Push registrations at the relay are anonymous and stay. In the push build the app drops its own push keys after "Delete account", but
-only until its next launch; it then registers them again for every server that accepts the account (remove the
-server in the app to stop its notifications for good).
+**If you used the email sign-in (0.1.x).** The first launch of the new version moves your account by itself: the same
+account keeps working and nothing is lost. If this iPhone cannot reach the account (a new iPhone, or iCloud Keychain
+off), a screen asks you to "Sign in with email" once to bring it here, or to start over with a new account (the old one
+stays on the Cloud). The watch still signs in on its own with the email provider's device code, which the iPhone asks
+you to approve; a watch of a new account only pairs through the codes the iPhone sends until a future watch update.
 
 The default build uses the project's Cloud (`WRISTCALL_CLOUD_URL` = `https://wristcall-cloud.trigram.com.br`, in
 `Config/Base.xcconfig`); set it empty in `Config/Local.xcconfig` and no account features show and nothing talks to a
-Cloud. The iPhone sign-in could not be verified against the real identity provider, whose hosted login page
-(login v2) was down when this was built; the watch's device code sign-in was verified against the real identity provider by a Kit integration test
-(`watchDeviceFlowPairsWithApproval`), not through the watch or iPhone screens.
+Cloud. There is no App Attest yet: the Cloud limits new accounts to 3 an hour per IP address instead.
 
 ```sh
 make -C watch build-ios                # builds the iPhone app and the embedded watch app
@@ -146,7 +155,9 @@ The default `IOS_DESTINATION` is an "iPhone 17" simulator. `CLOUD_URL` and `RELA
 `WRISTCALL_CLOUD_URL` and `WRISTCALL_RELAY_URL` for every build target of the Makefile (they can also go in
 `Config/Local.xcconfig`); left empty, the apps have no account and no push. In Debug builds
 `-addServer <URL> -addServerToken <token> [-addServerName <name>]` adds a server at launch, and
-`-debugOpen server|agents|form-new|form-edit|devices|code|watch|history|history-detail|settings` opens that screen.
+`-debugOpen server|agents|form-new|form-edit|devices|code|watch|history|history-detail|settings|plan|scanner|newAgent|editAgent` opens that screen;
+`-resetOnboarding` brings the welcome screen back and `-debugOpenURL <url>` sends a link through the link router as if it
+had been opened from outside.
 `AgentsLiveTests` run against a test server when `TEST_RUNNER_WRISTCALL_TEST_SERVER` and
 `TEST_RUNNER_WRISTCALL_TEST_TOKEN` are set for `make test-ios`.
 
@@ -168,6 +179,26 @@ TEST_RUNNER_WRISTCALL_UI_TOKEN=$TOKEN make test-ios-ui
 deletes the agent it created and removes the server it added. It runs on an "iPhone 17" simulator
 (`IOS_DESTINATION`, above). The watch simulator is the one from [Test](#test); to try WatchConnectivity between the
 two, pair the iPhone simulator with a watch simulator in Xcode (Window > Devices and Simulators).
+
+**Screenshots of the v3 screens.** `PhoneUITests/OnboardingShotsTests.swift` (same scheme, also never in CI) takes
+`o5-01-welcome.png`, `o5-02-plan.png`, `o5-04-agents-empty.png`, `o5-08-settings.png` and, with the variables
+below, `o5-03-agents.png`, `o5-05-new-agent.png` and `o5-07-link-confirm.png`. The cases share one installed
+app, so a run makes one silent account on the Cloud (3 an hour per IP address at most). It never taps anything that
+changes an account.
+
+```sh
+TEST_RUNNER_WRISTCALL_UI_SHOTS=/tmp/shots make -C watch shots-ios
+```
+
+- `TEST_RUNNER_WRISTCALL_UI_SHOTS=<folder>` (required): where the PNGs go. `make shots-ios` stops with a message
+  without it, and the test itself skips.
+- `TEST_RUNNER_WRISTCALL_UI_SERVER=<url>` and `TEST_RUNNER_WRISTCALL_UI_SERVER_TOKEN=<personal token>`: a server to
+  show (agents, new agent). Both are needed; the two cases skip without them.
+- `TEST_RUNNER_WRISTCALL_UI_LINK=<link>`: a `wristcall://link#...` link of a server not yet connected (link confirm).
+  The case skips without it. The screen is never confirmed.
+- The target first uninstalls the app and resets the Keychain of the simulator named by `SHOTS_SIMULATOR` (default
+  `booted`), so that the welcome and the empty Agents tab show; `SHOTS_KEEP_SIM=1` skips that. Use a simulator you
+  do not mind resetting. `CLOUD_URL=<url>` points the run at another Cloud.
 
 The watch app's bundle id (and so its APNs topic) is now `<BUNDLE_ID_PREFIX>.wristcall.watchkitapp`, no longer
 `<BUNDLE_ID_PREFIX>.wristcall`: the Cloud pushes to both apps, so it lists both in `WRISTCALL_CLOUD_APNS_TOPICS`.

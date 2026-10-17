@@ -11,6 +11,55 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
   against it. Set it empty in `watch/Config/Local.xcconfig` for a build without an account. The push build keeps a
   local Cloud.
 
+## [ios-0.2.0] - 2026-10-16
+
+For servers 0.8.0 or later (link codes; 0.8.1 for agent colors) and Cloud 0.4.1.
+
+### Added
+
+- No sign-up: the first launch shows a welcome screen and a plan screen, and the app makes a silent wristcall account on
+  the Cloud. The account key lives in the iPhone Keychain and in iCloud Keychain, so the account reaches a new iPhone by
+  itself.
+- Plan by invite: "Redeem an invite code" (plan screen and Settings) gives the account a plan during the Cloud's
+  invite-only beta; "Your own server" needs no code and "Not now" skips the choice.
+- Agents home: the agents of every connected server in one tab, with the watch status strip, an empty state that points
+  to "Scan QR code", and a new agent editor with templates, icon and color.
+- Connect a server by QR code or link: the camera scans the QR code a server prints, and `wristcall://link#...` links
+  (and the web app's `/link` page) open "Connect to <host>?". The app connects the server to your account and sets the
+  Apple Watch up automatically.
+- Approve a web app sign-in by scanning its QR code (Settings, "Use on the web").
+- Settings: plan, account devices, "Approve watch sign-in", servers, privacy and "Delete account".
+- The `wristcall` URL scheme, a camera permission and a Keychain access group shared with the watch app.
+- A screenshots test, `make -C watch shots-ios` (own scheme, not part of CI): see [watch/README.md](watch/README.md#iphone-app).
+
+### Changed
+
+- The Servers tab is gone: the servers are listed in Settings and their agents show in the Agents tab. Adding a server
+  no longer needs a sign-in.
+- Whoever signed in with email before keeps the same account: the first launch moves it to the silent account. When this
+  iPhone cannot reach it (a new iPhone, or iCloud Keychain off), a restore screen offers "Sign in with email" once, or
+  "Start over with a new account".
+- The 8-digit pairing code in "Add server" now also sets the watch up.
+- "Delete account" brings the welcome screen back.
+- The iPhone app and the embedded watch app carry version 0.5.0 (build 5).
+
+### Security
+
+- The account key never leaves the iPhone Keychain and iCloud Keychain; links and codes are single use and never
+  written to logs.
+- Server links are always `https`, and the app shows the server's host and "Only connect servers you trust" before it
+  connects.
+
+### Known limitations
+
+- The watch app embedded in this release still shows 0.5.0 and has no code change (there is no `watch-v0.5.0` tag).
+- No App Attest yet: the Cloud limits new accounts to 3 an hour per IP address instead.
+- An account without an identity (no email sign-in) that loses its key and its iCloud Keychain copy cannot be recovered.
+- The watch of a new account only pairs through the codes the iPhone sends until a future watch update; the watch's own
+  sign-in still uses the email provider.
+- "Scan from your other iPhone" is not included.
+- "Use on the web" stays hidden until the web app shows its sign-in QR code.
+
 ## [cloud-0.4.1] - 2026-10-16
 
 ### Added

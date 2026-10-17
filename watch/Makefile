@@ -31,7 +31,7 @@ export WRISTCALL_TEST_CONFIG ?= $(CURDIR)/WristcallKit/Tests/test-server.yaml
 export WRISTCALL_TEST_DATA_DIR ?= $(CURDIR)/build/test-server-data
 export WRISTCALL_TEST_CLI ?= wristcall
 
-.PHONY: generate test-kit test-server test-integration test-account build build-sim-push test-sim build-ios build-ios-push test-ios test-ios-ui clean
+.PHONY: generate test-kit test-server test-integration test-account build build-sim-push test-sim build-ios build-ios-push test-ios test-ios-ui shots-ios clean
 
 generate:
 	xcodegen generate --spec project.yml
@@ -83,7 +83,27 @@ test-ios: generate
 # TEST_RUNNER_WRISTCALL_UI_SHOTS=<folder> also writes the screenshots there. The test skips without a token.
 test-ios-ui: generate
 	xcodebuild -project $(PROJECT) -scheme WristcallPhoneUI -destination '$(IOS_DESTINATION)' \
-		-derivedDataPath $(DERIVED_DATA) test $(URL_SETTINGS)
+		-derivedDataPath $(DERIVED_DATA) test -skip-testing:WristcallPhoneUITests/OnboardingShotsTests $(URL_SETTINGS)
+
+# Screenshots of the iPhone v3 screens (OnboardingShotsTests; own scheme WristcallPhoneUI, never in CI). It
+# talks to the real Cloud (one silent account per run), so it needs CLOUD_URL when Config/Local.xcconfig does
+# not set it. Refuses to run without a folder for the PNGs:
+#   TEST_RUNNER_WRISTCALL_UI_SHOTS=<folder> make shots-ios
+# Optional: TEST_RUNNER_WRISTCALL_UI_SERVER + TEST_RUNNER_WRISTCALL_UI_SERVER_TOKEN (agents, new agent) and
+# TEST_RUNNER_WRISTCALL_UI_LINK (link confirm). The app and the Keychain of the simulator SHOTS_SIMULATOR
+# (default: the booted one) are reset first so the welcome and the empty agents show; SHOTS_KEEP_SIM=1 skips that.
+SHOTS_SIMULATOR ?= booted
+BUNDLE_ID_PREFIX ?= $(shell sed -n 's/^ *BUNDLE_ID_PREFIX *= *//p' Config/Local.xcconfig Config/Base.xcconfig 2>/dev/null | head -1)
+PHONE_BUNDLE_ID ?= $(BUNDLE_ID_PREFIX).wristcall
+shots-ios: generate
+	@test -n "$$TEST_RUNNER_WRISTCALL_UI_SHOTS" || { \
+		echo "shots-ios: set TEST_RUNNER_WRISTCALL_UI_SHOTS=<folder> (where the PNGs go)"; exit 1; }
+	@if [ -z "$(SHOTS_KEEP_SIM)" ]; then \
+		xcrun simctl uninstall $(SHOTS_SIMULATOR) $(PHONE_BUNDLE_ID) || true; \
+		xcrun simctl keychain $(SHOTS_SIMULATOR) reset || true; \
+	fi
+	xcodebuild -project $(PROJECT) -scheme WristcallPhoneUI -destination '$(IOS_DESTINATION)' \
+		-derivedDataPath $(DERIVED_DATA) test -only-testing:WristcallPhoneUITests/OnboardingShotsTests $(URL_SETTINGS)
 
 clean:
 	rm -rf $(PROJECT) build WristcallKit/.build
