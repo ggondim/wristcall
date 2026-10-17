@@ -106,7 +106,7 @@ struct WatchLinkTests {
         )
     }
 
-    // MARK: - The watch's enroll code (Task 13)
+    // MARK: - The watch's enroll code
 
     @Test func publishesTheEnrollCodeAsApplicationContext() {
         let session = FakeWatchSession()

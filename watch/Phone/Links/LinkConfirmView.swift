@@ -1,7 +1,7 @@
 import SwiftUI
 import WristcallKit
 
-/// "Connect to <host>?" for a server link (spec O5, mockup `iphone-07`): what the server is, then the link
+/// "Connect to <host>?" for a server link (mockup `iphone-07`): what the server is, then the link
 /// with its single-use code. The code never reaches the screen or a log.
 @MainActor
 @Observable

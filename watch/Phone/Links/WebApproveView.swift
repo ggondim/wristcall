@@ -1,7 +1,7 @@
 import SwiftUI
 import WristcallKit
 
-/// "Sign in on the web?" for a web app QR code (spec O5): the Cloud describes the browser behind the code,
+/// "Sign in on the web?" for a web app QR code: the Cloud describes the browser behind the code,
 /// then this iPhone approves it. The approve key never reaches the screen or a log.
 @MainActor
 @Observable

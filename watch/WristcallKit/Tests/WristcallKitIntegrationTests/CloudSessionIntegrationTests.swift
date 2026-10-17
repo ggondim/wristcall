@@ -10,7 +10,7 @@ import WristcallKit
 /// the values of its parts, so secrets are compared first and only the `Bool` is expected.
 @Suite(.serialized, .enabled(if: CloudSessionEnvironment.isConfigured, "set WRISTCALL_TEST_CLOUD_SESSIONS to run the session tests"))
 struct CloudSessionIntegrationTests {
-    static let phone = CloudDeviceInfo(name: "o5 e2e iPhone", platform: .ios)
+    static let phone = CloudDeviceInfo(name: "wristcall e2e iPhone", platform: .ios)
 
     @Test func fullSilentAccountLifecycle() async throws {
         let cloud = CloudClient(cloud: try CloudSessionEnvironment.requireCloud())
@@ -61,7 +61,7 @@ struct CloudSessionIntegrationTests {
         #expect(hasCode)
         #expect(code.expiresAt > Date())
 
-        let audience = try #require(URL(string: "https://o5-e2e.wristcall.invalid"))
+        let audience = try #require(URL(string: "https://e2e.wristcall.invalid"))
         let serverToken = try await cloud.serverToken(audience: audience, accessToken: token)
         let hasServerToken = !serverToken.token.isEmpty
         #expect(hasServerToken)

@@ -412,7 +412,7 @@ struct AgentFormModelTests {
         ]))
     }
 
-    // MARK: Templates, chat URL and color (O5)
+    // MARK: Templates, chat URL and color
 
     @Test func templatesFillTypeIconAndColor() {
         let voice = creating()
