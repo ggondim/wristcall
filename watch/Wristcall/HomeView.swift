@@ -53,6 +53,7 @@ struct HomeView: View {
                 }
             }
             .navigationTitle("Agents")
+            .toolbarForegroundStyle(.mint, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     NavigationLink {
