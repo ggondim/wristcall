@@ -28,6 +28,8 @@ struct WatchStripState: Equatable {
         case .none:
             if watchServers.isEmpty && !sections.isEmpty { return .openOnWatch }
         case .some(let account):
+            // Also while this iPhone's account is still starting (`myAccount == nil`): "open on watch" for those
+            // few seconds, on purpose (C7).
             guard let account, account == myAccount else { return .openOnWatch }
         }
         let count = sections

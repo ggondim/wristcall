@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 import WristcallKit
 import WristcallKitTesting
@@ -538,13 +539,14 @@ struct AccountModelTests {
     // MARK: - The watch's enroll code
 
     private func watchRig(
-        installed: Bool = true, servers: [ManagedServer] = [],
+        installed: Bool = true, servers: [ManagedServer] = [], sleep: (@Sendable (Duration) async throws -> Void)? = nil,
         makeAPI: @escaping ServerAPIFactory = { _, _ in FakeServerAPI() }
     ) async -> (AccountRig, FakeWatchSession, WatchLink) {
         let rig = await readyRig(servers: servers, makeAPI: makeAPI)
         let session = FakeWatchSession()
         session.isWatchAppInstalled = installed
-        let link = WatchLink(session: session, defaults: UserDefaults(suiteName: "AccountModelTests-\(UUID().uuidString)")!)
+        let defaults = UserDefaults(suiteName: "AccountModelTests-\(UUID().uuidString)")!
+        let link = sleep.map { WatchLink(session: session, sleep: $0, defaults: defaults) } ?? WatchLink(session: session, defaults: defaults)
         rig.model.watchLink = link
         return (rig, session, link)
     }
@@ -559,24 +561,35 @@ struct AccountModelTests {
         #expect(context.account == rig.model.accountID)
     }
 
-    /// Three servers, each with its own fake: `A` (`approval`) and `B` (`attestation`) are not on the watch,
-    /// `C` (`approval`) is.
-    private func missingServersRig() async -> (AccountRig, FakeWatchSession, WatchLink, [String: FakeServerAPI]) {
-        let names = ["a", "b", "c"]
+    /// A server per name, each with its own fake: `b` is `attestation`, the others `approval`. The tests' watch
+    /// context lists `c`, so the others are missing from the watch.
+    private func missingServersRig(
+        _ names: [String] = ["a", "b", "c"], sleep: (@Sendable (Duration) async throws -> Void)? = nil
+    ) async -> (AccountRig, FakeWatchSession, WatchLink, [String: FakeServerAPI]) {
         let servers = names.map { ManagedServer(id: $0, name: $0.uppercased(), url: URL(string: "https://\($0).test")!, token: "wc_pat_\($0)") }
         var fakes: [String: FakeServerAPI] = [:]
-        for name in names {
+        for (index, name) in names.enumerated() {
             let fake = FakeServerAPI()
             let credential = name == "b" ? "attestation" : "approval"
             fake.healthResult = .success(ServerHealth(version: "0.6.0", account: .init(issuer: world.cloud.url.absoluteString, deviceCredential: credential)))
-            fake.grant = PairingCodeGrant(code: "1234567\(names.firstIndex(of: name)!)", expiresAt: AccountWorld.clock.timeIntervalSince1970 + 600, serverUrl: "https://\(name).test", viaDirectory: false)
+            fake.grant = PairingCodeGrant(code: "1234567\(index)", expiresAt: AccountWorld.clock.timeIntervalSince1970 + 600, serverUrl: "https://\(name).test", viaDirectory: false)
             fakes[name] = fake
         }
         let byHost = fakes
-        let (rig, session, link) = await watchRig(servers: servers, makeAPI: { url, _ in
+        let (rig, session, link) = await watchRig(servers: servers, sleep: sleep, makeAPI: { url, _ in
             byHost[String(url.host()!.prefix(1))] ?? FakeServerAPI()
         })
         return (rig, session, link, fakes)
+    }
+
+    private var sameAccountContext: WatchLinkContext {
+        WatchLinkContext(servers: [ServerAddress.canonical(URL(string: "https://c.test")!)], account: "acc_1")
+    }
+
+    private func codesAsked(_ fake: FakeServerAPI?) -> Int { fake?.calls.filter { $0 == "createPairingCode" }.count ?? 0 }
+
+    private func waitUntil(_ condition: () -> Bool) async {
+        for _ in 0..<300 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
     }
 
     private func pairCodes(_ session: FakeWatchSession) -> [String] {
@@ -625,6 +638,55 @@ struct AccountModelTests {
         }
         #expect(fakes.mapValues(\.calls.count) == before)
         #expect(session.sent.isEmpty && session.transfers.isEmpty)
+    }
+
+    /// Two passes at once (two contexts in a row, the first held by a slow server): each server still gets one
+    /// code, and neither pass cancels the other's.
+    @Test func overlappingPassesSendOneCodePerServer() async throws {
+        let (rig, session, link, fakes) = await missingServersRig(["a", "b", "c", "d"])
+        let open = Mutex(false)
+        let slowA = fakes["a"]!
+        let healthsBefore = slowA.calls.count
+        slowA.healthWait = {
+            while !open.withLock({ $0 }) { try? await Task.sleep(for: .milliseconds(5)) }
+        }
+        link.contextReceived(sameAccountContext)
+        let model = rig.model
+        let first = Task { await model.pairWatchWithMissingServers() }
+        await waitUntil { slowA.calls.count > healthsBefore }
+        // The second pass skips `a` (on its way) and sends `d`.
+        await model.pairWatchWithMissingServers()
+        #expect(pairCodes(session) == ["d.test"])
+        open.withLock { $0 = true }
+        await first.value
+        #expect(pairCodes(session).sorted() == ["a.test", "d.test"])
+        #expect(codesAsked(fakes["a"]) == 1)
+        #expect(codesAsked(fakes["d"]) == 1)
+        #expect(session.cancelled.isEmpty)
+    }
+
+    /// A code queued for an unreachable watch that expires undelivered: the next context sends a new one.
+    @Test func expiredQueuedCodeIsSentAgain() async throws {
+        let expire = Mutex(false)
+        let (rig, session, link, fakes) = await missingServersRig(sleep: { _ in
+            while !expire.withLock({ $0 }) { try await Task.sleep(for: .milliseconds(5)) }
+        })
+        session.isReachable = false
+        link.contextReceived(sameAccountContext)
+        await rig.model.pairWatchWithMissingServers()
+        #expect(session.transfers.count == 1)
+        // Queued counts as taken while the code lasts.
+        await rig.model.pairWatchWithMissingServers()
+        #expect(session.transfers.count == 1)
+
+        expire.withLock { $0 = true }
+        for _ in 0..<300 where session.transfers.count < 2 {
+            link.contextReceived(sameAccountContext)
+            await rig.model.pairWatchWithMissingServers()
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(session.transfers.count == 2)
+        #expect(codesAsked(fakes["a"]) == 2)
     }
 
     @Test func enrollCodeIsReusedUntilItExpires() async throws {

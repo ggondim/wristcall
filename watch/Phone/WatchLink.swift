@@ -91,6 +91,9 @@ final class WatchLink {
     /// Each context the watch's state arrives in (at activation and on delivery): the account sends pairing
     /// codes for the servers the watch lacks (C6).
     @ObservationIgnored var onWatchContext: (@MainActor () -> Void)?
+    /// A server's queued code expired (its `ServerAddress.canonical`), delivered or not: the account may send
+    /// that server a new one on the next context.
+    @ObservationIgnored var onQueuedCodeExpired: (@MainActor (String) -> Void)?
     @ObservationIgnored private let session: (any WatchSessionProtocol)?
     @ObservationIgnored private let timeout: Duration
     @ObservationIgnored private let now: () -> Date
@@ -343,6 +346,7 @@ final class WatchLink {
             guard !Task.isCancelled, let self else { return }
             self.sweepExpiredTransfers()
             self.expiryTasks[server] = nil
+            self.onQueuedCodeExpired?(server)
         }
     }
 }

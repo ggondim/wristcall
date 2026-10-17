@@ -71,7 +71,12 @@ final class AccountModel {
     /// Runs after the Cloud deleted the account, before the local servers go: the app drops its push keys there.
     @ObservationIgnored var accountDeleted: (@MainActor () async -> Void)?
     /// The watch a linked server is set up on (`PhoneApp` sets it); `nil`: no watch step.
-    @ObservationIgnored var watchLink: WatchLink?
+    @ObservationIgnored var watchLink: WatchLink? {
+        didSet {
+            // C6: a code queued for the watch that expired lets its server get a new one.
+            watchLink?.onQueuedCodeExpired = { [weak self] server in self?.watchCodeExpired(for: server) }
+        }
+    }
     /// The watch set-up the last link started (it may wait for the watch's answer): tests wait for it.
     @ObservationIgnored private(set) var watchPairing: Task<WatchLink.SendResult, Never>?
 
@@ -626,13 +631,14 @@ final class AccountModel {
         guard let watchLink, let account = accountID, watchLink.watchAccount == .some(account),
             watchLink.canReachWatch
         else { return }
-        let missing = appState.servers.filter { server in
-            !watchLink.watchServers.contains(ServerAddress.canonical(server.url))
-                && !watchCodesSent.contains(server.id) && !watchCodesSending.contains(server.id)
-        }
-        for server in missing {
+        for server in appState.servers {
             // The account (or the watch's) changed meanwhile: these codes are not for it any more.
             guard accountID == account, watchLink.watchAccount == .some(account) else { return }
+            // Checked again for each server, before any wait: another pass (an earlier context) may have sent
+            // it a code, or be sending one, since this one started.
+            guard !watchLink.watchServers.contains(ServerAddress.canonical(server.url)),
+                !watchCodesSent.contains(server.id), !watchCodesSending.contains(server.id)
+            else { continue }
             watchCodesSending.insert(server.id)
             defer { watchCodesSending.remove(server.id) }
             let api = appState.api(for: server)
@@ -643,6 +649,14 @@ final class AccountModel {
             case .failed, .unavailable:
                 break
             }
+        }
+    }
+
+    /// The watch's queued code for `server` (`ServerAddress.canonical`) expired: the next context sends a new
+    /// one if the watch still lacks the server.
+    private func watchCodeExpired(for server: String) {
+        for saved in appState.servers where ServerAddress.canonical(saved.url) == server {
+            watchCodesSent.remove(saved.id)
         }
     }
 

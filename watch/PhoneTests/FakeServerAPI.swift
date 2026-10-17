@@ -15,8 +15,12 @@ final class FakeServerAPI: ServerAPI, @unchecked Sendable {
         set { healthResult = newValue.map { .failure($0) } ?? .success(ServerHealth(version: "1.0.0")) }
     }
 
+    /// Awaited inside `health()` when set (after the call is recorded): a slow server.
+    var healthWait: (@Sendable () async -> Void)?
+
     func health() async throws -> ServerHealth {
         calls.append("health")
+        if let healthWait { await healthWait() }
         return try healthResult.get()
     }
 

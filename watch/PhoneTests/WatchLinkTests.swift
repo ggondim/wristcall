@@ -377,17 +377,26 @@ struct WatchLinkTests {
         #expect(session.outstanding.map { $0["code"] as? String } == ["87654321", "11223344"])
     }
 
-    /// Each server's queued code is swept when that code expires, not when another server's does.
+    /// Each server's queued code is swept when that code expires, not when another server's does, and the
+    /// expiry tells `onQueuedCodeExpired` which server it was.
     @Test func eachServersCodeExpiresOnItsOwn() async {
         let session = FakeWatchSession()
         session.isReachable = false
         let clock = clock
         let link = makeLink(session, sleep: { duration in
-            clock.value.withLock { $0 += Double(duration.components.seconds) }
+            // The first server's code (100 s) expires; the second's (600 s) not during the test.
+            guard duration == .seconds(100) else { return try await Task.sleep(for: .seconds(3_600)) }
+            clock.value.withLock { $0 = 1_100 }
         })
+        var expired: [String] = []
+        link.onQueuedCodeExpired = { expired.append($0) }
+        _ = await link.send(server: server, grant: grant(code: "12345678", expires: 1_100))
         _ = await link.send(server: work, grant: grant(code: "87654321", expires: 1_600))
-        await waitUntil { session.outstanding.isEmpty }
-        #expect(session.cancelled.map { $0["code"] as? String } == ["87654321"])
+        await waitUntil { !session.cancelled.isEmpty }
+        #expect(session.cancelled.map { $0["code"] as? String } == ["12345678"])
+        #expect(session.outstanding.map { $0["code"] as? String } == ["87654321"])
+        await waitUntil { !expired.isEmpty }
+        #expect(expired == [ServerAddress.canonical(server.url)])
     }
 
     /// C7: the watch's account: `.none` without the key (0.4.0), `.some(nil)` for `""`, else the id; every
