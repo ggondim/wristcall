@@ -229,10 +229,11 @@ describe("Callback", () => {
     expect(screen.getByText("Signing in…")).toBeTruthy()
   })
 
-  test("callbackWhenAlreadySignedInJustOpensSettings", async () => {
+  test("callbackWhenAlreadySignedInJustOpensAgents", async () => {
     const w = setup()
     w.ui()
-    await screen.findByRole("heading", { name: "Account" })
+    await waitFor(() => expect(location.pathname).toBe("/agents"))
+    expect(location.search).toBe("")
     expect(w.calls.filter((c) => c.startsWith("completeSignIn"))).toHaveLength(0)
   })
 

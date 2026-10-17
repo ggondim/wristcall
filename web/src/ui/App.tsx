@@ -1,9 +1,10 @@
 import type { AgentDetail } from "../api/server"
-import type { AccountModel } from "../models/account"
+import type { AccountModel, AccountScreen } from "../models/account"
 import { AddServerModel } from "../models/addServer"
 import { ApprovalsModel } from "../models/approvals"
 import { HistoryModel } from "../models/history"
 import type { AccountLink, ServersModel } from "../models/servers"
+import type { SignInModel } from "../models/signIn"
 import type { NotificationsModel } from "../push/notifications"
 import { SettingsView } from "./AccountView"
 import { AddServerView } from "./AddServerView"
@@ -17,10 +18,11 @@ import { HistoryView } from "./HistoryView"
 import { LinkView } from "./LinkView"
 import { ServerDetailView } from "./ServerDetailView"
 import { ServersView } from "./ServersView"
-import { onNavigate, parseAgentsTarget, parseApprovalTarget, parseDevicesTarget, parseHistoryServer, parseHistoryTarget, parseRoute, type Route } from "./route"
+import { SignInView } from "./SignInView"
+import { onNavigate, parseAgentsTarget, parseApprovalTarget, parseDevicesTarget, parseHistoryServer, parseHistoryTarget, parseRoute, replaceRoute, type Route } from "./route"
 import { Tabs } from "./Tabs"
 import { useEffect, useMemo, useState } from "preact/hooks"
-import type { Model } from "./useModel"
+import { useModel, type Model } from "./useModel"
 
 export { navigate, parseRoute, type Route } from "./route"
 
@@ -34,6 +36,8 @@ export interface AppProps {
   session?: AccountLink | null
   /** The account screens (Settings, the sign-in callback); null when the site runs without accounts. */
   account?: AccountModel | null
+  /** The QR sign-in of the first screen and `/sign-in`; null when the site runs without a Cloud. */
+  signIn?: SignInModel | null
   /** Notifications of this device (Settings); null when the site has no Cloud or the Cloud sends no Web Push. */
   notifications?: NotificationsModel | null
   /** Told each time an agents screen has a new list for a server (the account agenda mirrors it). */
@@ -61,7 +65,7 @@ function Screen({
 }) {
   const addServer = useMemo(() => new AddServerModel(servers, session), [servers, session])
   if (route.tab === "servers") {
-    if (route.path === "/" || route.path === "/servers") return <ServersView model={servers} />
+    if (route.path === "/" || route.path === "/servers" || route.path === "/agents") return <ServersView model={servers} />
     if (route.path === "/servers/add") return <AddServerView model={addServer} />
     const agents = parseAgentsTarget(route.path)
     if (agents !== null) return <AgentsScreen servers={servers} target={agents} onAgentsChanged={onAgentsChanged} />
@@ -77,6 +81,7 @@ function Screen({
   if (route.tab === "callback") return <CallbackView model={account} />
   if (route.tab === "link") return <LinkView model={addServer} account={account} />
   if (route.path === "/settings/watch" && account !== null) return <ApproveWatchSignInView model={account} />
+  if (route.path === "/settings/servers/add") return <AddServerView model={addServer} />
   return <SettingsView account={account} notifications={notifications} />
 }
 
@@ -88,7 +93,19 @@ function decodeId(segment: string): string {
   }
 }
 
-export function App({ badge, approvals: given, servers, session = null, account = null, notifications = null, onAgentsChanged }: AppProps) {
+/** Stands in for the account when the site runs without one. */
+const NO_ACCOUNT: Model<{ screen: AccountScreen }> = { state: { screen: "unavailable" }, subscribe: () => () => {} }
+
+/**
+ * Routes the first screen never covers: the sign-in callback, a server link, `/sign-in` itself (it decides alone) and
+ * adding a server (the first screen's "own server" link).
+ */
+function coveredByFirstScreen(route: Route): boolean {
+  if (route.tab === "callback" || route.tab === "link" || route.tab === "signIn") return false
+  return route.path !== "/servers/add" && route.path !== "/settings/servers/add"
+}
+
+export function App({ badge, approvals: given, servers, session = null, account = null, signIn = null, notifications = null, onAgentsChanged }: AppProps) {
   const [route, setRoute] = useState<Route>(() => parseRoute(location.pathname))
   const [search, setSearch] = useState(() => location.search)
   useEffect(() => {
@@ -114,10 +131,26 @@ export function App({ badge, approvals: given, servers, session = null, account 
     // The stored query is spent too: a second tap on the same target arrives as a new query and must focus again.
     setSearch("")
   }, [route, search, approvals])
+  // C2: with a Cloud, signed out and no server saved in this browser, the app opens on the sign-in screen.
+  const { screen: accountScreen } = useModel(account ?? NO_ACCOUNT)
+  const { loaded, rows } = useModel(servers)
+  const signedOut = signIn !== null && account !== null && accountScreen !== "signedIn" && accountScreen !== "unavailable"
+  const firstScreen = signedOut && coveredByFirstScreen(route)
+  useEffect(() => {
+    if (firstScreen && !servers.state.loaded && !servers.state.loading) void servers.load()
+  }, [firstScreen, servers])
+  const leaveSignIn = route.tab === "signIn" && !signedOut
+  useEffect(() => {
+    if (leaveSignIn) replaceRoute("/agents")
+  }, [leaveSignIn])
+  if (signIn !== null && account !== null && ((route.tab === "signIn" && signedOut) || (firstScreen && loaded && rows.length === 0))) {
+    return <SignInView model={signIn} account={account} />
+  }
+  if (leaveSignIn || (firstScreen && !loaded)) return <main class="screen" aria-busy="true" />
   return (
     <>
       <Screen route={route} servers={servers} approvals={approvals} history={historyModel} session={session} account={account} notifications={notifications} onAgentsChanged={onAgentsChanged} />
-      {route.tab === "callback" || route.tab === "link" ? null : <Tabs route={route} badge={badge} />}
+      {route.tab === "callback" || route.tab === "link" || route.tab === "signIn" ? null : <Tabs route={route} badge={badge} />}
     </>
   )
 }

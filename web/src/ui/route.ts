@@ -1,12 +1,13 @@
 export type Route =
-  | { tab: "servers"; path: "/" | "/servers" }
+  | { tab: "servers"; path: "/" | "/servers" | "/agents" }
   | { tab: "servers"; path: "/servers/add" }
   | { tab: "servers"; path: `/servers/${string}` }
   | { tab: "history"; path: "/history" | `/history/${string}` }
   | { tab: "approvals"; path: "/approvals" }
-  | { tab: "settings"; path: "/settings" | "/settings/watch" }
+  | { tab: "settings"; path: "/settings" | "/settings/watch" | "/settings/servers/add" }
   | { tab: "callback"; path: "/auth/callback" }
   | { tab: "link"; path: "/link" }
+  | { tab: "signIn"; path: "/sign-in" }
 
 const FALLBACK: Route = { tab: "servers", path: "/servers" }
 const NAVIGATE_EVENT = "wristcall:navigate"
@@ -26,12 +27,16 @@ export function parseRoute(pathname: string): Route {
   }
   // /history/:server/:call
   if (head === "history" && id && rest.length === 1 && rest[0] !== "") return { tab: "history", path: `/history/${id}/${rest[0]}` }
+  // Where the sign-in screen's "own server" link goes (Task 5 moves Servers under Settings).
+  if (path === "/settings/servers/add") return { tab: "settings", path: "/settings/servers/add" }
   if (rest.length > 0) return FALLBACK
   switch (path) {
     case "/":
       return { tab: "servers", path: "/" }
     case "/servers":
       return { tab: "servers", path: "/servers" }
+    case "/agents":
+      return { tab: "servers", path: "/agents" } // provisional: the servers list until Task 5 brings the Agents tab
     case "/servers/add":
       return { tab: "servers", path: "/servers/add" }
     case "/history":
@@ -46,6 +51,8 @@ export function parseRoute(pathname: string): Route {
       return { tab: "callback", path: "/auth/callback" }
     case "/link":
       return { tab: "link", path: "/link" }
+    case "/sign-in":
+      return { tab: "signIn", path: "/sign-in" }
   }
   if (head === "servers" && id) return { tab: "servers", path: `/servers/${id}` }
   if (head === "history" && id) return { tab: "history", path: `/history/${id}` }

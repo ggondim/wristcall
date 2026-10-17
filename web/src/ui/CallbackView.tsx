@@ -24,7 +24,7 @@ function Callback({ model }: { model: AccountModel }) {
   const { screen } = useModel(model)
   useEffect(() => {
     // Already signed in (a reload after the callback): nothing to trade.
-    if (model.state.screen === "signedIn") replaceRoute("/settings")
+    if (model.state.screen === "signedIn") replaceRoute("/agents")
     else void model.completeSignIn(location.href)
   }, [model])
   return (
