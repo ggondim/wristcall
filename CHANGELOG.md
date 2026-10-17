@@ -4,6 +4,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 
 ## [Unreleased]
 
+## [watch-0.5.1] - 2026-10-17
+
+Watch app 0.5.1 (build 7), embedded in iPhone app 0.2.2. For Cloud 0.4.1 and servers 0.8.0 or later. No Cloud or server change.
+
+### Changed
+
+- With automatic setup paused, the first screen says "Automatic setup is paused." under "Open wristcall on your iPhone" (it said the watch would finish setting up on its own). "Set up again" is still the way out.
+- The watch app and the iPhone app carry version 0.5.1 (build 7).
+
+## [ios-0.2.2] - 2026-10-17
+
+For Cloud 0.4.1 and servers 0.8.0 or later. Carries watch app 0.5.1 (build 7). Approving the web app's QR code needs this version (web 0.3.0).
+
+### Added
+
+- "Use on the web" in Settings > Account scans the QR code the web app shows on its first screen and approves the browser, like WhatsApp Web. The row was built in 0.2.0 and stayed hidden until the web app had the code.
+
+### Changed
+
+- The iPhone app and the embedded watch app carry version 0.5.1 (the watch is build 7).
+
 ## [web-0.3.0] - 2026-10-17
 
 Web app 0.3.0. For Cloud 0.4.1 (account sessions) and servers 0.7.0 or later (0.8.0 for server links, 0.8.1 for agent

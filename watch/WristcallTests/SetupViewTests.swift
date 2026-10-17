@@ -16,4 +16,12 @@ struct SetupViewTests {
         #expect(ready.signIn == .done)
         #expect(ready.agents == .done)
     }
+
+    @Test func waitingSubtitleWhenPaused() {
+        #expect(SetupView.waitingSubtitle(paused: true) == "Automatic setup is paused.")
+    }
+
+    @Test func waitingSubtitleWhenNotPaused() {
+        #expect(SetupView.waitingSubtitle(paused: false) == "Your watch finishes setting up on its own.")
+    }
 }

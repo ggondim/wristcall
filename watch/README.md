@@ -130,9 +130,9 @@ show no agent color.
 
 ## iPhone app
 
-`Phone/` is the iPhone app (tag `ios-vX.Y.Z`; version 0.2.1). Its bundle id is `<BUNDLE_ID_PREFIX>.wristcall` and
+`Phone/` is the iPhone app (tag `ios-vX.Y.Z`; version 0.2.2). Its bundle id is `<BUNDLE_ID_PREFIX>.wristcall` and
 it embeds the watch app (`Wristcall.app/Watch/`). Apple refuses an embedded watch app whose version differs from the
-iPhone app's, so both bundles carry the same version (0.5.0, build 6), even though the iPhone app's own release is 0.2.1.
+iPhone app's, so both bundles carry the same version (0.5.1, build 7), even though the iPhone app's own release is 0.2.2.
 
 **No sign-up.** The first launch shows a welcome screen and a plan screen, no sign-in. The app makes a silent
 wristcall account on the Cloud: it keeps the account key in the iPhone's Keychain and in iCloud Keychain, so the account
@@ -154,8 +154,8 @@ What it does (it makes no calls; the watch does):
   server's host prints a new code. A personal token (`wristcall users tokens add --name iphone`) or an 8-digit pairing
   code (`wristcall pair --user <you>`) still work from "Add server"; the pairing code now also sets up the watch. Tokens
   live in the iPhone Keychain, readable after the first unlock and never synced.
-- **Approve web sign-ins.** Scanning the QR code of the web app's sign-in screen approves it from the iPhone. This works
-  once the web app shows that QR code; until then "Use on the web" in Settings stays hidden.
+- **Approve web sign-ins.** Scanning the QR code of the web app's sign-in screen approves it from the iPhone. "Use on the
+  web" in Settings opens the scanner (the web app shows the QR code since 0.3.0).
 - **Devices.** Watches paired with the server, pending requests to approve or deny (read on opening, on coming to the
   foreground and every 10 seconds on the devices screen), pairing codes, and the watches of your account.
 - **History.** The calls of every server in one list, with search, filters by server and agent, export (a file per
@@ -170,7 +170,7 @@ What it does (it makes no calls; the watch does):
 account keeps working and nothing is lost. If this iPhone cannot reach the account (a new iPhone, or iCloud Keychain
 off), a screen asks you to "Sign in with email" once to bring it here, or to start over with a new account (the old one
 stays on the Cloud). The watch still signs in on its own with the email provider's device code, which the iPhone asks
-you to approve; the watch 0.5.0 (build 6) also sets itself up (see [First open](#first-open-of-the-watch-app)).
+you to approve; the watch 0.5.1 (build 7) also sets itself up (see [First open](#first-open-of-the-watch-app)).
 
 The default build uses the project's Cloud (`WRISTCALL_CLOUD_URL` = `https://wristcall-cloud.trigram.com.br`, in
 `Config/Base.xcconfig`); set it empty in `Config/Local.xcconfig` and no account features show and nothing talks to a
