@@ -121,14 +121,12 @@ final class SetupModel {
     /// Signed in, only the account is compared (C3); otherwise a new code wakes the loop.
     func receive(_ context: PhoneLinkContext) {
         phoneAccount = context.account
-        if account != nil {
-            checkPhoneAccount()
-            return
-        }
+        if account != nil { checkPhoneAccount() }
         guard !refusedCodes.contains(context.enrollCode),
               pendingCode?.enrollCode != context.enrollCode else { return }
+        // Kept even when signed in: after "Sign out" + "Set up again" it enrolls into the iPhone's account (C3).
         pendingCode = context
-        guard hasRestored, !isPaused else { return }
+        guard account == nil, hasRestored, !isPaused else { return }
         startLoop(tryLegacy: false)
     }
 
@@ -146,6 +144,9 @@ final class SetupModel {
     /// The device flow ("Use a code instead") finished: no sync, the login pairs the servers itself.
     func didSignIn(account: String) {
         stopLoop()
+        // A loop enrollment whose sync is still running must not pair or announce after this.
+        syncTask?.cancel()
+        announcePending = false
         isPaused = false
         defaults.removeObject(forKey: Self.pausedDefaultsKey)
         message = nil
@@ -158,21 +159,22 @@ final class SetupModel {
     /// "Sign out of this watch" (C4): the device session goes, servers stay, and the automatic setup pauses until
     /// "Set up again".
     func signOut() async {
+        // Paused before the first await: an activation or a code meanwhile starts nothing.
+        isPaused = true
+        defaults.set(true, forKey: Self.pausedDefaultsKey)
         let loop = loopTask
         let sync = syncTask
         stopLoop()
         syncTask?.cancel()
         syncTask = nil
         announcePending = false
-        await loop?.value
-        await sync?.value
-        await backend.signOut()
         account = nil
-        isPaused = true
-        defaults.set(true, forKey: Self.pausedDefaultsKey)
         message = nil
         phase = .idle
         onAccountReady?(nil)
+        await loop?.value
+        await sync?.value
+        await backend.signOut()
     }
 
     /// "Set up again": the automatic setup runs again (no key is touched).
@@ -194,6 +196,7 @@ final class SetupModel {
 
     /// One loop at a time: a running one is woken instead (and asked for the 0.4.0 sign-in if `tryLegacy`).
     private func startLoop(tryLegacy: Bool) {
+        guard !isPaused else { return }
         if loopTask != nil {
             legacyRequested = legacyRequested || tryLegacy
             wakeRequested = true
@@ -300,7 +303,8 @@ final class SetupModel {
     @discardableResult
     private func sync(announceAfter: Bool = false) -> Task<Void, Never>? {
         if announceAfter { announcePending = true }
-        if let syncTask { return syncTask }
+        // A cancelled sync (device flow finished) stays in `syncTask` until it ends, but is not joined.
+        if let syncTask, !syncTask.isCancelled { return syncTask }
         guard !isManualRunning() else {
             // The device flow or the manual sync pairs instead; the next activation tries again.
             finishSync()

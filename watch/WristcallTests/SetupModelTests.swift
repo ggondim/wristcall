@@ -160,6 +160,7 @@ final class FakeSetupBackend: SetupBackend {
         var agenda: [Result<[CloudServer], any Error>] = []
         var outcomes: [URL: AccountPairing.Outcome] = [:]
         var agendaGate: Gate?
+        var signOutGate: Gate?
         var enrolls: [Enroll] = []
         var agendaCount = 0
         var paired: [URL] = []
@@ -168,6 +169,9 @@ final class FakeSetupBackend: SetupBackend {
 
     private let state = Mutex(State())
     let probe: SetupProbe
+    /// Open once `agenda()` / `signOut()` has been called.
+    let agendaReached = Gate()
+    let signOutReached = Gate()
 
     init(probe: SetupProbe) {
         self.probe = probe
@@ -209,6 +213,13 @@ final class FakeSetupBackend: SetupBackend {
         return gate
     }
 
+    /// Holds `signOut()` until the returned gate opens.
+    func holdSignOut() -> Gate {
+        let gate = Gate()
+        state.withLock { $0.signOutGate = gate }
+        return gate
+    }
+
     static func servers(_ urls: [URL]) -> [CloudServer] {
         urls.enumerated().map { index, url in
             CloudServer(id: "cs-\(index)", name: "S\(index)", url: url.absoluteString, kind: "self-hosted",
@@ -237,6 +248,7 @@ final class FakeSetupBackend: SetupBackend {
             state.agendaCount += 1
             return (state.agenda.isEmpty ? .success([]) : state.agenda.removeFirst(), state.agendaGate)
         }
+        agendaReached.open()
         await gate?.wait()
         return try result.get()
     }
@@ -251,7 +263,12 @@ final class FakeSetupBackend: SetupBackend {
 
     func signOut() async {
         await probe.record("signOut")
-        state.withLock { $0.signOutCount += 1 }
+        let gate = state.withLock { state in
+            state.signOutCount += 1
+            return state.signOutGate
+        }
+        signOutReached.open()
+        await gate?.wait()
     }
 }
 
@@ -636,6 +653,80 @@ struct SetupModelTests {
         #expect(!setup.isPaused)
         #expect(defaults.object(forKey: "setup.paused") == nil)
         #expect(backend.enrolls == [.init(code: "wcc_one", tryLegacy: true)])
+    }
+
+    /// C3: signed in to acc_1, the iPhone sends an acc_2 code; "Sign out" + "Set up again" enrolls with that code.
+    @Test func codeReceivedWhileSignedInIsUsedAfterSetUpAgain() async throws {
+        let model = try await makeModel(paired: true)
+        backend.script(restore: ["acc_1", nil])
+        let setup = makeSetup(model)
+        await setup.start()
+        await setup.settle()
+
+        setup.receive(code("wcc_two", account: "acc_2"))
+        await setup.settle()
+        #expect(backend.enrolls.isEmpty)
+        #expect(setup.message == SetupModel.otherAccountMessage)
+
+        await setup.signOut()
+        await setup.setUpAgain()
+        await setup.settle()
+
+        #expect(backend.enrolls == [.init(code: "wcc_two", tryLegacy: true)])
+    }
+
+    /// An activation while the sign out waits for the Cloud starts nothing, and the setup stays paused.
+    @Test func activationDuringSignOutDoesNotReEnroll() async throws {
+        let model = try await makeModel(paired: true)
+        backend.script(restore: ["acc_1"])
+        backend.scriptAgenda([.success([]), .failure(AccountError.signedOut)])
+        let release = backend.holdSignOut()
+        // No throttle: only the pause keeps a sync out.
+        let setup = makeSetup(model, syncInterval: 0)
+        await setup.start()
+        await setup.settle()
+        #expect(backend.agendaCount == 1)
+
+        let signingOut = Task { await setup.signOut() }
+        await backend.signOutReached.wait()
+        #expect(setup.isPaused)
+        #expect(setup.account == nil)
+        await setup.becameActive()
+        setup.receive(code("wcc_one"))
+        await setup.settle()
+        #expect(backend.agendaCount == 1)
+        #expect(backend.enrolls.isEmpty)
+
+        release.open()
+        await signingOut.value
+        #expect(setup.isPaused)
+        #expect(defaults.bool(forKey: "setup.paused"))
+        #expect(probe.announced == ["acc_1", nil])
+
+        await setup.becameActive()
+        await setup.settle()
+        #expect(backend.agendaCount == 1)
+        #expect(backend.enrolls.isEmpty)
+    }
+
+    /// A loop enrollment whose first sync is still running when the device flow finishes is not announced later.
+    @Test func deviceFlowSignInCancelsTheRunningSync() async throws {
+        let model = try await makeModel()
+        backend.script(enroll: [.enrolled(account: "acc_1")], agenda: [[other]],
+                       outcomes: [other: .paired(other, homeDevice)])
+        let gate = backend.holdAgenda()
+        let setup = makeSetup(model)
+        await setup.start()
+        await backend.agendaReached.wait()
+
+        setup.didSignIn(account: "acc_2")
+        gate.open()
+        await setup.settle()
+
+        #expect(probe.announced == ["acc_2"])
+        #expect(setup.account == "acc_2")
+        #expect(backend.paired.isEmpty)
+        #expect(setup.phase == .noAgents)
     }
 
     @Test func syncIsThrottled() async throws {
