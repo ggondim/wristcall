@@ -132,6 +132,12 @@ struct PhoneApp: App {
     }
 }
 
+/// What can make someone count as already in use: the servers were read, or one was added.
+private struct FinishKey: Equatable {
+    var loaded: Bool
+    var hasServers: Bool
+}
+
 struct RootView: View {
     @Environment(AppState.self) private var state
     @Environment(AccountModel.self) private var account
@@ -174,7 +180,7 @@ struct RootView: View {
             }
         }
         // Someone who already uses the app never sees the welcome: it counts as gone through.
-        .task(id: state.didLoad) { finishIfAlreadyInUse() }
+        .task(id: FinishKey(loaded: state.didLoad, hasServers: !state.servers.isEmpty)) { finishIfAlreadyInUse() }
         .onChange(of: account.didMigrate) { finishIfAlreadyInUse() }
         // After an account deletion the onboarding starts over from the welcome.
         .onChange(of: onboardingDone) { if !onboardingDone { step = .welcome } }

@@ -48,6 +48,35 @@ struct OnboardingTests {
         #expect(OnboardingGate.entryStep(isDone: false, serversLoaded: false, hasServers: false, didMigrate: false) == nil)
     }
 
+    @Test func unreadableServerStoreNeverShowsTheWelcome() async {
+        let flaky = AppStateTests.FlakyStore([])
+        let state = AppState(store: flaky, makeAPI: { _, _ in FakeServerAPI() })
+        await state.load()
+
+        // The read failed: an existing user (upgrade) goes to the tabs, where `loadError` is shown.
+        #expect(state.loadError != nil)
+        #expect(!state.didLoad)
+        #expect(OnboardingGate.entryStep(
+            isDone: false, serversLoaded: state.didLoad, hasServers: !state.servers.isEmpty, didMigrate: false
+        ) == nil)
+        #expect(!OnboardingGate.shouldFinishSilently(
+            isDone: false, serversLoaded: state.didLoad, hasServers: !state.servers.isEmpty, didMigrate: false
+        ))
+
+        // A later successful read is a real "no servers": the welcome may show.
+        flaky.readable = true
+        await state.load()
+        #expect(state.didLoad)
+        #expect(OnboardingGate.entryStep(
+            isDone: false, serversLoaded: state.didLoad, hasServers: !state.servers.isEmpty, didMigrate: false
+        ) == .welcome)
+    }
+
+    @Test func onboardingFlagReadsTheSameDefaultsAsTheView() {
+        // `RootView` reads `@AppStorage(OnboardingStore.key)` (UserDefaults.standard).
+        #expect(OnboardingStore.defaults === UserDefaults.standard)
+    }
+
     @Test func doneOnboardingGoesToTheTabs() {
         #expect(OnboardingGate.entryStep(isDone: true, serversLoaded: true, hasServers: false, didMigrate: false) == nil)
     }

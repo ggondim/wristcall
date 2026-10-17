@@ -69,7 +69,8 @@ final class AppState {
     private(set) var healths: [String: ServerHealth] = [:]
     /// Set when the Keychain list could not be read; the Servers screen shows it.
     private(set) var loadError: String?
-    /// The Keychain list was read at least once: an empty `servers` before that is "not known yet".
+    /// The Keychain list was read successfully at least once: an empty `servers` before that is "not known
+    /// yet" (or unreadable, see `loadError`), not "no servers".
     private(set) var didLoad = false
     var hooks = AppHooks()
 
@@ -114,9 +115,9 @@ final class AppState {
     /// Reads the saved list; a failure leaves the store marked unreadable and the list empty.
     private func readStore() {
         storeRead = true
-        didLoad = true
         do {
             servers = try store.load()
+            didLoad = true
             storeReadable = true
             loadError = nil
         } catch {

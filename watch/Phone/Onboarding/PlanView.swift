@@ -266,6 +266,8 @@ struct InviteCodeSheet: View {
     @FocusState private var focused: Bool
 
     private var blocker: String? { PlanModel.blocker(for: account.state) }
+    /// The account is still being made: the button itself says so.
+    private var isSettingUp: Bool { account.state == .starting }
 
     var body: some View {
         NavigationStack {
@@ -280,7 +282,7 @@ struct InviteCodeSheet: View {
                         .submitLabel(.go)
                         .onSubmit { redeem() }
                 } footer: {
-                    if let blocker, blocker != PlanModel.settingUpMessage {
+                    if let blocker, !isSettingUp {
                         Text(blocker)
                     }
                 }
@@ -290,8 +292,8 @@ struct InviteCodeSheet: View {
                 Section {
                     Button { redeem() } label: {
                         HStack {
-                            Text(blocker == PlanModel.settingUpMessage ? PlanModel.settingUpMessage : "Redeem")
-                            if model.redeeming || blocker == PlanModel.settingUpMessage {
+                            Text(isSettingUp ? PlanModel.settingUpMessage : "Redeem")
+                            if model.redeeming || isSettingUp {
                                 Spacer()
                                 ProgressView()
                             }
