@@ -91,15 +91,46 @@ launch arguments:
 - `-showOptions <slug>`: opens that agent's call options, as a long press on it does.
 - `-addServer`: opens the pairing screen over the servers already paired. `-pairServer` (above) also adds a
   server when the watch is already paired, unless that server is listed.
+- `-debugSetup signingIn|gettingAgents|waitingForPhone|noAgents|paused`: freezes the first-open screen on one phase,
+  with no setup loop, restore or sync behind it (to screenshot it; see [First open](#first-open-of-the-watch-app)).
 - `-openURL <url>`: does what a tapped complication does, for example
   `-openURL 'wristcall://call?agent=<server id>/<agent id>'`. `xcrun simctl openurl` fails on watch simulators
   (LaunchServices error 115), so use this one.
 
+## First open of the watch app
+
+A watch with no server sets itself up, with nothing to type. It tries these in order and stops at the first that works:
+
+1. A saved Cloud session.
+2. The account key in the Keychain group shared with the iPhone app (`$(AppIdentifierPrefix)io.github.ggondim.wristcall.shared`,
+   the iPhone's account first). iCloud Keychain also delivers it, but that path was only checked on the simulator,
+   where the watch and the iPhone share one device Keychain.
+3. The enroll code the iPhone sends in its WatchConnectivity application context (it carries the account).
+4. A 0.4 sign-in, exchanged once for a Cloud session.
+
+If none works in 10 seconds the watch says "Open wristcall on your iPhone". "Use a code instead" runs the device
+code flow: the watch shows a code, you approve it on the iPhone (or the web), and it ends in a Cloud session on a
+watch that has no iPhone of its own.
+
+Once enrolled, the agenda syncs on its own after enrolling and whenever the app becomes active (at most once every
+60 seconds). Servers that pair at once are paired; a server that needs approval waits for the pairing code the iPhone
+sends. The watch no longer sends Zitadel tokens to the agenda or server token routes, so it works with
+`WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS` off.
+
+**Settings > Advanced** holds "Pair with a code", "Pairing directory", "Sync with account" and "Sign out of this
+watch". Signing out deletes the watch's device on the Cloud (best effort), clears its session and pauses the automatic
+setup until "Set up again" (or "Use a code instead"); paired servers stay. If the iPhone's account differs from the
+watch's, Advanced says so: sign out and set up again to switch.
+
+Known limitations: an account without an email identity cannot approve "Use a code instead" on the iPhone;
+approving it on the web with an email that has no account creates a new, empty account; complications and controls
+show no agent color.
+
 ## iPhone app
 
-`Phone/` is the iPhone app (tag `ios-vX.Y.Z`; version 0.2.0). Its bundle id is `<BUNDLE_ID_PREFIX>.wristcall` and
+`Phone/` is the iPhone app (tag `ios-vX.Y.Z`; version 0.2.1). Its bundle id is `<BUNDLE_ID_PREFIX>.wristcall` and
 it embeds the watch app (`Wristcall.app/Watch/`). Apple refuses an embedded watch app whose version differs from the
-iPhone app's, so both bundles carry the same version (0.5.0, build 5), even though the iPhone app's own release is 0.2.0.
+iPhone app's, so both bundles carry the same version (0.5.0, build 6), even though the iPhone app's own release is 0.2.1.
 
 **No sign-up.** The first launch shows a welcome screen and a plan screen, no sign-in. The app makes a silent
 wristcall account on the Cloud: it keeps the account key in the iPhone's Keychain and in iCloud Keychain, so the account
@@ -137,7 +168,7 @@ What it does (it makes no calls; the watch does):
 account keeps working and nothing is lost. If this iPhone cannot reach the account (a new iPhone, or iCloud Keychain
 off), a screen asks you to "Sign in with email" once to bring it here, or to start over with a new account (the old one
 stays on the Cloud). The watch still signs in on its own with the email provider's device code, which the iPhone asks
-you to approve; a watch of a new account only pairs through the codes the iPhone sends until a future watch update.
+you to approve; the watch 0.5.0 (build 6) also sets itself up (see [First open](#first-open-of-the-watch-app)).
 
 The default build uses the project's Cloud (`WRISTCALL_CLOUD_URL` = `https://wristcall-cloud.trigram.com.br`, in
 `Config/Base.xcconfig`); set it empty in `Config/Local.xcconfig` and no account features show and nothing talks to a
@@ -219,13 +250,14 @@ The watch app's bundle id (and so its APNs topic) is now `<BUNDLE_ID_PREFIX>.wri
 - **Pairing from the iPhone.** The iPhone app's "Add to watch" sends a server address and a pairing code over
   WatchConnectivity; the watch pairs at once (it says "busy" during a call). The iPhone's "Refresh watch" makes the
   watch read its agents again.
-- **Sign in with account.** With a Cloud in the build, the pairing screen and Settings offer "Sign in with account":
+- **Sign in with account.** Since 0.5.0 the watch does this by itself on first open (see above); this is the manual
+  path, "Use a code instead" and Settings > Advanced > "Sync with account". With a Cloud in the build it offers the device code:
   the watch shows a short code and opens the provider's device page on the iPhone, where you approve it (the same
   code goes to the iPhone app, which asks you). Then the watch reads the account's server list and pairs each
   server that is not paired yet, only when the server names the same Cloud as its issuer; a server that needs your
   approval waits for it on the iPhone ("Approve on your iPhone: 0423"). "Sync with account" repeats this, "Sign out
-  of account" forgets the account (servers stay). The refresh token is in the watch Keychain.
-- **Agent grid.** Home shows the agents of every server, two per row, in each server's order. Tap an agent to
+  of this watch" forgets the account (servers stay).
+- **Agent grid.** Home shows the agents of every server, two per row, in each server's order and each agent's color. Tap an agent to
   call it; long press opens its call options (end of turn, auto or manual, for conversations). The "…" button in
   the toolbar opens the same options: directly for the only callable agent, or a list of agents to pick from.
   Messages ("No connection", "Agent not found.") show at the top, above the grid. A server that is
