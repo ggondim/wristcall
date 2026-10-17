@@ -14,6 +14,7 @@ struct WatchEnrollmentTests {
     static let unauthorized = StubHost.Reply(401, #"{"error":"unauthorized","message":"no"}"#)
     static let staleToken = StubHost.Reply(401, #"{"error":"stale_token","message":"old"}"#)
     static let invalidCode = StubHost.Reply(404, #"{"error":"invalid_code","message":"gone"}"#)
+    static let forbidden = StubHost.Reply(403, #"{"error":"forbidden","message":"not for this device"}"#)
     static let limit = StubHost.Reply(403, #"{"error":"limit","message":"10 devices"}"#)
 
     static func stored(_ account: String, at seconds: Double) -> StoredAccountKey {
@@ -149,6 +150,18 @@ struct WatchEnrollmentTests {
         #expect(try await enrollment(full).enroll(code: Self.code(), tryLegacy: false) == .deviceLimit)
     }
 
+    @Test func codeAboutToExpireIsNotSent() async throws {
+        let host = StubHost(replies: [] as [StubHost.Reply])
+        #expect(try await enrollment(host).enroll(code: Self.code(expiresIn: 3), tryLegacy: false) == .nothing)
+        #expect(host.requests.isEmpty)
+    }
+
+    @Test func forbiddenCodeIsNothing() async throws {
+        let host = StubHost(replies: [(403, Self.forbidden.body)])
+        #expect(try await enrollment(host).enroll(code: Self.code(), tryLegacy: false) == .nothing)
+        #expect(host.requests.map(\.path) == ["/v1/devices/enroll"])
+    }
+
     @Test func fullAccountOnTheKeyIsReported() async throws {
         let host = StubHost(replies: [(403, Self.limit.body)])
         let keys = InMemoryAccountKeyStore([Self.stored("acc_old", at: 1_000)])
@@ -225,6 +238,37 @@ struct WatchEnrollmentTests {
         #expect(result == .nothing)
         #expect(await !legacy.isSignedIn)
         #expect(try keys.keys().count == 1)
+    }
+
+    @Test func forbiddenLegacyIsClearedAndNothing() async throws {
+        let world = StubAccountWorld()
+        let (legacy, _) = legacySession(world)
+        let host = StubHost(replies: [(403, Self.forbidden.body)])
+        #expect(try await enrollment(host, legacy: legacy).exchangeLegacy() == .nothing)
+        #expect(await !legacy.isSignedIn)
+    }
+
+    @Test func refusedLegacyAfterNoCodeIsClearedAndNothing() async throws {
+        let world = StubAccountWorld()
+        let (legacy, _) = legacySession(world)
+        let host = StubHost(replies: [(401, Self.staleToken.body)])
+        let result = try await enrollment(host, legacy: legacy).enroll(code: nil, tryLegacy: true)
+        #expect(result == .nothing)
+        #expect(host.requests.map(\.path) == ["/v1/devices"])
+        #expect(await !legacy.isSignedIn)
+    }
+
+    @Test func enrollWithoutAnOldLoginNeverCallsTheProvider() async throws {
+        let world = StubAccountWorld()
+        let (legacy, _) = legacySession(world, signedIn: false)
+        let host = StubHost(replies: [(201, Self.session())])
+        let keys = InMemoryAccountKeyStore([Self.stored("acc_old", at: 1_000)])
+        let result = try await enrollment(host, keys: keys, legacy: legacy).enroll(code: nil, tryLegacy: true)
+
+        guard case .enrolled(_, .accountKey) = result else { Issue.record("got \(result)"); return }
+        #expect(world.cloud.requests.isEmpty)
+        #expect(world.issuer.requests.isEmpty)
+        #expect(world.endpoints.requests.isEmpty)
     }
 
     @Test func exchangeLegacyEnrolls() async throws {

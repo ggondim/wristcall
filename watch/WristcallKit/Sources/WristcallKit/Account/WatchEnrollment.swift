@@ -44,7 +44,7 @@ public struct WatchEnrollment: Sendable {
     /// An old login is signed out once any way worked: the device session replaces it.
     public func enroll(code: PhoneLinkContext?, tryLegacy: Bool) async throws -> Result {
         let result = try await tryKeysThenCode(code, tryLegacy: tryLegacy)
-        if case .enrolled = result { await legacy?.signOut() }
+        if case .enrolled = result { await dropLegacyLogin() }
         return result
     }
 
@@ -52,8 +52,14 @@ public struct WatchEnrollment: Sendable {
     /// (the refused one is deleted).
     public func exchangeLegacy() async throws -> Result {
         let result = try await exchangeLegacyToken()
-        if case .enrolled = result { await legacy?.signOut() }
+        if case .enrolled = result { await dropLegacyLogin() }
         return result
+    }
+
+    /// The device session replaces the old login. Nothing to do (and no call to the provider) when there is none.
+    private func dropLegacyLogin() async {
+        guard let legacy, await legacy.isSignedIn else { return }
+        await legacy.signOut()
     }
 
     private func tryKeysThenCode(_ code: PhoneLinkContext?, tryLegacy: Bool) async throws -> Result {
@@ -70,11 +76,14 @@ public struct WatchEnrollment: Sendable {
             }
         }
 
-        if let code, code.expiresAt > now().timeIntervalSince1970 {
+        // A code with under 5 s left would expire on the way: not sent.
+        if let code, code.expiresAt - 5 > now().timeIntervalSince1970 {
             do {
                 return .enrolled(try await client.enrollDevice(code: code.enrollCode, device: device), .enrollCode)
             } catch APIError.invalidCode {
                 // Spent or expired: the iPhone will send another.
+            } catch APIError.forbidden {
+                // Refused (not a watch code): wait for another.
             } catch APIError.limit {
                 return .deviceLimit
             }
@@ -93,7 +102,7 @@ public struct WatchEnrollment: Sendable {
         }
         do {
             return .enrolled(try await client.enrollDevice(zitadelAccessToken: token, device: device), .legacyAccount)
-        } catch APIError.staleToken, APIError.unauthorized, APIError.invalidAccountToken {
+        } catch APIError.staleToken, APIError.unauthorized, APIError.invalidAccountToken, APIError.forbidden {
             await legacy.signOut()
             return .nothing
         } catch APIError.limit {
