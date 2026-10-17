@@ -160,8 +160,10 @@ Rules:
 - `DELETE /v1/account/link` or `wristcall users unlink <handle>` removes the link. From 0.8.2 on it also revokes the
   devices paired through that account (`POST /v1/pair/account`, right away or after approval; their push keys go too)
   and deletes its pairing requests not delivered yet, approved or not: the watch's next `POST /v1/pair/poll` gets
-  `410 gone`. Devices paired with a code or approved by the operator stay, as do devices paired through the account
-  by a server before 0.8.2 (they carry no mark).
+  `410 gone`. Devices paired with a code, or by a manual (non-account) request, stay, as do devices paired through the
+  account by a server before 0.8.2 (they carry no mark). Devices from account pairing requests are revoked whoever
+  approved them (the operator included): the request carries the account, not the approver. Linking the user to
+  another account does the same.
 
 ### Link URL
 

@@ -202,7 +202,7 @@ Know before you turn it on:
 - The server does not ask the Cloud whether a login was revoked: a per-server token lives 5 minutes, and the Cloud
   issues one while the central account's access token is valid. Configure short access tokens at the account issuer.
 - `users unlink` (or `DELETE /v1/account/link`, or linking the user to another account) revokes the devices paired
-  through the account and drops its pairing requests not collected yet. Devices paired with a code, and devices
+  through the account (whoever approved their request) and drops its pairing requests not collected yet. Devices paired with a code, and devices
   paired through the account before server 0.8.2, stay (`wristcall devices revoke`). In `attestation` mode a leaked
   login pairs a device until the token expires.
 - A per-server token is made for this server's URL only: its operator cannot replay it at another server or at the

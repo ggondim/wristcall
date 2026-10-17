@@ -367,15 +367,16 @@ Zitadel identity are never deleted by this.
 ## Transition flag
 
 `WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS=1` keeps the Cloud working for the app builds that predate account sessions: the
-PWA 0.1.0, the iPhone app `ios-v0.1.0` and the watch app `watch-v0.4.0`. With it on, a Zitadel token is accepted on
+PWA 0.1.0 to 0.2.x (they sent the Zitadel token on every call; PWA 0.3.0 migrates its session to a Cloud web device),
+the iPhone app `ios-v0.1.0` and the watch app `watch-v0.4.0`. With it on, a Zitadel token is accepted on
 the routes that existed in 0.3.x (`GET` and `DELETE /v1/account`, the servers and agents routes, `GET /v1/agents`,
 `POST /v1/server-tokens`), with the same answers as 0.3.1 and the same account (`sub` of the per-server token
 included). The account is created on first use, as before, with the id `<issuer>#<subject>`. The routes of
 [Accounts and sessions](#accounts-and-sessions) never take a Zitadel token, except the exchange at `POST /v1/devices`
 and the key reset proof (`zitadel_token`) in the body of `POST /v1/account/key/rotate`.
 
-The default is off. Turn it off once the v3 apps of the iPhone and the PWA are published: from then on a Zitadel
-token only works for the exchange, and old builds get `401`. The Cloud logs a warning at every start while it is on,
+The default is off. Turn it off once the iPhone app 0.2.0 or later, the watch app 0.5.0 or later and the PWA 0.3.0 are
+published and in use: from then on a Zitadel token only works for the exchange, and old builds get `401`. The Cloud logs a warning at every start while it is on,
 and `/v1/config` reports it (`sessions.legacy_zitadel_tokens`).
 
 ## Admin CLI
@@ -468,8 +469,9 @@ shares the proxy's address.
   user is linked: there they can pair a device (in `attestation` mode) or send approval requests to the user. So
   upgrade every 0.5.0 server with `central_account` to 0.6.0, or unlink its users, **before** setting
   `WRISTCALL_CLOUD_SIGNING_KEY`. Apps must never send a login token to a server, only per-server tokens.
-- **The transition flag.** While PWA 0.1.0, the iPhone app `ios-v0.1.0` and the watch app `watch-v0.4.0` are in use, set
-  `WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS=1`, or they get `401`. Turn it off once the v3 apps are published (see
+- **The transition flag.** While PWA 0.1.0 to 0.2.x, the iPhone app `ios-v0.1.0` and the watch app `watch-v0.4.0` are in use,
+  set `WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS=1`, or they get `401`. Turn it off once iPhone 0.2.0 or later, watch 0.5.0
+  or later and PWA 0.3.0 are published and in use (see
   [Transition flag](#transition-flag)).
 - **Client address and country.** The account limits are per client address: set `WRISTCALL_CLOUD_CLIENT_IP_HEADER`.
   Behind Cloudflare also set `WRISTCALL_CLOUD_CLIENT_COUNTRY_HEADER=CF-IPCountry`, so web sessions show a country.

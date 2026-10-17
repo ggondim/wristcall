@@ -12,8 +12,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
   /v1/account/link`, `wristcall users unlink <handle>`, and linking the user to a different account (linking the same
   account again changes nothing). Their push keys are deleted, and the account's pairing requests not delivered yet
   (pending, or approved but not collected by the watch) are dropped: the watch's next poll gets `410`. Devices paired
-  with a code or approved by the operator stay. `wristcall users unlink` prints how many devices it revoked; the log
-  says `unlinked account; N devices revoked` (never the account).
+  with a code, or by a manual (non-account) request, stay. Devices from account pairing requests are revoked, whoever
+  approved them (the request carries the account, not the approver). `wristcall users unlink` prints how many devices
+  it revoked; the log says `unlinked account; N devices revoked` (never the account), and linking another account logs
+  `linked another account; N devices revoked`.
 - Only devices paired through the account from 0.8.2 on fall: older ones carry no mark and stay paired (revoke them
   with `wristcall devices revoke`).
 - Database schema 9 (new `devices.central_subject` and `pairing_requests.central_subject` columns, null for existing
