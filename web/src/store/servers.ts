@@ -98,6 +98,26 @@ export class ServerStore {
     return taken
   }
 
+  /**
+   * Reads and writes in one transaction, so two tabs never interleave: `change` gets the value (null when absent) and
+   * returns the new one, null to delete it, or undefined to leave it. Returns what the key holds afterwards.
+   */
+  async swapKV<T>(key: string, change: (current: T | null) => T | null | undefined): Promise<T | null> {
+    const tx = this.db.transaction(KV, "readwrite")
+    const store = tx.objectStore(KV)
+    let after: T | null = null
+    const read = store.get(key) as IDBRequest<T | undefined>
+    read.onsuccess = () => {
+      const current = read.result ?? null
+      const next = change(current)
+      after = next === undefined ? current : next
+      if (next === null) store.delete(key)
+      else if (next !== undefined) store.put(next, key)
+    }
+    await finished(tx)
+    return after
+  }
+
   async deleteKV(key: string): Promise<void> {
     const tx = this.db.transaction(KV, "readwrite")
     tx.objectStore(KV).delete(key)

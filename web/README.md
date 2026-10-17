@@ -46,7 +46,6 @@ public address, the origin of the page):
 | The Cloud | `WRISTCALL_CLOUD_CORS_ORIGINS` | `https://app.example.com` |
 | The Cloud | `WRISTCALL_CLOUD_CLIENT_PWA` | the OIDC client id of the PWA (without it there is no sign-in from the site, and `DELETE /v1/account` answers `403`) |
 | Zitadel, application `wristcall-pwa` (PKCE, no secret) | redirect URI | `https://app.example.com/auth/callback` |
-| Zitadel, same application | post logout URI | `https://app.example.com/` |
 | The site's container | `WRISTCALL_WEB_CLOUD_URL` | the Cloud's canonical public URL, the same value as the Cloud's `WRISTCALL_CLOUD_PUBLIC_URL` (same scheme, host and port, no trailing slash). A server that names a different Cloud as its account issuer or push relay is refused |
 
 The server and the Cloud send no CORS headers by default, so nothing opens by itself. See "Browsers (CORS)" in
@@ -100,11 +99,18 @@ characters, typed with or without spaces and hyphens), for when the QR code cann
 - Chrome 142 and later (Local Network Access): a public site that calls a server on a private address asks for the
   permission for access to devices on the local network. The user must allow it once. A server with a
   public name behind TLS asks nothing.
-- Credentials (personal tokens, the account's refresh token) live in the browser's storage (IndexedDB), on this
-  device. Anyone who can use the browser profile can use them, and a script that runs in the page could read them: the
-  site ships a strict Content Security Policy (no inline script) for that reason, and loads nothing from a CDN. The access token of the account session stays in memory. After the
+- Credentials (personal tokens, and the account session: this browser's `web` device at the Cloud with its refresh
+  and access tokens) live in the browser's storage (IndexedDB), on this device. Anyone who can use the browser profile
+  can use them, and a script that runs in the page could read them: the site ships a strict Content Security Policy (no
+  inline script) for that reason, and loads nothing from a CDN. No Zitadel token is kept: "Sign in with email" trades
+  it at once for a device, and a session left by 0.2.x is moved to a device the first time 0.3.0 opens. After the
   first server is saved the app asks the browser for persistent storage (`navigator.storage.persist()`), so the data
   is not evicted when the device is short of space; a browser may refuse, and then the data can still be erased.
+- The account session's refresh token rotates at every renewal, and the Cloud deletes the device when an old one comes
+  back. Tabs take turns (a Web Lock, or a lease in IndexedDB without one) and always send the stored token, but an
+  answer lost on the way (the connection drops after the Cloud rotated) leaves the browser with a token the Cloud
+  already replaced: the next renewal signs it out ("This browser was signed out. Sign in again."). Accepted for now;
+  signing in again fixes it.
 - On iOS the Safari tab and the installed app have separate storage: servers added in the tab do not appear in the
   installed app (install first, then add your servers: the installed app is the one to rely on). In a Safari tab, Intelligent Tracking Prevention erases the
   storage of a site not used for 7 days; the installed app is exempt. With an account, "From your account" lists the

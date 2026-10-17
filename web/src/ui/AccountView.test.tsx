@@ -110,7 +110,7 @@ describe("Settings", () => {
     expect((screen.getByRole("button", { name: "Delete account" }) as HTMLButtonElement).disabled).toBe(true)
     release()
     await screen.findByRole("button", { name: "Sign in" })
-    expect(w.assigned).toHaveLength(1)
+    expect(w.assigned).toEqual([]) // no end-session page
   })
 
   test("deleteAccountAsksFirstWithTheIPhoneText", async () => {
@@ -203,15 +203,14 @@ describe("Approve watch sign-in", () => {
 describe("Callback", () => {
   beforeEach(() => history.replaceState(null, "", "/auth/callback?code=the-code&state=s"))
 
-  test("callbackTradesTheCodeAndOpensSettings", async () => {
+  test("callbackTradesTheCodeAndOpensAgents", async () => {
     const w = setup({ state: "signedOut" })
     w.ui()
     expect(screen.queryByRole("navigation")).toBeNull()
-    await screen.findByRole("heading", { name: "Account" })
-    expect(location.pathname).toBe("/settings")
+    await waitFor(() => expect(location.pathname).toBe("/agents"))
     expect(location.search).toBe("")
     expect(w.calls.filter((c) => c.startsWith("completeSignIn"))).toHaveLength(1)
-    expect(screen.getByText("Signed in")).toBeTruthy()
+    expect(w.model.state.screen).toBe("signedIn")
   })
 
   test("callbackFailureShowsTheReasonAndTryAgain", async () => {

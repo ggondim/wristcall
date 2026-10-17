@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
-import { CloudClient } from "../api/cloud"
+import { type DeviceSession, CloudClient } from "../api/cloud"
 import { type PendingLogin, OidcError } from "../api/oidc"
-import { NetworkError } from "../lib/errors"
+import { browserDeviceName } from "../lib/deviceName"
+import { ApiError, NetworkError } from "../lib/errors"
 import { openDb } from "../store/db"
 import { ServerStore } from "../store/servers"
 import { mockFetch } from "../test/mockFetch"
@@ -12,31 +13,63 @@ const ISSUER = "https://id.example"
 const ORIGIN = "http://localhost:5173"
 const TOKEN = `${ISSUER}/oauth/v2/token`
 const REVOKE = `${ISSUER}/oauth/v2/revoke`
+const DEVICES = `${CLOUD}/v1/devices`
+const REFRESH = `${CLOUD}/v1/session/refresh`
+const REVOKED = "This browser was signed out. Sign in again."
 
 const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } })
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+/** Waits without timers (fake timers would be advanced by `vi.waitFor`). */
+async function until(condition: () => boolean): Promise<void> {
+  while (!condition()) await new Promise((resolve) => setImmediate(resolve))
+}
+
+interface Exchange {
+  bearer: string
+  body: unknown
+}
 
 interface World {
   fetch: ReturnType<typeof mockFetch>
   store: ServerStore
   session: AccountSession
   clock: { now: number }
-  /** Form bodies sent to the token endpoint. */
+  /** Form bodies sent to the Zitadel token endpoint. */
   tokenForms: URLSearchParams[]
   revokes: URLSearchParams[]
-  /** Answer to the next token calls; defaults to an `access_token` with `expires_in: 3600`. */
+  /** `POST /v1/devices`: the Zitadel access token sent and the body. */
+  exchanges: Exchange[]
+  /** Refresh tokens sent to `POST /v1/session/refresh`. */
+  refreshes: string[]
+  /** `DELETE /v1/devices/{id}`: the path and the bearer. */
+  removals: { path: string; bearer: string }[]
+  /** Zitadel's token endpoint; defaults to an `access_token` with `expires_in: 3600`, rotating the refresh token. */
   answer: (form: URLSearchParams) => Response | Promise<Response>
   revokeAnswer: () => Response | Promise<Response>
+  exchangeAnswer: (call: Exchange) => Response | Promise<Response>
+  refreshAnswer: (refreshToken: string) => Response | Promise<Response>
+  removeAnswer: () => Response | Promise<Response>
   config: Record<string, unknown>
+}
+
+const seconds = (w: World) => Math.floor(w.clock.now / 1000)
+
+/** A Cloud device session of `dev-1` whose access token lives `expiresIn` seconds. */
+function device(w: World, n: number, expiresIn = 900): DeviceSession {
+  return { account: "acc-1", device: "dev-1", access_token: `cat-${n}`, refresh_token: `crt-${n}`, expires_at: seconds(w) + expiresIn }
 }
 
 async function world(): Promise<World> {
   const store = new ServerStore(await openDb("t-" + crypto.randomUUID()))
-  const clock = { now: 1_000_000 }
+  const clock = { now: 1_000_000_000 }
   const w = {} as World
   w.clock = clock
   w.store = store
   w.tokenForms = []
   w.revokes = []
+  w.exchanges = []
+  w.refreshes = []
+  w.removals = []
   w.config = {
     issuer: ISSUER,
     project_id: null,
@@ -48,14 +81,19 @@ async function world(): Promise<World> {
   let counter = 0
   w.answer = (form) =>
     reply({
-      access_token: `at-${++counter}`,
-      refresh_token: form.get("grant_type") === "refresh_token" ? `rt-${counter}` : "rt-0",
+      access_token: `zat-${++counter}`,
+      refresh_token: form.get("grant_type") === "refresh_token" ? `zrt-${counter}` : "zrt-0",
       id_token: form.get("grant_type") === "refresh_token" ? undefined : "idt-0",
       expires_in: 3600,
       token_type: "Bearer",
     })
   w.revokeAnswer = () => new Response(null, { status: 200 })
+  w.exchangeAnswer = () => reply({ ...device(w, 0), key_set: false }, 201)
+  let rotations = 0
+  w.refreshAnswer = () => reply(device(w, ++rotations))
+  w.removeAnswer = () => new Response(null, { status: 204 })
   w.fetch = mockFetch((url, init) => {
+    const bearer = String((init.headers as Record<string, string> | undefined)?.Authorization ?? "").replace(/^Bearer /, "")
     if (url === `${CLOUD}/v1/config`) return reply(w.config)
     if (url === `${ISSUER}/.well-known/openid-configuration`) {
       return reply({
@@ -75,11 +113,27 @@ async function world(): Promise<World> {
       w.revokes.push(new URLSearchParams(String(init.body)))
       return w.revokeAnswer()
     }
+    if (url === DEVICES && init.method === "POST") {
+      const call = { bearer, body: JSON.parse(String(init.body)) }
+      w.exchanges.push(call)
+      return w.exchangeAnswer(call)
+    }
+    if (url === REFRESH) {
+      const sent = (JSON.parse(String(init.body)) as { refresh_token: string }).refresh_token
+      w.refreshes.push(sent)
+      return w.refreshAnswer(sent)
+    }
+    if (url.startsWith(`${DEVICES}/`) && init.method === "DELETE") {
+      w.removals.push({ path: new URL(url).pathname, bearer })
+      return w.removeAnswer()
+    }
     return new Response("not found", { status: 404 })
   })
-  w.session = new AccountSession(new CloudClient(CLOUD, w.fetch), store, { fetchImpl: w.fetch, now: () => clock.now, origin: ORIGIN })
+  w.session = tab(w)
   return w
 }
+
+const tab = (w: World) => new AccountSession(new CloudClient(CLOUD, w.fetch), w.store, { fetchImpl: w.fetch, now: () => w.clock.now, origin: ORIGIN })
 
 async function pendingOf(w: World): Promise<PendingLogin> {
   return (await w.store.getKV<PendingLogin>("oidc.pending"))!
@@ -93,21 +147,42 @@ async function sessionWithPending(): Promise<{ w: World; href: string }> {
   return { w, href: callbackFor(await pendingOf(w)) }
 }
 
-/** Signs in, with an access token that lives `accessExpiresIn` seconds. */
-async function signedInSession(options: { accessExpiresIn?: number } = {}): Promise<World> {
+/** Signed in with the device session `cat-0`/`crt-0`, whose access token lives `expiresIn` seconds. */
+async function signedIn(options: { expiresIn?: number } = {}): Promise<World> {
   const w = await world()
-  const defaultAnswer = w.answer
-  w.answer = (form) => {
-    const response = defaultAnswer(form) as Response
-    return form.get("grant_type") === "authorization_code" && options.accessExpiresIn !== undefined
-      ? response.json().then((body: Record<string, unknown>) => reply({ ...body, expires_in: options.accessExpiresIn }))
-      : response
-  }
-  await w.session.beginSignIn()
-  await w.session.completeSignIn(callbackFor(await pendingOf(w)))
-  w.answer = defaultAnswer
-  w.tokenForms.length = 0
+  await w.session.adoptWebSession(device(w, 0, options.expiresIn ?? 900))
   return w
+}
+
+/** A browser with the Zitadel tokens of the PWA 0.2.x. */
+async function zitadelWorld(): Promise<World> {
+  const w = await world()
+  await w.store.setKV("account.refresh", "zrt-old")
+  await w.store.setKV("account.id_token", "idt-old")
+  return w
+}
+
+/** A Web Locks stand-in: requests for one name run one after the other. */
+function stubLocks(): string[] {
+  const names: string[] = []
+  let tail: Promise<unknown> = Promise.resolve()
+  vi.stubGlobal("navigator", {
+    ...globalThis.navigator,
+    userAgent: globalThis.navigator.userAgent,
+    locks: {
+      request: (name: string, callback: () => Promise<unknown>) => {
+        names.push(name)
+        const run = tail.then(callback, callback)
+        tail = run.catch(() => {})
+        return run
+      },
+    },
+  })
+  return names
+}
+
+function noLocks(): void {
+  vi.stubGlobal("navigator", { userAgent: globalThis.navigator.userAgent, locks: undefined })
 }
 
 afterEach(() => {
@@ -115,7 +190,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe("sign-in", () => {
+describe("email sign-in", () => {
   test("beginSignIn: saves the pending login in IndexedDB and returns the authorization URL", async () => {
     const w = await world()
     const url = new URL(await w.session.beginSignIn())
@@ -144,18 +219,36 @@ describe("sign-in", () => {
     expect(await w.store.getKV("oidc.pending")).toBeNull()
   })
 
-  test("completeSignIn: stores the tokens and signs in", async () => {
+  test("email callback exchanges and keeps no Zitadel tokens", async () => {
     const { w, href } = await sessionWithPending()
-    expect(w.session.state).toBe("signedOut")
+    let changes = 0
+    w.session.onStateChange(() => (changes += 1))
     await w.session.completeSignIn(href)
     expect(w.session.state).toBe("signedIn")
-    expect(await w.store.getKV("account.refresh")).toBe("rt-0")
-    expect(await w.store.getKV("account.id_token")).toBe("idt-0")
-    expect(await w.store.getKV("oidc.pending")).toBeNull()
+    expect(changes).toBe(1)
+    expect(w.tokenForms).toHaveLength(1)
     expect(w.tokenForms[0]!.get("code")).toBe("the-code")
     expect(w.tokenForms[0]!.get("code_verifier")).toMatch(/^[A-Za-z0-9_-]{43}$/)
-    expect(await w.session.accessToken()).toBe("at-1")
-    expect(w.tokenForms).toHaveLength(1) // the access token from the exchange is still fresh
+    expect(w.exchanges).toEqual([{ bearer: "zat-1", body: { device: { name: browserDeviceName(navigator.userAgent), platform: "web" } } }])
+    expect(await w.store.getKV("account.device")).toEqual(device(w, 0))
+    expect(await w.store.getKV("account.refresh")).toBeNull()
+    expect(await w.store.getKV("account.id_token")).toBeNull()
+    expect(await w.store.getKV("oidc.pending")).toBeNull()
+    expect(w.session.accountId).toBe("acc-1")
+    expect(w.session.deviceId).toBe("dev-1")
+    expect(await w.session.accessToken()).toBe("cat-0")
+    expect(w.refreshes).toHaveLength(0)
+    await vi.waitFor(() => expect(w.revokes.map((r) => r.get("token"))).toEqual(["zrt-0"])) // best effort
+  })
+
+  test("email callback: a refused /v1/devices leaves the browser signed out with nothing stored", async () => {
+    const { w, href } = await sessionWithPending()
+    w.exchangeAnswer = () => reply({ error: "limit" }, 403)
+    await expect(w.session.completeSignIn(href)).rejects.toBeInstanceOf(ApiError)
+    expect(w.session.state).toBe("signedOut")
+    expect(await w.store.getKV("account.device")).toBeNull()
+    expect(await w.store.getKV("account.refresh")).toBeNull()
+    await vi.waitFor(() => expect(w.revokes.map((r) => r.get("token"))).toEqual(["zrt-0"]))
   })
 
   test("session: callback is single use", async () => {
@@ -163,6 +256,7 @@ describe("sign-in", () => {
     await w.session.completeSignIn(href)
     await expect(w.session.completeSignIn(href)).rejects.toThrow(OidcError)
     expect(w.tokenForms).toHaveLength(1)
+    expect(w.exchanges).toHaveLength(1)
   })
 
   test("session: two tabs finishing the same callback exchange the code once", async () => {
@@ -170,10 +264,11 @@ describe("sign-in", () => {
     const results = await Promise.allSettled([w.session.completeSignIn(href), w.session.completeSignIn(href)])
     expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"])
     expect(w.tokenForms).toHaveLength(1)
+    expect(w.exchanges).toHaveLength(1)
   })
 
   test.each([
-    ["wrong state", (p: PendingLogin) => `${ORIGIN}/auth/callback?code=c&state=other`],
+    ["wrong state", (_p: PendingLogin) => `${ORIGIN}/auth/callback?code=c&state=other`],
     ["two codes", (p: PendingLogin) => `${ORIGIN}/auth/callback?code=a&code=b&state=${p.state}`],
     ["foreign iss", (p: PendingLogin) => callbackFor(p, "&iss=https://evil.example")],
     ["denied", (p: PendingLogin) => `${ORIGIN}/auth/callback?error=access_denied&state=${p.state}`],
@@ -182,8 +277,9 @@ describe("sign-in", () => {
     await w.session.beginSignIn()
     await expect(w.session.completeSignIn(make(await pendingOf(w)))).rejects.toThrow(OidcError)
     expect(w.tokenForms).toHaveLength(0)
+    expect(w.exchanges).toHaveLength(0)
     expect(w.session.state).toBe("signedOut")
-    expect(await w.store.getKV("account.refresh")).toBeNull()
+    expect(await w.store.getKV("account.device")).toBeNull()
     expect(await w.store.getKV("oidc.pending")).toBeNull()
   })
 
@@ -208,201 +304,405 @@ describe("sign-in", () => {
     expect(w.session.state).toBe("signedIn")
   })
 
-  test("a refused exchange leaves the session signed out", async () => {
+  test("a refused code exchange leaves the session signed out and creates nothing", async () => {
     const { w, href } = await sessionWithPending()
     w.answer = () => reply({ error: "invalid_grant" }, 400)
     await expect(w.session.completeSignIn(href)).rejects.toThrow(OidcError)
     expect(w.session.state).toBe("signedOut")
-    expect(await w.store.getKV("account.refresh")).toBeNull()
+    expect(w.exchanges).toHaveLength(0)
+    expect(await w.store.getKV("account.device")).toBeNull()
   })
 })
 
-describe("load", () => {
-  test("load: signed in when the database has a refresh token", async () => {
-    const w = await signedInSession()
-    const other = new AccountSession(new CloudClient(CLOUD, w.fetch), w.store, { fetchImpl: w.fetch, now: () => w.clock.now, origin: ORIGIN })
-    expect(other.state).toBe("signedOut")
-    await other.load()
-    expect(other.state).toBe("signedIn")
-    expect(await other.accessToken()).toBe("at-2") // no access token in memory: renewed
-    expect(w.tokenForms[0]!.get("refresh_token")).toBe("rt-0")
+describe("web device session", () => {
+  test("adopts a web session", async () => {
+    const w = await world()
+    let changes = 0
+    w.session.onStateChange(() => (changes += 1))
+    await w.session.adoptWebSession({ ...device(w, 0), key_set: true } as DeviceSession)
+    expect(w.session.state).toBe("signedIn")
+    expect(changes).toBe(1)
+    expect(await w.store.getKV("account.device")).toEqual(device(w, 0)) // only the session's fields
+    expect(w.session.accountId).toBe("acc-1")
+    expect(w.session.deviceId).toBe("dev-1")
+    expect(await w.session.accessToken()).toBe("cat-0")
+    expect(w.fetch.calls).toHaveLength(0)
   })
 
-  test("load: signed out without one", async () => {
+  test("load: signed in from the stored device, with its access token and no request", async () => {
+    const w = await signedIn()
+    const other = tab(w)
+    expect(other.state).toBe("signedOut")
+    expect(other.accountId).toBeNull()
+    await other.load()
+    expect(other.state).toBe("signedIn")
+    expect(other.deviceId).toBe("dev-1")
+    expect(await other.accessToken()).toBe("cat-0")
+    expect(w.fetch.calls).toHaveLength(0)
+  })
+
+  test("load: signed out without a stored device", async () => {
     const w = await world()
     await w.session.load()
     expect(w.session.state).toBe("signedOut")
+    expect(w.fetch.calls).toHaveLength(0)
     await expect(w.session.accessToken()).rejects.toMatchObject({ kind: "signed_out" })
   })
-})
 
-describe("accessToken", () => {
-  test("a fresh token is returned without a request", async () => {
-    const w = await signedInSession()
-    expect(await w.session.accessToken()).toBe("at-1")
-    expect(w.tokenForms).toHaveLength(0)
-  })
-
-  test("renews when less than 60 s remain", async () => {
-    const w = await signedInSession({ accessExpiresIn: 100 })
+  test("renews with POST /v1/session/refresh and stores the new refresh", async () => {
+    const w = await signedIn({ expiresIn: 100 })
     w.clock.now += 39_000
-    expect(await w.session.accessToken()).toBe("at-1")
+    expect(await w.session.accessToken()).toBe("cat-0")
     w.clock.now += 2_000 // 59 s left
-    expect(await w.session.accessToken()).toBe("at-2")
-    expect(w.tokenForms).toHaveLength(1)
-    expect(await w.store.getKV("account.refresh")).toBe("rt-2")
-    expect(await w.store.getKV("account.id_token")).toBe("idt-0") // none came back: the login's one stays
+    expect(await w.session.accessToken()).toBe("cat-1")
+    expect(w.refreshes).toEqual(["crt-0"])
+    expect(await w.store.getKV("account.device")).toEqual(device(w, 1))
+    expect(await w.session.accessToken()).toBe("cat-1")
+    expect(w.refreshes).toHaveLength(1)
   })
 
-  test("concurrentAccessTokenRefreshesOnce", async () => {
-    const w = await signedInSession({ accessExpiresIn: 0 })
+  test("concurrent calls in one tab renew once", async () => {
+    const w = await signedIn({ expiresIn: 0 })
     const tokens = await Promise.all([w.session.accessToken(), w.session.accessToken(), w.session.accessToken()])
-    expect(new Set(tokens).size).toBe(1)
-    expect(w.tokenForms).toHaveLength(1)
+    expect(new Set(tokens)).toEqual(new Set(["cat-1"]))
+    expect(w.refreshes).toHaveLength(1)
   })
 
-  test("refreshWithoutNewRefreshTokenKeepsOld", async () => {
-    const w = await signedInSession({ accessExpiresIn: 0 })
-    w.answer = () => reply({ access_token: "at-x", expires_in: 3600 })
-    expect(await w.session.accessToken()).toBe("at-x")
-    expect(await w.store.getKV("account.refresh")).toBe("rt-0")
+  test("two tabs renew once with the stored token", async () => {
+    const names = stubLocks()
+    const a = await signedIn({ expiresIn: 0 })
+    const b = tab(a)
+    await b.load()
+    const tokens = await Promise.all([a.session.accessToken(), b.accessToken()])
+    expect(tokens).toEqual(["cat-1", "cat-1"])
+    expect(a.refreshes).toEqual(["crt-0"])
+    expect(names.every((name) => name === "wc.refresh")).toBe(true)
   })
 
-  test("session: refresh uses latest stored token", async () => {
-    const w = await signedInSession({ accessExpiresIn: 0 })
-    await w.store.setKV("account.refresh", "rt-from-other-tab")
-    await w.session.accessToken()
-    expect(w.tokenForms.at(-1)!.get("refresh_token")).toBe("rt-from-other-tab")
+  test("a tab with an old refresh token reads the new one", async () => {
+    stubLocks()
+    const a = await signedIn({ expiresIn: 0 })
+    const b = tab(a)
+    await b.load() // B read crt-0 before A renewed
+    expect(await a.session.accessToken()).toBe("cat-1")
+    a.clock.now += 3_600_000 // A's new access token is stale too
+    expect(await b.accessToken()).toBe("cat-2")
+    expect(a.refreshes).toEqual(["crt-0", "crt-1"]) // never crt-0 twice
+    expect(await a.store.getKV("account.device")).toEqual(device(a, 2))
   })
 
-  test("refreshUsesLatestStoredToken: a token stored while the request is out gets one retry after invalid_grant", async () => {
-    const w = await signedInSession({ accessExpiresIn: 0 })
-    let calls = 0
-    w.answer = async (form) => {
-      calls += 1
-      if (form.get("refresh_token") === "rt-0") {
-        await w.store.setKV("account.refresh", "rt-other") // the other tab renewed first
-        return reply({ error: "invalid_grant" }, 400)
-      }
-      return reply({ access_token: "at-retry", refresh_token: "rt-next", expires_in: 3600 })
-    }
-    expect(await w.session.accessToken()).toBe("at-retry")
-    expect(calls).toBe(2)
-    expect(w.tokenForms.map((f) => f.get("refresh_token"))).toEqual(["rt-0", "rt-other"])
-    expect(await w.store.getKV("account.refresh")).toBe("rt-next")
-    expect(w.session.state).toBe("signedIn")
+  test("a tab whose access token is stale uses the one another tab stored, without renewing", async () => {
+    const a = await signedIn({ expiresIn: 0 })
+    const b = tab(a)
+    await b.load()
+    expect(await a.session.accessToken()).toBe("cat-1")
+    expect(await b.accessToken()).toBe("cat-1")
+    expect(a.refreshes).toHaveLength(1)
   })
 
-  test("session: invalid_grant signs out without retry loop", async () => {
-    const w = await signedInSession({ accessExpiresIn: 0 })
-    let signedOutCalls = 0
-    w.session.onSignedOut(() => (signedOutCalls += 1))
-    w.answer = () => reply({ error: "invalid_grant" }, 400)
-    await expect(w.session.accessToken()).rejects.toThrow(OidcError)
+  test("renews under the IndexedDB lease when Web Locks are missing", async () => {
+    noLocks()
+    const a = await signedIn({ expiresIn: 0 })
+    const b = tab(a)
+    await b.load()
+    const tokens = await Promise.all([a.session.accessToken(), b.accessToken()])
+    expect(tokens).toEqual(["cat-1", "cat-1"])
+    expect(a.refreshes).toEqual(["crt-0"])
+    expect(await a.store.getKV("refresh.lease")).toBeNull() // released
+  })
+
+  test("the IndexedDB lease of another tab is waited for, and an expired one is taken over", async () => {
+    noLocks()
+    const w = await signedIn({ expiresIn: 0 })
+    await w.store.setKV("refresh.lease", { owner: "other-tab", until: w.clock.now + 30_000 })
+    const renewing = w.session.accessToken()
+    await sleep(150)
+    expect(w.refreshes).toHaveLength(0) // still waiting for the other tab
+    await w.store.deleteKV("refresh.lease")
+    expect(await renewing).toBe("cat-1")
+
+    await w.store.setKV("refresh.lease", { owner: "dead-tab", until: w.clock.now })
+    w.clock.now += 3_600_000
+    expect(await w.session.accessToken()).toBe("cat-2")
+    expect(w.refreshes).toEqual(["crt-0", "crt-1"])
+  })
+
+  test.each(["revoked", "unauthorized"])("revoked refresh signs out (%s), without a second try", async (code) => {
+    const w = await signedIn({ expiresIn: 0 })
+    const reasons: (string | null)[] = []
+    w.session.onSignedOut((reason) => reasons.push(reason))
+    w.refreshAnswer = () => reply({ error: code }, 401)
+    await expect(w.session.accessToken()).rejects.toMatchObject({ kind: "signed_out", message: REVOKED })
     expect(w.session.state).toBe("signedOut")
-    expect(await w.store.getKV("account.refresh")).toBeNull()
-    expect(await w.store.getKV("account.id_token")).toBeNull()
-    expect(w.tokenForms).toHaveLength(1)
-    expect(signedOutCalls).toBe(1)
+    expect(await w.store.getKV("account.device")).toBeNull()
+    expect(reasons).toEqual([REVOKED])
+    expect(w.refreshes).toEqual(["crt-0"])
+    expect(w.session.accountId).toBeNull()
     await expect(w.session.accessToken()).rejects.toMatchObject({ kind: "signed_out" })
-    expect(w.tokenForms).toHaveLength(1)
+    expect(w.refreshes).toHaveLength(1)
   })
 
-  test("a network failure keeps the tokens", async () => {
-    const w = await signedInSession({ accessExpiresIn: 0 })
-    w.answer = () => Promise.reject(new TypeError("offline"))
+  test("a network failure or a busy Cloud keeps the session", async () => {
+    const w = await signedIn({ expiresIn: 0 })
+    w.refreshAnswer = () => Promise.reject(new TypeError("offline"))
     await expect(w.session.accessToken()).rejects.toBeInstanceOf(NetworkError)
+    w.refreshAnswer = () => reply({ error: "busy" }, 503)
+    await expect(w.session.accessToken()).rejects.toMatchObject({ status: 503 })
     expect(w.session.state).toBe("signedIn")
-    expect(await w.store.getKV("account.refresh")).toBe("rt-0")
-    w.answer = () => reply({ access_token: "back", expires_in: 3600 })
-    expect(await w.session.accessToken()).toBe("back") // the failed renewal does not stay cached
+    expect(await w.store.getKV("account.device")).toEqual(device(w, 0, 0))
+    w.refreshAnswer = () => reply(device(w, 7))
+    expect(await w.session.accessToken()).toBe("cat-7") // the failed renewal does not stay cached
   })
 
   test("the renewal runs inside the 'wc.refresh' Web Lock when the browser has locks", async () => {
-    const names: string[] = []
-    vi.stubGlobal("navigator", {
-      ...globalThis.navigator,
-      locks: { request: async (name: string, callback: () => Promise<unknown>) => (names.push(name), callback()) },
-    })
-    const w = await signedInSession({ accessExpiresIn: 0 })
+    const names = stubLocks()
+    const w = await signedIn({ expiresIn: 0 })
     await w.session.accessToken()
     expect(names).toEqual(["wc.refresh"])
   })
 
-  test("a sign-out during a renewal wins", async () => {
-    const w = await signedInSession({ accessExpiresIn: 0 })
+  test("a renewal that returns after another tab signed out does not bring the session back", async () => {
+    const a = await signedIn()
+    const b = tab(a)
+    await b.load()
     let release: () => void = () => {}
-    w.answer = () => new Promise<Response>((resolve) => (release = () => resolve(reply({ access_token: "late", refresh_token: "rt-late", expires_in: 3600 }))))
-    const pending = w.session.accessToken()
-    pending.catch(() => {})
-    await vi.waitFor(() => expect(w.tokenForms).toHaveLength(1))
-    await w.session.signOut()
+    a.refreshAnswer = () => new Promise<Response>((resolve) => (release = () => resolve(reply(device(a, 1)))))
+    const renewing = b.accessTokenRefused("cat-0") // tab B renews, its request is out
+    await vi.waitFor(() => expect(a.refreshes).toHaveLength(1))
+    await a.session.signOut() // tab A: its access token is fresh, nothing to wait for
     release()
-    await expect(pending).rejects.toMatchObject({ kind: "signed_out" })
-    expect(await w.store.getKV("account.refresh")).toBeNull()
+    await renewing
+    expect(b.state).toBe("signedOut")
+    expect(await a.store.getKV("account.device")).toBeNull()
+    // The rotated session is nobody's: the device goes with its new token.
+    await vi.waitFor(() => expect(a.removals.map((r) => r.bearer)).toEqual(["cat-0", "cat-1"]))
+  })
+
+  test("a 401 from the Cloud forces a renewal", async () => {
+    const w = await signedIn()
+    await w.session.accessTokenRefused("cat-0")
+    expect(w.refreshes).toEqual(["crt-0"])
+    expect(await w.session.accessToken()).toBe("cat-1")
+    expect(w.session.state).toBe("signedIn")
+  })
+
+  test("a 401 from the Cloud after another tab signed out signs this tab out", async () => {
+    const w = await signedIn()
+    const reasons: (string | null)[] = []
+    w.session.onSignedOut((reason) => reasons.push(reason))
+    await w.store.deleteKV("account.device") // the other tab signed out
+    await w.session.accessTokenRefused("cat-0")
     expect(w.session.state).toBe("signedOut")
+    expect(w.refreshes).toHaveLength(0)
+    expect(reasons).toEqual([null])
+  })
+
+  test("a 401 for a token another tab already replaced uses the stored one", async () => {
+    const w = await signedIn()
+    await w.store.setKV("account.device", device(w, 5))
+    await w.session.accessTokenRefused("cat-0")
+    expect(await w.session.accessToken()).toBe("cat-5")
+    expect(w.refreshes).toHaveLength(0)
+  })
+
+  test("serverToken: asks the Cloud with the access token, and a 401 forces a renewal", async () => {
+    const w = await signedIn()
+    let refuse = true
+    const asked = mockFetch((url, init) => {
+      if (url !== `${CLOUD}/v1/server-tokens`) return w.fetch(url, init)
+      if (refuse) return reply({ error: "unauthorized" }, 401)
+      return reply({ token: "per-server", audience: "https://home.example.com", expires_at: 99 })
+    })
+    const session = new AccountSession(new CloudClient(`${CLOUD}/`, asked), w.store, { fetchImpl: asked, now: () => w.clock.now, origin: ORIGIN })
+    await session.load()
+    expect(session.cloudUrl).toBe(CLOUD)
+    await expect(session.serverToken("https://Home.Example.com:443/")).rejects.toMatchObject({ status: 401 })
+    expect(w.refreshes).toEqual(["crt-0"])
+    refuse = false
+    const result = await session.serverToken("https://Home.Example.com:443/")
+    expect(result.token).toBe("per-server")
+    const call = asked.calls.filter((c) => c.url.endsWith("/v1/server-tokens")).at(-1)!
+    expect((call.init.headers as Record<string, string>).Authorization).toBe("Bearer cat-1")
+    expect(JSON.parse(call.init.body as string)).toEqual({ audience: "https://home.example.com" })
+  })
+})
+
+describe("migration from the Zitadel session", () => {
+  test("migrates a Zitadel session once", async () => {
+    const w = await zitadelWorld()
+    await w.session.load()
+    expect(w.session.state).toBe("signedIn")
+    expect(w.tokenForms.map((f) => [f.get("grant_type"), f.get("refresh_token")])).toEqual([["refresh_token", "zrt-old"]])
+    expect(w.exchanges).toEqual([{ bearer: "zat-1", body: { device: { name: browserDeviceName(navigator.userAgent), platform: "web" } } }])
+    expect(await w.store.getKV("account.device")).toEqual(device(w, 0))
+    expect(await w.store.getKV("account.refresh")).toBeNull()
+    expect(await w.store.getKV("account.id_token")).toBeNull()
+    expect(await w.session.accessToken()).toBe("cat-0")
+    await vi.waitFor(() => expect(w.revokes.map((r) => r.get("token"))).toEqual(["zrt-1"])) // best effort
+
+    const next = tab(w)
+    await next.load()
+    expect(next.state).toBe("signedIn")
+    expect(w.tokenForms).toHaveLength(1)
+    expect(w.exchanges).toHaveLength(1)
+  })
+
+  test("two tabs opening together migrate once", async () => {
+    stubLocks()
+    const w = await zitadelWorld()
+    const b = tab(w)
+    await Promise.all([w.session.load(), b.load()])
+    expect(w.session.state).toBe("signedIn")
+    expect(b.state).toBe("signedIn")
+    expect(w.tokenForms).toHaveLength(1)
+    expect(w.exchanges).toHaveLength(1)
+  })
+
+  test("a dead Zitadel session signs out without creating anything", async () => {
+    const w = await zitadelWorld()
+    w.answer = () => reply({ error: "invalid_grant" }, 400)
+    await w.session.load()
+    expect(w.session.state).toBe("signedOut")
+    expect(w.exchanges).toHaveLength(0)
+    expect(await w.store.getKV("account.refresh")).toBeNull()
+    expect(await w.store.getKV("account.id_token")).toBeNull()
+    expect(await w.store.getKV("account.device")).toBeNull()
+  })
+
+  test("offline migration keeps the old session for later", async () => {
+    const w = await zitadelWorld()
+    w.answer = () => Promise.reject(new TypeError("offline"))
+    await w.session.load()
+    expect(w.session.state).toBe("signedOut")
+    expect(w.exchanges).toHaveLength(0)
+    expect(await w.store.getKV("account.refresh")).toBe("zrt-old")
+    expect(await w.store.getKV("account.id_token")).toBe("idt-old")
+
+    w.answer = () => reply({ access_token: "zat-back", refresh_token: "zrt-back", expires_in: 3600 })
+    const later = tab(w)
+    await later.load()
+    expect(later.state).toBe("signedIn")
+    expect(w.exchanges.map((e) => e.bearer)).toEqual(["zat-back"])
+  })
+
+  test.each([
+    ["403 limit", () => reply({ error: "limit" }, 403)],
+    ["401 stale_token", () => reply({ error: "stale_token" }, 401)],
+    ["503", () => reply({ error: "unavailable" }, 503)],
+    ["404 not_configured", () => reply({ error: "not_configured" }, 404)],
+    ["offline", () => Promise.reject(new TypeError("offline"))],
+  ])("migration keeps the renewed Zitadel token when /v1/devices fails (%s)", async (_name, answer) => {
+    const w = await zitadelWorld()
+    w.exchangeAnswer = answer
+    await w.session.load()
+    expect(w.session.state).toBe("signedOut")
+    expect(w.exchanges).toHaveLength(1)
+    expect(await w.store.getKV("account.refresh")).toBe("zrt-1") // the rotated one, stored before the exchange
+    expect(await w.store.getKV("account.id_token")).toBe("idt-old")
+    expect(await w.store.getKV("account.device")).toBeNull()
+    expect(w.revokes).toHaveLength(0)
+  })
+
+  test("a migration slower than 5 s leaves this opening signed out and deletes nothing", async () => {
+    const w = await zitadelWorld()
+    let release: () => void = () => {}
+    w.exchangeAnswer = () => new Promise<Response>((resolve) => (release = () => resolve(reply({ ...device(w, 0), key_set: false }, 201))))
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    let loaded = false
+    const loading = w.session.load().then(() => (loaded = true))
+    await until(() => w.exchanges.length === 1)
+    await vi.advanceTimersByTimeAsync(4_900)
+    expect(loaded).toBe(false)
+    await vi.advanceTimersByTimeAsync(200)
+    await loading
+    expect(w.session.state).toBe("signedOut")
+    expect(await w.store.getKV("account.refresh")).toBe("zrt-1")
+    expect(await w.store.getKV("account.id_token")).toBe("idt-old")
+    vi.useRealTimers()
+    // The Cloud created the device after all: it is kept for the next opening, not lost.
+    release()
+    await vi.waitFor(async () => expect(await w.store.getKV("account.device")).toEqual(device(w, 0)))
+    await vi.waitFor(async () => expect(await w.store.getKV("account.refresh")).toBeNull())
+    expect(w.session.state).toBe("signedOut")
+  })
+
+  test("with a device stored, Zitadel leftovers are deleted", async () => {
+    const w = await signedIn()
+    await w.store.setKV("account.refresh", "zrt-old")
+    await w.store.setKV("account.id_token", "idt-old")
+    const other = tab(w)
+    await other.load()
+    expect(other.state).toBe("signedIn")
+    expect(await w.store.getKV("account.refresh")).toBeNull()
+    expect(await w.store.getKV("account.id_token")).toBeNull()
+    expect(w.tokenForms).toHaveLength(0)
+    expect(w.exchanges).toHaveLength(0)
   })
 })
 
 describe("signOut", () => {
-  test("signOutRevokesAndReturnsEndSession", async () => {
-    const w = await signedInSession()
-    let signedOutCalls = 0
-    w.session.onSignedOut(() => (signedOutCalls += 1))
-    const url = new URL((await w.session.signOut())!)
+  test("sign out deletes this device and forgets the session", async () => {
+    const w = await signedIn()
+    const reasons: (string | null)[] = []
+    let changes = 0
+    w.session.onSignedOut((reason) => reasons.push(reason))
+    w.session.onStateChange(() => (changes += 1))
+    expect(await w.session.signOut()).toBeNull()
+    expect(w.removals).toEqual([{ path: "/v1/devices/dev-1", bearer: "cat-0" }])
     expect(w.session.state).toBe("signedOut")
-    expect(await w.store.getKV("account.refresh")).toBeNull()
-    expect(await w.store.getKV("account.id_token")).toBeNull()
-    expect(w.revokes.map((r) => Object.fromEntries(r))).toEqual([{ token: "rt-0", client_id: "pwa-client" }])
-    expect(url.origin + url.pathname).toBe(`${ISSUER}/oidc/v1/end_session`)
-    expect(Object.fromEntries(url.searchParams)).toEqual({ client_id: "pwa-client", post_logout_redirect_uri: `${ORIGIN}/`, id_token_hint: "idt-0" })
-    expect(signedOutCalls).toBe(1)
+    expect(w.session.deviceId).toBeNull()
+    expect(await w.store.getKV("account.device")).toBeNull()
+    expect(reasons).toEqual([null])
+    expect(changes).toBe(1)
+    expect(w.fetch.calls.some((c) => c.url.includes("end_session") || c.url === REVOKE)).toBe(false)
     await expect(w.session.accessToken()).rejects.toMatchObject({ kind: "signed_out" })
   })
 
-  test("signOutRevokesBeforeNavigating: the revocation has been answered when signOut returns", async () => {
-    const w = await signedInSession()
-    let answered = false
-    w.revokeAnswer = async () => {
-      await new Promise((resolve) => setTimeout(resolve, 20))
-      answered = true
-      return new Response(null, { status: 200 })
-    }
+  test("sign out renews a stale access token first", async () => {
+    const w = await signedIn({ expiresIn: 0 })
     await w.session.signOut()
-    expect(answered).toBe(true)
-    expect(w.fetch.calls.find((c) => c.url === REVOKE)!.init.keepalive).toBe(true)
+    expect(w.refreshes).toEqual(["crt-0"])
+    expect(w.removals).toEqual([{ path: "/v1/devices/dev-1", bearer: "cat-1" }])
+    expect(await w.store.getKV("account.device")).toBeNull()
   })
 
-  test("signOutRevokesBeforeNavigating: a revocation that hangs is given up after 2 s", async () => {
-    const w = await signedInSession()
-    w.revokeAnswer = () => new Promise<Response>(() => {})
-    vi.useFakeTimers()
-    const result = w.session.signOut()
+  test("sign out waits for a renewal already out and deletes the device with its token", async () => {
+    const w = await signedIn({ expiresIn: 0 })
+    let release: () => void = () => {}
+    w.refreshAnswer = () => new Promise<Response>((resolve) => (release = () => resolve(reply(device(w, 1)))))
+    const renewing = w.session.accessToken()
+    await vi.waitFor(() => expect(w.refreshes).toHaveLength(1))
+    const signingOut = w.session.signOut()
+    release()
+    expect(await renewing).toBe("cat-1")
+    await signingOut
+    expect(w.removals.map((r) => r.bearer)).toEqual(["cat-1"])
+    expect(w.session.state).toBe("signedOut")
+    expect(await w.store.getKV("account.device")).toBeNull()
+  })
+
+  test("sign out gives up on the Cloud after 2 s", async () => {
+    const w = await signedIn()
+    w.removeAnswer = () => new Promise<Response>(() => {})
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
     let done = false
-    void result.then(() => (done = true))
+    const result = w.session.signOut().then(() => (done = true))
+    await until(() => w.removals.length === 1)
     await vi.advanceTimersByTimeAsync(1_900)
     expect(done).toBe(false)
     await vi.advanceTimersByTimeAsync(200)
-    expect(done).toBe(true)
-    expect(await result).toContain("end_session")
+    await result
     expect(w.session.state).toBe("signedOut")
+    expect(await w.store.getKV("account.device")).toBeNull()
   })
 
-  test("a failed revocation does not stop the sign-out", async () => {
-    const w = await signedInSession()
-    w.revokeAnswer = () => Promise.reject(new TypeError("offline"))
-    expect(await w.session.signOut()).toContain("end_session")
+  test("sign out without the Cloud still forgets the session, and its Zitadel leftovers", async () => {
+    const w = await signedIn()
+    w.removeAnswer = () => Promise.reject(new TypeError("offline"))
+    await w.store.setKV("account.refresh", "zrt-old")
+    expect(await w.session.signOut()).toBeNull()
     expect(w.session.state).toBe("signedOut")
-    expect(await w.store.getKV("account.refresh")).toBeNull()
-  })
-
-  test("signOut: the tokens go even when the provider cannot be reached", async () => {
-    const w = await signedInSession()
-    const offline = mockFetch(() => Promise.reject(new TypeError("offline")))
-    const fresh = new AccountSession(new CloudClient(CLOUD, offline), w.store, { fetchImpl: offline, origin: ORIGIN })
-    await fresh.load()
-    expect(await fresh.signOut()).toBeNull()
-    expect(fresh.state).toBe("signedOut")
+    expect(await w.store.getKV("account.device")).toBeNull()
     expect(await w.store.getKV("account.refresh")).toBeNull()
   })
 
@@ -410,8 +710,8 @@ describe("signOut", () => {
     const w = await world()
     let calls = 0
     w.session.onSignedOut(() => (calls += 1))
-    expect(await w.session.signOut()).toContain("end_session")
-    expect(w.revokes).toHaveLength(0)
+    expect(await w.session.signOut()).toBeNull()
+    expect(w.removals).toHaveLength(0)
     expect(calls).toBe(0)
   })
 
@@ -429,12 +729,12 @@ describe("signOut", () => {
     await other.load() // signed out in the database: nothing changed
     expect(loads).toBe(0)
     off()
-    await w.session.beginSignIn()
+    await w.session.adoptWebSession(device(w, 3))
     expect(calls).toBe(2)
   })
 
   test("onSignedOut: the returned function unsubscribes", async () => {
-    const w = await signedInSession()
+    const w = await signedIn()
     let calls = 0
     const off = w.session.onSignedOut(() => (calls += 1))
     off()
@@ -443,80 +743,30 @@ describe("signOut", () => {
   })
 })
 
-const tab = (w: World) => new AccountSession(new CloudClient(CLOUD, w.fetch), w.store, { fetchImpl: w.fetch, now: () => w.clock.now, origin: ORIGIN })
-
-/** A Web Locks stand-in: requests for one name run one after the other. */
-function stubLocks(): string[] {
-  const names: string[] = []
-  let tail: Promise<unknown> = Promise.resolve()
-  vi.stubGlobal("navigator", {
-    ...globalThis.navigator,
-    locks: {
-      request: (name: string, callback: () => Promise<unknown>) => {
-        names.push(name)
-        const run = tail.then(callback, callback)
-        tail = run.catch(() => {})
-        return run
-      },
-    },
-  })
-  return names
-}
-
-describe("two tabs", () => {
-  test("signOutInOtherTabWinsOverRenewal: a renewal that returns after another tab signed out does not save its token", async () => {
-    const a = await signedInSession({ accessExpiresIn: 0 })
-    const b = tab(a)
-    await b.load()
-    let release: () => void = () => {}
-    a.answer = () => new Promise<Response>((resolve) => (release = () => resolve(reply({ access_token: "b-at", refresh_token: "rt-2", expires_in: 3600 }))))
-    const renewing = b.accessToken()
-    renewing.catch(() => {})
-    await vi.waitFor(() => expect(a.tokenForms).toHaveLength(1))
-    await a.session.signOut() // tab A: deletes and revokes rt-0
-    release()
-    await expect(renewing).rejects.toMatchObject({ kind: "signed_out" })
-    expect(await a.store.getKV("account.refresh")).toBeNull()
-    expect(b.state).toBe("signedOut")
-    const fresh = tab(a)
-    await fresh.load()
-    expect(fresh.state).toBe("signedOut")
-    await vi.waitFor(() => expect(a.revokes.map((r) => r.get("token"))).toEqual(["rt-0", "rt-2"]))
+describe("secrets", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "log")
+    vi.spyOn(console, "error")
+    vi.spyOn(console, "warn")
+    vi.spyOn(console, "info")
+    vi.spyOn(console, "debug")
   })
 
-  test("with Web Locks the sign-out waits for the renewal and revokes the token it stored", async () => {
-    const names = stubLocks()
-    const a = await signedInSession({ accessExpiresIn: 0 })
-    const b = tab(a)
-    await b.load()
-    let release: () => void = () => {}
-    a.answer = () => new Promise<Response>((resolve) => (release = () => resolve(reply({ access_token: "b-at", refresh_token: "rt-2", expires_in: 3600 }))))
-    const renewing = b.accessToken()
-    await vi.waitFor(() => expect(a.tokenForms).toHaveLength(1))
-    const signingOut = a.session.signOut()
-    await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(a.revokes).toHaveLength(0) // still waiting for the lock
-    release()
-    expect(await renewing).toBe("b-at")
-    await signingOut
-    expect(a.revokes.map((r) => r.get("token"))).toEqual(["rt-2"])
-    expect(await a.store.getKV("account.refresh")).toBeNull()
-    expect(names).toContain("wc.refresh")
+  test("nothing reaches the console", async () => {
+    const w = await signedIn({ expiresIn: 0 })
+    await w.session.accessToken()
+    w.refreshAnswer = () => reply({ error: "revoked" }, 401)
+    w.clock.now += 3_600_000
+    await w.session.accessToken().catch(() => {})
+    const z = await zitadelWorld()
+    z.exchangeAnswer = () => reply({ error: "limit" }, 403)
+    await z.session.load()
+    for (const method of ["log", "error", "warn", "info", "debug"] as const) expect(console[method]).not.toHaveBeenCalled()
+    vi.restoreAllMocks()
   })
+})
 
-  test("a renewal superseded by a sign-out in the same tab revokes the rotated token", async () => {
-    const w = await signedInSession({ accessExpiresIn: 0 })
-    let release: () => void = () => {}
-    w.answer = () => new Promise<Response>((resolve) => (release = () => resolve(reply({ access_token: "late", refresh_token: "rt-late", expires_in: 3600 }))))
-    const renewing = w.session.accessToken()
-    renewing.catch(() => {})
-    await vi.waitFor(() => expect(w.tokenForms).toHaveLength(1))
-    await w.session.signOut()
-    release()
-    await expect(renewing).rejects.toMatchObject({ kind: "signed_out" })
-    await vi.waitFor(() => expect(w.revokes.map((r) => r.get("token"))).toContain("rt-late"))
-  })
-
+describe("discovery", () => {
   test("concurrent first calls fetch discovery once, and a failed discovery is not cached", async () => {
     const w = await world()
     let fail = true
@@ -535,41 +785,3 @@ describe("two tabs", () => {
     expect(flaky.calls.filter((c) => c.url === `${CLOUD}/v1/config`)).toHaveLength(1)
   })
 })
-
-describe("secrets", () => {
-  beforeEach(() => {
-    vi.spyOn(console, "log")
-    vi.spyOn(console, "error")
-    vi.spyOn(console, "warn")
-    vi.spyOn(console, "info")
-    vi.spyOn(console, "debug")
-  })
-
-  test("nothing reaches the console", async () => {
-    const w = await signedInSession({ accessExpiresIn: 0 })
-    await w.session.accessToken()
-    w.answer = () => reply({ error: "invalid_grant" }, 400)
-    w.clock.now += 3_600_000
-    await w.session.accessToken().catch(() => {})
-    for (const method of ["log", "error", "warn", "info", "debug"] as const) expect(console[method]).not.toHaveBeenCalled()
-    vi.restoreAllMocks()
-  })
-})
-
-describe("server tokens", () => {
-  test("serverTokenAsksTheCloudWithTheAccessToken", async () => {
-    const w = await signedInSession()
-    const asked = mockFetch((url) =>
-      url === `${CLOUD}/v1/config` ? reply(w.config) : url === `${CLOUD}/v1/server-tokens` ? reply({ token: "per-server", audience: "https://home.example.com", expires_at: 99 }) : new Response("no", { status: 404 }),
-    )
-    const session = new AccountSession(new CloudClient(`${CLOUD}/`, asked), w.store, { fetchImpl: w.fetch, now: () => w.clock.now, origin: ORIGIN })
-    await session.load()
-    expect(session.cloudUrl).toBe(CLOUD)
-    const result = await session.serverToken("https://Home.Example.com:443/")
-    expect(result.token).toBe("per-server")
-    const call = asked.calls.find((c) => c.url.endsWith("/v1/server-tokens"))!
-    expect((call.init.headers as Record<string, string>).Authorization).toMatch(/^Bearer .+/)
-    expect(JSON.parse(call.init.body as string)).toEqual({ audience: "https://home.example.com" })
-  })
-})
-

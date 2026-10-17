@@ -8,7 +8,7 @@ import type { ServerChange, ServersModel, ServerStorage } from "../models/server
 import type { AccountSession } from "./session"
 
 /** What the mirror needs from the sign-in: the state, a fresh access token and the Cloud client. */
-export type AgendaSession = Pick<AccountSession, "state" | "accessToken" | "cloudClient">
+export type AgendaSession = Pick<AccountSession, "state" | "accessToken" | "accessTokenRefused" | "cloudClient">
 
 /** What the mirror needs from the servers list: a client per saved server (to read its agents). */
 export type AgendaServers = Pick<ServersModel, "client">
@@ -31,6 +31,10 @@ type Outcome = "done" | "failed" | "stale" | "signedOut"
 
 function isSignedOut(error: unknown): boolean {
   return error instanceof OidcError && error.kind === "signed_out"
+}
+
+function isUnauthorized(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 401
 }
 
 function characters(text: string): string[] {
@@ -77,6 +81,8 @@ export class AgendaSync implements AgendaControl {
   readonly #store: AgendaStore
   readonly #noticeListeners = new Set<() => void>()
   #notice: string | null = null
+  /** The access token of the last Cloud call: a `401` to it makes the session renew (or sign out). */
+  #lastToken: string | null = null
   /** Bumped by `invalidate()`; a job of an older generation writes nothing. */
   #generation = 0
   /** The last job queued; each job waits for the one before it. */
@@ -218,6 +224,7 @@ export class AgendaSync implements AgendaControl {
       return entries.filter((entry) => parseServerAddress(entry.url) !== null && !local.some((url) => sameUrl(url, entry.url)))
     } catch (error) {
       if (generation !== this.#generation) return []
+      this.#refusedToken(error)
       if (isSignedOut(error)) this.#signedOut()
       else this.#setNotice(READ_NOTICE)
       return []
@@ -266,6 +273,7 @@ export class AgendaSync implements AgendaControl {
     } catch (error) {
       // A stale job's failure is nobody's business.
       if (generation !== this.#generation || error instanceof Stale) return "stale"
+      this.#refusedToken(error)
       if (isSignedOut(error)) return "signedOut"
       return "failed" // the error is not kept: it says nothing the user can act on
     }
@@ -288,7 +296,14 @@ export class AgendaSync implements AgendaControl {
   }
 
   async #token(): Promise<string> {
-    return this.#session.accessToken()
+    const token = await this.#session.accessToken()
+    this.#lastToken = token
+    return token
+  }
+
+  /** The Cloud refused the access token (deleted in another tab, say): the session renews, or signs out. */
+  #refusedToken(error: unknown): void {
+    if (isUnauthorized(error) && this.#lastToken !== null) void this.#session.accessTokenRefused(this.#lastToken)
   }
 
   #serverUpserted(id: string): void {

@@ -61,6 +61,10 @@ function world(
       if (this.tokenError !== null) throw this.tokenError
       return "access-token"
     },
+    refused: [] as string[],
+    async accessTokenRefused(token: string): Promise<void> {
+      this.refused.push(token)
+    },
     cloudClient: new CloudClient(CLOUD, cloudFetch),
   }
   const serverFetch = mockFetch((url) => {
@@ -247,6 +251,15 @@ describe("AgendaSync", () => {
     expect((await w.agenda.fromAccount()).map((s) => s.id)).toEqual(["c2"])
     w.session.state = "signedOut"
     expect(await w.agenda.fromAccount()).toEqual([])
+  })
+
+  test("a 401 from the Cloud makes the session renew the access token it sent", async () => {
+    const w = world([saved()], () => json({ error: "unauthorized", message: "x" }, 401))
+    w.agenda.serverChanged(change("updated", saved()))
+    await w.agenda.idle()
+    expect(w.session.refused).toEqual(["access-token"])
+    expect(await w.agenda.fromAccount()).toEqual([])
+    expect(w.session.refused).toEqual(["access-token", "access-token"])
   })
 
   test("fromAccount failure sets the read notice and shows nothing", async () => {

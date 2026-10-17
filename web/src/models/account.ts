@@ -1,5 +1,5 @@
 import { OidcError } from "../api/oidc"
-import type { CloudClient } from "../api/cloud"
+import type { CloudClient, DeviceSession } from "../api/cloud"
 import type { AccountSession } from "../account/session"
 import { canonical, parseServerAddress } from "../lib/address"
 import { ApiError, NetworkError, TimeoutError } from "../lib/errors"
@@ -27,7 +27,10 @@ export interface AccountState {
 }
 
 /** What the account screens need from the sign-in (the real `AccountSession`, or a stand-in in a test). */
-export type AccountSessionPort = Pick<AccountSession, "state" | "beginSignIn" | "completeSignIn" | "signOut" | "accessToken" | "onSignedOut"> & {
+export type AccountSessionPort = Pick<
+  AccountSession,
+  "state" | "accountId" | "deviceId" | "beginSignIn" | "completeSignIn" | "adoptWebSession" | "signOut" | "accessToken" | "onSignedOut"
+> & {
   config(): Promise<{ issuer: string }>
 }
 
@@ -57,7 +60,7 @@ export interface AccountOptions {
   cloud?: Pick<CloudClient, "deleteAccount"> | null
   /** Told when the account leaves, so the servers lose their account links (their tokens stay). */
   servers?: Pick<ServersModel, "forgetAccount"> | null
-  /** Leaves the page for an address (the sign-in page, the end-session page). */
+  /** Leaves the page for an address (the email sign-in page). */
   assign?: (url: string) => void
 }
 
@@ -67,6 +70,8 @@ const NOT_SET_UP = "wristcall Cloud isn't set up for this app."
 const CLOUD_DOWN = "Can't reach wristcall Cloud."
 const DELETE_FAILED = "Can't delete the account now. "
 const CALLBACK_PATH = "/auth/callback"
+/** Where a sign-in lands, unless a server link waited for it (`takePendingLink`). */
+const HOME_PATH = "/agents"
 
 const CODE_SHAPE = /^([A-Za-z0-9]{4})[ -]?([A-Za-z0-9]{4})$/
 
@@ -105,8 +110,9 @@ function isSignedOut(error: unknown): boolean {
 }
 
 /**
- * The central account in this browser: sign in (a full-page redirect), the callback, sign out, deletion, and the
- * watch sign-in page. Optional: without a Cloud (`session` null) the screen is `unavailable` and nothing here acts.
+ * The central account in this browser: sign in (email, a full-page redirect, or a device session handed over by the
+ * QR sign-in), the callback, sign out, deletion, and the watch sign-in page. Optional: without a Cloud (`session` null)
+ * the screen is `unavailable` and nothing here acts.
  */
 export class AccountModel extends BaseModel<AccountState> {
   readonly agenda: AgendaControl | null
@@ -128,7 +134,7 @@ export class AccountModel extends BaseModel<AccountState> {
     this.#cloud = opts.cloud ?? null
     this.#servers = opts.servers ?? null
     this.#assign = opts.assign ?? ((url) => globalThis.location.assign(url))
-    session?.onSignedOut(() => void this.#sessionEnded())
+    session?.onSignedOut((reason) => void this.#sessionEnded(reason))
   }
 
   /** At opening: a stored session mirrors the servers to the agenda. */
@@ -149,8 +155,21 @@ export class AccountModel extends BaseModel<AccountState> {
   }
 
   /**
+   * A device session the Cloud handed over (the QR sign-in): signed in, the agenda mirrored, and the Agents screen
+   * opens (or the server link that waited for the sign-in).
+   */
+  async adopt(device: DeviceSession): Promise<void> {
+    const session = this.#session
+    if (session === null) return
+    await session.adoptWebSession(device)
+    this.set({ screen: "signedIn", error: null })
+    this.agenda?.pushAll()
+    replaceRoute(hasPendingLink() ? "/link" : HOME_PATH)
+  }
+
+  /**
    * The callback route: trades the code (once, even if called twice), clears it from the address bar and opens
-   * Settings, or the server link that waited for the sign-in. A failure stays on the callback route, without the query, and shows the reason.
+   * Agents, or the server link that waited for the sign-in. A failure stays on the callback route, without the query, and shows the reason.
    */
   completeSignIn(href: string): Promise<void> {
     this.#completing ??= this.#complete(href).finally(() => {
@@ -173,13 +192,13 @@ export class AccountModel extends BaseModel<AccountState> {
     }
     this.set({ screen: "signedIn" })
     // A server link opened before the sign-in: its screen takes it (`takePendingLink`).
-    replaceRoute(hasPendingLink() ? "/link" : "/settings")
+    replaceRoute(hasPendingLink() ? "/link" : HOME_PATH)
     this.agenda?.pushAll()
   }
 
   /**
-   * Deletes the tokens, revokes the refresh token and opens the provider's end-session page (so the next sign-in can
-   * pick another user). The servers and their tokens stay. Can wait for a renewal in another tab: `busy` shows it.
+   * Deletes this browser's device at the Cloud (best effort, 2 s) and forgets the session; no provider page opens. The
+   * servers and their tokens stay. Can wait for a renewal in another tab: `busy` shows it.
    */
   async signOut(): Promise<void> {
     if (this.#session === null || this.state.busy || this.state.screen !== "signedIn") return
@@ -203,7 +222,7 @@ export class AccountModel extends BaseModel<AccountState> {
       this.agenda?.resume()
       if (isSignedOut(error)) {
         this.set({ busy: false })
-        await this.#sessionEnded()
+        await this.#sessionEnded(null) // the session told its reason already, if it had one
         return
       }
       this.set({ busy: false, error: DELETE_FAILED + message(error) })
@@ -222,11 +241,10 @@ export class AccountModel extends BaseModel<AccountState> {
     this.#leaving = true
     // First: a mirror still running must not write to the agenda once the tokens are gone.
     this.agenda?.suspend()
-    let endSession: string | null = null
     try {
-      endSession = await session.signOut()
+      await session.signOut()
     } catch {
-      // The tokens here are gone whatever happened at the provider.
+      // The session here is gone whatever happened at the Cloud.
     }
     try {
       await this.#servers?.forgetAccount()
@@ -238,13 +256,11 @@ export class AccountModel extends BaseModel<AccountState> {
     this.#issuerLoading = null
     this.set({ screen: "signedOut", busy: false, error: null, watch: "idle", issuerReady: false, issuerError: null })
     this.agenda?.resume()
-    // The page leaves for the provider's end-session page; the app is signed out already.
-    if (endSession !== null) this.#assign(endSession)
   }
 
-  /** The session ended on its own (the renewal was refused): the tokens are gone already. */
-  async #sessionEnded(): Promise<void> {
-    if (this.#leaving || this.state.screen === "signedOut" || this.state.screen === "unavailable") return
+  /** The session ended on its own (the Cloud deleted the device, or another tab signed out): the tokens are gone already. */
+  async #sessionEnded(reason: string | null): Promise<void> {
+    if (this.#leaving || (this.state.screen !== "signedIn" && this.state.screen !== "signingIn")) return
     this.agenda?.suspend()
     try {
       await this.#servers?.forgetAccount()
@@ -253,7 +269,7 @@ export class AccountModel extends BaseModel<AccountState> {
     }
     this.#issuer = null
     this.#issuerLoading = null
-    this.set({ screen: "signedOut", busy: false, error: null, watch: "idle", issuerReady: false, issuerError: null })
+    this.set({ screen: reason === null ? "signedOut" : { failed: reason }, busy: false, error: null, watch: "idle", issuerReady: false, issuerError: null })
     this.agenda?.resume()
   }
 
