@@ -14,14 +14,15 @@ struct WatchStripTests {
         .init(server: server, agents: (0..<agents).map { .sample(slug: "a\($0)") }, error: nil)
     }
 
-    /// `account` is the watch's (`.none`: a 0.4.0 watch, which sends none); `mine` is the iPhone's.
+    /// `account` is the watch's (`.none`: a 0.4.0 watch, which sends none); `mine` is the iPhone's; `cloud`:
+    /// whether this iPhone build has a Cloud.
     private func kind(
-        paired: Bool = true, installed: Bool = true, account: String?? = .none, mine: String? = "acc_1",
-        watch: Set<String>, sections: [AllAgentsModel.Section], at: Date? = nil
+        paired: Bool = true, installed: Bool = true, cloud: Bool = true, account: String?? = .none,
+        mine: String? = "acc_1", watch: Set<String>, sections: [AllAgentsModel.Section], at: Date? = nil
     ) -> WatchStripState.Kind {
         WatchStripState.make(
-            paired: paired, appInstalled: installed, watchAccount: account, myAccount: mine, watchServers: watch,
-            sections: sections, lastContextAt: at)
+            paired: paired, appInstalled: installed, cloudAvailable: cloud, watchAccount: account, myAccount: mine,
+            watchServers: watch, sections: sections, lastContextAt: at)
     }
 
     @Test func hiddenWithoutAPairedWatch() {
@@ -79,6 +80,16 @@ struct WatchStripTests {
         #expect(kind(account: .none, watch: [homeCanonical], sections: [section(home, agents: 2)], at: at)
             == .synced(agents: 2, at: at))
         #expect(kind(installed: false, account: .some("acc_1"), watch: [homeCanonical], sections: []) == .openOnWatch)
+    }
+
+    @Test func withoutCloudTheWatchAccountIsIgnored() {
+        // A build without Cloud has no account: a new watch (which sends "") is judged by its servers alone.
+        let at = Date(timeIntervalSince1970: 100)
+        #expect(kind(cloud: false, account: .some(nil), mine: nil, watch: [homeCanonical], sections: [section(home, agents: 2)], at: at)
+            == .synced(agents: 2, at: at))
+        #expect(kind(cloud: false, account: .some("acc_2"), mine: nil, watch: [homeCanonical], sections: [section(home, agents: 2)], at: at)
+            == .synced(agents: 2, at: at))
+        #expect(kind(cloud: false, account: .some(nil), mine: nil, watch: [], sections: [section(home, agents: 2)]) == .openOnWatch)
     }
 
     @Test func syncedTextSaysHowLongAgo() {

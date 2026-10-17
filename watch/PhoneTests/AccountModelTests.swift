@@ -709,6 +709,24 @@ struct AccountModelTests {
         #expect(requests("POST", "/v1/devices/enroll-codes").count == 3)
     }
 
+    /// The watch reports this account: the code it was sent is likely spent, so the next publish asks for a new one.
+    @Test func enrollCodeIsDroppedOnceTheWatchIsInTheAccount() async throws {
+        let (rig, session, link) = await watchRig()
+        await rig.model.publishWatchCode()
+        #expect(requests("POST", "/v1/devices/enroll-codes").count == 1)
+        // Another account on the watch: the code is still good for it.
+        link.contextReceived(WatchLinkContext(servers: [], account: "acc_2"))
+        await rig.model.publishWatchCode()
+        #expect(requests("POST", "/v1/devices/enroll-codes").count == 1)
+
+        link.contextReceived(WatchLinkContext(servers: [], account: "acc_1"))
+        await rig.model.publishWatchCode()
+        #expect(requests("POST", "/v1/devices/enroll-codes").count == 2)
+        let contexts = session.contexts.compactMap(PhoneLinkContext.init)
+        #expect(contexts.count == 3)
+        #expect(contexts[2] != contexts[0])
+    }
+
     @Test func enrollCodeLimitIsIgnored() async {
         let (rig, session, _) = await watchRig()
         world.enrollLimit = true

@@ -97,8 +97,8 @@ private struct AgentsHomeContent: View {
     private var stripKind: WatchStripState.Kind {
         WatchStripState.make(
             paired: watchLink.isPaired, appInstalled: watchLink.isWatchAppInstalled,
-            watchAccount: watchLink.watchAccount, myAccount: account.accountID, watchServers: watchLink.watchServers,
-            sections: model.sections, lastContextAt: watchLink.lastContextAt
+            cloudAvailable: account.cloudURL != nil, watchAccount: watchLink.watchAccount, myAccount: account.accountID,
+            watchServers: watchLink.watchServers, sections: model.sections, lastContextAt: watchLink.lastContextAt
         )
     }
 

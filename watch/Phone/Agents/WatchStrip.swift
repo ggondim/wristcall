@@ -17,14 +17,15 @@ struct WatchStripState: Equatable {
     /// `watchServers` are `ServerAddress.canonical` addresses (the watch's application context); the agents
     /// counted are those of sections whose server is among them. `watchAccount` is the watch's account (C7):
     /// another account than `myAccount`, or none yet, means the next step is on the watch; a 0.4.0 watch
-    /// (`.none`) keeps the rule of before, which only looks at its servers.
+    /// (`.none`) keeps the rule of before, which only looks at its servers. So does any watch when this build
+    /// has no Cloud (`cloudAvailable` false): there is no account to compare.
     static func make(
-        paired: Bool, appInstalled: Bool, watchAccount: String??, myAccount: String?, watchServers: Set<String>,
-        sections: [AllAgentsModel.Section], lastContextAt: Date?
+        paired: Bool, appInstalled: Bool, cloudAvailable: Bool, watchAccount: String??, myAccount: String?,
+        watchServers: Set<String>, sections: [AllAgentsModel.Section], lastContextAt: Date?
     ) -> Kind {
         guard paired else { return .hidden }
         guard appInstalled else { return .openOnWatch }
-        switch watchAccount {
+        switch cloudAvailable ? watchAccount : .none {
         case .none:
             if watchServers.isEmpty && !sections.isEmpty { return .openOnWatch }
         case .some(let account):

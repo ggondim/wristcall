@@ -593,9 +593,11 @@ final class AccountModel {
     }
 
     /// C8: a single use code for the watch to sign in to this account, reused while it has more than a minute
-    /// left. `nil` when there is no account yet, the device limit is reached (`403 limit`) or the Cloud fails.
+    /// left and the watch is not in this account yet (once it is, the code it got is likely spent). `nil` when
+    /// there is no account yet, the device limit is reached (`403 limit`) or the Cloud fails.
     func enrollCodeForWatch() async -> EnrollCode? {
         guard let session, state == .ready else { return nil }
+        if let accountID, watchLink?.watchAccount == .some(accountID) { watchCode = nil }
         if let watchCode, watchCode.expiresAt.timeIntervalSinceNow > 60 { return watchCode }
         do {
             let code = try await session.cloudClient.enrollCode(accessToken: try await session.accessToken())
