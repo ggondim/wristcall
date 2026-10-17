@@ -671,6 +671,40 @@ struct AccountModelTests {
         #expect(!requests("POST", "/v1/devices").compactMap { try? $0.json()["account_key"] as? String }.contains(left.value))
     }
 
+    @Test func restoreAfterDeleteGetsTheLeftAccountsKeyBack() async throws {
+        let rig = await readyRig()
+        let model = rig.model
+        // The 0.3.x account A was left behind by a restore: its key is here.
+        let keyA = AccountKey.generate()
+        world.addAccount(AccountWorld.zitadelAccount, key: keyA, AccountWorld.Account(identities: ["zitadel"], keySet: true))
+        try rig.keys.save(keyA, account: AccountWorld.zitadelAccount)
+
+        // Deleting B sets A's key aside; the fresh account C comes next.
+        await model.deleteAccount()
+        await model.start()
+        #expect(model.state == .ready)
+        #expect(model.info?.account != AccountWorld.zitadelAccount)
+        let storedA = try #require(try rig.keys.keys().first { $0.account == AccountWorld.zitadelAccount })
+        #expect(DeadKeys.isDead(storedA, defaults: rig.defaults))
+
+        // "Sign in with email" back into A: its key counts again.
+        try await model.restoreWithEmail()
+        #expect(model.state == .ready)
+        #expect(model.info?.account == AccountWorld.zitadelAccount)
+        #expect(model.hasLocalKey)
+        #expect(!DeadKeys.isDead(storedA, defaults: rig.defaults))
+
+        // A refused session gets back in with A's key (not `.needsSignIn`).
+        try rig.sessions.save(world.storedSession(AccountWorld.zitadelAccount, expired: true))
+        world.refuseSessionRefresh = true
+        await model.refreshAccount()
+        await model.start()
+        #expect(model.state == .ready)
+        #expect(try rig.sessions.load()?.account == AccountWorld.zitadelAccount)
+        let tried = requests("POST", "/v1/devices").compactMap { try? $0.json()["account_key"] as? String }
+        #expect(tried.contains(keyA.value))
+    }
+
     @Test func failedDeleteKeepsTheAccount() async throws {
         let rig = await readyRig(servers: [server])
         let model = rig.model

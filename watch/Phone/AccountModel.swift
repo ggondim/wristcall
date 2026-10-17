@@ -332,6 +332,9 @@ final class AccountModel {
             appState.forgetAccount()
             watchCode = nil
         }
+        // In this account now (a restore back into one whose key "Delete account" set aside, say): its keys count
+        // again, for `hasLocalKey` and for getting back in after a refused session.
+        if previous != account { DeadKeys.forget(account: account, defaults: defaults) }
         defaults.set(account, forKey: Self.lastIDKey)
         return previous != account
     }

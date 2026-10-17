@@ -307,6 +307,25 @@ struct AccountBootstrapTests {
         #expect(!entries[0].contains(stored.key.value))
     }
 
+    @Test func forgetDropsOnlyThatAccountsDeadKeys() {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let one = StoredAccountKey(account: "acc_1", key: .generate(), createdAt: Date())
+        let older = StoredAccountKey(account: "acc_1", key: .generate(), createdAt: Date(timeIntervalSince1970: 1_000))
+        let other = StoredAccountKey(account: "acc_10", key: .generate(), createdAt: Date())
+        DeadKeys.mark(one, defaults: defaults)
+        DeadKeys.mark(older, defaults: defaults)
+        DeadKeys.mark(other, defaults: defaults)
+
+        DeadKeys.forget(account: "acc_1", defaults: defaults)
+
+        #expect(!DeadKeys.isDead(one, defaults: defaults))
+        #expect(!DeadKeys.isDead(older, defaults: defaults))
+        // `acc_10` starts with `acc_1` but is another account.
+        #expect(DeadKeys.isDead(other, defaults: defaults))
+        DeadKeys.forget(account: "acc_none", defaults: defaults)
+        #expect(DeadKeys.isDead(other, defaults: defaults))
+    }
+
     @Test func forgetAllDropsEveryDeadKey() {
         let defaults = UserDefaults(suiteName: UUID().uuidString)!
         let one = StoredAccountKey(account: "acc_1", key: .generate(), createdAt: Date())

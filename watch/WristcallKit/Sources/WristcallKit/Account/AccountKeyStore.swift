@@ -177,6 +177,13 @@ public struct DeadKeys {
         defaults.set(entries, forKey: defaultsKey)
     }
 
+    /// Forgets the marks of `account`'s keys: this device just got into that account, so its keys count again.
+    public static func forget(account: String, defaults: UserDefaults = .standard) {
+        guard let entries = defaults.stringArray(forKey: defaultsKey) else { return }
+        let kept = entries.filter { !$0.hasPrefix(account + ":") }
+        if kept.count != entries.count { defaults.set(kept, forKey: defaultsKey) }
+    }
+
     /// Forgets every refused key (the account was deleted: nothing of it is left to skip).
     public static func forgetAll(defaults: UserDefaults = .standard) {
         defaults.removeObject(forKey: defaultsKey)
