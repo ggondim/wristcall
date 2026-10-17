@@ -27,7 +27,8 @@ For servers 0.8.0 or later (link codes; 0.8.1 for agent colors) and Cloud 0.4.1.
 - Connect a server by QR code or link: the camera scans the QR code a server prints, and `wristcall://link#...` links
   (and the web app's `/link` page) open "Connect to <host>?". The app connects the server to your account and sets the
   Apple Watch up automatically.
-- Approve a web app sign-in by scanning its QR code (Settings, "Use on the web").
+- Approving a web app sign-in by scanning its QR code is built, but "Use on the web" in Settings stays hidden until the
+  web app shows that code.
 - Settings: plan, account devices, "Approve watch sign-in", servers, privacy and "Delete account".
 - The `wristcall` URL scheme, a camera permission and a Keychain access group shared with the watch app.
 - A screenshots test, `make -C watch shots-ios` (own scheme, not part of CI): see [watch/README.md](watch/README.md#iphone-app).

@@ -181,8 +181,8 @@ deletes the agent it created and removes the server it added. It runs on an "iPh
 two, pair the iPhone simulator with a watch simulator in Xcode (Window > Devices and Simulators).
 
 **Screenshots of the v3 screens.** `PhoneUITests/OnboardingShotsTests.swift` (same scheme, also never in CI) takes
-`o5-01-welcome.png`, `o5-02-plan.png`, `o5-04-agents-empty.png`, `o5-08-settings.png` and, with the variables
-below, `o5-03-agents.png`, `o5-05-new-agent.png` and `o5-07-link-confirm.png`. The cases share one installed
+`iphone-01-welcome.png`, `iphone-02-plan.png`, `iphone-04-agents-empty.png`, `iphone-08-settings.png` and, with the variables
+below, `iphone-03-agents.png`, `iphone-05-new-agent.png` and `iphone-07-link-confirm.png`. The cases share one installed
 app, so a run makes one silent account on the Cloud (3 an hour per IP address at most). It never taps anything that
 changes an account.
 
@@ -196,9 +196,10 @@ TEST_RUNNER_WRISTCALL_UI_SHOTS=/tmp/shots make -C watch shots-ios
   show (agents, new agent). Both are needed; the two cases skip without them.
 - `TEST_RUNNER_WRISTCALL_UI_LINK=<link>`: a `wristcall://link#...` link of a server not yet connected (link confirm).
   The case skips without it. The screen is never confirmed.
-- The target first uninstalls the app and resets the Keychain of the simulator named by `SHOTS_SIMULATOR` (default
-  `booted`), so that the welcome and the empty Agents tab show; `SHOTS_KEEP_SIM=1` skips that. Use a simulator you
-  do not mind resetting. `CLOUD_URL=<url>` points the run at another Cloud.
+- The welcome and the empty Agents tab only show on a simulator without the app's account and servers. Nothing is
+  wiped by default. `SHOTS_UDID=<udid>` runs on that simulator (instead of `IOS_DESTINATION`); adding `SHOTS_RESET=1`
+  first prints its name, uninstalls the app and resets its Keychain (every app's on that simulator), and stops if the
+  UDID does not exist. Use a simulator you do not mind resetting. `CLOUD_URL=<url>` points the run at another Cloud.
 
 The watch app's bundle id (and so its APNs topic) is now `<BUNDLE_ID_PREFIX>.wristcall.watchkitapp`, no longer
 `<BUNDLE_ID_PREFIX>.wristcall`: the Cloud pushes to both apps, so it lists both in `WRISTCALL_CLOUD_APNS_TOPICS`.

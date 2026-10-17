@@ -9,7 +9,7 @@ import XCTest
 ///
 ///     TEST_RUNNER_WRISTCALL_UI_SHOTS=/tmp/shots make -C watch shots-ios
 ///
-/// - `WRISTCALL_UI_SHOTS` (folder, required): where `o5-<nn>-<name>.png` are written.
+/// - `WRISTCALL_UI_SHOTS` (folder, required): where `iphone-<nn>-<name>.png` are written.
 /// - `WRISTCALL_UI_SERVER` + `WRISTCALL_UI_SERVER_TOKEN` (a server URL and a personal token of it): add the
 ///   "agents" and "new agent" screens. Those cases skip without both.
 /// - `WRISTCALL_UI_LINK` (a `wristcall://` link, or the https link of a QR code): adds "link confirm".
@@ -18,7 +18,7 @@ import XCTest
 /// uninstalled between cases, so a single silent account is created on the Cloud per run (there is a limit
 /// of 3 accounts an hour per IP). The first case starts from `-resetOnboarding`, and the cases that need an
 /// app without servers run before any server is added. Start the run on a simulator without the app's
-/// servers: `make shots-ios` resets the simulator's Keychain for that.
+/// account and servers (`SHOTS_UDID=<udid> SHOTS_RESET=1 make shots-ios` resets one).
 @MainActor
 final class OnboardingShotsTests: XCTestCase {
     private var app: XCUIApplication!
@@ -50,14 +50,14 @@ final class OnboardingShotsTests: XCTestCase {
     func test01Welcome() throws {
         launch("-resetOnboarding")
         XCTAssertTrue(app.buttons["Get started"].waitForExistence(timeout: timeout), "no welcome screen")
-        shot("o5-01-welcome")
+        shot("iphone-01-welcome")
     }
 
     func test02Plan() throws {
         launch("-resetOnboarding", "-debugOpen", "plan")
         XCTAssertTrue(app.staticTexts["How do you want to start?"].waitForExistence(timeout: timeout), "no plan screen")
         settle()
-        shot("o5-02-plan")
+        shot("iphone-02-plan")
     }
 
     /// Welcome, then "Get started", then "Not now": the app opens on the agents with no server.
@@ -74,14 +74,14 @@ final class OnboardingShotsTests: XCTestCase {
             "no empty agents screen (does the simulator still have servers? reset its Keychain)"
         )
         settle()
-        shot("o5-04-agents-empty")
+        shot("iphone-04-agents-empty")
     }
 
     func test04Settings() throws {
         launch("-debugOpen", "settings")
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: timeout), "no Settings screen")
         settle(seconds: 2) // the account row fills in once the Cloud answers
-        shot("o5-08-settings")
+        shot("iphone-08-settings")
     }
 
     func test05LinkConfirm() throws {
@@ -89,14 +89,14 @@ final class OnboardingShotsTests: XCTestCase {
         launch("-debugOpenURL", link)
         XCTAssertTrue(app.buttons["Connect"].waitForExistence(timeout: timeout), "no link confirm screen")
         settle(seconds: 2)
-        shot("o5-07-link-confirm")
+        shot("iphone-07-link-confirm")
     }
 
     func test06Agents() throws {
         try requireServer()
         launch("-addServer", server, "-addServerToken", serverToken, "-addServerName", "Shots server")
         waitForAgents()
-        shot("o5-03-agents")
+        shot("iphone-03-agents")
     }
 
     func test07NewAgent() throws {
@@ -105,7 +105,7 @@ final class OnboardingShotsTests: XCTestCase {
                "-debugOpen", "newAgent")
         XCTAssertTrue(app.buttons["Save"].waitForExistence(timeout: timeout), "no agent editor")
         settle()
-        shot("o5-05-new-agent")
+        shot("iphone-05-new-agent")
     }
 
     // MARK: - Helpers
