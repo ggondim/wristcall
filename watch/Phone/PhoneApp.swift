@@ -114,11 +114,14 @@ struct PhoneApp: App {
         return link
     }
 
-    fileprivate static var isUnitTest: Bool { ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil }
+    static var isUnitTest: Bool { ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil }
 
     private func start() async {
         // The unit tests run hosted in this app: they bring their own state and nothing should hit the network.
         guard !Self.isUnitTest else { return }
+        #if DEBUG
+        DebugLaunch.prepare()
+        #endif
         await state.load()
         #if DEBUG
         await DebugLaunch.apply(to: state)
@@ -130,20 +133,92 @@ struct PhoneApp: App {
 }
 
 struct RootView: View {
+    @Environment(AppState.self) private var state
+    @Environment(AccountModel.self) private var account
     @Environment(ApprovalsModel.self) private var approvals
     @State private var tab = Self.firstTab
+    @State private var step: OnboardingStep = Self.firstStep
+    /// Read from the defaults, so finishing the onboarding (or an account deletion resetting it) redraws.
+    @AppStorage(OnboardingStore.key) private var onboardingDone = false
+    /// "Your own server" was chosen. Task 12 replaces this with the QR scanner.
+    @State private var connectingOwnServer = false
 
     private static var firstTab: String {
         #if DEBUG
         if DebugRoute.opensHistory { return "history" }
         if DebugRoute.opensSettings { return "settings" }
         #endif
-        return "servers"
+        return "agents"
+    }
+
+    private static var firstStep: OnboardingStep {
+        #if DEBUG
+        if DebugRoute.opensPlan { return .plan }
+        #endif
+        return .welcome
+    }
+
+    private var entryStep: OnboardingStep? {
+        OnboardingGate.entryStep(
+            isDone: onboardingDone, serversLoaded: state.didLoad,
+            hasServers: !state.servers.isEmpty, didMigrate: account.didMigrate
+        )
     }
 
     var body: some View {
+        Group {
+            if entryStep != nil {
+                onboarding
+            } else {
+                tabs
+            }
+        }
+        // Someone who already uses the app never sees the welcome: it counts as gone through.
+        .task(id: state.didLoad) { finishIfAlreadyInUse() }
+        .onChange(of: account.didMigrate) { finishIfAlreadyInUse() }
+        // After an account deletion the onboarding starts over from the welcome.
+        .onChange(of: onboardingDone) { if !onboardingDone { step = .welcome } }
+        // No way into the account: sign in again (or start over). Not dismissible by swiping.
+        .sheet(isPresented: Binding(
+            get: { OnboardingGate.showsRestore(for: account.state) },
+            set: { _ in }
+        )) {
+            RestoreView(account: account, allowsStartOver: true) { OnboardingStore.finish() }
+        }
+        .sheet(isPresented: $connectingOwnServer) { AddServerView() }
+    }
+
+    private func finishIfAlreadyInUse() {
+        if OnboardingGate.shouldFinishSilently(
+            isDone: onboardingDone, serversLoaded: state.didLoad,
+            hasServers: !state.servers.isEmpty, didMigrate: account.didMigrate
+        ) {
+            OnboardingStore.finish()
+        }
+    }
+
+    @ViewBuilder
+    private var onboarding: some View {
+        switch step {
+        case .welcome:
+            WelcomeView(
+                onContinue: { withAnimation { step = .plan } },
+                onRestored: { OnboardingStore.finish() }
+            )
+            .transition(.opacity)
+        case .plan:
+            PlanView(mode: .onboarding) { choice in
+                tab = "agents"
+                if OnboardingGate.finish(with: choice) { connectingOwnServer = true }
+            }
+            .transition(.opacity)
+        }
+    }
+
+    private var tabs: some View {
         TabView(selection: $tab) {
-            Tab("Servers", systemImage: "server.rack", value: "servers") {
+            Tab("Agents", systemImage: "person.2.wave.2", value: "agents") {
+                // Until the agents home (Task 10): the servers screen.
                 ServersView()
             }
             .badge(approvals.pending.count)
@@ -154,9 +229,9 @@ struct RootView: View {
                 SettingsView()
             }
         }
-        // A tapped notification opens the Servers tab (and there, the server's devices).
+        // A tapped notification opens the Agents tab (and there, the server's devices).
         .task(id: approvals.openRequest) {
-            if approvals.openRequest != nil { tab = "servers" }
+            if approvals.openRequest != nil { tab = "agents" }
         }
     }
 }
@@ -225,6 +300,11 @@ struct SettingsView: View {
 /// Launch arguments for the simulator (Debug builds only), like the watch app's: `-addServer <URL>
 /// -addServerToken <wc_pat_…>` adds a server at launch.
 enum DebugLaunch {
+    /// Before the servers are read: `-resetOnboarding` brings the welcome screen back.
+    static func prepare() {
+        if ProcessInfo.processInfo.arguments.contains("-resetOnboarding") { OnboardingStore.reset() }
+    }
+
     @MainActor
     static func apply(to state: AppState) async {
         let args = ProcessInfo.processInfo.arguments
@@ -240,7 +320,7 @@ enum DebugLaunch {
 
 #if DEBUG
 /// `-debugOpen history|history-detail` opens the History tab (or its first call), `-debugOpen settings` the
-/// Settings tab; `-debugOpen server|agents|form-new|form-edit|devices|code|watch` opens that screen at launch (a way to reach a screen
+/// Settings tab, `-debugOpen plan` the plan screen of the onboarding (with `-resetOnboarding`); `-debugOpen server|agents|form-new|form-edit|devices|code|watch` opens that screen at launch (a way to reach a screen
 /// without tapping, for screenshots from the command line): the first server, its agents, the form for a new agent, the form of the last agent, the devices of the server, its
 /// pairing code, or "Add to watch" (which sends a new code to the paired watch at once).
 enum DebugRoute {
@@ -252,7 +332,8 @@ enum DebugRoute {
 
     static var opensHistory: Bool { ["history", "history-detail"].contains(value ?? "") }
     static var opensSettings: Bool { value == "settings" }
-    static var opensServer: Bool { value != nil && !opensHistory && !opensSettings }
+    static var opensPlan: Bool { value == "plan" }
+    static var opensServer: Bool { value != nil && !opensHistory && !opensSettings && !opensPlan }
     static var opensDevices: Bool { ["devices", "code"].contains(value ?? "") }
     static var opensAgents: Bool { ["agents", "form-new", "form-edit"].contains(value ?? "") }
     static var opensSendToWatch: Bool { value == "watch" }
