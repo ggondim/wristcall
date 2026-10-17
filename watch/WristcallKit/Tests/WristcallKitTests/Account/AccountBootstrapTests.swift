@@ -117,6 +117,22 @@ struct AccountBootstrapTests {
         #expect(host.requests.map(\.path) == ["/v1/devices", "/v1/accounts"])
     }
 
+    @Test func createOnlyRunLeavesStoredKeysAlone() async throws {
+        let other = StoredAccountKey(account: "acc_left", key: .generate(), createdAt: Date(timeIntervalSince1970: 1_000))
+        let host = StubHost(replies: [(201, Self.session(account: "acc_fresh"))])
+        let store = InMemoryAccountKeyStore([other])
+        let waits = Waits()
+        let (tokens, outcome) = try await bootstrap(host, store: store, waits: waits).run(usingStoredKeys: false)
+
+        #expect(outcome == .created)
+        #expect(tokens.account == "acc_fresh")
+        // No key tried and no wait for iCloud Keychain: straight to a new account.
+        #expect(waits.value == 0)
+        #expect(host.requests.map(\.path) == ["/v1/accounts"])
+        #expect(try body(host.requests[0])["account_key"] as? String != other.key.value)
+        #expect(try store.keys().map(\.account).sorted() == ["acc_fresh", "acc_left"])
+    }
+
     @Test func keyThatArrivesDuringTheWaitIsUsed() async throws {
         let arrived = AccountKey.generate()
         let host = StubHost(replies: [(201, Self.session(account: "acc_other"))])

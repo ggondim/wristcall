@@ -128,6 +128,21 @@ struct CloudSessionRoutesTests {
         #expect(request.headers["Authorization"] == "Bearer at")
     }
 
+    @Test func accountWithAnUnknownPlanStillDecodes() async throws {
+        let host = StubHost(replies: [(200, """
+            {"account":"acc_abc","created_at":1800000000,"servers":0,"plan":{"plan":"team","source":"invite","expires_at":null},"identities":[],"key_set":true}
+            """)])
+        let info = try await client(host).account(accessToken: "at")
+        #expect(info.plan == Plan(plan: .other("team"), source: "invite"))
+        #expect(info.plan?.plan.rawValue == "team")
+        #expect(!info.isEmpty)
+        // Known names never end up as `other`, and the name goes back out as it came.
+        #expect(PlanKind(rawValue: "full") == .full)
+        #expect(PlanKind(rawValue: "custom") == .custom)
+        let plan = Plan(plan: .other("team"), source: "invite")
+        #expect(try JSONDecoder().decode(Plan.self, from: JSONEncoder().encode(plan)) == plan)
+    }
+
     @Test func modelsRoundTripThroughJSON() throws {
         let info = CloudAccountInfo(
             account: "acc_abc", createdAt: Date(timeIntervalSince1970: 1_800_000_000.5), servers: 1,

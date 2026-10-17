@@ -128,9 +128,28 @@ extension SessionTokens: CustomStringConvertible, CustomDebugStringConvertible, 
     }
 }
 
-/// A beta plan.
-public enum PlanKind: String, Codable, Sendable, Equatable {
+/// A beta plan. A name this build does not know (a plan the Cloud added later) is kept as `other`, so the
+/// account still reads.
+public enum PlanKind: RawRepresentable, Codable, Sendable, Hashable {
     case full, custom
+    /// A plan unknown to this build, with its name as the Cloud sent it.
+    case other(String)
+
+    public init(rawValue: String) {
+        switch rawValue {
+        case "full": self = .full
+        case "custom": self = .custom
+        default: self = .other(rawValue)
+        }
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .full: "full"
+        case .custom: "custom"
+        case .other(let name): name
+        }
+    }
 }
 
 /// A plan of the account (`source`: why it has one, e.g. `beta` or `invite`); `expiresAt` is `nil` for no end.

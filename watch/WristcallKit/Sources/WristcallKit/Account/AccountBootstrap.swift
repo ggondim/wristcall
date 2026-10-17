@@ -1,6 +1,6 @@
 import Foundation
 
-/// The silent way into a Cloud account (spec O5): no screen, no password. The account key in iCloud Keychain is
+/// The silent way into a Cloud account: no screen, no password. The account key in iCloud Keychain is
 /// the credential. On a device that already has a key, `run` signs in with it; on the first device it creates
 /// the account. `migrate` gives a 0.3.x account (signed in with Zitadel) a key.
 ///
@@ -53,11 +53,14 @@ public struct AccountBootstrap: Sendable {
 
     /// Signs in with a stored key, or creates the account. Throws on `429` (`APIError.retryLater`) and network
     /// errors without deleting anything: the pending key waits for the next call.
-    public func run() async throws -> (SessionTokens, Outcome) {
-        if let tokens = try await enrollWithStoredKeys() { return (tokens, .enrolled) }
+    ///
+    /// `usingStoredKeys: false` only creates (no stored key tried, no wait for iCloud Keychain): the user deleted
+    /// the account on this device and asked for a new one, not for another account a stored key opens.
+    public func run(usingStoredKeys: Bool = true) async throws -> (SessionTokens, Outcome) {
+        if usingStoredKeys, let tokens = try await enrollWithStoredKeys() { return (tokens, .enrolled) }
 
         let pending = try keys.pending()
-        if pending == nil {
+        if usingStoredKeys, pending == nil {
             // No usable key here (none stored, or every one refused): the user's other devices may have an account
             // whose current key is still on its way through iCloud Keychain. Making a new account now would
             // leave the user with two.
