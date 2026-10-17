@@ -35,7 +35,7 @@ export class AgentsHomeModel extends BaseModel<AgentsHomeState> {
   /** Asks every saved server for its agents at once; one that fails becomes a `problem` on its own section. */
   async load(): Promise<void> {
     const load = ++this.#loads
-    if (!this.#servers.state.loaded) await this.#servers.load()
+    await this.#storedListRead()
     if (load !== this.#loads) return
     const rows = this.#servers.state.rows
     const done = new Map<string, AgentsSection>()
@@ -60,6 +60,23 @@ export class AgentsHomeModel extends BaseModel<AgentsHomeState> {
       }),
     )
     if (load === this.#loads) publish(true)
+  }
+
+  /**
+   * Waits only for the stored list (`loaded` turns true after the database read), not for the health checks
+   * `ServersModel.load` goes on with afterwards: a server that is down must not hold back the others.
+   */
+  #storedListRead(): Promise<void> {
+    const servers = this.#servers
+    if (servers.state.loaded) return Promise.resolve()
+    return new Promise((resolve) => {
+      const off = servers.subscribe(() => {
+        if (!servers.state.loaded) return
+        off()
+        resolve()
+      })
+      if (!servers.state.loading) void servers.load()
+    })
   }
 
   /** The account's servers may arrive or change after `load` (the agenda is read later): follows them. */

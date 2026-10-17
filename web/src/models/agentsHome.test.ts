@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest"
+import { describe, expect, test, vi } from "vitest"
 import type { CloudServer } from "../api/cloud"
 import { ServerClient } from "../api/server"
 import { openDb } from "../store/db"
@@ -74,6 +74,26 @@ describe("AgentsHomeModel", () => {
     expect(office!.agents.map((a) => a.display_name)).toEqual(["Beta"])
     expect(office!.problem).toBeNull()
     expect(model.state.loaded).toBe(true)
+  })
+
+  test("a hung server does not delay the others", async () => {
+    const never = new Promise<Response>(() => {})
+    const store = new ServerStore(await openDb("t-" + crypto.randomUUID()))
+    await store.put(saved({ id: "1", name: "home", url: "https://hung.example.com" }))
+    await store.put(saved({ id: "2", name: "office", url: "https://office.example.com", addedAt: 2 }))
+    const servers = new ServersModel(store, (s) =>
+      new ServerClient(new URL(s.url), s.token, mockFetch((u) => {
+        if (new URL(u).host === "hung.example.com") return never
+        if (u.endsWith("/health")) return ok(health)
+        if (u.endsWith("/providers")) return ok({ providers: [], custom_endpoints: false })
+        return ok({ agents: [agent("b", "Beta")] })
+      })),
+    )
+    const model = new AgentsHomeModel(servers)
+    void model.load()
+    await vi.waitFor(() => expect(model.state.sections.map((s) => s.serverName)).toEqual(["office"]))
+    expect(model.state.sections[0]!.agents.map((a) => a.display_name)).toEqual(["Beta"])
+    expect(model.state.loaded).toBe(false)
   })
 
   test("account servers follow the agenda after the load", async () => {
