@@ -37,7 +37,30 @@ final class LinkRouter {
 
     static let invalidMessage = "This link isn't valid or has expired. Get a new one with `wristcall link` on your server."
 
-    var sheet: Sheet?
+    /// A sheet as shown: `token` is new on every `open` or assignment, so a second link for the same server
+    /// (a new code) rebuilds the sheet and its model. Not a secret.
+    struct Presented: Identifiable, Equatable {
+        let sheet: Sheet
+        let token: Int
+        var id: String { "\(token):\(sheet.id)" }
+    }
+
+    private(set) var presented: Presented?
+    @ObservationIgnored private var nextToken = 0
+
+    /// What is shown. Setting it (even to the same sheet) presents it anew.
+    var sheet: Sheet? {
+        get { presented?.sheet }
+        set {
+            nextToken += 1
+            presented = newValue.map { Presented(sheet: $0, token: nextToken) }
+        }
+    }
+
+    /// Closes the sheet `token` belongs to, unless a newer one replaced it meanwhile.
+    func close(_ token: Int) {
+        if presented?.token == token { presented = nil }
+    }
 
     /// Routes `url`. Returns whether the link was the app's: `false` for the sign-in callbacks and anything
     /// that is not a wristcall link (nothing changes then).
@@ -84,23 +107,26 @@ struct LinkRouterPresenter: ViewModifier {
     func body(content: Content) -> some View {
         content
             .sheet(item: Binding(
-                get: { router.sheet == .invalid ? nil : router.sheet },
-                set: { if $0 == nil, router.sheet != .invalid { router.sheet = nil } }
-            )) { sheet in
-                switch sheet {
+                get: { router.sheet == .invalid ? nil : router.presented },
+                set: { if $0 == nil, let shown = router.presented, shown.sheet != .invalid { router.close(shown.token) } }
+            )) { shown in
+                switch shown.sheet {
                 case .server(let server, let code):
-                    LinkConfirmView(server: server, code: code, account: account)
+                    LinkConfirmView(server: server, code: code, account: account, token: shown.token)
                 case .web(let id, let key):
-                    WebApproveView(id: id, key: key, account: account)
+                    WebApproveView(id: id, key: key, account: account, token: shown.token)
                 case .scanner(let purpose):
-                    QRScannerView(purpose: purpose)
+                    QRScannerView(purpose: purpose, token: shown.token)
                 case .invalid:
                     EmptyView()
                 }
             }
             .alert(
                 "Can't open this link",
-                isPresented: Binding(get: { router.sheet == .invalid }, set: { if !$0 { router.sheet = nil } })
+                isPresented: Binding(
+                    get: { router.sheet == .invalid },
+                    set: { if !$0, let shown = router.presented, shown.sheet == .invalid { router.close(shown.token) } }
+                )
             ) {
                 Button("OK", role: .cancel) {}
             } message: {

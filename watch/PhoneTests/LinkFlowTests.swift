@@ -118,6 +118,63 @@ struct LinkFlowTests {
 
     // MARK: - Server link
 
+    @Test func newLinkForTheSameServerRebuildsTheConfirmation() async throws {
+        let host = serverHost()
+        let model = await readyRig().model
+        let router = LinkRouter()
+        let codeB = try #require(LinkCode("BBBBBBBBBBBBBBBBBBBBBBBBBB"))
+        let linkA = link(to: host.url)
+        let linkB = URL(string: linkA.absoluteString.replacingOccurrences(of: Self.code.value, with: codeB.value))!
+
+        router.open(linkA)
+        let first = try #require(router.presented)
+        router.open(linkB)
+        let second = try #require(router.presented)
+        // Same server, new sheet: SwiftUI rebuilds the view and its model.
+        #expect(first.id != second.id)
+        #expect(second.sheet == .server(host.url, codeB))
+
+        // An older sheet's task finishing does not close the newer one.
+        router.close(first.token)
+        #expect(router.presented == second)
+
+        guard case .server(let server, let code) = second.sheet else { return }
+        let confirm = ServerLinkModel(server: server, code: code, account: model)
+        await confirm.load()
+        #expect(await confirm.connect())
+        let links = host.requests.filter { $0.path == "/v1/account/link" }
+        #expect(links.count == 1)
+        #expect(try links.first?.json()["code"] as? String == codeB.value)
+
+        router.close(second.token)
+        #expect(router.sheet == nil)
+    }
+
+    @Test func unlinkedServerInTheListGetsLinkedWithoutDuplicate() async throws {
+        let host = serverHost()
+        let existing = ManagedServer(id: "home", name: "Home", url: host.url, token: "wc_pat_old")
+        let model = await readyRig(servers: [existing]).model
+        let confirm = ServerLinkModel(server: host.url, code: Self.code, account: model)
+        #expect(confirm.phase == .confirm)
+
+        let saved = try await model.addLinkedServer(host.url, code: Self.code)
+        #expect(model.appState.servers.count == 1)
+        #expect(saved.id == "home")
+        #expect(saved.name == "Home")
+        #expect(saved.token == "wc_pat_new")
+        #expect(saved.linked)
+    }
+
+    @Test func linkMessagesNeverShowServerText() {
+        let words = "Evil `run this` [tap](https://evil.test)"
+        for error: APIError in [.forbidden(words), .limit(words), .notLinked(words), .invalid(words), .unavailable(words)] {
+            #expect(!AccountModel.linkMessage(for: error).contains("Evil"), "\(error)")
+        }
+        for error: APIError in [.forbidden(words), .notLinked(words), .invalid(words), .unavailable(words)] {
+            #expect(!AccountModel.webMessage(for: error).contains("Evil"), "\(error)")
+        }
+    }
+
     @Test func linkStoresTheServerMirrorsAndPairsTheWatch() async throws {
         let host = serverHost()
         let rig = await readyRig()

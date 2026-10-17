@@ -93,8 +93,12 @@ struct WebApproveView: View {
     @State private var model: WebApprovalModel
     @Environment(LinkRouter.self) private var router
 
-    init(id: String, key: String, account: AccountModel) {
+    /// The router's token for this sheet: closing never closes a newer one.
+    private let token: Int
+
+    init(id: String, key: String, account: AccountModel, token: Int) {
         _model = State(initialValue: WebApprovalModel(id: id, key: key, account: account))
+        self.token = token
     }
 
     static let warning = "Only approve a code you opened yourself."
@@ -139,7 +143,7 @@ struct WebApproveView: View {
                 .foregroundStyle(.red)
                 .multilineTextAlignment(.center)
                 .padding(.top, 24)
-            Button("Done") { router.sheet = nil }
+            Button("Done") { router.close(token) }
                 .font(.headline)
                 .padding(.top, 24)
         case .approved:
@@ -186,7 +190,7 @@ struct WebApproveView: View {
                 ProgressView().controlSize(.large).frame(height: 50)
             } else {
                 Button {
-                    Task { if await model.approve() { router.sheet = nil } }
+                    Task { if await model.approve() { router.close(token) } }
                 } label: {
                     Text("Approve").font(.headline).frame(maxWidth: .infinity)
                 }
@@ -200,7 +204,7 @@ struct WebApproveView: View {
     }
 
     private var cancelButton: some View {
-        Button("Cancel") { router.sheet = nil }
+        Button("Cancel") { router.close(token) }
             .font(.headline)
             .padding(.top, 14)
     }

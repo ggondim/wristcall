@@ -7,6 +7,8 @@ import VisionKit
 /// "Enter address instead" opens the manual form.
 struct QRScannerView: View {
     let purpose: LinkRouter.ScanPurpose
+    /// The router's token for this sheet: closing never closes a newer one.
+    let token: Int
     @Environment(LinkRouter.self) private var router
     @State private var enteringAddress = false
     /// A read or pasted text that was not a wristcall link.
@@ -57,13 +59,13 @@ struct QRScannerView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { router.sheet = nil }
+                    Button("Cancel") { router.close(token) }
                 }
             }
         }
         .environment(\.colorScheme, .dark)
         .sheet(isPresented: $enteringAddress) {
-            AddServerView(onAdded: { router.sheet = nil })
+            AddServerView(onAdded: { router.close(token) })
         }
     }
 

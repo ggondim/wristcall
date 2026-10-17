@@ -718,7 +718,7 @@ final class AccountModel {
         case is PairingError:
             "This doesn't look like a wristcall server."
         default:
-            message(for: error)
+            fixedMessage(for: error)
         }
     }
 
@@ -733,6 +733,19 @@ final class AccountModel {
             "Too many attempts. Try again in a minute."
         case LinkError.accountNotReady:
             settingUpMessage
+        default:
+            fixedMessage(for: error)
+        }
+    }
+
+    /// `message(for:)` without the replies that carry the server's own words (`forbidden`, `limit`,
+    /// `notLinked`, `invalid`, `unavailable`): link screens show only the app's copy.
+    private static func fixedMessage(for error: any Error) -> String {
+        switch error {
+        case APIError.unavailable:
+            "The server is unavailable. Try again later."
+        case APIError.forbidden, APIError.limit, APIError.notLinked, APIError.invalid:
+            "The server refused the request."
         default:
             message(for: error)
         }

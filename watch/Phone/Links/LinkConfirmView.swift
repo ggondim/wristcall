@@ -94,8 +94,12 @@ struct LinkConfirmView: View {
     @Environment(WatchLink.self) private var watchLink
     @Environment(LinkRouter.self) private var router
 
-    init(server: URL, code: LinkCode, account: AccountModel) {
+    /// The router's token for this sheet: closing never closes a newer one.
+    private let token: Int
+
+    init(server: URL, code: LinkCode, account: AccountModel, token: Int) {
         _model = State(initialValue: ServerLinkModel(server: server, code: code, account: account))
+        self.token = token
     }
 
     static let trustNote = "Only connect servers you trust. The server hears your calls to its agents. "
@@ -122,7 +126,7 @@ struct LinkConfirmView: View {
                 }
                 if model.phase == .alreadyConnected {
                     Spacer(minLength: 32)
-                    primaryButton("Done") { router.sheet = nil }
+                    primaryButton("Done") { router.close(token) }
                 } else {
                     confirmContent
                 }
@@ -182,11 +186,11 @@ struct LinkConfirmView: View {
                 .frame(height: 50)
         } else {
             primaryButton("Connect") {
-                Task { if await model.connect() { router.sheet = nil } }
+                Task { if await model.connect() { router.close(token) } }
             }
             .disabled(!model.canConnect)
         }
-        Button("Cancel") { router.sheet = nil }
+        Button("Cancel") { router.close(token) }
             .font(.headline)
             .padding(.top, 14)
             .disabled(model.phase == .connecting)
