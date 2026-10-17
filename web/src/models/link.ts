@@ -60,7 +60,7 @@ export function linkFragment(link: ServerLink): string {
 }
 
 /** Epic O5 turns this on once the iPhone app registers the `wristcall` scheme; until then nothing opens the app link. */
-export const APP_OPENS_LINKS = false
+export const APP_OPENS_LINKS = true
 
 /** The same link for the app: `wristcall://link#v=1&s=…&c=…`. */
 export function appLinkURL(link: ServerLink): string {

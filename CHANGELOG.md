@@ -11,6 +11,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
   against it. Set it empty in `watch/Config/Local.xcconfig` for a build without an account. The push build keeps a
   local Cloud.
 
+## [web-0.2.1] - 2026-10-16
+
+### Changed
+
+- "Open in wristcall" shows again on server links, because the iPhone app 0.2.0 opens them. The button has a caption:
+  "Requires the wristcall iPhone app."
+
 ## [ios-0.2.0] - 2026-10-16
 
 For servers 0.8.0 or later (link codes; 0.8.1 for agent colors) and Cloud 0.4.1.

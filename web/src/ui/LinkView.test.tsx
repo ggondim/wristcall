@@ -109,9 +109,9 @@ describe("LinkView", () => {
     expect(location.pathname).toBe("/link")
   })
 
-  test("ships with the app hand-off off", async () => {
+  test("ships with the app hand-off on", async () => {
     const actual = await vi.importActual<typeof import("../models/link")>("../models/link")
-    expect(actual.APP_OPENS_LINKS).toBe(false)
+    expect(actual.APP_OPENS_LINKS).toBe(true)
   })
 
   test("does not offer the app while it cannot open links", async () => {
@@ -125,6 +125,7 @@ describe("LinkView", () => {
     flags.appOpensLinks = true
     await world()
     expect(screen.getByRole("link", { name: "Open in wristcall" }).getAttribute("href")).toBe(APP_HREF)
+    expect(screen.getByText("Requires the wristcall iPhone app.")).toBeTruthy()
   })
 
   test("keeps the link through sign-in", async () => {
@@ -180,6 +181,7 @@ describe("LinkView", () => {
     flags.appOpensLinks = true
     await world({ cloud: false })
     expect(screen.getByRole("link", { name: "Open in wristcall" }).getAttribute("href")).toBe(APP_HREF)
+    expect(screen.getByText("Requires the wristcall iPhone app.")).toBeTruthy()
     expect(screen.getByText("This site has no wristcall account: open the link in the wristcall app to connect the server.")).toBeTruthy()
     expect(screen.queryByText(NO_CONNECT)).toBeNull()
   })
