@@ -267,4 +267,29 @@ struct WatchLinkReceiverTests {
         await model.launch()
         #expect(receiver.lastContext == WatchLinkContext(servers: [], account: nil))
     }
+
+    @Test func phoneContextReachesTheCallback() {
+        let receiver = WatchLinkReceiver(model: makeModel())
+        let received = Recorder<String>()
+        receiver.onPhoneContext = { received.append($0.enrollCode) }
+        receiver.receive(WatchLinkReceiver.parsePhoneContext(["v": 1, "enroll_code": "wce_x", "expires_at": 2e9]))
+        #expect(received.all == ["wce_x"])
+        receiver.receive(WatchLinkReceiver.parsePhoneContext(["v": 1, "expires_at": 2e9]))
+        receiver.receive(WatchLinkReceiver.parsePhoneContext(["v": 2, "enroll_code": "wce_y", "expires_at": 2e9]))
+        receiver.receive(nil)
+        #expect(received.all == ["wce_x"])
+    }
+
+    @Test func contextCarriesAccount() {
+        let receiver = WatchLinkReceiver(model: makeModel())
+        receiver.publishContext([])
+        #expect(receiver.lastContext?.hasAccountField == true)
+        #expect(receiver.lastContext?.account == nil)
+        receiver.account = "acc_1"
+        #expect(receiver.lastContext?.account == "acc_1")
+        #expect(receiver.lastContext?.servers == [])
+        receiver.account = nil
+        #expect(receiver.lastContext?.account == nil)
+        #expect(receiver.lastContext?.hasAccountField == true)
+    }
 }

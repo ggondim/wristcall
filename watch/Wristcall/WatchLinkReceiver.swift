@@ -19,6 +19,15 @@ final class WatchLinkReceiver: NSObject {
     private var session: WCSession?
     /// What `publishContext` last built (the iPhone reads it from `receivedApplicationContext`).
     private(set) var lastContext: WatchLinkContext?
+    /// The iPhone's enrolment context (code and, when it knows, the account). Set before `activate()`.
+    var onPhoneContext: (@MainActor (PhoneLinkContext) -> Void)?
+    /// The account this watch is signed in to, announced to the iPhone; `nil` until it has one.
+    /// A change publishes the context again.
+    var account: String? {
+        didSet { if account != oldValue { publishContext(servers) } }
+    }
+    /// The servers `publishContext` last announced, so an account change can republish them.
+    private var servers: [Credentials] = []
     /// Messages that arrived before the servers were read from the Keychain, in arrival order. A
     /// queued transfer is delivered right after activation, often before the scene's first task.
     private var held: [(message: WatchLinkMessage?, reply: Reply?)] = []
@@ -38,6 +47,17 @@ final class WatchLinkReceiver: NSObject {
         session.delegate = self
         self.session = session
         session.activate()
+    }
+
+    /// `nil` for anything malformed: another version, no code. Runs on WatchConnectivity's queue.
+    nonisolated static func parsePhoneContext(_ dictionary: [String: Any]) -> PhoneLinkContext? {
+        PhoneLinkContext(dictionary)
+    }
+
+    /// The iPhone's context, already parsed off the main actor (`nil`: not ours, ignored).
+    func receive(_ context: PhoneLinkContext?) {
+        guard let context else { return }
+        onPhoneContext?(context)
     }
 
     /// A message from the iPhone, already validated off the main actor (`nil`: malformed). Before
@@ -109,9 +129,10 @@ final class WatchLinkReceiver: NSObject {
 
     /// Publishes the canonical address of every paired server (each once, in grid order).
     func publishContext(_ servers: [Credentials]) {
+        self.servers = servers
         var seen = Set<String>()
         let addresses = servers.map { ServerAddress.canonical($0.serverURL) }.filter { seen.insert($0).inserted }
-        let context = WatchLinkContext(servers: addresses, account: nil)
+        let context = WatchLinkContext(servers: addresses, account: account)
         lastContext = context
         sendContext()
     }
@@ -154,7 +175,12 @@ extension WatchLinkReceiver: WCSessionDelegate {
         _ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: (any Error)?
     ) {
         guard activationState == .activated else { return }
-        Task { @MainActor in self.sendContext() }
+        // A context the iPhone sent before this launch waits in `receivedApplicationContext`.
+        let phone = Self.parsePhoneContext(session.receivedApplicationContext)
+        Task { @MainActor in
+            self.sendContext()
+            self.receive(phone)
+        }
     }
 
     /// The iPhone app was installed after launch: the context it could not get goes out.
@@ -173,6 +199,11 @@ extension WatchLinkReceiver: WCSessionDelegate {
     nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
         let parsed = WatchLinkMessage(message)
         Task { @MainActor in self.receive(parsed, reply: nil) }
+    }
+
+    nonisolated func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
+        let parsed = Self.parsePhoneContext(applicationContext)
+        Task { @MainActor in self.receive(parsed) }
     }
 
     nonisolated func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
