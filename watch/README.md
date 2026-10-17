@@ -102,15 +102,17 @@ launch arguments:
 A watch with no server sets itself up, with nothing to type. It tries these in order and stops at the first that works:
 
 1. A saved Cloud session.
-2. The account key in the Keychain group shared with the iPhone app (`$(AppIdentifierPrefix)io.github.ggondim.wristcall.shared`,
-   the iPhone's account first). iCloud Keychain also delivers it, but that path was only checked on the simulator,
-   where the watch and the iPhone share one device Keychain.
+2. The account key, which only reaches the watch through iCloud Keychain: the synced item in the access group shared
+   with the iPhone app (`$(AppIdentifierPrefix)io.github.ggondim.wristcall.shared`). When the iPhone names its account,
+   only that account's key is tried. The simulator only proved that the watch can read and write its own shared group;
+   delivery from the iPhone through iCloud Keychain is untested (no real devices) and needs a paid team's provisioning
+   for the shared group.
 3. The enroll code the iPhone sends in its WatchConnectivity application context (it carries the account).
 4. A 0.4 sign-in, exchanged once for a Cloud session.
 
 If none works in 10 seconds the watch says "Open wristcall on your iPhone". "Use a code instead" runs the device
-code flow: the watch shows a code, you approve it on the iPhone (or the web), and it ends in a Cloud session on a
-watch that has no iPhone of its own.
+code flow: the watch shows a code, you approve it on the iPhone (or the web), and it ends in a Cloud session for the
+watch.
 
 Once enrolled, the agenda syncs on its own after enrolling and whenever the app becomes active (at most once every
 60 seconds). Servers that pair at once are paired; a server that needs approval waits for the pairing code the iPhone

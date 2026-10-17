@@ -11,11 +11,11 @@ Cloud or server change.
 
 ### Added
 
-- Sets itself up on first open, with no sign-in on the watch. In this order: a saved session; the account key in the
-  Keychain group shared with the iPhone app (the iPhone's account first); the enroll code in the iPhone's application
-  context; a 0.4 sign-in, exchanged once for the new session. After 10 seconds without any of them the watch says
-  "Open wristcall on your iPhone" and offers "Use a code instead" (the device code flow, which ends in a Cloud session on
-  a watch that has no iPhone of its own).
+- Sets itself up on first open, with no sign-in on the watch. In this order: a saved session; the account key that
+  iCloud Keychain syncs into the access group shared with the iPhone app (only the iPhone's account when the iPhone
+  names it); the enroll code in the iPhone's application context; a 0.4 sign-in, exchanged once for the new session.
+  After 10 seconds without any of them the watch says "Open wristcall on your iPhone" and offers "Use a code instead"
+  (the device code flow, which ends in a Cloud session for the watch, approved on the iPhone or on the web).
 - The agenda syncs by itself after enrolling and whenever the app becomes active (at most once every 60 seconds).
   Servers that pair at once are paired; a server that needs approval gets a pairing code from the iPhone.
 - The agent grid shows each agent in its color, with its name under the circle. A watch with no agents says "No agents
@@ -32,13 +32,14 @@ Cloud or server change.
 - The watch no longer sends Zitadel tokens to the agenda and server token routes, so it works with
   `WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS` off. A Zitadel token only goes to `POST /v1/devices`, freshly renewed, to enroll
   once.
-- The pairing screen moved from Settings to Settings > Advanced.
+- The 8-digit pairing code left the first screen and, with the pairing directory, moved to Settings > Advanced.
 - Build 6 of version 0.5.0 (the 0.5.0 build 5 embedded in iPhone app 0.2.0 was the previous watch app).
 
 ### Known limitations
 
-- The account key reaching the watch through iCloud Keychain was only checked on the simulator (which shares the
-  device's Keychain).
+- The watch reads the account key only through iCloud Keychain (the synced item in the shared access group). The
+  simulator only proved that the watch can read and write its own shared group; delivery from the iPhone through
+  iCloud Keychain is untested (no real devices) and needs a paid team's provisioning for the shared group.
 - An account without an email identity cannot approve "Use a code instead" on the iPhone.
 - Approving "Use a code instead" on the web with an email that has no account creates a new, empty account.
 - Complications and controls show no color.
