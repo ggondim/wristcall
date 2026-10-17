@@ -204,7 +204,8 @@ CLOUD_URL=http://127.0.0.1:8090 TEST_RUNNER_WRISTCALL_UI_SHOTS=/tmp/shots make -
 - The welcome and the empty Agents tab only show on a simulator without the app's account and servers. Nothing is
   wiped by default. `SHOTS_UDID=<udid>` runs on that simulator (instead of `IOS_DESTINATION`); adding `SHOTS_RESET=1`
   first prints its name, uninstalls the app and resets its Keychain (every app's on that simulator), and stops if the
-  UDID does not exist. Use a simulator you do not mind resetting.
+  UDID does not exist. It also deletes the app's preferences domain on that simulator: a `simctl spawn ... defaults write`
+  lands there (not in the app) and outlives an uninstall. Use a simulator you do not mind resetting.
 
 The watch app's bundle id (and so its APNs topic) is now `<BUNDLE_ID_PREFIX>.wristcall.watchkitapp`, no longer
 `<BUNDLE_ID_PREFIX>.wristcall`: the Cloud pushes to both apps, so it lists both in `WRISTCALL_CLOUD_APNS_TOPICS`.
