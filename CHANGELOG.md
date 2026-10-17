@@ -4,6 +4,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 
 ## [Unreleased]
 
+### Fixed
+
+- iPhone: "Delete account" and `-resetOnboarding` bring the welcome back even when a done flag sits in another
+  preferences domain.
+
 ## [web-0.2.1] - 2026-10-16
 
 ### Changed

@@ -100,7 +100,8 @@ test-ios-ui: generate
 # TEST_RUNNER_WRISTCALL_UI_LINK (link confirm). The welcome and the empty agents only show on a simulator without
 # the app's account and servers. Nothing is wiped by default. SHOTS_UDID=<udid> runs on that simulator (instead
 # of IOS_DESTINATION); SHOTS_RESET=1 (needs SHOTS_UDID) first uninstalls the app and resets the Keychain of THAT
-# simulator, which wipes the Keychain of every app on it: use a simulator you do not mind resetting.
+# simulator, which wipes the Keychain of every app on it: use a simulator you do not mind resetting. It also deletes
+# the app's preferences domain on that simulator (a `simctl spawn ... defaults write` lands there and outlives an uninstall).
 SHOTS_UDID ?=
 BUNDLE_ID_PREFIX ?= $(shell sed -n 's/^ *BUNDLE_ID_PREFIX *= *//p' Config/Local.xcconfig Config/Base.xcconfig 2>/dev/null | head -1)
 PHONE_BUNDLE_ID ?= $(BUNDLE_ID_PREFIX).wristcall
@@ -121,6 +122,8 @@ shots-ios: generate
 		xcrun simctl list devices | grep -F "($(SHOTS_UDID))" | grep -q Booted || { echo "shots-ios: cannot boot $(SHOTS_UDID)"; exit 1; }; \
 		xcrun simctl uninstall $(SHOTS_UDID) $(PHONE_BUNDLE_ID) 2>/dev/null; \
 		xcrun simctl keychain $(SHOTS_UDID) reset || exit 1; \
+		out=$$(xcrun simctl spawn $(SHOTS_UDID) defaults delete $(PHONE_BUNDLE_ID) 2>&1) || \
+			echo "$$out" | grep -q "Domain .* not found" || { echo "$$out"; exit 1; }; \
 	fi
 	xcodebuild -project $(PROJECT) -scheme WristcallPhoneUI -destination '$(SHOTS_DESTINATION)' \
 		-derivedDataPath $(DERIVED_DATA) test -only-testing:WristcallPhoneUITests/OnboardingShotsTests $(URL_SETTINGS)
