@@ -201,6 +201,36 @@ struct CloudSessionRoutesTests {
         await #expect(throws: APIError.limit("5 open")) { try await client(host).enrollCode(accessToken: "at") }
     }
 
+    @Test func enrollByCodePostsCodeAndDevice() async throws {
+        let host = StubHost(replies: [(201, Self.sessionJSON)])
+        let tokens = try await client(host).enrollDevice(code: "wce_abc", device: CloudDeviceInfo(name: "Watch", platform: .watchos))
+        #expect(tokens.account == "acc_abc")
+        #expect(tokens.device == "dev_1")
+        let request = try #require(host.requests.first)
+        #expect(request.method == "POST")
+        #expect(request.path == "/v1/devices/enroll")
+        #expect(request.headers["Authorization"] == nil)
+        let body = try request.json()
+        #expect(Set(body.keys) == ["code", "device"])
+        #expect(body["code"] as? String == "wce_abc")
+        #expect(body["device"] as? [String: String] == ["name": "Watch", "platform": "watchos"])
+    }
+
+    @Test func enrollByCodeMapsErrors() async {
+        let host = StubHost(replies: [
+            StubHost.Reply(404, #"{"error":"invalid_code","message":"no"}"#),
+            StubHost.Reply(403, #"{"error":"limit","message":"10 devices"}"#),
+            StubHost.Reply(403, #"{"error":"forbidden","message":"watchos only"}"#),
+            StubHost.Reply(429, #"{"error":"rate_limited"}"#, headers: ["Retry-After": "30"]),
+        ])
+        let cloud = client(host)
+        let watch = CloudDeviceInfo(name: "Watch", platform: .watchos)
+        await #expect(throws: APIError.invalidCode) { try await cloud.enrollDevice(code: "wce_abc", device: watch) }
+        await #expect(throws: APIError.limit("10 devices")) { try await cloud.enrollDevice(code: "wce_abc", device: watch) }
+        await #expect(throws: APIError.forbidden("watchos only")) { try await cloud.enrollDevice(code: "wce_abc", device: watch) }
+        await #expect(throws: APIError.retryLater(30)) { try await cloud.enrollDevice(code: "wce_abc", device: watch) }
+    }
+
     @Test func inspectAndApproveSendTheApproveKey() async throws {
         let host = StubHost(replies: [
             (200, #"{"name":"Chrome on Mac","user_agent":"UA","country":null,"created_at":1800000000,"expires_at":1800000300}"#),

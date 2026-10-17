@@ -24,6 +24,49 @@ struct CloudSessionIntegrationTests {
         await Self.deleteAccount(cloud, key)
     }
 
+    @Test func watchEnrollsByKeyAndByCode() async throws {
+        let cloud = CloudClient(cloud: try CloudSessionEnvironment.requireCloud())
+        let key = AccountKey.generate()
+        let iPhone = try await cloud.createAccount(key: key, device: Self.phone)
+        do {
+            try await Self.watchEnrollment(cloud, key, iPhone)
+        } catch {
+            try? await cloud.deleteAccount(accessToken: iPhone.accessToken)
+            throw error
+        }
+        try? await cloud.deleteAccount(accessToken: iPhone.accessToken)
+    }
+
+    private static func watchEnrollment(_ cloud: CloudClient, _ key: AccountKey, _ iPhone: SessionTokens) async throws {
+        let watch = CloudDeviceInfo(name: "wristcall e2e watch", platform: .watchos)
+        let byKey = try await cloud.enrollDevice(key: key, device: watch)
+        #expect(byKey.account == iPhone.account)
+
+        let code = try await cloud.enrollCode(accessToken: iPhone.accessToken)
+        let byCode = try await cloud.enrollDevice(code: code.code, device: watch)
+        #expect(byCode.account == iPhone.account)
+        #expect(byCode.device != byKey.device)
+
+        // A code is single use.
+        do {
+            _ = try await cloud.enrollDevice(code: code.code, device: watch)
+            Issue.record("a spent enroll code was accepted")
+        } catch let error as APIError {
+            #expect(error == .invalidCode)
+        }
+
+        // A watch enrolled by code cannot make codes (the owner routes need an app device).
+        do {
+            _ = try await cloud.enrollCode(accessToken: byCode.accessToken)
+            Issue.record("a watch made an enroll code")
+        } catch let error as APIError {
+            guard case .forbidden = error else {
+                Issue.record("expected forbidden, got a different error")
+                return
+            }
+        }
+    }
+
     private static func lifecycle(_ cloud: CloudClient, _ key: AccountKey) async throws {
         // A silent account: key and device, nothing else.
         let first = try await cloud.createAccount(key: key, device: phone)

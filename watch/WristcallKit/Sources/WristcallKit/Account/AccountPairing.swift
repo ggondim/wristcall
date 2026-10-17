@@ -2,7 +2,8 @@ import Foundation
 
 /// What the watch does after the account login (decision R11), without UI: for one server of the agenda,
 /// `GET /v1/health` (the server's account must be this Cloud) → `POST {cloud}/v1/server-tokens` →
-/// `POST /v1/pair/account`. Nothing here logs; tokens never reach an outcome or a reason.
+/// `POST /v1/pair/account`, over whichever session backs the device (`CloudAccess`). Nothing here logs; tokens
+/// never reach an outcome or a reason.
 public struct AccountPairing: Sendable {
     public enum Outcome: Sendable, Equatable {
         /// The server paired the watch at once (`device_credential: attestation`).
@@ -16,6 +17,8 @@ public struct AccountPairing: Sendable {
     /// Short reasons of `.skipped`, shown after the server's host ("y.test: not linked to your account").
     public enum Reason {
         public static let oldServer = "server needs 0.6.0"
+        /// The server asks its owner to approve the watch, and the caller does not want to ask yet.
+        public static let needsPhone = "waiting for your iPhone"
         /// `401` from a server that passed the version check: it did not accept the per-server token.
         public static let tokenRefused = "the server refused the account token"
         public static let noAccount = "no account on this server"
@@ -34,13 +37,13 @@ public struct AccountPairing: Sendable {
     /// The first server version with per-server tokens (`POST /v1/pair/account` takes only those).
     public static let minimumVersion = [0, 6, 0]
 
-    private let session: AccountSession
+    private let access: any CloudAccess
     private let pairing: PairingClient
     private let http: URLSession
 
     /// `http` reads each server's health (`ServerPushClient.health(of:session:)`).
-    public init(session: AccountSession, pairing: PairingClient = PairingClient(), http: URLSession = .shared) {
-        self.session = session
+    public init(access: any CloudAccess, pairing: PairingClient = PairingClient(), http: URLSession = .shared) {
+        self.access = access
         self.pairing = pairing
         self.http = http
     }
@@ -75,8 +78,9 @@ public struct AccountPairing: Sendable {
 
     /// Pairs the watch with `server` for the signed-in account. The server is skipped, before any token is asked
     /// for (M10), when its health cannot be read, it is older than 0.6.0, it has no central account, or its
-    /// account is another Cloud (Review Focus 2).
-    public func pair(_ server: URL, deviceName: String) async -> Outcome {
+    /// account is another Cloud (Review Focus 2). With `allowApproval` off, a server that wants its owner's approval
+    /// (`device_credential: approval`) is skipped as `Reason.needsPhone`, also before a token is asked for.
+    public func pair(_ server: URL, deviceName: String, allowApproval: Bool = true) async -> Outcome {
         let health: ServerHealth
         do {
             health = try await ServerPushClient.health(of: server, session: http)
@@ -88,12 +92,13 @@ public struct AccountPairing: Sendable {
         guard Self.supportsAccountPairing(version: health.version) else { return .skipped(server, Reason.oldServer) }
         guard let account = health.account else { return .skipped(server, Reason.noAccount) }
         guard let issuer = URL(string: account.issuer),
-              ServerAddress.canonical(issuer) == ServerAddress.canonical(session.cloud)
+              ServerAddress.canonical(issuer) == ServerAddress.canonical(access.cloudClient.cloud)
         else { return .skipped(server, Reason.foreignAccount) }
+        if !allowApproval, account.deviceCredential == "approval" { return .skipped(server, Reason.needsPhone) }
 
         let token: String
         do {
-            token = try await session.serverToken(for: server, health: health)
+            token = try await access.serverToken(for: server, health: health)
         } catch AccountError.signedOut {
             return .skipped(server, Reason.signedOut)
         } catch AccountError.foreignIssuer {

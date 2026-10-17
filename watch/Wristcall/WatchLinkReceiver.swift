@@ -111,7 +111,7 @@ final class WatchLinkReceiver: NSObject {
     func publishContext(_ servers: [Credentials]) {
         var seen = Set<String>()
         let addresses = servers.map { ServerAddress.canonical($0.serverURL) }.filter { seen.insert($0).inserted }
-        let context = WatchLinkContext(servers: addresses)
+        let context = WatchLinkContext(servers: addresses, account: nil)
         lastContext = context
         sendContext()
     }

@@ -29,6 +29,15 @@ extension CloudClient {
         ))
     }
 
+    /// `POST /v1/devices/enroll` (no token): signs a watch into the account that made `code` (`enrollCode`).
+    /// The code is single use; a wrong or spent one is `APIError.invalidCode`, a device other than `watchos`
+    /// is `.forbidden` (the code is not spent), a full account is `.limit` (the code is spent).
+    public func enrollDevice(code: String, device: CloudDeviceInfo) async throws -> SessionTokens {
+        try await expect(201, try http.request(
+            url("v1/devices/enroll"), method: "POST", json: CodeAndDevice(code: code, device: device)
+        ))
+    }
+
     /// `POST /v1/session/refresh`: a new access token and a new refresh token. The old refresh token is spent:
     /// using it again signs the device out (`APIError.revoked`).
     public func refreshSession(_ refreshToken: String) async throws -> SessionTokens {
@@ -118,6 +127,11 @@ private struct KeyAndDevice: Encodable {
         case account, device
         case accountKey = "account_key"
     }
+}
+
+private struct CodeAndDevice: Encodable {
+    var code: String
+    var device: CloudDeviceInfo
 }
 
 private struct DeviceOnly: Encodable { var device: CloudDeviceInfo }

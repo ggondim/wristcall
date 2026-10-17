@@ -360,7 +360,7 @@ struct WatchLinkTests {
 
     @Test func isOnWatchUsesContext() async {
         let session = FakeWatchSession()
-        session.receivedApplicationContext = WatchLinkContext(servers: ["https://home.example.com:8443"]).dictionary
+        session.receivedApplicationContext = WatchLinkContext(servers: ["https://home.example.com:8443"], account: nil).dictionary
         let link = makeLink(session)
         #expect(link.watchServers == ["https://home.example.com:8443"])
         #expect(link.isOnWatch(server))
@@ -374,7 +374,7 @@ struct WatchLinkTests {
     /// Minor 4: a watch unpaired (or without the app any more) is no longer "On watch".
     @Test func isOnWatchNeedsTheWatch() {
         let session = FakeWatchSession()
-        session.receivedApplicationContext = WatchLinkContext(servers: ["https://home.example.com:8443"]).dictionary
+        session.receivedApplicationContext = WatchLinkContext(servers: ["https://home.example.com:8443"], account: nil).dictionary
         let link = makeLink(session)
         session.isWatchAppInstalled = false
         link.sessionStateDidChange()
@@ -385,7 +385,7 @@ struct WatchLinkTests {
         let session = FakeWatchSession()
         let link = makeLink(session)
         #expect(!link.isOnWatch(server))
-        link.contextDidChange(WatchLinkContext(servers: ["https://home.example.com:8443"]))
+        link.contextDidChange(WatchLinkContext(servers: ["https://home.example.com:8443"], account: nil))
         #expect(link.isOnWatch(server))
     }
 
@@ -395,12 +395,12 @@ struct WatchLinkTests {
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let session = FakeWatchSession()
-        session.receivedApplicationContext = WatchLinkContext(servers: ["https://home.example.com:8443"]).dictionary
+        session.receivedApplicationContext = WatchLinkContext(servers: ["https://home.example.com:8443"], account: nil).dictionary
         let link = makeLink(session, defaults: defaults)
         // The context the session already held at launch was not delivered now.
         #expect(link.lastContextAt == nil)
         clock.value.withLock { $0 = 1_500 }
-        link.contextReceived(WatchLinkContext(servers: []))
+        link.contextReceived(WatchLinkContext(servers: [], account: nil))
         #expect(link.lastContextAt == Date(timeIntervalSince1970: 1_500))
         #expect(defaults.double(forKey: "watch.lastContextAt") == 1_500)
         #expect(makeLink(session, defaults: defaults).lastContextAt == Date(timeIntervalSince1970: 1_500))

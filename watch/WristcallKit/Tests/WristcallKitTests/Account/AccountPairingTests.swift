@@ -21,7 +21,7 @@ struct AccountPairingTests {
     }
 
     var accountPairing: AccountPairing {
-        AccountPairing(session: signedInSession, pairing: PairingClient(session: .stubbed()), http: .stubbed())
+        AccountPairing(access: signedInSession, pairing: PairingClient(session: .stubbed()), http: .stubbed())
     }
 
     func health(version: String = "0.6.0", issuer: String? = nil) -> String {
@@ -98,6 +98,43 @@ struct AccountPairingTests {
         #expect(outcome == .skipped(srv.url, AccountPairing.Reason.notLinked))
     }
 
+    @Test func approvalServerSkippedWithoutRequest() async throws {
+        let srv = server(pair: 202, #"{"request_id":"0423","poll_token":"poll-secret","expires_at":1800000600}"#)
+        let outcome = await accountPairing.pair(srv.url, deviceName: "Apple Watch", allowApproval: false)
+        #expect(outcome == .skipped(srv.url, AccountPairing.Reason.needsPhone))
+        #expect(AccountPairing.Reason.needsPhone == "waiting for your iPhone")
+        #expect(tokenRequests.isEmpty)
+        #expect(!srv.requests.contains { $0.path == "/v1/pair/account" })
+    }
+
+    @Test func approvalServerStillAsksWhenAllowed() async throws {
+        let srv = server(pair: 202, #"{"request_id":"0423","poll_token":"poll-secret","expires_at":1800000600}"#)
+        let outcome = await accountPairing.pair(srv.url, deviceName: "Apple Watch")
+        guard case .pending = outcome else { Issue.record("expected pending, got \(outcome)"); return }
+    }
+
+    @Test func attestationServerPairsEvenWithoutApproval() async throws {
+        let attestation = health().replacingOccurrences(of: "approval", with: "attestation")
+        let srv = server(health: attestation, pair: 200, #"{"device_id":"dev-1","token":"device-token"}"#)
+        let outcome = await accountPairing.pair(srv.url, deviceName: "Apple Watch", allowApproval: false)
+        #expect(outcome == .paired(srv.url, PairedDevice(deviceId: "dev-1", token: "device-token")))
+    }
+
+    @Test func pairsWithDeviceSession() async throws {
+        let srv = server(pair: 200, #"{"device_id":"dev-1","token":"device-token"}"#)
+        let now = now
+        let stored = StoredDeviceSession(
+            account: "acc_abc", device: "dev_1", refreshToken: "wcr_rt", accessToken: "device-at",
+            expiresAt: now.addingTimeInterval(3600))
+        let device = DeviceSession(
+            cloud: cloud.cloud.url, store: InMemoryDeviceSessionStore(stored), session: .stubbed(), now: { now })
+        let pairing = AccountPairing(access: device, pairing: PairingClient(session: .stubbed()), http: .stubbed())
+        let outcome = await pairing.pair(srv.url, deviceName: "Apple Watch")
+        #expect(outcome == .paired(srv.url, PairedDevice(deviceId: "dev-1", token: "device-token")))
+        let tokenRequest = try #require(tokenRequests.first)
+        #expect(tokenRequest.headers["Authorization"] == "Bearer device-at")
+    }
+
     @Test func oldServerSkips() async throws {
         // M10: a 0.5.x server (no per-server tokens) is skipped before the Cloud is asked for a token.
         let srv = server(health: health(version: "0.5.2"), pair: 401, #"{"error":"invalid_token"}"#)
@@ -122,7 +159,7 @@ struct AccountPairingTests {
                 ? StubHost.Reply(200, #"{"status":"ok","version":"0.6.0","protocol":1,"account":{"issuer":"https://evil.test","device_credential":"approval"}}"#)
                 : StubHost.Reply(500, "")
         }
-        let outcome = await AccountPairing(session: signedInSession, pairing: PairingClient(session: .stubbed()), http: .stubbed())
+        let outcome = await AccountPairing(access: signedInSession, pairing: PairingClient(session: .stubbed()), http: .stubbed())
             .pair(srv.url, deviceName: "Apple Watch")
         guard case .skipped(_, let reason) = outcome else { Issue.record("expected skipped"); return }
         #expect(reason == AccountPairing.Reason.foreignAccount)
@@ -167,7 +204,7 @@ struct AccountPairingTests {
     @Test func signedOutSkipsWithoutPairing() async {
         let srv = server(pair: 200, #"{"device_id":"dev-1","token":"device-token"}"#)
         let session = AccountSession(cloud: cloud.cloud.url, kind: .watch, store: InMemoryTokenStore(), session: .stubbed())
-        let outcome = await AccountPairing(session: session, pairing: PairingClient(session: .stubbed()), http: .stubbed())
+        let outcome = await AccountPairing(access: session, pairing: PairingClient(session: .stubbed()), http: .stubbed())
             .pair(srv.url, deviceName: "Apple Watch")
         #expect(outcome == .skipped(srv.url, AccountPairing.Reason.signedOut))
         #expect(!srv.requests.contains { $0.path == "/v1/pair/account" })

@@ -106,7 +106,7 @@ final class AccountLoginModel {
         sendToPhone: (@MainActor (WatchLinkMessage) -> Void)?
     ) {
         let backend = cloudURL == nil ? nil : session.map {
-            LiveAccountLoginBackend(session: $0, pairing: AccountPairing(session: $0))
+            LiveAccountLoginBackend(session: $0, pairing: AccountPairing(access: $0))
         }
         self.init(backend: backend, model: model, sendToPhone: sendToPhone)
     }

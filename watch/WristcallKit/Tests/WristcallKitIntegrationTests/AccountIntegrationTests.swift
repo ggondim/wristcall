@@ -108,7 +108,7 @@ struct AccountIntegrationTests {
         let server = try TestServer.requireBaseURL()
 
         // The watch asks with the Cloud's token for this server; `device_credential: approval` → pending.
-        let outcome = await AccountPairing(session: watch).pair(server, deviceName: "E2E Watch")
+        let outcome = await AccountPairing(access: watch).pair(server, deviceName: "E2E Watch")
         guard case .pending(_, let request) = outcome else {
             Issue.record("expected .pending, got \(outcome)")
             return
@@ -160,7 +160,7 @@ struct AccountIntegrationTests {
         try await withCleanup {
             try await serverPush.setPushKey(pushKey)
 
-            let outcome = await AccountPairing(session: watch).pair(server, deviceName: "E2E Push Watch")
+            let outcome = await AccountPairing(access: watch).pair(server, deviceName: "E2E Push Watch")
             guard case .pending(_, let request) = outcome else {
                 Issue.record("expected .pending, got \(outcome)")
                 return

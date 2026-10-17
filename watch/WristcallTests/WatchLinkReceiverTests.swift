@@ -110,7 +110,7 @@ struct WatchLinkReceiverTests {
         #expect(model.phase == .home)
         #expect(model.servers.map(\.credentials.serverURL) == [first.serverURL, home])
         #expect(pairing.calls.first == "me https://agent.example.com")
-        #expect(receiver.lastContext == WatchLinkContext(servers: ["https://agent.example.com", "https://home.example.com"]))
+        #expect(receiver.lastContext == WatchLinkContext(servers: ["https://agent.example.com", "https://home.example.com"], account: nil))
         // The scene's own launch afterwards does not read the Keychain again.
         await model.launchIfNeeded()
         #expect(pairing.calls.filter { $0 == "me https://agent.example.com" }.count == 1)
@@ -242,10 +242,10 @@ struct WatchLinkReceiverTests {
 
         await model.launch()
 
-        #expect(receiver.lastContext == WatchLinkContext(servers: ["https://agent.example.com", "https://home.example.com/wc"]))
-        // Only addresses: no token, no device id.
+        #expect(receiver.lastContext == WatchLinkContext(servers: ["https://agent.example.com", "https://home.example.com/wc"], account: nil))
+        // Only addresses and the account id (empty until the watch has one): no token, no device id.
         let published = try #require(receiver.lastContext?.dictionary)
-        #expect(Set(published.keys) == ["v", "servers"])
+        #expect(Set(published.keys) == ["v", "servers", "account"])
     }
 
     @Test func contextFollowsPairingAndRemoval() async throws {
@@ -255,16 +255,16 @@ struct WatchLinkReceiverTests {
         pairing.setMeResults([.success(homeInfo)], for: home)
 
         _ = await receiver.handle(.pair(server: home, code: code, name: "Home", expiresAt: soon))
-        #expect(receiver.lastContext == WatchLinkContext(servers: ["https://agent.example.com", "https://home.example.com"]))
+        #expect(receiver.lastContext == WatchLinkContext(servers: ["https://agent.example.com", "https://home.example.com"], account: nil))
 
         await model.removeServer(id: "srv-1")
-        #expect(receiver.lastContext == WatchLinkContext(servers: ["https://home.example.com"]))
+        #expect(receiver.lastContext == WatchLinkContext(servers: ["https://home.example.com"], account: nil))
     }
 
     @Test func emptyWatchPublishesEmptyContext() async {
         let model = makeModel()
         let receiver = WatchLinkReceiver(model: model)
         await model.launch()
-        #expect(receiver.lastContext == WatchLinkContext(servers: []))
+        #expect(receiver.lastContext == WatchLinkContext(servers: [], account: nil))
     }
 }

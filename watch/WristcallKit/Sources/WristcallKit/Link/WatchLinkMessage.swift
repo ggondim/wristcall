@@ -165,20 +165,31 @@ public struct WatchLinkReply: Sendable, Equatable {
 }
 
 /// The watch's `applicationContext`: the servers it is paired with, as `ServerAddress.canonical`
-/// strings (no token, no device id). The iPhone shows "On watch" for these.
+/// strings (no token, no device id), and the Cloud account it is signed into. The iPhone shows "On watch"
+/// for the servers and compares the account with its own.
 public struct WatchLinkContext: Sendable, Equatable {
     public var servers: [String]
+    /// The account id (`acc_…`), `nil` for a watch that has none yet.
+    public var account: String?
+    /// Whether the dictionary carried the `account` key at all: a watch before this field (0.4.0) sends none,
+    /// and a new one without an account sends `""`.
+    public private(set) var hasAccountField: Bool
 
-    public init(servers: [String]) {
+    public init(servers: [String], account: String?) {
         self.servers = servers
+        self.account = account
+        self.hasAccountField = true
     }
 
     public init?(_ dictionary: [String: Any]) {
         guard WatchLinkMessage.hasVersion(dictionary), let servers = dictionary["servers"] as? [String] else { return nil }
         self.servers = servers
+        let account = dictionary["account"]
+        hasAccountField = account != nil
+        self.account = (account as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
 
     public var dictionary: [String: Any] {
-        ["v": WatchLinkMessage.version, "servers": servers]
+        ["v": WatchLinkMessage.version, "servers": servers, "account": account ?? ""]
     }
 }
