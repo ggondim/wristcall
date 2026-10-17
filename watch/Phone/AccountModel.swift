@@ -7,6 +7,8 @@ enum LinkError: Error, Equatable {
     case badCode
     /// The server linked the account and issued a personal token, but the app could not verify or save it.
     case notSaved
+    /// A link URL arrived before the account was ready (nothing was sent).
+    case accountNotReady
 }
 
 /// Restoring an account by email met an account on this iPhone that holds something.
@@ -62,6 +64,10 @@ final class AccountModel {
     let agenda: AgendaSync?
     /// Runs after the Cloud deleted the account, before the local servers go: the app drops its push keys there.
     @ObservationIgnored var accountDeleted: (@MainActor () async -> Void)?
+    /// The watch a linked server is set up on (`PhoneApp` sets it); `nil`: no watch step.
+    @ObservationIgnored var watchLink: WatchLink?
+    /// The watch set-up the last link started (it may wait for the watch's answer): tests wait for it.
+    @ObservationIgnored private(set) var watchPairing: Task<WatchLink.SendResult, Never>?
 
     @ObservationIgnored private let session: DeviceSession?
     @ObservationIgnored private let keys: any AccountKeyStore
@@ -598,13 +604,49 @@ final class AccountModel {
             let serverToken = try await session.serverToken(for: url, health: health)
             return try await api.linkAccount(serverToken: serverToken, code: code)
         }
+        return try await storeLinked(url, link: link, name: name)
+    }
+
+    /// Adds the server of a link URL (`WristcallLink.server`, a QR code or `wristcall link` on the server) with
+    /// its single-use code: health (the server's account must be this Cloud) → per-server token →
+    /// `POST /v1/account/link` (no `Authorization`) → the server's personal token saved, linked (a server
+    /// already in the list, same canonical URL, gets the new token) → the agenda's mirror → the watch.
+    @discardableResult
+    func addLinkedServer(_ server: URL, code: LinkCode) async throws -> ManagedServer {
+        guard state == .ready else { throw LinkError.accountNotReady }
+        let session = try configuredSession()
+        let api = appState.api(for: server)
+        let health = try await api.health()
+        // Refused before any Cloud call (`serverToken` checks again).
+        guard health.account != nil else { throw AccountError.serverWithoutAccount }
+        let link = try await signingOutIfNeeded {
+            let serverToken = try await session.serverToken(for: server, health: health)
+            return try await api.linkAccount(serverToken: serverToken, code: code)
+        }
+        return try await storeLinked(server, link: link, name: nil)
+    }
+
+    /// The steps after a link by code: the personal token saved (the agenda mirrors it through the app's
+    /// hooks), then the watch gets a pairing code for it.
+    private func storeLinked(_ url: URL, link: AccountLink, name: String?) async throws -> ManagedServer {
         guard link.linked, let token = link.apiToken else { throw APIError.malformedResponse }
+        let saved: ManagedServer
         do {
-            return try await appState.addServer(urlText: url.absoluteString, token: token, name: name, linked: true)
+            saved = try await appState.addServer(urlText: url.absoluteString, token: token, name: name, linked: true)
         } catch {
             // The code is spent and the token exists on the server: say how to clean it up (never the token).
             throw LinkError.notSaved
         }
+        pairWatch(with: saved)
+        return saved
+    }
+
+    /// Sends the watch a pairing code for `server` without holding the screen: `WatchLink` asks the server
+    /// for a code only when a watch with the app is there.
+    private func pairWatch(with server: ManagedServer) {
+        guard let watchLink else { return }
+        let api = appState.api(for: server)
+        watchPairing = Task { await watchLink.send(server: server, api: api) }
     }
 
     /// Links a saved server (personal token) to the account. The server's `409` means another user there has
@@ -621,7 +663,82 @@ final class AccountModel {
         try await appState.markLinked(server.id)
     }
 
+    // MARK: - Web sign-in
+
+    /// `POST /v1/web-sessions/{id}/inspect`: what the browser behind a web sign-in code looks like. `key` is
+    /// the approve key from its QR code.
+    func inspectWebSession(id: String, key: String) async throws -> WebSessionInfo {
+        try await withReadySession { session in
+            try await session.cloudClient.inspectWebSession(id: id, key: key, accessToken: try await session.accessToken())
+        }
+    }
+
+    /// `POST /v1/web-sessions/{id}/approve`: the browser signs in to this account.
+    func approveWebSession(id: String, key: String) async throws {
+        try await withReadySession { session in
+            try await session.cloudClient.approveWebSession(id: id, key: key, accessToken: try await session.accessToken())
+        }
+    }
+
+    private func withReadySession<T>(_ work: (DeviceSession) async throws -> T) async throws -> T {
+        guard state == .ready else { throw LinkError.accountNotReady }
+        let session = try configuredSession()
+        do {
+            return try await work(session)
+        } catch {
+            _ = await endIfRefused(error)
+            throw error
+        }
+    }
+
     // MARK: - Messages
+
+    /// Text for a failed link URL (`addLinkedServer(_:code:)`). Copy may hold Markdown code spans.
+    static func linkMessage(for error: any Error) -> String {
+        switch error {
+        case AccountError.serverWithoutAccount, APIError.notConfigured:
+            "This server isn't set up for wristcall accounts."
+        case AccountError.foreignIssuer:
+            "This server uses another wristcall account service."
+        case APIError.invalidCode:
+            "This code was already used or has expired. Run `wristcall link` on the server for a new one."
+        case APIError.conflict:
+            "Your account is already linked to another user on this server."
+        case APIError.invalidAccountToken:
+            "The server didn't accept the sign-in. Try again."
+        case APIError.rateLimited, APIError.retryLater:
+            "Too many attempts. Try again in a minute."
+        case LinkError.accountNotReady:
+            settingUpMessage
+        // The server's health (`ServerPushClient`) fails with `PairingError`.
+        case PairingError.network:
+            "Can't reach the server."
+        case PairingError.rateLimited:
+            "Too many attempts. Try again in a minute."
+        case is PairingError:
+            "This doesn't look like a wristcall server."
+        default:
+            message(for: error)
+        }
+    }
+
+    /// Text for a failed web sign-in approval.
+    static func webMessage(for error: any Error) -> String {
+        switch error {
+        case APIError.notFound:
+            "This code expired. Reload the page for a new one."
+        case APIError.limit:
+            "Too many web sessions are open. Sign out of one in Devices first."
+        case APIError.rateLimited, APIError.retryLater:
+            "Too many attempts. Try again in a minute."
+        case LinkError.accountNotReady:
+            settingUpMessage
+        default:
+            message(for: error)
+        }
+    }
+
+    static let settingUpMessage = "Setting up your account…"
 
     /// Short text for the screen. Never the error's own text when it may carry what was sent.
     static func message(for error: any Error) -> String {
@@ -638,6 +755,8 @@ final class AccountModel {
             return "Enter the 8-digit code."
         case LinkError.notSaved:
             return notSavedMessage
+        case LinkError.accountNotReady:
+            return settingUpMessage
         case let failure as AddServerError:
             return failure.message
         case APIError.conflict:

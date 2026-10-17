@@ -45,6 +45,8 @@ protocol ServerAPI: Sendable {
     /// The same without a personal token: the pairing code proves the local user, and the reply carries a
     /// new personal token (`apiToken`). Sent without `Authorization`.
     func linkAccount(serverToken: String, code: PairingCode) async throws -> AccountLink
+    /// The same with the single-use code of a link URL (`wristcall://link`, `WristcallLink.server`).
+    func linkAccount(serverToken: String, code: LinkCode) async throws -> AccountLink
 }
 
 /// The real thing: the Kit's clients with the server's personal token.
@@ -103,6 +105,10 @@ struct LiveServerAPI: ServerAPI {
     func unlinkAccount() async throws { try await management.unlinkAccount() }
 
     func linkAccount(serverToken: String, code: PairingCode) async throws -> AccountLink {
+        try await ManagementClient.linkAccount(server: server, serverToken: serverToken, code: code, session: session)
+    }
+
+    func linkAccount(serverToken: String, code: LinkCode) async throws -> AccountLink {
         try await ManagementClient.linkAccount(server: server, serverToken: serverToken, code: code, session: session)
     }
 }

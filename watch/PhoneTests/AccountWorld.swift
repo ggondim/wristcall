@@ -57,6 +57,10 @@ final class AccountWorld: Sendable {
         var holding = false
         /// Writes waiting in the hold right now.
         var waiting = 0
+        /// What `POST /v1/web-sessions/{id}/inspect` and `/approve` answer (bearer checked first).
+        var webInspectReply = StubHost.Reply(
+            200, #"{"name":"Firefox on Mac","user_agent":"Mozilla/5.0 (Macintosh)","country":"BR","created_at":1800000000,"expires_at":1800000300}"#)
+        var webApproveReply = StubHost.Reply(200, #"{"ok":true}"#)
     }
 
     private final class TextBox: Sendable {
@@ -163,6 +167,16 @@ final class AccountWorld: Sendable {
     }
 
     var entries: [Entry] { box.state.withLock { $0.entries } }
+
+    var webInspectReply: StubHost.Reply {
+        get { box.state.withLock { $0.webInspectReply } }
+        set { box.state.withLock { $0.webInspectReply = newValue } }
+    }
+
+    var webApproveReply: StubHost.Reply {
+        get { box.state.withLock { $0.webApproveReply } }
+        set { box.state.withLock { $0.webApproveReply = newValue } }
+    }
 
     /// Holds every agenda write until `release()` (at most 10 s, so a failing test cannot hang). The stub
     /// answers on URLSession's protocol thread, so other stubbed hosts wait too while a write is held.
@@ -389,6 +403,11 @@ final class AccountWorld: Sendable {
             return StubHost.Reply(200, #"{"revoked":2}"#)
         default:
             if request.method == "DELETE", request.path.hasPrefix("/v1/devices/") { return StubHost.Reply(204, "") }
+            if request.method == "POST", request.path.hasPrefix("/v1/web-sessions/") {
+                guard bearerAccount(request) != nil else { return revoked }
+                if request.path.hasSuffix("/inspect") { return box.state.withLock { $0.webInspectReply } }
+                if request.path.hasSuffix("/approve") { return box.state.withLock { $0.webApproveReply } }
+            }
             return nil
         }
     }

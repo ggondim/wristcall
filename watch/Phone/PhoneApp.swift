@@ -15,6 +15,8 @@ struct PhoneApp: App {
     @State private var history: HistoryModel
     @State private var account: AccountModel
     @State private var watchLink: WatchLink
+    /// wristcall links (`onOpenURL`, the QR scanner): the sheets they open.
+    @State private var router = LinkRouter()
     @Environment(\.scenePhase) private var scenePhase
     /// The watch login code whose approval sheet the user closed (it does not come back for that code).
     @State private var dismissedWatchCode: String?
@@ -45,6 +47,8 @@ struct PhoneApp: App {
         _watchLink = State(initialValue: watchLink)
         // M13: the watch's login is done: the device page it was approved on closes.
         watchLink.onWatchSignedIn = { [weak account] in account?.watchSignInFinished() }
+        // A server linked by its QR code is set up on the watch too.
+        account.watchLink = watchLink
         // Read by the app delegate in `didFinishLaunching`, which runs after this.
         PhoneAppDelegate.notifications = ApprovalNotificationHandler(approvals: approvals)
         #if WRISTCALL_PUSH
@@ -69,6 +73,8 @@ struct PhoneApp: App {
                 .environment(history)
                 .environment(account)
                 .environment(watchLink)
+                .environment(router)
+                .onOpenURL { router.open($0) }
                 // R11: the watch sent its login code and the account is signed in here: approve it.
                 .sheet(item: Binding(
                     get: {
@@ -125,6 +131,8 @@ struct PhoneApp: App {
         await state.load()
         #if DEBUG
         await DebugLaunch.apply(to: state)
+        if let url = DebugLaunch.openURL { router.open(url) }
+        if DebugRoute.opensScanner { router.sheet = .scanner(purpose: .server) }
         #endif
         await approvals.refresh()
         launched = true
@@ -142,15 +150,14 @@ struct RootView: View {
     @Environment(AppState.self) private var state
     @Environment(AccountModel.self) private var account
     @Environment(ApprovalsModel.self) private var approvals
+    @Environment(LinkRouter.self) private var router
     @State private var tab = Self.firstTab
     @State private var step: OnboardingStep = Self.firstStep
     /// Read from the defaults, so finishing the onboarding (or an account deletion resetting it) redraws.
     @AppStorage(OnboardingStore.key) private var onboardingDone = false
-    /// "Your own server" was chosen. Task 12 replaces this with the QR scanner.
-    @State private var connectingOwnServer = false
     /// "Try Wristcall Cloud" (Agents home): the plan screen in a sheet.
     @State private var choosingPlan = false
-    /// The plan sheet ended on "Your own server": the add-server form opens once the sheet is gone.
+    /// The plan sheet ended on "Your own server": the scanner opens once the sheet is gone.
     @State private var planWantsServer = false
 
     private static var firstTab: String {
@@ -195,11 +202,11 @@ struct RootView: View {
         )) {
             RestoreView(account: account, allowsStartOver: true) { OnboardingStore.finish() }
         }
-        .sheet(isPresented: $connectingOwnServer) { AddServerView() }
+        .modifier(LinkRouterPresenter())
         .sheet(isPresented: $choosingPlan, onDismiss: {
             if planWantsServer {
                 planWantsServer = false
-                connectingOwnServer = true
+                router.sheet = .scanner(purpose: .server)
             }
         }) {
             NavigationStack {
@@ -235,7 +242,7 @@ struct RootView: View {
         case .plan:
             PlanView(mode: .onboarding) { choice in
                 tab = "agents"
-                if OnboardingGate.finish(with: choice) { connectingOwnServer = true }
+                if OnboardingGate.finish(with: choice) { router.sheet = .scanner(purpose: .server) }
             }
             .transition(.opacity)
         }
@@ -244,8 +251,7 @@ struct RootView: View {
     private var tabs: some View {
         TabView(selection: $tab) {
             Tab("Agents", systemImage: "person.2.wave.2", value: "agents") {
-                // Until the QR scanner (Task 12): "Scan QR code" opens the manual add-server form.
-                AgentsHomeView(onScan: { connectingOwnServer = true }, onTryCloud: { choosingPlan = true })
+                AgentsHomeView(onScan: { router.sheet = .scanner(purpose: .server) }, onTryCloud: { choosingPlan = true })
             }
             .badge(approvals.pending.count)
             Tab("History", systemImage: "clock", value: "history") {
@@ -331,6 +337,13 @@ enum DebugLaunch {
         if ProcessInfo.processInfo.arguments.contains("-resetOnboarding") { OnboardingStore.reset() }
     }
 
+    /// `-debugOpenURL <url>`: the URL goes through the link router at launch, as if opened from outside.
+    static var openURL: URL? {
+        let args = ProcessInfo.processInfo.arguments
+        guard let index = args.firstIndex(of: "-debugOpenURL"), args.indices.contains(index + 1) else { return nil }
+        return URL(string: args[index + 1])
+    }
+
     @MainActor
     static func apply(to state: AppState) async {
         let args = ProcessInfo.processInfo.arguments
@@ -348,7 +361,8 @@ enum DebugLaunch {
 /// `-debugOpen history|history-detail` opens the History tab (or its first call), `-debugOpen settings` the
 /// Settings tab, `-debugOpen plan` the plan screen of the onboarding (with `-resetOnboarding`); `-debugOpen server|agents|form-new|form-edit|devices|code|watch` opens that screen at launch (a way to reach a screen
 /// without tapping, for screenshots from the command line): the first server, its agents, the form for a new agent, the form of the last agent, the devices of the server, its
-/// pairing code, or "Add to watch" (which sends a new code to the paired watch at once). `-debugOpen newAgent|editAgent` opens the agent editor (new, or the last agent of the first server) on the Agents tab.
+/// pairing code, or "Add to watch" (which sends a new code to the paired watch at once). `-debugOpen newAgent|editAgent` opens the agent editor (new, or the last agent of the first server) on the Agents tab. `-debugOpen scanner`
+/// opens the QR scanner.
 enum DebugRoute {
     static let value: String? = {
         let args = ProcessInfo.processInfo.arguments
@@ -359,7 +373,11 @@ enum DebugRoute {
     static var opensHistory: Bool { ["history", "history-detail"].contains(value ?? "") }
     static var opensSettings: Bool { value == "settings" }
     static var opensPlan: Bool { value == "plan" }
-    static var opensServer: Bool { value != nil && !opensHistory && !opensSettings && !opensPlan && !opensEditor }
+    static var opensServer: Bool {
+        value != nil && !opensHistory && !opensSettings && !opensPlan && !opensEditor && !opensScanner
+    }
+    /// `-debugOpen scanner`: the QR scanner (server mode).
+    static var opensScanner: Bool { value == "scanner" }
     static var opensDevices: Bool { ["devices", "code"].contains(value ?? "") }
     static var opensAgents: Bool { ["agents", "form-new", "form-edit"].contains(value ?? "") }
     static var opensEditor: Bool { ["newAgent", "editAgent"].contains(value ?? "") }

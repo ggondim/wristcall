@@ -262,6 +262,12 @@ final class FakeServerAPI: ServerAPI, @unchecked Sendable {
         linkRequests.append((serverToken, code.digits))
         return try linkResult.get()
     }
+
+    func linkAccount(serverToken: String, code: LinkCode) async throws -> AccountLink {
+        calls.append("linkAccountWithLinkCode")
+        linkRequests.append((serverToken, code.value))
+        return try linkResult.get()
+    }
 }
 
 /// A door a fake answer waits at until the test opens it; `reached()` says an answer is waiting.

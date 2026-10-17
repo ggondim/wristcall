@@ -19,8 +19,12 @@ struct AddServerView: View {
     @State private var error: String?
     @State private var busy = false
 
+    /// Runs after the server was added and the form closed (the scanner closes too).
+    private let onAdded: (() -> Void)?
+
     /// `initialURL`: an agenda server to set up here ("From your account").
-    init(initialURL: String = "", initialName: String = "") {
+    init(initialURL: String = "", initialName: String = "", onAdded: (() -> Void)? = nil) {
+        self.onAdded = onAdded
         _urlText = State(initialValue: initialURL)
         _name = State(initialValue: initialName)
         // An agenda server most likely uses the account: start with the code (needs the sign-in, see `current`).
@@ -105,6 +109,7 @@ struct AddServerView: View {
                 try await account.addLinkedServer(urlText: urlText, code: code, name: name)
             }
             dismiss()
+            onAdded?()
         } catch let failure as AddServerError {
             error = failure.message
         } catch {
