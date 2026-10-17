@@ -551,6 +551,30 @@ struct AppModelTests {
         #expect(model.agents.count == 2)
     }
 
+    @Test func showPairingWithoutServers() async throws {
+        let model = makeModel()
+        await model.launch()
+        try #require(model.phase == .unpaired)
+
+        model.showPairing()
+        #expect(model.isAddingServer)
+        #expect(model.phase == .unpaired)
+
+        model.cancelAddServer()
+        #expect(!model.isAddingServer)
+        #expect(model.phase == .unpaired)
+    }
+
+    @Test func showPairingOverServersGoesBackHome() async throws {
+        let model = try await makePairedModel()
+        model.showPairing()
+        #expect(model.isAddingServer)
+        #expect(model.phase == .unpaired)
+
+        model.cancelAddServer()
+        #expect(model.phase == .home)
+    }
+
     // MARK: - Removing a server
 
     @Test func removeServerRevokesOnTheServerAndForgetsIt() async throws {

@@ -86,8 +86,14 @@ struct WristcallApp: App {
                     // A message from the iPhone may have started it already (WatchLinkReceiver).
                     await model.launchIfNeeded()
                     await login.restore()
+                    #if DEBUG
+                    let frozen = DebugSetup.frozenPhase(arguments: ProcessInfo.processInfo.arguments)
+                    if let frozen { setup?.debugFreeze(frozen.phase, paused: frozen.paused) }
+                    #else
+                    let frozen: (phase: SetupModel.Phase, paused: Bool)? = nil
+                    #endif
                     // After the servers are read: an account announced now goes out with them (C7).
-                    await setup?.start()
+                    if frozen == nil { await setup?.start() }
                     // Once the servers are read: every one of them gets its push key.
                     push?.start()
                     // On a cold start the intent may record its request before `onReceive`
@@ -192,6 +198,24 @@ struct WristcallApp: App {
 }
 
 #if DEBUG
+/// `-debugSetup signingIn|gettingAgents|waitingForPhone|noAgents|paused`: freezes the setup screen on one phase
+/// (no loop runs), to screenshot it on the simulator.
+enum DebugSetup {
+    static func frozenPhase(arguments: [String]) -> (phase: SetupModel.Phase, paused: Bool)? {
+        guard let index = arguments.firstIndex(of: "-debugSetup"), arguments.indices.contains(index + 1) else {
+            return nil
+        }
+        switch arguments[index + 1] {
+        case "signingIn": return (.signingIn, false)
+        case "gettingAgents": return (.gettingAgents, false)
+        case "waitingForPhone": return (.waitingForPhone, false)
+        case "noAgents": return (.noAgents, false)
+        case "paused": return (.idle, true)
+        default: return nil
+        }
+    }
+}
+
 /// Simulator shortcut (Debug builds only), because typing on the simulated watch is slow:
 ///
 ///     xcrun simctl launch <device> <bundle id> -pairServer http://127.0.0.1:8765 -pairCode 12345678

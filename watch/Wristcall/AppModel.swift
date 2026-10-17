@@ -598,13 +598,21 @@ final class AppModel {
     /// "Add server" in Settings: the pairing screen, over the servers already paired.
     func addServer() {
         guard phase == .home else { return }
+        showPairing()
+    }
+
+    /// "Pair with a code" (Settings > Advanced): the pairing screen, from Home or from the setup screen
+    /// (no server yet). `cancelAddServer()` goes back to where it was.
+    func showPairing() {
+        guard phase == .home || phase == .unpaired else { return }
         isAddingServer = true
         customServerURL = nil
         message = nil
         phase = .unpaired
     }
 
-    /// "Cancel" on the pairing screen while adding: stops a running request and goes back Home.
+    /// "Cancel" on the pairing screen while adding: stops a running request and goes back Home (or to
+    /// the setup screen, with no server).
     func cancelAddServer() {
         guard isAddingServer else { return }
         pairingTask?.cancel()

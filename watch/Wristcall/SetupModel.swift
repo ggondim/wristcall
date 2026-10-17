@@ -54,7 +54,7 @@ final class SetupModel {
     var isManualRunning: @MainActor () -> Bool = { false }
     /// An enrollment round or a sync is in flight (`AccountLoginModel.isSetupBusy`): the manual login does not
     /// start. The wait between two rounds is not busy: it is when "Use a code instead" is needed.
-    var isBusy: Bool { enrolling > 0 || syncTask.map { !$0.isCancelled } ?? false }
+    private(set) var isBusy = false
 
     @ObservationIgnored private let backend: any SetupBackend
     @ObservationIgnored private let model: AppModel
@@ -82,8 +82,8 @@ final class SetupModel {
     /// An activation asked for the 0.4.0 sign-in on the next round.
     @ObservationIgnored private var legacyRequested = false
     /// `backend.enroll` calls running (a counter: a cancelled loop's call may still end after a new loop's starts).
-    @ObservationIgnored private var enrolling = 0
-    @ObservationIgnored private var syncTask: Task<Void, Never>?
+    @ObservationIgnored private var enrolling = 0 { didSet { updateBusy() } }
+    @ObservationIgnored private var syncTask: Task<Void, Never>? { didSet { updateBusy() } }
     @ObservationIgnored private var syncID = 0
     /// A new enrollment waits for its first sync to be announced.
     @ObservationIgnored private var announcePending = false
@@ -152,6 +152,7 @@ final class SetupModel {
         stopLoop()
         // A loop enrollment whose sync is still running must not pair or announce after this.
         syncTask?.cancel()
+        updateBusy()
         announcePending = false
         isPaused = false
         defaults.removeObject(forKey: Self.pausedDefaultsKey)
@@ -189,6 +190,15 @@ final class SetupModel {
         isPaused = false
         await start()
     }
+
+    #if DEBUG
+    /// `-debugSetup <phase>` (screenshots): shows a phase as it is, with no loop, restore or sync behind it.
+    func debugFreeze(_ phase: Phase, paused: Bool) {
+        stopLoop()
+        self.phase = phase
+        isPaused = paused
+    }
+    #endif
 
     /// Waits for the loop and the sync running now (and any one they start). A loop waiting for the next key
     /// poll does not end: callers (tests) use this only when it will.
@@ -373,6 +383,15 @@ final class SetupModel {
             onAccountReady?(account)
         }
         phase = model.servers.isEmpty ? .noAgents : .ready
+    }
+
+    // MARK: - Busy
+
+    /// `isBusy` is stored (not computed from the ignored counters) so a view can observe it; this runs where
+    /// the counters change.
+    private func updateBusy() {
+        let busy = enrolling > 0 || syncTask.map { !$0.isCancelled } ?? false
+        if busy != isBusy { isBusy = busy }
     }
 
     // MARK: - Account

@@ -41,10 +41,14 @@ struct HomeView: View {
                         }
                     }
                     if showsNoAgents {
-                        Text("No agents on your servers.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
+                        VStack(spacing: 4) {
+                            Text("No agents yet")
+                                .font(.headline)
+                            Text("Add one in wristcall on your iPhone.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        .multilineTextAlignment(.center)
                     }
                 }
             }

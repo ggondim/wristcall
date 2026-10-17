@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import Synchronization
 import Testing
 import WristcallKit
@@ -625,6 +626,40 @@ struct SetupModelTests {
         #expect(setup.isBusy)
         gate.open()
         await setup.settle()
+        #expect(!setup.isBusy)
+    }
+
+    @Test func showsSetupOnlyWithoutServers() async throws {
+        let unpaired = try await makeModel()
+        let setup = makeSetup(unpaired)
+        #expect(setup.showsSetup)
+        unpaired.showPairing()
+        #expect(!setup.showsSetup)
+        unpaired.cancelAddServer()
+        #expect(setup.showsSetup)
+
+        let paired = try await makeModel(paired: true)
+        #expect(!makeSetup(paired).showsSetup)
+    }
+
+    @Test func isBusyIsObservable() async throws {
+        let model = try await makeModel(paired: true)
+        backend.script(restore: ["acc_1"])
+        let gate = backend.holdAgenda()
+        let setup = makeSetup(model)
+        await setup.start()
+        await backend.agendaReached.wait()
+        #expect(setup.isBusy)
+
+        let changed = Mutex(false)
+        withObservationTracking {
+            _ = setup.isBusy
+        } onChange: {
+            changed.withLock { $0 = true }
+        }
+        gate.open()
+        await setup.settle()
+        #expect(changed.withLock { $0 })
         #expect(!setup.isBusy)
     }
 
