@@ -161,17 +161,19 @@ had been opened from outside.
 `AgentsLiveTests` run against a test server when `TEST_RUNNER_WRISTCALL_TEST_SERVER` and
 `TEST_RUNNER_WRISTCALL_TEST_TOKEN` are set for `make test-ios`.
 
-**UI smoke test.** `PhoneUITests/PhoneSmokeTests.swift` (XCUITest, scheme `WristcallPhoneUI`) adds a server, opens
-its agents, creates a one-shot agent, opens History and Settings, and attaches a screenshot of each screen. It has
-its own scheme, so `make test-ios` and CI never run it. With the test server up (`make -C watch test-server`) and a
-personal token of it, run (from `watch/`, with `wristcall` on your `PATH`; the config reads the same two variables
-`make test-server` sets, so they must match):
+**UI smoke test.** `PhoneUITests/PhoneSmokeTests.swift` (XCUITest, scheme `WristcallPhoneUI`) goes through the welcome
+and the plan screen ("Not now"), adds a server in Settings > Servers, opens its agents, creates a one-shot agent, opens
+History and Settings, and attaches a screenshot of each screen. It has its own scheme, so `make test-ios` and CI never
+run it. The app makes a silent account on the build's Cloud, so `make test-ios-ui` refuses to run without an explicit
+`CLOUD_URL` (the default build would use the production Cloud); point it at a local Cloud. With the test server up
+(`make -C watch test-server`) and a personal token of it, run (from `watch/`, with `wristcall` on your `PATH`; the
+config reads the same two variables `make test-server` sets, so they must match):
 
 ```sh
 cd watch
 export WRISTCALL_TEST_SERVER=http://127.0.0.1:8765 WRISTCALL_TEST_DATA_DIR=$PWD/build/test-server-data
 TOKEN=$(wristcall users tokens add --config WristcallKit/Tests/test-server.yaml --name ui-smoke | tail -1)
-TEST_RUNNER_WRISTCALL_UI_TOKEN=$TOKEN make test-ios-ui
+CLOUD_URL=http://127.0.0.1:8090 TEST_RUNNER_WRISTCALL_UI_TOKEN=$TOKEN make test-ios-ui
 ```
 
 `TEST_RUNNER_WRISTCALL_UI_SERVER` changes the server address (default `http://127.0.0.1:8765`) and
@@ -187,8 +189,11 @@ app, so a run makes one silent account on the Cloud (3 an hour per IP address at
 changes an account.
 
 ```sh
-TEST_RUNNER_WRISTCALL_UI_SHOTS=/tmp/shots make -C watch shots-ios
+CLOUD_URL=http://127.0.0.1:8090 TEST_RUNNER_WRISTCALL_UI_SHOTS=/tmp/shots make -C watch shots-ios
 ```
+
+- `CLOUD_URL=<url>` (required): the Cloud the run's silent account goes to. `make shots-ios` stops with a message
+  without it (`Config/Local.xcconfig` does not count): the default build would leave an account on the production Cloud.
 
 - `TEST_RUNNER_WRISTCALL_UI_SHOTS=<folder>` (required): where the PNGs go. `make shots-ios` stops with a message
   without it, and the test itself skips.
@@ -199,7 +204,7 @@ TEST_RUNNER_WRISTCALL_UI_SHOTS=/tmp/shots make -C watch shots-ios
 - The welcome and the empty Agents tab only show on a simulator without the app's account and servers. Nothing is
   wiped by default. `SHOTS_UDID=<udid>` runs on that simulator (instead of `IOS_DESTINATION`); adding `SHOTS_RESET=1`
   first prints its name, uninstalls the app and resets its Keychain (every app's on that simulator), and stops if the
-  UDID does not exist. Use a simulator you do not mind resetting. `CLOUD_URL=<url>` points the run at another Cloud.
+  UDID does not exist. Use a simulator you do not mind resetting.
 
 The watch app's bundle id (and so its APNs topic) is now `<BUNDLE_ID_PREFIX>.wristcall.watchkitapp`, no longer
 `<BUNDLE_ID_PREFIX>.wristcall`: the Cloud pushes to both apps, so it lists both in `WRISTCALL_CLOUD_APNS_TOPICS`.

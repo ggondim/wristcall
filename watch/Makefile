@@ -20,7 +20,7 @@ XCODEBUILD_IOS := xcodebuild -project $(PROJECT) -scheme $(IOS_SCHEME) -destinat
 	-derivedDataPath $(DERIVED_DATA)
 
 # Cloud and push relay URLs reach every build when given (`make build-ios CLOUD_URL=http://127.0.0.1:8090`);
-# left out, Config/Local.xcconfig or the empty default of Config/Base.xcconfig applies.
+# left out, Config/Local.xcconfig or else Config/Base.xcconfig applies (the project's production Cloud, no relay).
 CLOUD_URL ?=
 RELAY_URL ?=
 URL_SETTINGS := $(if $(CLOUD_URL),WRISTCALL_CLOUD_URL=$(CLOUD_URL)) $(if $(RELAY_URL),WRISTCALL_RELAY_URL=$(RELAY_URL))
@@ -77,18 +77,25 @@ build-ios-push: generate
 test-ios: generate
 	$(XCODEBUILD_IOS) test $(URL_SETTINGS)
 
-# UI smoke test (XCUITest, own scheme WristcallPhoneUI, never in CI): needs the test server running
-# (`make test-server`) and a personal token of it, passed with the TEST_RUNNER_ prefix:
-#   TEST_RUNNER_WRISTCALL_UI_TOKEN=wc_pat_... make test-ios-ui
+# The UI targets refuse to run without an explicit CLOUD_URL: the app makes a silent account on whatever Cloud
+# the build names, and the default build names the production Cloud (an orphan account on every clean run).
+REQUIRE_CLOUD_URL = @test -n "$(CLOUD_URL)" || { \
+	echo "$@: set CLOUD_URL=<url> (a local Cloud such as http://127.0.0.1:8090): the app makes a silent account there,"; \
+	echo "$@: and without it the build talks to the production Cloud."; exit 1; }
+
+# UI smoke test (XCUITest, own scheme WristcallPhoneUI, never in CI): needs a Cloud (CLOUD_URL, required), the
+# test server running (`make test-server`) and a personal token of it, passed with the TEST_RUNNER_ prefix:
+#   CLOUD_URL=http://127.0.0.1:8090 TEST_RUNNER_WRISTCALL_UI_TOKEN=wc_pat_... make test-ios-ui
 # TEST_RUNNER_WRISTCALL_UI_SHOTS=<folder> also writes the screenshots there. The test skips without a token.
 test-ios-ui: generate
+	$(REQUIRE_CLOUD_URL)
 	xcodebuild -project $(PROJECT) -scheme WristcallPhoneUI -destination '$(IOS_DESTINATION)' \
 		-derivedDataPath $(DERIVED_DATA) test -skip-testing:WristcallPhoneUITests/OnboardingShotsTests $(URL_SETTINGS)
 
 # Screenshots of the iPhone v3 screens (OnboardingShotsTests; own scheme WristcallPhoneUI, never in CI). It
-# talks to the real Cloud (one silent account per run), so it needs CLOUD_URL when Config/Local.xcconfig does
-# not set it. Refuses to run without a folder for the PNGs:
-#   TEST_RUNNER_WRISTCALL_UI_SHOTS=<folder> make shots-ios
+# makes one silent account per run on the Cloud of CLOUD_URL, which it requires (Config/Local.xcconfig does not
+# count). Refuses to run without a folder for the PNGs either:
+#   CLOUD_URL=http://127.0.0.1:8090 TEST_RUNNER_WRISTCALL_UI_SHOTS=<folder> make shots-ios
 # Optional: TEST_RUNNER_WRISTCALL_UI_SERVER + TEST_RUNNER_WRISTCALL_UI_SERVER_TOKEN (agents, new agent) and
 # TEST_RUNNER_WRISTCALL_UI_LINK (link confirm). The welcome and the empty agents only show on a simulator without
 # the app's account and servers. Nothing is wiped by default. SHOTS_UDID=<udid> runs on that simulator (instead
@@ -102,6 +109,7 @@ ifneq ($(SHOTS_UDID),)
 SHOTS_DESTINATION := platform=iOS Simulator,id=$(SHOTS_UDID)
 endif
 shots-ios: generate
+	$(REQUIRE_CLOUD_URL)
 	@test -n "$$TEST_RUNNER_WRISTCALL_UI_SHOTS" || { \
 		echo "shots-ios: set TEST_RUNNER_WRISTCALL_UI_SHOTS=<folder> (where the PNGs go)"; exit 1; }
 	@if [ -n "$(SHOTS_RESET)" ]; then \
