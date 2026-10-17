@@ -53,6 +53,9 @@ final class AccountModel {
     /// `GET /v1/account`, once ready.
     private(set) var info: CloudAccountInfo?
     var plan: Plan? { info?.plan }
+    /// The account this iPhone is in (`acc_…`), set once ready and cleared when the session ends or the account
+    /// is deleted: what the watch's account is compared with (C6, C7).
+    private(set) var accountID: String?
     /// Whether this iPhone holds a usable key of the current account (what "Sign out everywhere" needs).
     private(set) var hasLocalKey = false
     /// A 0.3.x account with its Zitadel sign-in: the only kind whose watch can still use the device page (R11).
@@ -95,6 +98,12 @@ final class AccountModel {
     @ObservationIgnored private var watchCode: EnrollCode?
     /// The publishing of the enroll code the last `becameReady` started (tests wait for it).
     @ObservationIgnored private(set) var watchPublishing: Task<Void, Never>?
+    /// C6: the servers (ids) whose pairing code the watch took or may still be taking, this opening.
+    @ObservationIgnored private var watchCodesSent: Set<String> = []
+    /// C6: the servers a pairing code is on its way for right now (two contexts in a row send one).
+    @ObservationIgnored private var watchCodesSending: Set<String> = []
+    /// The pairing codes the last watch context started sending (tests wait for it).
+    @ObservationIgnored private(set) var watchCodes: Task<Void, Never>?
 
     /// Approving the watch's login (R11): the provider's device page, open or closed again.
     enum WatchApproval: Equatable {
@@ -305,6 +314,7 @@ final class AccountModel {
     /// the servers.
     private func becameReady(_ session: DeviceSession) async {
         guard let account = await session.accountID else { return }
+        adoptAccountID(account)
         // A start on the way back to the foreground finds the account it was in: no new full mirror.
         var mirror = state != .ready
         if enteredAccount(account) { mirror = true }
@@ -314,6 +324,7 @@ final class AccountModel {
         // C6 only on what the Cloud said just now: an old `info` may miss servers added since.
         if read, await adoptOlderKey(session) {
             guard let account = await session.accountID else { return }
+            adoptAccountID(account)
             _ = enteredAccount(account)
             mirror = true
             await refreshAccount()
@@ -322,6 +333,14 @@ final class AccountModel {
         agenda?.resume()
         if mirror { agenda?.pushAll() }
         publishWatchCodeInBackground()
+        // The watch's context may have come before the account was ready (at launch).
+        pairWatchWithMissingServersInBackground()
+    }
+
+    /// `accountID` from now on; another account than before forgets which servers got a watch code.
+    private func adoptAccountID(_ account: String?) {
+        if account != accountID { watchCodesSent = [] }
+        accountID = account
     }
 
     /// Writes the account as the last one. Another account than the last one: the agenda ids and links
@@ -392,6 +411,7 @@ final class AccountModel {
         info = nil
         hasLocalKey = false
         watchCode = nil
+        adoptAccountID(nil)
         state = .starting
         if starting != nil || restoring {
             // The run in flight (or the restore, when it ends) starts again.
@@ -559,6 +579,7 @@ final class AccountModel {
         hasLocalKey = false
         didMigrate = false
         watchCode = nil
+        adoptAccountID(nil)
         state = .starting
         await accountDeleted?()
         for server in appState.servers {
@@ -587,12 +608,48 @@ final class AccountModel {
     func publishWatchCode() async {
         guard let watchLink, watchLink.isWatchAppInstalled else { return }
         guard let code = await enrollCodeForWatch() else { return }
-        watchLink.publish(PhoneLinkContext(enrollCode: code.code, expiresAt: code.expiresAt.timeIntervalSince1970))
+        watchLink.publish(
+            PhoneLinkContext(enrollCode: code.code, expiresAt: code.expiresAt.timeIntervalSince1970, account: accountID))
     }
 
     func publishWatchCodeInBackground() {
         guard watchLink?.isWatchAppInstalled == true else { return }
         watchPublishing = Task { [weak self] in await self?.publishWatchCode() }
+    }
+
+    /// C6: a watch in this same account pairs its `attestation` servers on its own, but an `approval` one waits
+    /// for a code from this iPhone. Each server of the app the watch lacks, and that has not taken a code this
+    /// opening, is asked for its health; an `approval` one gets a pairing code (`WatchLink.send`). Taken means
+    /// paired, queued, pending or still pairing; a failure (or no watch) is tried again on the next context.
+    /// Another account, none, or a 0.4.0 watch (no account in its context): nothing is asked or sent.
+    func pairWatchWithMissingServers() async {
+        guard let watchLink, let account = accountID, watchLink.watchAccount == .some(account),
+            watchLink.canReachWatch
+        else { return }
+        let missing = appState.servers.filter { server in
+            !watchLink.watchServers.contains(ServerAddress.canonical(server.url))
+                && !watchCodesSent.contains(server.id) && !watchCodesSending.contains(server.id)
+        }
+        for server in missing {
+            // The account (or the watch's) changed meanwhile: these codes are not for it any more.
+            guard accountID == account, watchLink.watchAccount == .some(account) else { return }
+            watchCodesSending.insert(server.id)
+            defer { watchCodesSending.remove(server.id) }
+            let api = appState.api(for: server)
+            guard let health = try? await api.health(), health.account?.deviceCredential == "approval" else { continue }
+            switch await watchLink.send(server: server, api: api) {
+            case .paired, .queued, .pending, .stillPairing:
+                if accountID == account { watchCodesSent.insert(server.id) }
+            case .failed, .unavailable:
+                break
+            }
+        }
+    }
+
+    /// `pairWatchWithMissingServers()` without holding the caller: each watch context starts it.
+    func pairWatchWithMissingServersInBackground() {
+        guard let watchLink, let account = accountID, watchLink.watchAccount == .some(account) else { return }
+        watchCodes = Task { [weak self] in await self?.pairWatchWithMissingServers() }
     }
 
     // MARK: - Account devices

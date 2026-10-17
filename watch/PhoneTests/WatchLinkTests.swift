@@ -85,6 +85,7 @@ final class TestClock: Sendable {
 @MainActor
 struct WatchLinkTests {
     let server = ManagedServer(id: "srv-1", name: "Home", url: URL(string: "https://home.example.com:8443")!, token: "wc_pat_secret")
+    let work = ManagedServer(id: "srv-2", name: "Work", url: URL(string: "https://work.example.com")!, token: "wc_pat_work")
 
     private func grant(code: String = "12345678", expires: Double = 1_600) -> PairingCodeGrant {
         // The code's own address differs from the one this iPhone reaches the server at (M9).
@@ -348,14 +349,66 @@ struct WatchLinkTests {
         #expect(session.transfers.first?["expires_at"] as? Double == 1_600)
     }
 
-    /// "Show the code instead" after a queued send: the queued code goes away.
+    /// "Show the code instead" after a queued send: the queued code of that server goes away, another
+    /// server's stays.
     @Test func cancelQueuedPairDropsTransfers() async {
         let session = FakeWatchSession()
         session.isReachable = false
         let link = makeLink(session)
         _ = await link.send(server: server, api: api())
-        link.cancelQueuedPair()
-        #expect(session.outstanding.isEmpty)
+        _ = await link.send(server: work, grant: grant(code: "87654321"))
+        link.cancelQueuedPair(for: server)
+        #expect(session.cancelled.map { $0["code"] as? String } == ["12345678"])
+        #expect(session.outstanding.map { $0["code"] as? String } == ["87654321"])
+    }
+
+    /// C6: codes for two servers queued for an unreachable watch: the second does not cancel the first.
+    @Test func queuedPairsForTwoServersBothSurvive() async {
+        let session = FakeWatchSession()
+        session.isReachable = false
+        let link = makeLink(session)
+        #expect(await link.send(server: server, grant: grant(code: "12345678")) == .queued)
+        #expect(await link.send(server: work, grant: grant(code: "87654321")) == .queued)
+        #expect(session.cancelled.isEmpty)
+        #expect(session.outstanding.map { $0["code"] as? String } == ["12345678", "87654321"])
+        // A new code for the first server replaces only its own.
+        _ = await link.send(server: server, grant: grant(code: "11223344"))
+        #expect(session.cancelled.map { $0["code"] as? String } == ["12345678"])
+        #expect(session.outstanding.map { $0["code"] as? String } == ["87654321", "11223344"])
+    }
+
+    /// Each server's queued code is swept when that code expires, not when another server's does.
+    @Test func eachServersCodeExpiresOnItsOwn() async {
+        let session = FakeWatchSession()
+        session.isReachable = false
+        let clock = clock
+        let link = makeLink(session, sleep: { duration in
+            clock.value.withLock { $0 += Double(duration.components.seconds) }
+        })
+        _ = await link.send(server: work, grant: grant(code: "87654321", expires: 1_600))
+        await waitUntil { session.outstanding.isEmpty }
+        #expect(session.cancelled.map { $0["code"] as? String } == ["87654321"])
+    }
+
+    /// C7: the watch's account: `.none` without the key (0.4.0), `.some(nil)` for `""`, else the id; every
+    /// context tells `onWatchContext`.
+    @Test func contextAccountIsRead() {
+        let session = FakeWatchSession()
+        session.receivedApplicationContext = ["v": 1, "servers": [String](), "account": "acc_1"]
+        #expect(makeLink(session).watchAccount == .some("acc_1"))
+        session.receivedApplicationContext = ["v": 1, "servers": [String](), "account": ""]
+        #expect(makeLink(session).watchAccount == .some(nil))
+        session.receivedApplicationContext = ["v": 1, "servers": [String]()]
+        let link = makeLink(session)
+        #expect(link.watchAccount == .none)
+
+        var told = 0
+        link.onWatchContext = { told += 1 }
+        link.contextReceived(WatchLinkContext(servers: [], account: "acc_2"))
+        #expect(link.watchAccount == .some("acc_2"))
+        link.sessionDidActivate(context: WatchLinkContext(["v": 1, "servers": [String]()]))
+        #expect(link.watchAccount == .none)
+        #expect(told == 2)
     }
 
     @Test func isOnWatchUsesContext() async {

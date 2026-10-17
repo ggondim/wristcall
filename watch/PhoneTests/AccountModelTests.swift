@@ -537,13 +537,94 @@ struct AccountModelTests {
 
     // MARK: - The watch's enroll code
 
-    private func watchRig(installed: Bool = true) async -> (AccountRig, FakeWatchSession, WatchLink) {
-        let rig = await readyRig()
+    private func watchRig(
+        installed: Bool = true, servers: [ManagedServer] = [],
+        makeAPI: @escaping ServerAPIFactory = { _, _ in FakeServerAPI() }
+    ) async -> (AccountRig, FakeWatchSession, WatchLink) {
+        let rig = await readyRig(servers: servers, makeAPI: makeAPI)
         let session = FakeWatchSession()
         session.isWatchAppInstalled = installed
         let link = WatchLink(session: session, defaults: UserDefaults(suiteName: "AccountModelTests-\(UUID().uuidString)")!)
         rig.model.watchLink = link
         return (rig, session, link)
+    }
+
+    /// C8: the enroll code says which account it belongs to.
+    @Test func enrollCodeCarriesTheAccount() async throws {
+        let (rig, session, _) = await watchRig()
+        #expect(rig.model.accountID == "acc_1")
+        await rig.model.publishWatchCode()
+        let context = try #require(session.contexts.compactMap(PhoneLinkContext.init).first)
+        #expect(context.account == "acc_1")
+        #expect(context.account == rig.model.accountID)
+    }
+
+    /// Three servers, each with its own fake: `A` (`approval`) and `B` (`attestation`) are not on the watch,
+    /// `C` (`approval`) is.
+    private func missingServersRig() async -> (AccountRig, FakeWatchSession, WatchLink, [String: FakeServerAPI]) {
+        let names = ["a", "b", "c"]
+        let servers = names.map { ManagedServer(id: $0, name: $0.uppercased(), url: URL(string: "https://\($0).test")!, token: "wc_pat_\($0)") }
+        var fakes: [String: FakeServerAPI] = [:]
+        for name in names {
+            let fake = FakeServerAPI()
+            let credential = name == "b" ? "attestation" : "approval"
+            fake.healthResult = .success(ServerHealth(version: "0.6.0", account: .init(issuer: world.cloud.url.absoluteString, deviceCredential: credential)))
+            fake.grant = PairingCodeGrant(code: "1234567\(names.firstIndex(of: name)!)", expiresAt: AccountWorld.clock.timeIntervalSince1970 + 600, serverUrl: "https://\(name).test", viaDirectory: false)
+            fakes[name] = fake
+        }
+        let byHost = fakes
+        let (rig, session, link) = await watchRig(servers: servers, makeAPI: { url, _ in
+            byHost[String(url.host()!.prefix(1))] ?? FakeServerAPI()
+        })
+        return (rig, session, link, fakes)
+    }
+
+    private func pairCodes(_ session: FakeWatchSession) -> [String] {
+        session.sent.compactMap { message in
+            guard case .pair(let server, _, _, _) = WatchLinkMessage(message) else { return nil }
+            return server.host()
+        }
+    }
+
+    /// C6: the watch is in this account: each `approval` server it lacks gets a pairing code, once per opening
+    /// while the watch takes it; a failed send is tried again on the next context.
+    @Test func missingApprovalServersGetPairingCodesOnce() async throws {
+        let (rig, session, link, fakes) = await missingServersRig()
+        let context = WatchLinkContext(servers: [ServerAddress.canonical(URL(string: "https://c.test")!)], account: "acc_1")
+        session.answer = .reply(["ok": false, "error": "busy"])
+        link.contextReceived(context)
+        await rig.model.pairWatchWithMissingServers()
+        #expect(pairCodes(session) == ["a.test"])
+        #expect(!fakes["b"]!.calls.contains("createPairingCode"))
+        #expect(!fakes["c"]!.calls.contains("createPairingCode"))
+
+        // Failed: tried again on the next context, and this time the watch takes it.
+        session.answer = .reply(["ok": true])
+        link.contextReceived(context)
+        await rig.model.pairWatchWithMissingServers()
+        #expect(pairCodes(session) == ["a.test", "a.test"])
+
+        // Taken: the same context again sends nothing new.
+        link.contextReceived(context)
+        await rig.model.pairWatchWithMissingServers()
+        #expect(pairCodes(session) == ["a.test", "a.test"])
+        #expect(fakes["a"]!.calls.filter { $0 == "createPairingCode" }.count == 2)
+        #expect(!fakes["b"]!.calls.contains("createPairingCode"))
+    }
+
+    /// C6: a watch in another account (or none, or a 0.4.0 watch) gets no pairing code, and no server is asked.
+    @Test func otherAccountGetsNoPairingCodes() async throws {
+        let (rig, session, link, fakes) = await missingServersRig()
+        let before = fakes.mapValues(\.calls.count)
+        for context in [
+            WatchLinkContext(servers: [], account: "acc_2"), WatchLinkContext(servers: [], account: nil),
+            WatchLinkContext(["v": 1, "servers": [String]()])!,
+        ] {
+            link.contextReceived(context)
+            await rig.model.pairWatchWithMissingServers()
+        }
+        #expect(fakes.mapValues(\.calls.count) == before)
+        #expect(session.sent.isEmpty && session.transfers.isEmpty)
     }
 
     @Test func enrollCodeIsReusedUntilItExpires() async throws {

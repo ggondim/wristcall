@@ -49,6 +49,8 @@ struct PhoneApp: App {
         watchLink.onWatchSignedIn = { [weak account] in account?.watchSignInFinished() }
         // The watch app was installed after the account was ready: it gets its enroll code now.
         watchLink.onWatchAppInstalled = { [weak account] in account?.publishWatchCodeInBackground() }
+        // C6: a watch in this account gets pairing codes for the `approval` servers it lacks.
+        watchLink.onWatchContext = { [weak account] in account?.pairWatchWithMissingServersInBackground() }
         // A server linked by its QR code is set up on the watch too.
         account.watchLink = watchLink
         // Read by the app delegate in `didFinishLaunching`, which runs after this.
