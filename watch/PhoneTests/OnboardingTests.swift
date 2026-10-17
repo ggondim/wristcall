@@ -77,6 +77,25 @@ struct OnboardingTests {
         #expect(OnboardingStore.defaults === UserDefaults.standard)
     }
 
+    @Test func resetWinsOverADoneFlagFromAnotherDomain() {
+        // A "done" the app cannot remove, from a domain below its own (on the simulator, a `simctl spawn defaults
+        // write` lands in the device's preferences, which the app reads but never writes): reset still means
+        // "not done", so the welcome comes back.
+        let below = "onboarding-tests-below-" + UUID().uuidString
+        let other = UserDefaults(suiteName: below)!
+        other.set(true, forKey: OnboardingStore.key)
+        defer { other.removePersistentDomain(forName: below) }
+        let defaults = freshDefaults()
+        defaults.addSuite(named: below)
+        #expect(OnboardingStore.isDone(in: defaults))
+
+        OnboardingStore.reset(in: defaults)
+
+        #expect(!OnboardingStore.isDone(in: defaults))
+        OnboardingStore.finish(in: defaults)
+        #expect(OnboardingStore.isDone(in: defaults))
+    }
+
     @Test func doneOnboardingGoesToTheTabs() {
         #expect(OnboardingGate.entryStep(isDone: true, serversLoaded: true, hasServers: false, didMigrate: false) == nil)
     }

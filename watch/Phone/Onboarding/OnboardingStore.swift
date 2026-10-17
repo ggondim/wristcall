@@ -14,7 +14,10 @@ struct OnboardingStore {
 
     static func isDone(in defaults: UserDefaults) -> Bool { defaults.bool(forKey: key) }
     static func finish(in defaults: UserDefaults) { defaults.set(true, forKey: key) }
-    static func reset(in defaults: UserDefaults) { defaults.removeObject(forKey: key) }
+    /// Writes `false`, not a removal: a removal lets a `true` from a domain below the app's own show through (on the
+    /// simulator, `simctl spawn … defaults write` puts one in the device's preferences, which the app reads but
+    /// never writes), and then the welcome never comes back.
+    static func reset(in defaults: UserDefaults) { defaults.set(false, forKey: key) }
 }
 
 /// The screens before the tabs: the welcome, then the plan choice.
