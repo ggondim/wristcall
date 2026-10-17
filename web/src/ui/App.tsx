@@ -9,6 +9,7 @@ import type { NotificationsModel } from "../push/notifications"
 import { SettingsView } from "./AccountView"
 import { AddServerView } from "./AddServerView"
 import { AgentsScreen } from "./AgentsView"
+import { ApproveView } from "./ApproveView"
 import { ApproveWatchSignInView } from "./ApproveWatchSignInView"
 import { ApprovalsView } from "./ApprovalsView"
 import { CallbackView } from "./CallbackView"
@@ -80,6 +81,7 @@ function Screen({
   }
   if (route.tab === "callback") return <CallbackView model={account} />
   if (route.tab === "link") return <LinkView model={addServer} account={account} />
+  if (route.tab === "approve") return <ApproveView />
   if (route.path === "/settings/watch" && account !== null) return <ApproveWatchSignInView model={account} />
   if (route.path === "/settings/servers/add") return <AddServerView model={addServer} />
   return <SettingsView account={account} notifications={notifications} />
@@ -101,7 +103,7 @@ const NO_ACCOUNT: Model<{ screen: AccountScreen }> = { state: { screen: "unavail
  * adding a server (the first screen's "own server" link).
  */
 function coveredByFirstScreen(route: Route): boolean {
-  if (route.tab === "callback" || route.tab === "link" || route.tab === "signIn") return false
+  if (route.tab === "callback" || route.tab === "link" || route.tab === "signIn" || route.tab === "approve") return false
   return route.path !== "/servers/add" && route.path !== "/settings/servers/add"
 }
 
@@ -150,7 +152,7 @@ export function App({ badge, approvals: given, servers, session = null, account 
   return (
     <>
       <Screen route={route} servers={servers} approvals={approvals} history={historyModel} session={session} account={account} notifications={notifications} onAgentsChanged={onAgentsChanged} />
-      {route.tab === "callback" || route.tab === "link" || route.tab === "signIn" ? null : <Tabs route={route} badge={badge} />}
+      {route.tab === "callback" || route.tab === "link" || route.tab === "signIn" || route.tab === "approve" ? null : <Tabs route={route} badge={badge} />}
     </>
   )
 }

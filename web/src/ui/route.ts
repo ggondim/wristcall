@@ -8,6 +8,7 @@ export type Route =
   | { tab: "callback"; path: "/auth/callback" }
   | { tab: "link"; path: "/link" }
   | { tab: "signIn"; path: "/sign-in" }
+  | { tab: "approve"; path: "/approve" }
 
 const FALLBACK: Route = { tab: "servers", path: "/servers" }
 const NAVIGATE_EVENT = "wristcall:navigate"
@@ -53,6 +54,8 @@ export function parseRoute(pathname: string): Route {
       return { tab: "link", path: "/link" }
     case "/sign-in":
       return { tab: "signIn", path: "/sign-in" }
+    case "/approve":
+      return { tab: "approve", path: "/approve" }
   }
   if (head === "servers" && id) return { tab: "servers", path: `/servers/${id}` }
   if (head === "history" && id) return { tab: "history", path: `/history/${id}` }

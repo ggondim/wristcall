@@ -8,6 +8,8 @@ import type { AccountModel } from "./account"
 const POLL_MS = 2000
 /** Codes renewed on their own in a row (tab visible) before the screen asks for a tap (C3, about 15 min). */
 const MAX_RENEWALS = 3
+/** How long this tab trusts a code it created, by its own clock (the Cloud's lifetime is 300 s; its `404` ends it sooner). */
+const CODE_LIFETIME_MS = 300_000
 /** Where a live code waits out a reload of the tab. */
 const STORAGE_KEY = "wristcall.webSession"
 
@@ -23,6 +25,34 @@ export function approveLink(id: string, approveKey: string): string {
 /** The same approval, opened straight in the wristcall app (on an iPhone, where the code cannot be scanned). */
 export function appApproveLink(id: string, approveKey: string): string {
   return `wristcall://approve#w=${encodeURIComponent(id)}&k=${encodeURIComponent(approveKey)}`
+}
+
+/**
+ * What `/approve` reads from the address bar, by the Kit's rules (`WristcallLink`): `w` is `ws_` and 16 lowercase hex
+ * digits, `k` is 1 to 128 of `A-Z a-z 0-9 _ -`. Both are required; other keys are ignored, but a malformed pair, a
+ * repeated key or a bad `%` escape makes the whole link invalid.
+ */
+export function parseApproveFragment(hash: string): { id: string; key: string } | null {
+  const fragment = hash.startsWith("#") ? hash.slice(1) : hash
+  const values = new Map<string, string>()
+  for (const pair of fragment.split("&")) {
+    const equals = pair.indexOf("=")
+    if (equals <= 0) return null // empty segment, no `=`, or empty key: the whole link is invalid
+    const key = pair.slice(0, equals)
+    if (values.has(key)) return null
+    let value: string
+    try {
+      value = decodeURIComponent(pair.slice(equals + 1))
+    } catch {
+      return null
+    }
+    values.set(key, value)
+  }
+  const id = values.get("w")
+  const key = values.get("k")
+  if (id === undefined || key === undefined) return null
+  if (!/^ws_[0-9a-f]{16}$/.test(id) || !/^[A-Za-z0-9_-]{1,128}$/.test(key)) return null
+  return { id, key }
 }
 
 /** An iPhone or iPad (an iPad asking for the desktop site says Macintosh, but has a touch screen). */
@@ -98,6 +128,11 @@ export class SignInModel extends BaseModel<{ phase: SignInPhase }> {
   /** Bumped by every new code and by `stop()`: an answer about an older one is dropped. */
   #generation = 0
   #live: Live | null = null
+  /**
+   * When this tab stops trusting the shown code, on its own clock. The Cloud's absolute `expires_at` is never compared
+   * with the local clock: a browser clock a few minutes off would make every code look expired.
+   */
+  #deadline = 0
   #cancelTimer: (() => void) | null = null
   #creating = false
   #polling = false
@@ -126,7 +161,8 @@ export class SignInModel extends BaseModel<{ phase: SignInPhase }> {
     this.#renewals = 0
     const stored = readStored()
     if (stored !== null && stored.expires_at * 1000 > this.#now()) {
-      this.#show(stored)
+      // A code a reload left behind: only a fresh page load compares the clocks, and a wrong guess just shows a new code.
+      this.#show(stored, Math.min(stored.expires_at * 1000 - this.#now(), CODE_LIFETIME_MS))
       if (this.#visible()) void this.#poll()
     } else {
       store(null)
@@ -190,8 +226,9 @@ export class SignInModel extends BaseModel<{ phase: SignInPhase }> {
     }, ms)
   }
 
-  #show(live: Live): void {
+  #show(live: Live, lifetimeMs: number): void {
     this.#live = live
+    this.#deadline = this.#now() + lifetimeMs
     this.set({ phase: { qr: { id: live.id, link: approveLink(live.id, live.approve_key), appLink: appApproveLink(live.id, live.approve_key), expiresAt: live.expires_at * 1000 } } })
   }
 
@@ -229,11 +266,11 @@ export class SignInModel extends BaseModel<{ phase: SignInPhase }> {
     this.#creating = false
     const live: Live = { id: created.id, poll_key: created.poll_key, approve_key: created.approve_key, expires_at: created.expires_at }
     store(live)
-    this.#show(live)
+    this.#show(live, CODE_LIFETIME_MS)
     if (this.#visible()) this.#schedule(() => void this.#poll(), POLL_MS)
   }
 
-  /** The code is gone on the Cloud (`404`, or out of time by the clock): a new one on its own, or a tap. */
+  /** The code is gone on the Cloud (`404`, or this tab has shown it for its whole lifetime): a new one on its own, or a tap. */
   #expired(): void {
     if (this.#visible() && this.#renewals < MAX_RENEWALS) {
       this.#renewals += 1
@@ -246,7 +283,7 @@ export class SignInModel extends BaseModel<{ phase: SignInPhase }> {
   async #poll(): Promise<void> {
     const live = this.#live
     if (!this.#running || live === null || this.#polling || !this.#visible()) return
-    if (live.expires_at * 1000 <= this.#now()) {
+    if (this.#deadline <= this.#now()) {
       this.#expired()
       return
     }

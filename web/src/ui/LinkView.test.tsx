@@ -2,8 +2,9 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/preact
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import { AccountModel } from "../models/account"
 import { AddServerModel } from "../models/addServer"
-import { savePendingLink, takePendingLink } from "../models/link"
+import { hasPendingLink, savePendingLink } from "../models/link"
 import { ServersModel, type AccountLink } from "../models/servers"
+import { SignInModel } from "../models/signIn"
 import { openDb } from "../store/db"
 import { ServerStore } from "../store/servers"
 import { FakeSession } from "../test/fakeAccount"
@@ -38,7 +39,7 @@ class Badge extends BaseModel<{ count: number }> {
 type Handler = (path: string, init: RequestInit) => Response | undefined
 
 /** The site with a Cloud (`signedIn` says whether the account is signed in), or without one (`cloud: false`). */
-async function world(opts: { signedIn?: boolean; cloud?: boolean; over?: Handler; fetch?: typeof fetch } = {}) {
+async function world(opts: { signedIn?: boolean; cloud?: boolean; over?: Handler; fetch?: typeof fetch; qr?: boolean } = {}) {
   const store = new ServerStore(await openDb("t-" + crypto.randomUUID()))
   const f =
     opts.fetch ??
@@ -66,7 +67,20 @@ async function world(opts: { signedIn?: boolean; cloud?: boolean; over?: Handler
   const account = withCloud
     ? new AccountModel(new FakeSession(signedIn ? "signedIn" : "signedOut", calls), null, null, { assign: (url) => void assigned.push(url) })
     : null
-  const view = render(<App badge={new Badge()} servers={servers} session={session} account={account} />)
+  // The QR sign-in, with a Cloud that never answers the poll (the test hands the approved session over itself).
+  const signIn =
+    opts.qr && account !== null
+      ? new SignInModel({
+          cloud: {
+            createWebSession: async () => ({ id: "ws_0123456789abcdef", approve_key: "wck_a", poll_key: "wcp_a", expires_at: Date.now() / 1000 + 300 }),
+            pollWebSession: async () => ({ status: "pending" as const, expires_at: Date.now() / 1000 + 300 }),
+          },
+          account,
+          setTimer: () => () => {},
+          visibility: () => "visible",
+        })
+      : null
+  const view = render(<App badge={new Badge()} servers={servers} session={session} account={account} signIn={signIn} />)
   return { store, servers, session, account, calls, assigned, f, view }
 }
 
@@ -97,7 +111,7 @@ describe("LinkView", () => {
     const add = vi.spyOn(AddServerModel.prototype, "addWithCode")
     const { store } = await world()
     fireEvent.click(await screen.findByRole("button", { name: "Connect" }))
-    await waitFor(() => expect(location.pathname).toBe("/servers"))
+    await waitFor(() => expect(location.pathname).toBe("/agents"))
     expect(add).toHaveBeenCalledWith("https://home.example.com/", CODE, "")
     expect(await store.list()).toMatchObject([{ url: "https://home.example.com", linked: true, token: "wc_pat_from_the_server" }])
   })
@@ -128,21 +142,23 @@ describe("LinkView", () => {
     expect(screen.getByText("Requires the wristcall iPhone app.")).toBeTruthy()
   })
 
-  test("keeps the link through sign-in", async () => {
-    const first = await world({ signedIn: false })
+  test("link signed out goes to /sign-in and back", async () => {
+    const { account } = await world({ signedIn: false, qr: true })
     await screen.findByText("Server 0.8.0")
     expect(screen.queryByRole("button", { name: "Connect" })).toBeNull()
     fireEvent.click(screen.getByRole("button", { name: "Sign in to connect here" }))
-    await waitFor(() => expect(first.assigned).toHaveLength(1))
-    expect(first.calls).toContain("beginSignIn")
-    first.view.unmount()
+    // The QR sign-in comes first (email is an option on the same screen); no redirect to the identity provider.
+    await waitFor(() => expect(location.pathname).toBe("/sign-in"))
+    expect(await screen.findByRole("img", { name: "Sign-in code" })).toBeTruthy()
+    expect(hasPendingLink()).toBe(true)
 
-    // Back from the identity provider: the callback opens /link, without the fragment.
-    history.replaceState(null, "", "/link")
-    await world()
-    expect(screen.getByRole("heading", { name: "Connect to home.example.com?" })).toBeTruthy()
-    expect(await screen.findByRole("button", { name: "Connect" })).toBeTruthy()
-    expect(takePendingLink()).toBeNull() // taken once
+    // The iPhone approves: the account takes the session over and returns to /link, without the fragment.
+    await act(() =>
+      account!.adopt({ account: "acc_1", device: "dev_web", access_token: "wca_x", refresh_token: "wcr_x", expires_at: Date.now() / 1000 + 900 }),
+    )
+    expect(location.pathname).toBe("/link")
+    expect(await screen.findByRole("heading", { name: "Connect to home.example.com?" })).toBeTruthy()
+    expect(hasPendingLink()).toBe(false) // taken once
   })
 
   test("the callback brings the pending link back", async () => {
@@ -190,7 +206,7 @@ describe("LinkView", () => {
     history.replaceState(null, "", address)
     const { f } = await world()
     expect(screen.getByText(BAD_LINK)).toBeTruthy()
-    expect(screen.getByRole("link", { name: "Servers" }).getAttribute("href")).toBe("/servers")
+    expect(screen.getByRole("link", { name: "Agents" }).getAttribute("href")).toBe("/agents")
     expect(screen.queryByRole("link", { name: "Open in wristcall" })).toBeNull()
     expect(location.hash).toBe("")
     expect((f as ReturnType<typeof mockFetch>).calls).toHaveLength(0)

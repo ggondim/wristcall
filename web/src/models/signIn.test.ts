@@ -4,7 +4,7 @@ import { browserDeviceName } from "../lib/deviceName"
 import { ApiError, NetworkError } from "../lib/errors"
 import { FakeSession } from "../test/fakeAccount"
 import { AccountModel } from "./account"
-import { appApproveLink, approveLink, SignInModel, type SignInPhase } from "./signIn"
+import { appApproveLink, approveLink, parseApproveFragment, SignInModel, type SignInPhase } from "./signIn"
 
 const MAC_SAFARI = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
 const CLOUD_DOWN = "Can't reach wristcall Cloud."
@@ -116,6 +116,38 @@ describe("links", () => {
   })
 })
 
+describe("parseApproveFragment", () => {
+  test("accepts the Kit shape", () => {
+    expect(parseApproveFragment("#w=ws_0123456789abcdef&k=wck_abc-_9")).toEqual({ id: "ws_0123456789abcdef", key: "wck_abc-_9" })
+    expect(parseApproveFragment("w=ws_0123456789abcdef&k=wck_abc-_9")).toEqual({ id: "ws_0123456789abcdef", key: "wck_abc-_9" })
+    expect(parseApproveFragment("#k=x&w=ws_0123456789abcdef&other=1")).toEqual({ id: "ws_0123456789abcdef", key: "x" }) // the rest is ignored
+    expect(parseApproveFragment(`#w=ws_0123456789abcdef&k=${"a".repeat(128)}`)).not.toBeNull()
+    expect(parseApproveFragment(approveLink("ws_0123456789abcdef", "wck_a").split("/approve")[1]!)).toEqual({ id: "ws_0123456789abcdef", key: "wck_a" })
+  })
+
+  test.each([
+    ["", "empty"],
+    ["#", "empty fragment"],
+    ["#w=ws_0123456789abcde&k=wck_a", "short id"],
+    ["#w=ws_0123456789abcdeff&k=wck_a", "long id"],
+    ["#w=ws_0123456789ABCDEF&k=wck_a", "uppercase id"],
+    ["#w=xs_0123456789abcdef&k=wck_a", "wrong prefix"],
+    ["#w=ws_0123456789abcdeg&k=wck_a", "non hex id"],
+    [`#w=ws_0123456789abcdef&k=${"a".repeat(129)}`, "long key"],
+    ["#w=ws_0123456789abcdef&k=", "empty key"],
+    ["#w=ws_0123456789abcdef&k=a.b", "key with a dot"],
+    ["#w=ws_0123456789abcdef&k=a%20b", "key with a space"],
+    ["#w=ws_0123456789abcdef", "missing key"],
+    ["#k=wck_a", "missing id"],
+    ["#w=ws_0123456789abcdef&&k=wck_a", "empty segment"],
+    ["#w=ws_0123456789abcdef&k=wck_a&k=wck_b", "repeated key"],
+    ["#w=ws_0123456789abcdef&k=wck_a&x", "pair without ="],
+    ["#w=ws_0123456789abcdef&k=wck_a&x=%ZZ", "bad escape"],
+  ])("rejects %s (%s)", (hash) => {
+    expect(parseApproveFragment(hash)).toBeNull()
+  })
+})
+
 describe("SignInModel", () => {
   test("creates one session and shows its approve link", async () => {
     const w = started()
@@ -216,6 +248,21 @@ describe("SignInModel", () => {
     expect(w.polls).toEqual([])
     expect(w.creates).toHaveLength(2)
     expect(qrId(w)).toBe("ws_2")
+  })
+
+  test("a fast browser clock still shows the code", async () => {
+    const w = world()
+    models.push(w.model)
+    // Local clock 10 min ahead of the Cloud: its absolute expires_at is already 5 min in the past by this clock.
+    w.createAnswers.push({ id: "ws_1", approve_key: "wck_1", poll_key: "wcp_1", expires_at: T0 / 1000 - 300 })
+    w.model.start()
+    await settle()
+    expect(qrId(w)).toBe("ws_1")
+    expect(w.creates).toHaveLength(1)
+    await w.timers.fire()
+    expect(w.polls).toEqual([["ws_1", "wcp_1"]])
+    expect(qrId(w)).toBe("ws_1")
+    expect(w.timers.pending.map((t) => t.ms)).toEqual([2000])
   })
 
   test("newCode after expired starts again", async () => {

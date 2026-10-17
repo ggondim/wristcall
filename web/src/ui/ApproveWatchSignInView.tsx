@@ -39,6 +39,9 @@ export function ApproveWatchSignInView({ model }: { model: AccountModel }) {
           if (valid) model.approveWatchSignIn(code)
         }}
       >
+        <p class="footnote">
+          Sign in with the email of your wristcall account. An email with no account creates a new, empty account, and the watch shows no agents.
+        </p>
         <label class="field">
           <span>Code shown on the watch</span>
           <input

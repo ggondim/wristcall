@@ -6,7 +6,6 @@ import type { AddServerModel } from "../models/addServer"
 import { APP_OPENS_LINKS, appLinkURL, linkFragment, parseLinkFragment, savePendingLink, takePendingLink, type ServerLink } from "../models/link"
 import { Link } from "./Link"
 import { navigate } from "./route"
-import { useModel } from "./useModel"
 
 const BAD_LINK = "This link is not valid. Scan the QR code again."
 
@@ -37,7 +36,7 @@ export function LinkView({ model, account }: { model: AddServerModel; account: A
           {BAD_LINK}
         </p>
         <p>
-          <Link href="/servers">Servers</Link>
+          <Link href="/agents">Agents</Link>
         </p>
       </main>
     )
@@ -72,7 +71,7 @@ function Confirm({ link, model, account }: { link: ServerLink; model: AddServerM
     try {
       const result = await model.addWithCode(link.server.href, link.code, "")
       if (result.ok) {
-        navigate("/servers")
+        navigate("/agents")
         return
       }
       setError(result.message)
@@ -85,7 +84,7 @@ function Confirm({ link, model, account }: { link: ServerLink; model: AddServerM
   return (
     <main class="screen">
       <p>
-        <Link href="/servers">Servers</Link>
+        <Link href="/agents">Agents</Link>
       </p>
       <h1>Connect to {link.server.host}?</h1>
       <p class="footnote">{canonical(link.server)}</p>
@@ -111,7 +110,7 @@ function Confirm({ link, model, account }: { link: ServerLink; model: AddServerM
               {busy ? "Connecting…" : "Connect"}
             </button>
           ) : (
-            <SignIn account={account} link={link} />
+            <SignIn link={link} />
           )
         ) : null}
         {APP_OPENS_LINKS ? (
@@ -134,27 +133,18 @@ function Confirm({ link, model, account }: { link: ServerLink; model: AddServerM
   )
 }
 
-/** Signs in (a full-page redirect) and keeps the link in this tab for the way back (`AccountModel` opens `/link`). */
-function SignIn({ account, link }: { account: AccountModel; link: ServerLink }) {
-  const { screen } = useModel(account)
+/** Opens the sign-in screen (the QR code first, email as an option) and keeps the link in this tab for the way back (`AccountModel` opens `/link`). */
+function SignIn({ link }: { link: ServerLink }) {
   return (
-    <>
-      <button
-        class="button"
-        type="button"
-        disabled={screen === "signingIn"}
-        onClick={() => {
-          savePendingLink(linkFragment(link))
-          void account.signIn()
-        }}
-      >
-        Sign in to connect here
-      </button>
-      {typeof screen === "object" ? (
-        <p class="problem" role="alert">
-          {screen.failed}
-        </p>
-      ) : null}
-    </>
+    <button
+      class="button"
+      type="button"
+      onClick={() => {
+        savePendingLink(linkFragment(link))
+        navigate("/sign-in")
+      }}
+    >
+      Sign in to connect here
+    </button>
   )
 }
