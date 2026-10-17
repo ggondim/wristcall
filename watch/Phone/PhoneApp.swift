@@ -148,6 +148,10 @@ struct RootView: View {
     @AppStorage(OnboardingStore.key) private var onboardingDone = false
     /// "Your own server" was chosen. Task 12 replaces this with the QR scanner.
     @State private var connectingOwnServer = false
+    /// "Try Wristcall Cloud" (Agents home): the plan screen in a sheet.
+    @State private var choosingPlan = false
+    /// The plan sheet ended on "Your own server": the add-server form opens once the sheet is gone.
+    @State private var planWantsServer = false
 
     private static var firstTab: String {
         #if DEBUG
@@ -192,6 +196,22 @@ struct RootView: View {
             RestoreView(account: account, allowsStartOver: true) { OnboardingStore.finish() }
         }
         .sheet(isPresented: $connectingOwnServer) { AddServerView() }
+        .sheet(isPresented: $choosingPlan, onDismiss: {
+            if planWantsServer {
+                planWantsServer = false
+                connectingOwnServer = true
+            }
+        }) {
+            NavigationStack {
+                PlanView(mode: .settings) { choice in
+                    if case .ownServer = choice { planWantsServer = true }
+                    choosingPlan = false
+                }
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Close") { choosingPlan = false } }
+                }
+            }
+        }
     }
 
     private func finishIfAlreadyInUse() {
@@ -224,8 +244,8 @@ struct RootView: View {
     private var tabs: some View {
         TabView(selection: $tab) {
             Tab("Agents", systemImage: "person.2.wave.2", value: "agents") {
-                // Until the agents home (Task 10): the servers screen.
-                ServersView()
+                // Until the QR scanner (Task 12): "Scan QR code" opens the manual add-server form.
+                AgentsHomeView(onScan: { connectingOwnServer = true }, onTryCloud: { choosingPlan = true })
             }
             .badge(approvals.pending.count)
             Tab("History", systemImage: "clock", value: "history") {

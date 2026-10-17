@@ -85,10 +85,14 @@ struct WatchLinkTests {
 
     private func makeLink(
         _ session: FakeWatchSession?, timeout: Duration = .seconds(15),
-        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        defaults: UserDefaults = UserDefaults(suiteName: "WatchLinkTests-\(UUID().uuidString)")!
     ) -> WatchLink {
         let clock = clock
-        return WatchLink(session: session, timeout: timeout, now: { Date(timeIntervalSince1970: clock.value.withLock { $0 }) }, sleep: sleep)
+        return WatchLink(
+            session: session, timeout: timeout, now: { Date(timeIntervalSince1970: clock.value.withLock { $0 }) },
+            sleep: sleep, defaults: defaults
+        )
     }
 
     private func pairTransfer(code: String, expires: Double?) -> [String: Any] {
@@ -330,6 +334,34 @@ struct WatchLinkTests {
         #expect(!link.isOnWatch(server))
         link.contextDidChange(WatchLinkContext(servers: ["https://home.example.com:8443"]))
         #expect(link.isOnWatch(server))
+    }
+
+    /// The Agents home's "synced 2 minutes ago": only a delivered context is stamped, and it survives a relaunch.
+    @Test func receivedContextIsStampedAndKept() {
+        let suite = "WatchLinkTests-stamp-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let session = FakeWatchSession()
+        session.receivedApplicationContext = WatchLinkContext(servers: ["https://home.example.com:8443"]).dictionary
+        let link = makeLink(session, defaults: defaults)
+        // The context the session already held at launch was not delivered now.
+        #expect(link.lastContextAt == nil)
+        clock.value.withLock { $0 = 1_500 }
+        link.contextReceived(WatchLinkContext(servers: []))
+        #expect(link.lastContextAt == Date(timeIntervalSince1970: 1_500))
+        #expect(defaults.double(forKey: "watch.lastContextAt") == 1_500)
+        #expect(makeLink(session, defaults: defaults).lastContextAt == Date(timeIntervalSince1970: 1_500))
+    }
+
+    @Test func exposesPairedAndInstalledSeparately() {
+        let session = FakeWatchSession()
+        session.isWatchAppInstalled = false
+        let link = makeLink(session)
+        #expect(link.isPaired && !link.isWatchAppInstalled && !link.canReachWatch)
+        session.isWatchAppInstalled = true
+        link.sessionStateDidChange()
+        #expect(link.isPaired && link.isWatchAppInstalled && link.canReachWatch)
+        #expect(!makeLink(nil).isPaired)
     }
 
     @Test func refreshSendsMessage() async {

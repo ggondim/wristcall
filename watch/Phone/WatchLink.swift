@@ -69,6 +69,14 @@ final class WatchLink {
     private var deviceCodeOffer: (userCode: String, expiresAt: Double)?
     /// A paired Apple Watch with Wristcall installed.
     private(set) var canReachWatch = false
+    /// An Apple Watch is paired with this iPhone (with or without Wristcall).
+    private(set) var isPaired = false
+    /// Wristcall is installed on the paired watch.
+    private(set) var isWatchAppInstalled = false
+    /// When the watch's context last arrived (`UserDefaults` `watch.lastContextAt`): the Agents home's "synced
+    /// 2 minutes ago". `nil` until it did.
+    private(set) var lastContextAt: Date?
+    nonisolated static let lastContextKey = "watch.lastContextAt"
 
     /// M13: the watch says its account login is done (the iPhone closes the approval page).
     @ObservationIgnored var onWatchSignedIn: (@MainActor () -> Void)?
@@ -76,6 +84,7 @@ final class WatchLink {
     @ObservationIgnored private let timeout: Duration
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
+    @ObservationIgnored private let defaults: UserDefaults
     /// Sweeps the queued `pair` once its code expires (M8), while the app runs.
     @ObservationIgnored private var expiryTask: Task<Void, Never>?
     /// Forgets the login code once it expires, so screens reading it update.
@@ -84,12 +93,15 @@ final class WatchLink {
     /// `session` is `nil` where WatchConnectivity is not supported (and in unit tests of other models).
     init(
         session: (any WatchSessionProtocol)?, timeout: Duration = .seconds(15), now: @escaping () -> Date = Date.init,
-        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        defaults: UserDefaults = .standard
     ) {
         self.session = session
         self.timeout = timeout
         self.now = now
         self.sleep = sleep
+        self.defaults = defaults
+        lastContextAt = (defaults.object(forKey: Self.lastContextKey) as? Double).map(Date.init(timeIntervalSince1970:))
         sessionStateDidChange()
         if let context = session.flatMap({ WatchLinkContext($0.receivedApplicationContext) }) {
             contextDidChange(context)
@@ -189,8 +201,21 @@ final class WatchLink {
 
     /// Paired, installed or reachable changed.
     func sessionStateDidChange() {
-        let reach = session.map { $0.isPaired && $0.isWatchAppInstalled } ?? false
+        let paired = session?.isPaired ?? false
+        let installed = session?.isWatchAppInstalled ?? false
+        if paired != isPaired { isPaired = paired }
+        if installed != isWatchAppInstalled { isWatchAppInstalled = installed }
+        let reach = paired && installed
         if reach != canReachWatch { canReachWatch = reach }
+    }
+
+    /// The watch sent a context just now (`didReceiveApplicationContext`): remembers when. The context the
+    /// session already holds at launch is not a delivery, so `contextDidChange` alone does not stamp it.
+    func contextReceived(_ context: WatchLinkContext) {
+        contextDidChange(context)
+        let at = now()
+        lastContextAt = at
+        defaults.set(at.timeIntervalSince1970, forKey: Self.lastContextKey)
     }
 
     /// A message from the watch. M7: an expired login code is dropped, a shown one goes at expiry. M13: the
@@ -379,7 +404,7 @@ final class LiveWatchSession: NSObject, WatchSessionProtocol, WCSessionDelegate,
 
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
         guard let context = WatchLinkContext(applicationContext) else { return }
-        onLink { $0.contextDidChange(context) }
+        onLink { $0.contextReceived(context) }
     }
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
