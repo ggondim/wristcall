@@ -15,6 +15,8 @@ protocol WatchSessionProtocol: AnyObject {
         _ message: [String: Any], replyHandler: (@Sendable ([String: Any]) -> Void)?,
         errorHandler: (@Sendable (any Error) -> Void)?)
     func transferUserInfo(_ userInfo: [String: Any])
+    /// `updateApplicationContext`: the latest context replaces the previous one (the watch's enroll code).
+    func updateApplicationContext(_ context: [String: Any]) throws
     /// Cancels the queued `transferUserInfo`s for which `shouldCancel` is `true` (M8: a pairing code
     /// that was replaced or expired).
     func cancelOutstandingTransfers(where shouldCancel: ([String: Any]) -> Bool)
@@ -80,6 +82,9 @@ final class WatchLink {
 
     /// M13: the watch says its account login is done (the iPhone closes the approval page).
     @ObservationIgnored var onWatchSignedIn: (@MainActor () -> Void)?
+    /// The watch app just got installed (or the session just activated with it there): the account sends its
+    /// enroll code then.
+    @ObservationIgnored var onWatchAppInstalled: (@MainActor () -> Void)?
     @ObservationIgnored private let session: (any WatchSessionProtocol)?
     @ObservationIgnored private let timeout: Duration
     @ObservationIgnored private let now: () -> Date
@@ -186,6 +191,20 @@ final class WatchLink {
         return false
     }
 
+    /// Sends the watch its enroll code (`updateApplicationContext`: only the latest context stays). Nothing is
+    /// sent, and `false` returned, without the watch app installed. The code is a secret: never logged.
+    @discardableResult
+    func publish(_ context: PhoneLinkContext) -> Bool {
+        sessionStateDidChange()
+        guard let session, isWatchAppInstalled else { return false }
+        do {
+            try session.updateApplicationContext(context.dictionary)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     // MARK: - Events from the session
 
     func contextDidChange(_ context: WatchLinkContext) {
@@ -204,7 +223,10 @@ final class WatchLink {
         let paired = session?.isPaired ?? false
         let installed = session?.isWatchAppInstalled ?? false
         if paired != isPaired { isPaired = paired }
-        if installed != isWatchAppInstalled { isWatchAppInstalled = installed }
+        if installed != isWatchAppInstalled {
+            isWatchAppInstalled = installed
+            if installed { onWatchAppInstalled?() }
+        }
         let reach = paired && installed
         if reach != canReachWatch { canReachWatch = reach }
     }
@@ -365,6 +387,10 @@ final class LiveWatchSession: NSObject, WatchSessionProtocol, WCSessionDelegate,
 
     func transferUserInfo(_ userInfo: [String: Any]) {
         session.transferUserInfo(userInfo)
+    }
+
+    func updateApplicationContext(_ context: [String: Any]) throws {
+        try session.updateApplicationContext(context)
     }
 
     func cancelOutstandingTransfers(where shouldCancel: ([String: Any]) -> Bool) {

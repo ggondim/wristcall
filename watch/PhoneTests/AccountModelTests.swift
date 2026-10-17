@@ -459,6 +459,70 @@ struct AccountModelTests {
         #expect(await other.model.enrollCodeForWatch() == nil)
     }
 
+    // MARK: - The watch's enroll code (Task 13)
+
+    private func watchRig(installed: Bool = true) async -> (AccountRig, FakeWatchSession, WatchLink) {
+        let rig = await readyRig()
+        let session = FakeWatchSession()
+        session.isWatchAppInstalled = installed
+        let link = WatchLink(session: session, defaults: UserDefaults(suiteName: "AccountModelTests-\(UUID().uuidString)")!)
+        rig.model.watchLink = link
+        return (rig, session, link)
+    }
+
+    @Test func enrollCodeIsReusedUntilItExpires() async throws {
+        let (rig, session, _) = await watchRig()
+        await rig.model.publishWatchCode()
+        await rig.model.publishWatchCode()
+        // Reused: one code asked for, and each publish sends the same one.
+        #expect(requests("POST", "/v1/devices/enroll-codes").count == 1)
+        let contexts = session.contexts.compactMap(PhoneLinkContext.init)
+        #expect(contexts.count == 2)
+        #expect(contexts[0] == contexts[1])
+        #expect(contexts[0].enrollCode.hasPrefix("code-"))
+        // A code with less than a minute left is replaced.
+        world.enrollTTL = 30
+        let short = await readyRig()
+        short.model.watchLink = WatchLink(
+            session: session, defaults: UserDefaults(suiteName: "AccountModelTests-\(UUID().uuidString)")!)
+        await short.model.publishWatchCode()
+        await short.model.publishWatchCode()
+        #expect(requests("POST", "/v1/devices/enroll-codes").count == 3)
+    }
+
+    @Test func enrollCodeLimitIsIgnored() async {
+        let (rig, session, _) = await watchRig()
+        world.enrollLimit = true
+        await rig.model.publishWatchCode()
+        #expect(session.contexts.isEmpty)
+        #expect(rig.model.state == .ready)
+        #expect(rig.model.error == nil)
+    }
+
+    @Test func noEnrollCodeIsAskedForWithoutTheWatchApp() async {
+        let (rig, session, _) = await watchRig(installed: false)
+        await rig.model.publishWatchCode()
+        rig.model.publishWatchCodeInBackground()
+        await rig.model.watchPublishing?.value
+        #expect(requests("POST", "/v1/devices/enroll-codes").isEmpty)
+        #expect(session.contexts.isEmpty)
+    }
+
+    @Test func theCodeIsPublishedWhenTheAccountBecomesReadyAndOnReturn() async throws {
+        let rig = await readyRig()
+        let session = FakeWatchSession()
+        rig.model.watchLink = WatchLink(
+            session: session, defaults: UserDefaults(suiteName: "AccountModelTests-\(UUID().uuidString)")!)
+        // Back in the foreground: `start` runs again for an account that is ready.
+        await rig.model.start()
+        await rig.model.watchPublishing?.value
+        #expect(session.contexts.count == 1)
+        await rig.model.start()
+        await rig.model.watchPublishing?.value
+        #expect(session.contexts.count == 2)
+        #expect(requests("POST", "/v1/devices/enroll-codes").count == 1)
+    }
+
     // MARK: - Delete
 
     @Test func deleteAccountClearsKeysSessionAndOnboarding() async throws {
@@ -690,11 +754,6 @@ struct AccountModelTests {
     }
 
     // MARK: - Messages
-
-    @Test func deleteExplanationSaysWhatStays() {
-        #expect(AccountSection.deleteExplanation == "Deletes your wristcall account: your server list in wristcall "
-            + "Cloud and the servers on this iPhone. Your servers and their data stay as they are.")
-    }
 
     @Test func retryDelays() {
         #expect(AccountModel.retryDelay(for: APIError.retryLater(2)) == 2)

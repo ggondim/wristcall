@@ -47,6 +47,8 @@ struct PhoneApp: App {
         _watchLink = State(initialValue: watchLink)
         // M13: the watch's login is done: the device page it was approved on closes.
         watchLink.onWatchSignedIn = { [weak account] in account?.watchSignInFinished() }
+        // The watch app was installed after the account was ready: it gets its enroll code now.
+        watchLink.onWatchAppInstalled = { [weak account] in account?.publishWatchCodeInBackground() }
         // A server linked by its QR code is set up on the watch too.
         account.watchLink = watchLink
         // Read by the app delegate in `didFinishLaunching`, which runs after this.
@@ -163,7 +165,7 @@ struct RootView: View {
     private static var firstTab: String {
         #if DEBUG
         if DebugRoute.opensHistory { return "history" }
-        if DebugRoute.opensSettings { return "settings" }
+        if DebugRoute.opensSettings || DebugRoute.opensServer { return "settings" }
         #endif
         return "agents"
     }
@@ -253,17 +255,18 @@ struct RootView: View {
             Tab("Agents", systemImage: "person.2.wave.2", value: "agents") {
                 AgentsHomeView(onScan: { router.sheet = .scanner(purpose: .server) }, onTryCloud: { choosingPlan = true })
             }
-            .badge(approvals.pending.count)
             Tab("History", systemImage: "clock", value: "history") {
                 HistoryView()
             }
             Tab("Settings", systemImage: "gear", value: "settings") {
-                SettingsView()
+                SettingsView(onChoosePlan: { choosingPlan = true })
             }
+            // Device approvals waiting for the owner (they are answered under Servers).
+            .badge(approvals.pending.count)
         }
-        // A tapped notification opens the Agents tab (and there, the server's devices).
+        // A tapped notification opens the Settings tab (Servers, then the server's devices).
         .task(id: approvals.openRequest) {
-            if approvals.openRequest != nil { tab = "agents" }
+            if approvals.openRequest != nil { tab = "settings" }
         }
     }
 }
@@ -301,31 +304,6 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate {
         Self.log.error("push: APNs registration failed: \((error as NSError).code, privacy: .public)")
     }
     #endif
-}
-
-struct SettingsView: View {
-    /// Placeholder until the privacy policy has a home (store debt).
-    static let privacyURL = URL(string: "https://github.com/ggondim/wristcall#privacy")!
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                AccountSection()
-                Section {
-                    LabeledContent("Version", value: Self.versionText)
-                    Link("Privacy", destination: Self.privacyURL)
-                }
-            }
-            .navigationTitle("Settings")
-        }
-    }
-
-    static var versionText: String {
-        let info = Bundle.main.infoDictionary
-        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
-        let build = info?["CFBundleVersion"] as? String ?? "?"
-        return "\(version) (\(build))"
-    }
 }
 
 #if DEBUG

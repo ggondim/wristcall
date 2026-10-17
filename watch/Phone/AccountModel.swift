@@ -86,6 +86,8 @@ final class AccountModel {
     @ObservationIgnored private var restoring = false
     /// The watch's enroll code, reused while it has more than a minute left (C8).
     @ObservationIgnored private var watchCode: EnrollCode?
+    /// The publishing of the enroll code the last `becameReady` started (tests wait for it).
+    @ObservationIgnored private(set) var watchPublishing: Task<Void, Never>?
 
     /// Approving the watch's login (R11): the provider's device page, open or closed again.
     enum WatchApproval: Equatable {
@@ -276,6 +278,7 @@ final class AccountModel {
         }
         agenda?.resume()
         if mirror { agenda?.pushAll() }
+        publishWatchCodeInBackground()
     }
 
     /// Writes the account as the last one. Another account than the last one: the agenda ids and links
@@ -522,6 +525,37 @@ final class AccountModel {
         } catch {
             _ = await endIfRefused(error)
             return nil
+        }
+    }
+
+    /// The watch's enroll code goes to the watch as its application context: when the account is ready, back
+    /// in the foreground (both end in `becameReady`) and when the watch app gets installed. Only with the
+    /// watch app installed, and never an error for the user: a limit or a failure just sends nothing.
+    func publishWatchCode() async {
+        guard let watchLink, watchLink.isWatchAppInstalled else { return }
+        guard let code = await enrollCodeForWatch() else { return }
+        watchLink.publish(PhoneLinkContext(enrollCode: code.code, expiresAt: code.expiresAt.timeIntervalSince1970))
+    }
+
+    func publishWatchCodeInBackground() {
+        guard watchLink?.isWatchAppInstalled == true else { return }
+        watchPublishing = Task { [weak self] in await self?.publishWatchCode() }
+    }
+
+    // MARK: - Account devices
+
+    /// `GET /v1/devices`: every device signed in to the account (this one is `current`).
+    func devices() async throws -> [AccountDevice] {
+        try await withReadySession { session in
+            try await session.cloudClient.devices(accessToken: try await session.accessToken())
+        }
+    }
+
+    /// `DELETE /v1/devices/{id}`: signs that device out. This iPhone's own id is never passed (the screen
+    /// offers no revoke for the `current` one).
+    func revokeDevice(id: String) async throws {
+        try await withReadySession { session in
+            try await session.cloudClient.revokeDevice(id: id, accessToken: try await session.accessToken())
         }
     }
 

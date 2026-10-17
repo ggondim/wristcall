@@ -25,6 +25,7 @@ final class FakeWatchSession: WatchSessionProtocol, @unchecked Sendable {
     private var _transfers: [[String: Any]] = []
     private var _outstanding: [[String: Any]] = []
     private var _cancelled: [[String: Any]] = []
+    private var _contexts: [[String: Any]] = []
     var sent: [[String: Any]] { lock.withLock { _sent } }
     /// Every `transferUserInfo`, delivered or not.
     var transfers: [[String: Any]] { lock.withLock { _transfers } }
@@ -56,6 +57,16 @@ final class FakeWatchSession: WatchSessionProtocol, @unchecked Sendable {
             _transfers.append(userInfo)
             _outstanding.append(userInfo)
         }
+    }
+
+    /// Every `updateApplicationContext`.
+    var contexts: [[String: Any]] { lock.withLock { _contexts } }
+    /// What `updateApplicationContext` throws, when set.
+    var contextError: (any Error)?
+
+    func updateApplicationContext(_ context: [String: Any]) throws {
+        if let contextError { throw contextError }
+        lock.withLock { _contexts.append(context) }
     }
 
     func cancelOutstandingTransfers(where shouldCancel: ([String: Any]) -> Bool) {
@@ -93,6 +104,48 @@ struct WatchLinkTests {
             session: session, timeout: timeout, now: { Date(timeIntervalSince1970: clock.value.withLock { $0 }) },
             sleep: sleep, defaults: defaults
         )
+    }
+
+    // MARK: - The watch's enroll code (Task 13)
+
+    @Test func publishesTheEnrollCodeAsApplicationContext() {
+        let session = FakeWatchSession()
+        let link = makeLink(session)
+        let context = PhoneLinkContext(enrollCode: "wce_CODE", expiresAt: 1_600)
+        #expect(link.publish(context))
+        #expect(session.contexts.count == 1)
+        #expect(NSDictionary(dictionary: session.contexts[0]).isEqual(to: context.dictionary))
+        #expect(PhoneLinkContext(session.contexts[0]) == context)
+    }
+
+    @Test func noEnrollCodeWithoutTheWatchApp() {
+        let session = FakeWatchSession()
+        session.isWatchAppInstalled = false
+        let link = makeLink(session)
+        #expect(!link.publish(PhoneLinkContext(enrollCode: "wce_CODE", expiresAt: 1_600)))
+        #expect(session.contexts.isEmpty)
+        #expect(!makeLink(nil).publish(PhoneLinkContext(enrollCode: "wce_CODE", expiresAt: 1_600)))
+    }
+
+    @Test func aFailedPublishIsNotAnError() {
+        struct Failure: Error {}
+        let session = FakeWatchSession()
+        session.contextError = Failure()
+        #expect(!makeLink(session).publish(PhoneLinkContext(enrollCode: "wce_CODE", expiresAt: 1_600)))
+    }
+
+    @Test func installingTheWatchAppTellsTheAccount() {
+        let session = FakeWatchSession()
+        session.isWatchAppInstalled = false
+        let link = makeLink(session)
+        var told = 0
+        link.onWatchAppInstalled = { told += 1 }
+        link.sessionStateDidChange()
+        #expect(told == 0)
+        session.isWatchAppInstalled = true
+        link.sessionStateDidChange()
+        link.sessionStateDidChange()
+        #expect(told == 1)
     }
 
     private func pairTransfer(code: String, expires: Double?) -> [String: Any] {

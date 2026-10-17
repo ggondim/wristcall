@@ -47,6 +47,10 @@ final class AccountWorld: Sendable {
         var zitadelSignInFailure: Int?
         var refuseSessionRefresh = false
         var enrollLimit = false
+        /// Seconds an enroll code lasts.
+        var enrollTTL = 600.0
+        /// `GET /v1/devices` answers this JSON.
+        var devicesJSON = #"{"devices":[]}"#
         /// `GET /v1/account` answers this status when set.
         var accountReadFailure: Int?
         var entries: [Entry] = []
@@ -152,6 +156,17 @@ final class AccountWorld: Sendable {
     var enrollLimit: Bool {
         get { box.state.withLock { $0.enrollLimit } }
         set { box.state.withLock { $0.enrollLimit = newValue } }
+    }
+
+    var enrollTTL: Double {
+        get { box.state.withLock { $0.enrollTTL } }
+        set { box.state.withLock { $0.enrollTTL = newValue } }
+    }
+
+    /// What `GET /v1/devices` answers.
+    var devicesJSON: String {
+        get { box.state.withLock { $0.devicesJSON } }
+        set { box.state.withLock { $0.devicesJSON = newValue } }
     }
 
     /// Zitadel refresh requests get `invalid_grant` (the refresh token was revoked).
@@ -378,13 +393,16 @@ final class AccountWorld: Sendable {
                 state.keyOwners[key] = account
                 return StubHost.Reply(204, "")
             }
+        case ("GET", "/v1/devices"):
+            guard bearerAccount(request) != nil else { return revoked }
+            return StubHost.Reply(200, box.state.withLock { $0.devicesJSON })
         case ("POST", "/v1/devices/enroll-codes"):
             guard bearerAccount(request) != nil else { return revoked }
             return box.state.withLock { state in
                 if state.enrollLimit { return StubHost.Reply(403, #"{"error":"limit","message":"limit"}"#) }
                 let number = state.nextDevice
                 state.nextDevice += 1
-                let expires = Date().timeIntervalSince1970 + 600
+                let expires = Date().timeIntervalSince1970 + state.enrollTTL
                 return StubHost.Reply(201, #"{"code":"code-\#(number)","expires_at":\#(expires)}"#)
             }
         case ("POST", "/v1/entitlements/redeem"):
