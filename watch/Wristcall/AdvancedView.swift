@@ -25,6 +25,11 @@ struct AdvancedView: View {
                     model.resetDirectory()
                     directoryText = model.directoryURL.absoluteString
                 }
+                if let message = model.message {
+                    Text(message)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
             }
             if let setup {
                 Section("Account") {
@@ -34,6 +39,7 @@ struct AdvancedView: View {
                         Button("Sign out of this watch", role: .destructive) { confirmingSignOut = true }
                     } else {
                         Button("Set up again") { Task { await setup.setUpAgain() } }
+                            .disabled(setup.isBusy)
                         Button("Use a code instead") { Task { await login.signIn() } }
                             .disabled(login.isRunning || setup.isBusy || model.isBusy)
                     }

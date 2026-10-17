@@ -26,7 +26,7 @@ struct RootView: View {
             ProgressView()
         case .unpaired:
             // No server: the setup screen, unless pairing was asked for or the build has no Cloud.
-            if let setup, !model.isAddingServer {
+            if let setup, setup.showsSetup {
                 SetupView(model: model, setup: setup)
             } else {
                 PairingView(model: model)
