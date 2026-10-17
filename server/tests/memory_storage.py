@@ -49,13 +49,13 @@ class _Users:
     async def link_central(self, user_id, subject, now):
         user = self.rows.get(user_id)
         if user is None:
-            return False
+            return None
         if any(u.central_subject == subject and u.id != user_id for u in self.rows.values()):
             raise Conflict("central account already linked to another user")
         self.rows[user_id] = replace(user, central_subject=subject)
         if user.central_subject is not None and user.central_subject != subject:
-            self._root.drop_account(user_id, user.central_subject, now)
-        return True
+            return self._root.drop_account(user_id, user.central_subject, now)
+        return 0
 
     async def unlink_central(self, user_id, now):
         user = self.rows.get(user_id)

@@ -157,7 +157,7 @@ def test_users_unlink(tmp_path):
     st = open_sqlite_storage(tmp_path / "data")
     owner = run(st.users.by_handle("owner"))
     key = "https://issuer.test#central-user-1"
-    assert run(st.users.link_central(owner.id, key, 1.0))
+    assert run(st.users.link_central(owner.id, key, 1.0)) == 0
     svc = PairingService(st)
     by_account = run(svc.pair_for_user(owner.id, "Account watch", approval=False, central_subject=key))
     by_code = run(svc.pair(run(svc.create_code(owner.id)).code, "Code watch"))

@@ -110,11 +110,16 @@ class AccountService:
 
     async def _link(self, user_id: str, identity: Identity) -> str:
         key = account_key(identity.issuer, identity.subject)
+        user = await self._st.users.get(user_id)
+        previous = user.central_subject if user is not None else None
         try:
             # Another account than the linked one: the devices the old one paired fall (decision C12).
-            linked = await self._st.users.link_central(user_id, key, self._now())
+            revoked = await self._st.users.link_central(user_id, key, self._now())
         except Conflict:
             raise AccountError("conflict", "this central account is already linked to another user") from None
-        if not linked:
+        if revoked is None:
             raise AccountError("not_found", "user not found")
+        if revoked > 0 or (previous is not None and previous != key):
+            # Never the key itself: it names the person's account.
+            log.info("user %s linked another account; %d devices revoked", user_id, revoked)
         return key

@@ -109,17 +109,17 @@ class _Users:
     async def delete(self, user_id: str) -> bool:
         return self._db.execute("DELETE FROM users WHERE id = ?", (user_id,)) == 1
 
-    async def link_central(self, user_id: str, subject: str, now: float) -> bool:
+    async def link_central(self, user_id: str, subject: str, now: float) -> int | None:
         try:
             with self._db.transaction() as conn:
                 row = conn.execute("SELECT central_subject FROM users WHERE id = ?", (user_id,)).fetchone()
                 if row is None:
-                    return False
+                    return None
                 conn.execute("UPDATE users SET central_subject = ? WHERE id = ?", (subject, user_id))
                 old = row["central_subject"]
                 if old is not None and old != subject:
-                    _drop_account(conn, user_id, old, now)
-                return True
+                    return _drop_account(conn, user_id, old, now)
+                return 0
         except sqlite3.IntegrityError as e:
             if not _unique(e):
                 raise

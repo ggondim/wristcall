@@ -474,11 +474,11 @@ async def test_sqlite_index_forgets_deleted_text():
 
 async def test_link_central_subject(storage):
     u = await storage.users.create("u_000000000001", "ana", "Ana", 1.0)
-    assert await storage.users.link_central(u.id, "https://i#sub-1", 2.0)
+    assert await storage.users.link_central(u.id, "https://i#sub-1", 2.0) == 0
     assert (await storage.users.by_central("https://i#sub-1")).id == u.id
     assert (await storage.users.get(u.id)).central_subject == "https://i#sub-1"
-    assert await storage.users.link_central(u.id, "https://i#sub-1", 3.0)  # idempotent
-    assert await storage.users.link_central("u_missing00000", "https://i#x", 3.0) is False
+    assert await storage.users.link_central(u.id, "https://i#sub-1", 3.0) == 0  # idempotent
+    assert await storage.users.link_central("u_missing00000", "https://i#x", 3.0) is None
 
 
 async def test_central_subject_is_unique(storage):
@@ -556,9 +556,9 @@ async def test_unlink_central_drops_only_undelivered_requests(storage):
 async def test_relink_to_another_account_revokes_its_devices(storage):
     u = await _account_setup(storage)
     await storage.pairing.add_request("h1", "0001", "watch", 10.0, 100.0, target_user_id=u.id, central_subject=ACCOUNT)
-    assert await storage.users.link_central(u.id, ACCOUNT, 10.0)  # the same account again: nothing falls
+    assert await storage.users.link_central(u.id, ACCOUNT, 10.0) == 0  # the same account again: nothing falls
     assert len(await storage.devices.list(u.id)) == 2
-    assert await storage.users.link_central(u.id, "https://i#sub-2", 11.0)
+    assert await storage.users.link_central(u.id, "https://i#sub-2", 11.0) == 1  # the one account device fell
     assert [d.id for d in await storage.devices.list(u.id)] == ["d_code"]
     assert await storage.push.for_device("d_acct") is None
     assert await storage.pairing.get_request("h1", 20.0) is None

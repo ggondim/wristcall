@@ -38,12 +38,13 @@ class UserStore(Protocol):
         """Also deletes the user's devices, tokens and agents."""
         ...
 
-    async def link_central(self, user_id: str, subject: str, now: float) -> bool:
+    async def link_central(self, user_id: str, subject: str, now: float) -> int | None:
         """Links the central account `subject` ("<issuer>#<sub>"), replacing the user's previous link.
 
         Replacing a link with another account drops what the old one paired, as unlink_central does, in the same
-        transaction. False if the user does not exist; raises Conflict if another user has the subject (nothing
-        changes). Idempotent: the same subject again keeps everything.
+        transaction. Returns how many devices that revoked (0 if none, or if the subject did not change); None if
+        the user does not exist; raises Conflict if another user has the subject (nothing changes). Idempotent:
+        the same subject again keeps everything.
         """
         ...
 
