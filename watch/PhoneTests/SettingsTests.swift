@@ -33,16 +33,24 @@ struct SettingsTests {
     }
 
     @Test func planRowReadsTheAccountPlan() async {
+        #expect(SettingsContent.planRow(for: Plan(plan: .full, source: "beta"))
+            == .init(title: "Wristcall Cloud", detail: "Beta · invite"))
         #expect(SettingsContent.planRow(for: Plan(plan: .full, source: "invite"))
             == .init(title: "Wristcall Cloud", detail: "Beta · invite"))
-        #expect(SettingsContent.planRow(for: Plan(plan: .custom, source: "invite"))
+        #expect(SettingsContent.planRow(for: Plan(plan: .custom, source: "beta"))
             == .init(title: "Cloud with your models", detail: "Beta · invite"))
+        #expect(SettingsContent.planRow(for: Plan(plan: .full, source: "partner"))
+            == .init(title: "Wristcall Cloud", detail: "Beta · partner"))
         #expect(SettingsContent.planRow(for: nil) == .init(title: "No plan", detail: "Choose how to start"))
 
-        let custom = await makeRig(account: AccountWorld.Account(plan: #"{"plan":"custom","source":"invite"}"#))
+        let custom = await makeRig(account: AccountWorld.Account(plan: #"{"plan":"custom","source":"beta"}"#))
         #expect(SettingsContent.planRow(for: custom.model.plan).title == "Cloud with your models")
         let none = await makeRig()
         #expect(SettingsContent.planRow(for: none.model.plan).title == "No plan")
+    }
+
+    @Test func anApprovalNotificationOpensTheServerFromServers() {
+        #expect(SettingsRoute.path(opening: "srv-1") == [.servers, .server("srv-1")])
     }
 
     @Test func deleteCopyIsTheMockups() {

@@ -26,7 +26,7 @@ struct WelcomeView: View {
 
     static var voiceNotice: AttributedString {
         let text = "When you call an agent, your voice is sent to the speech and AI services of that agent. "
-        let markdown = text + "[Privacy](\(SettingsView.privacyURL.absoluteString))"
+        let markdown = text + "[Privacy](\(SettingsContent.privacyURL.absoluteString))"
         return (try? AttributedString(markdown: markdown)) ?? AttributedString(text + "Privacy")
     }
 

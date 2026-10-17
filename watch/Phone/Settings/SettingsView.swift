@@ -10,6 +10,9 @@ enum SettingsRoute: Hashable {
     case servers
     case devices
     case server(String)
+
+    /// Where a tapped approval notification goes: the servers list, then the server (its devices open there).
+    static func path(opening serverID: String) -> [SettingsRoute] { [.servers, .server(serverID)] }
 }
 
 /// What Settings says, apart from how it looks (the views only draw this).
@@ -27,7 +30,13 @@ enum SettingsContent {
     static func planRow(for plan: Plan?) -> PlanRow {
         guard let plan else { return PlanRow(title: "No plan", detail: "Choose how to start") }
         let title = plan.plan == .custom ? PlanOption.cloudCustom.title : PlanOption.cloud.title
-        return PlanRow(title: title, detail: "Beta · \(plan.source)")
+        return PlanRow(title: title, detail: "Beta · \(sourceText(plan.source))")
+    }
+
+    /// The Cloud writes `beta` for every redeemed invite (and `invite` for older ones): both read "invite".
+    /// Any other source prints as is.
+    static func sourceText(_ source: String) -> String {
+        ["beta", "invite"].contains(source) ? "invite" : source
     }
 
     /// ACCOUNT section rows. "Use on the web" only once the web sign-in exists.
@@ -53,11 +62,13 @@ enum SettingsContent {
 
 /// The Settings tab (mockup `iphone-08`, without Apple sign-in): plan, account, advanced, privacy.
 struct SettingsView: View {
-    static var privacyURL: URL { SettingsContent.privacyURL }
-    static var versionText: String { SettingsContent.versionText }
-
     /// The plan row: the root shows the plan screen in a sheet.
     let onChoosePlan: () -> Void
+
+    init(account: AccountModel, onChoosePlan: @escaping () -> Void) {
+        self.onChoosePlan = onChoosePlan
+        _devices = State(initialValue: AccountDevicesModel(account: account))
+    }
 
     @Environment(AppState.self) private var state
     @Environment(AccountModel.self) private var account
@@ -65,7 +76,7 @@ struct SettingsView: View {
     @Environment(LinkRouter.self) private var router
     @Environment(\.openURL) private var openURL
     @State private var path: [SettingsRoute] = []
-    @State private var devices: AccountDevicesModel?
+    @State private var devices: AccountDevicesModel
     @State private var confirmingDelete = false
     @State private var busy = false
 
@@ -80,25 +91,21 @@ struct SettingsView: View {
                 if hasAccount { accountSection }
                 advancedSection
                 dangerSection
-                Section {} footer: {
-                    Text("Version \(SettingsContent.versionText)").frame(maxWidth: .infinity)
-                }
             }
+            // The floating tab bar covers the bottom of the list: leave room so the version can scroll above it.
+            .contentMargins(.bottom, 24, for: .scrollContent)
             .navigationTitle("Settings")
             .navigationDestination(for: SettingsRoute.self) { route in
                 switch route {
                 case .servers: ServersView()
                 case .devices:
-                    if let devices { AccountDevicesView(model: devices) }
+                    AccountDevicesView(model: devices)
                 case .server(let id): ServerDetailView(serverID: id)
                 }
             }
         }
-        .task {
-            if devices == nil { devices = AccountDevicesModel(account: account) }
-        }
         .task(id: account.state) {
-            if isReady { await devices?.load() }
+            if isReady { await devices.load() }
         }
         // A tapped notification: the server of its tag, among the saved ones only (the list may still be
         // loading on a cold start, hence the servers in the key). Its detail screen opens the devices.
@@ -109,12 +116,12 @@ struct SettingsView: View {
                 if !state.servers.isEmpty || state.loadError != nil { approvals.openRequest = nil }
                 return
             }
-            let target: [SettingsRoute] = [.servers, .server(id)]
+            let target = SettingsRoute.path(opening: id)
             if path != target { path = target }
         }
         #if DEBUG
         .task(id: state.servers.first?.id) {
-            if DebugRoute.opensServer, let id = state.servers.first?.id, path.isEmpty { path = [.servers, .server(id)] }
+            if DebugRoute.opensServer, let id = state.servers.first?.id, path.isEmpty { path = SettingsRoute.path(opening: id) }
         }
         #endif
     }
@@ -177,7 +184,7 @@ struct SettingsView: View {
                     NavigationLink(value: SettingsRoute.devices) {
                         SettingsRowLabel(
                             symbol: "applewatch", tint: .gray, title: "Devices",
-                            value: devices.flatMap { $0.didLoad ? String($0.devices.count) : nil })
+                            value: devices.didLoad ? String(devices.devices.count) : nil)
                     }
                     .disabled(!isReady)
                 }
@@ -231,6 +238,8 @@ struct SettingsView: View {
                     Text(SettingsContent.deleteExplanation)
                 }
             }
+        } footer: {
+            Text("Version \(SettingsContent.versionText)").frame(maxWidth: .infinity)
         }
     }
 }

@@ -259,7 +259,7 @@ struct RootView: View {
                 HistoryView()
             }
             Tab("Settings", systemImage: "gear", value: "settings") {
-                SettingsView(onChoosePlan: { choosingPlan = true })
+                SettingsView(account: account, onChoosePlan: { choosingPlan = true })
             }
             // Device approvals waiting for the owner (they are answered under Servers).
             .badge(approvals.pending.count)
