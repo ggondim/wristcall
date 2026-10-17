@@ -1,6 +1,7 @@
 import type { CloudAgent, CloudServer } from "../api/cloud"
 import { OidcError } from "../api/oidc"
 import type { AgentDetail } from "../api/server"
+import { AGENT_COLORS } from "../ui/agentColor"
 import { ApiError } from "../lib/errors"
 import { parseServerAddress, sameUrl } from "../lib/address"
 import type { AgendaControl } from "../models/account"
@@ -393,6 +394,8 @@ export class AgendaSync implements AgendaControl {
         display_name: AgendaSync.cut(String(agent.display_name ?? ""), agent.slug),
         icon: agent.icon,
         call_type: agent.call_type,
+        // The Cloud refuses the whole agenda for a color it does not know (a newer server's), so only known names go.
+        color: AGENT_COLORS.find((name) => name === agent.color) ?? null,
       }))
   }
 

@@ -228,6 +228,9 @@ a.button.quiet { background: var(--line); color: var(--fg); }
 .agent-disc { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 44px; height: 44px; border-radius: 50%; color: #fff; }
 .agent-disc .agent-icon { background: transparent; color: inherit; }
 .agent-name { display: inline-flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.color-picker { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem; }
+.color-choice { width: 44px; height: 44px; border: 3px solid transparent; border-radius: 50%; background-clip: content-box; padding: 3px; cursor: pointer; }
+.color-choice[aria-pressed="true"] { border-color: var(--fg); }
 .agent-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; }
 .agents-section { margin-bottom: 1.5rem; }
 .agents-section .screen-head { margin-bottom: 0.5rem; }

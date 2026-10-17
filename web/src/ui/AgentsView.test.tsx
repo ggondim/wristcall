@@ -18,8 +18,9 @@ function agent(id: string, name: string, over: Partial<AgentDetail> = {}): Agent
   }
 }
 
-async function setup(agents: AgentDetail[]): Promise<{ servers: ServersModel; fetchMock: MockFetch }> {
+async function setup(agents: AgentDetail[], version?: string): Promise<{ servers: ServersModel; fetchMock: MockFetch }> {
   const fetchMock = mockFetch((url, init) => {
+    if (url.endsWith("/health")) return ok({ status: "ok", version: version ?? "", protocol: 1, account: null, push: null })
     if (url.endsWith("/v1/providers")) {
       return ok({ providers: [{ name: "whisper", kind: "stt" }, { name: "claude", kind: "action" }, { name: "piper", kind: "tts" }], custom_endpoints: false })
     }
@@ -138,6 +139,35 @@ describe("AgentsScreen", () => {
     await waitFor(() => expect(location.pathname).toBe("/servers/s1/agents"))
     const post = fetchMock.calls.find((c) => c.init.method === "POST")!
     expect(JSON.parse(post.init.body as string)).toEqual({ slug: "daily-notes", display_name: "Daily notes", icon: "calendar", call_type: "conversation", turn_end: "auto", language: "en" })
+  })
+
+  test("picker marks chosen color and the new agent sends it", async () => {
+    const { servers, fetchMock } = await setup([], "0.8.1")
+    await servers.load()
+    history.replaceState(null, "", "/servers/s1/agents/new")
+    render(<AgentsScreen servers={servers} target={{ serverId: "s1", screen: "new" }} />)
+    const name = (await screen.findByLabelText("Name")) as HTMLInputElement
+    const buttons = screen.getAllByRole("button").filter((b) => b.classList.contains("color-choice"))
+    expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual(["Red", "Orange", "Yellow", "Green", "Mint", "Teal", "Blue", "Indigo", "Purple", "Pink"])
+    expect(buttons.filter((b) => b.getAttribute("aria-pressed") === "true").map((b) => b.getAttribute("aria-label"))).toEqual(["Mint"])
+    fireEvent.click(screen.getByRole("button", { name: "Purple" }))
+    await waitFor(() => expect(screen.getByRole("button", { name: "Purple" }).getAttribute("aria-pressed")).toBe("true"))
+    expect(screen.getByRole("button", { name: "Mint" }).getAttribute("aria-pressed")).toBe("false")
+    fireEvent.input(name, { target: { value: "Daily notes" } })
+    await waitFor(() => expect((screen.getByLabelText("Slug") as HTMLInputElement).value).toBe("daily-notes"))
+    fireEvent.submit(name.form!)
+    await waitFor(() => expect(location.pathname).toBe("/servers/s1/agents"))
+    const post = fetchMock.calls.find((c) => c.init.method === "POST")!
+    expect(JSON.parse(post.init.body as string).color).toBe("purple")
+  })
+
+  test("a server older than 0.8.1 shows no color picker", async () => {
+    const { servers } = await setup([agent("ag_a", "Alpha", { color: "purple" })], "0.8.0")
+    await servers.load()
+    history.replaceState(null, "", "/servers/s1/agents/ag_a")
+    render(<AgentsScreen servers={servers} target={{ serverId: "s1", screen: "edit", agentId: "ag_a" }} />)
+    await screen.findByLabelText("Name")
+    expect(screen.queryByRole("group", { name: "Color" })).toBeNull()
   })
 
   test("editFormShowsTheRefusalAndKeepsTheSlugFixed", async () => {

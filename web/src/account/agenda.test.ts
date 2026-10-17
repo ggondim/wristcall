@@ -228,6 +228,11 @@ describe("AgendaSync", () => {
     expect(w.writes().map((call) => `${call.method} ${call.path}`)).toEqual(["DELETE /v1/servers/c5", "DELETE /v1/servers/c7"])
   })
 
+  test("agenda mirror sends color", () => {
+    const sent = AgendaSync.snapshot([agent(1, { color: "purple" }), agent(2), agent(3, { color: "chartreuse" }), agent(4, { color: null })])
+    expect(sent.map((a) => a.color)).toEqual(["purple", null, null, null])
+  })
+
   test("agents are cut to 50, names to 64 characters, and invalid ones are left out", () => {
     const many = Array.from({ length: 60 }, (_, n) => agent(n))
     expect(AgendaSync.snapshot(many)).toHaveLength(50)

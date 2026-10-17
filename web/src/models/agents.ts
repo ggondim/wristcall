@@ -92,9 +92,10 @@ export class AgentsModel extends BaseModel<AgentsState> {
   }
 
   /** The form of a new agent (`null`) or of an existing one; saving it reads the list again. */
-  form(existing: AgentDetail | null): AgentFormModel {
+  form(existing: AgentDetail | null, colorSupported = false): AgentFormModel {
     return new AgentFormModel(this.#client, existing, this.state.providers, {
       customEndpoints: this.state.customEndpoints,
+      colorSupported,
       onSaved: () => this.load(),
     })
   }

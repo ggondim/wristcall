@@ -3,7 +3,7 @@ import type { AgentDetail } from "../api/server"
 import { AgentsModel } from "../models/agents"
 import { callTypeLabel } from "../models/agentForm"
 import type { ServersModel } from "../models/servers"
-import { resolvedColor } from "./agentColor"
+import { resolvedColor, supportsAgentColor } from "./agentColor"
 import { AgentForm } from "./AgentForm"
 import { AgentIcon } from "./IconPicker"
 import { Link } from "./Link"
@@ -22,6 +22,7 @@ export function AgentsScreen({
   onAgentsChanged?: (serverId: string, agents: AgentDetail[]) => void
 }) {
   const [model, setModel] = useState<AgentsModel | "missing" | null>(null)
+  const { rows } = useModel(servers)
   const serverId = target.serverId
   useEffect(() => {
     let live = true
@@ -60,7 +61,9 @@ export function AgentsScreen({
     )
   }
   if (target.screen === "list") return <AgentsView model={model} serverId={serverId} back={back} />
-  return <AgentForm model={model} serverId={serverId} agentId={target.screen === "edit" ? target.agentId : null} />
+  // The version comes from the server's health; unknown (not answered yet, or not at all) keeps color off.
+  const colorSupported = supportsAgentColor(rows.find((row) => row.server.id === serverId)?.health?.version)
+  return <AgentForm model={model} serverId={serverId} agentId={target.screen === "edit" ? target.agentId : null} colorSupported={colorSupported} />
 }
 
 export function AgentsView({ model, serverId, back }: { model: AgentsModel; serverId: string; back: string }) {

@@ -1,6 +1,7 @@
-import { useMemo, useState } from "preact/hooks"
+import { useEffect, useMemo, useState } from "preact/hooks"
 import type { AgentsModel } from "../models/agents"
 import { callTypeLabel, CALL_TYPES, MAX_RETENTION_DAYS, MAX_SILENCE_MS, MIN_SILENCE_MS, type AgentFormModel, type Choice, type FormValues, type Stage } from "../models/agentForm"
+import { ColorPicker } from "./ColorPicker"
 import { IconPicker } from "./IconPicker"
 import { Link } from "./Link"
 import { agentsPath, navigate } from "./route"
@@ -203,6 +204,13 @@ function FormBody({ form, serverId }: { form: AgentFormModel; serverId: string }
         <h2 class="section-title">Icon</h2>
         <IconPicker value={s.icon} onChange={(icon) => form.update({ icon })} />
 
+        {s.colorSupported ? (
+          <>
+            <h2 class="section-title">Color</h2>
+            <ColorPicker value={s.color} onChange={(color) => form.update({ color })} />
+          </>
+        ) : null}
+
         <label class="field">
           <span>Call type</span>
           <select name="call-type" value={s.callType} onChange={(e) => form.selectCallType(e.currentTarget.value)}>
@@ -244,14 +252,26 @@ function FormBody({ form, serverId }: { form: AgentFormModel; serverId: string }
 }
 
 /** Create (`agentId` null) or edit an agent. Waits for the list: the form needs the stored agent and the providers. */
-export function AgentForm({ model, serverId, agentId }: { model: AgentsModel; serverId: string; agentId: string | null }) {
+export function AgentForm({
+  model,
+  serverId,
+  agentId,
+  colorSupported = false,
+}: {
+  model: AgentsModel
+  serverId: string
+  agentId: string | null
+  /** Whether the server takes agent colors; its health may answer after the form is built. */
+  colorSupported?: boolean
+}) {
   const { agents, loaded, providersLoaded, error } = useModel(model)
   const existing = agentId === null ? null : (agents.find((agent) => agent.id === agentId) ?? null)
   // The pickers need the providers for an edit too: a failed read shows its error instead of an empty form.
   const ready = loaded && providersLoaded && (agentId === null || existing !== null)
   const list = agentsPath(serverId)
   // One form for the visit: a later reading of the list does not replace what the user is typing.
-  const form = useMemo(() => (ready ? model.form(existing) : null), [model, agentId, ready])
+  const form = useMemo(() => (ready ? model.form(existing, colorSupported) : null), [model, agentId, ready])
+  useEffect(() => form?.setColorSupported(colorSupported), [form, colorSupported])
   if (form !== null) return <FormBody form={form} serverId={serverId} />
   const missing = loaded && providersLoaded && agentId !== null
   return (
