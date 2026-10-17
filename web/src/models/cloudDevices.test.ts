@@ -12,7 +12,7 @@ function world(list: CloudDevice[] = [device("self", { platform: "web", current:
     devices: vi.fn(async (_token: string) => list),
     removeDevice: vi.fn(async (_token: string, _id: string) => {}),
   }
-  const session = { deviceId: "self" as string | null, accessToken: vi.fn(async () => "at") }
+  const session = { deviceId: "self" as string | null, accessToken: vi.fn(async () => "at"), accessTokenRefused: vi.fn(async (_token: string) => {}) }
   return { cloud, session, model: new CloudDevicesModel(cloud, session) }
 }
 
@@ -96,5 +96,24 @@ describe("CloudDevicesModel", () => {
     answer([device("phone")])
     await loading
     expect(w.model.state).toMatchObject({ devices: [], loaded: false, loading: false })
+  })
+
+  test("a 401 in Settings forces a renewal", async () => {
+    const w = world()
+    w.cloud.devices.mockRejectedValueOnce(new ApiError(401, "unauthorized", "raw"))
+    await w.model.load()
+    expect(w.session.accessTokenRefused).toHaveBeenCalledWith("at")
+    await w.model.load()
+    w.cloud.removeDevice.mockRejectedValueOnce(new ApiError(401, "unauthorized", "raw"))
+    await w.model.remove("phone")
+    expect(w.session.accessTokenRefused).toHaveBeenCalledTimes(2)
+    expect(w.model.state.devices.map((d) => d.id)).toContain("phone")
+  })
+
+  test("a failure other than 401 does not force a renewal", async () => {
+    const w = world()
+    w.cloud.devices.mockRejectedValueOnce(new ApiError(503, "busy", "raw"))
+    await w.model.load()
+    expect(w.session.accessTokenRefused).not.toHaveBeenCalled()
   })
 })

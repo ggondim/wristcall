@@ -72,6 +72,10 @@ export class FakeSession implements AccountSessionPort {
     return "access-token"
   }
 
+  async accessTokenRefused(token: string): Promise<void> {
+    this.calls.push(`accessTokenRefused:${token}`)
+  }
+
   async config(): Promise<{ issuer: string }> {
     this.calls.push("config")
     if (this.configError !== null) throw this.configError

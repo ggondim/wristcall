@@ -538,4 +538,29 @@ describe("plan and identities", () => {
     await w.model.redeemInvite("c")
     expect(w.model.state.redeem).toEqual({ failed: "Can't reach wristcall Cloud." })
   })
+
+  test("a 401 in Settings forces a renewal", async () => {
+    const w = await world()
+    w.cloud.account.mockRejectedValueOnce(new ApiError(401, "unauthorized", "raw"))
+    await w.model.loadProfile()
+    expect(w.calls).toContain("accessTokenRefused:access-token")
+    w.cloud.redeemInvite.mockRejectedValueOnce(new ApiError(401, "unauthorized", "raw"))
+    expect(await w.model.redeemInvite("CODE-1")).toBe(false)
+    expect(w.calls.filter((c) => c.startsWith("accessTokenRefused"))).toHaveLength(2)
+  })
+
+  test("a 401 on the deletion forces a renewal, other failures do not", async () => {
+    const w = await world({
+      deleteAccount: async () => {
+        throw new ApiError(401, "unauthorized", "raw")
+      },
+    })
+    await w.model.deleteAccount()
+    expect(w.calls).toContain("accessTokenRefused:access-token")
+    expect(w.model.state.screen).toBe("signedIn")
+    const other = await world()
+    other.cloud.account.mockRejectedValueOnce(new ApiError(503, "busy", "raw"))
+    await other.model.loadProfile()
+    expect(other.calls.some((c) => c.startsWith("accessTokenRefused"))).toBe(false)
+  })
 })

@@ -1,11 +1,13 @@
 import type { CloudClient, CloudDevice } from "../api/cloud"
-import { cloudMessage } from "../lib/errors"
+import { ApiError, cloudMessage } from "../lib/errors"
 import { BaseModel } from "../ui/useModel"
 
 /** What the list needs from the sign-in (the real `AccountSession`, or a stand-in in a test). */
 export interface CloudDevicesSession {
   readonly deviceId: string | null
   accessToken(): Promise<string>
+  /** The Cloud answered `401` to this token: the session renews, or signs out when the device is gone. */
+  accessTokenRefused(token: string): Promise<void>
 }
 
 export type CloudDevicesCloud = Pick<CloudClient, "devices" | "removeDevice">
@@ -41,14 +43,17 @@ export class CloudDevicesModel extends BaseModel<CloudDevicesState> {
   async load(): Promise<void> {
     const generation = this.#generation
     this.set({ loading: true, error: null })
+    let token = ""
     try {
-      const devices = await this.#cloud.devices(await this.#session.accessToken())
+      token = await this.#session.accessToken()
+      const devices = await this.#cloud.devices(token)
       if (generation !== this.#generation) return
       const self = this.#session.deviceId
       this.set({ devices: devices.map((device) => ({ ...device, thisBrowser: device.current || device.id === self })), loaded: true, loading: false })
     } catch (error) {
       if (generation !== this.#generation) return
       this.set({ loading: false, error: cloudMessage(error) })
+      this.#refusedToken(error, token)
     }
   }
 
@@ -58,14 +63,21 @@ export class CloudDevicesModel extends BaseModel<CloudDevicesState> {
     if (target === undefined || target.thisBrowser || this.state.removing !== null) return
     const generation = this.#generation
     this.set({ removing: id, error: null })
+    let token = ""
     try {
-      await this.#cloud.removeDevice(await this.#session.accessToken(), id)
+      token = await this.#session.accessToken()
+      await this.#cloud.removeDevice(token, id)
     } catch (error) {
       if (generation === this.#generation) this.set({ removing: null, error: cloudMessage(error) })
+      this.#refusedToken(error, token)
       return
     }
     if (generation !== this.#generation) return
     this.set({ removing: null, devices: this.state.devices.filter((device) => device.id !== id) })
+  }
+
+  #refusedToken(error: unknown, token: string): void {
+    if (error instanceof ApiError && error.status === 401 && token !== "") void this.#session.accessTokenRefused(token)
   }
 
   /** The account left: the list is not its any more. */

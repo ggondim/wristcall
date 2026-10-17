@@ -38,7 +38,7 @@ export interface AccountState {
 /** What the account screens need from the sign-in (the real `AccountSession`, or a stand-in in a test). */
 export type AccountSessionPort = Pick<
   AccountSession,
-  "state" | "accountId" | "deviceId" | "beginSignIn" | "completeSignIn" | "adoptWebSession" | "signOut" | "accessToken" | "onSignedOut"
+  "state" | "accountId" | "deviceId" | "beginSignIn" | "completeSignIn" | "adoptWebSession" | "signOut" | "accessToken" | "accessTokenRefused" | "onSignedOut"
 > & {
   config(): Promise<{ issuer: string }>
 }
@@ -248,8 +248,10 @@ export class AccountModel extends BaseModel<AccountState> {
     } catch {
       // A server that cannot be reached keeps its link until the user unlinks it there.
     }
+    let token = ""
     try {
-      await this.#cloud.deleteAccount(await session.accessToken())
+      token = await session.accessToken()
+      await this.#cloud.deleteAccount(token)
     } catch (error) {
       this.agenda?.resume()
       if (isSignedOut(error)) {
@@ -258,6 +260,7 @@ export class AccountModel extends BaseModel<AccountState> {
         return
       }
       this.set({ busy: false, error: DELETE_FAILED + message(error) })
+      this.#refusedToken(error, token)
       return
     }
     try {
@@ -317,11 +320,14 @@ export class AccountModel extends BaseModel<AccountState> {
     if (this.#profileLoading !== null) return this.#profileLoading
     const generation = this.#profileGeneration
     const running = (async () => {
+      let token = ""
       try {
-        const info = await cloud.account(await session.accessToken())
+        token = await session.accessToken()
+        const info = await cloud.account(token)
         if (generation === this.#profileGeneration) this.set({ plan: info.plan?.plan ? info.plan : null, identities: info.identities, profileError: null })
       } catch (error) {
         if (generation === this.#profileGeneration) this.set({ profileError: message(error) })
+        this.#refusedToken(error, token)
       }
     })()
     this.#profileLoading = running
@@ -339,15 +345,23 @@ export class AccountModel extends BaseModel<AccountState> {
     if (session === null || cloud === null || clean === "" || this.state.screen !== "signedIn" || this.state.redeem === "busy") return false
     const generation = this.#profileGeneration
     this.set({ redeem: "busy" })
+    let token = ""
     try {
-      const plan = await cloud.redeemInvite(await session.accessToken(), clean)
+      token = await session.accessToken()
+      const plan = await cloud.redeemInvite(token, clean)
       if (generation !== this.#profileGeneration) return false
       this.set({ plan: plan.plan ? plan : null, redeem: "idle" })
       return true
     } catch (error) {
       if (generation === this.#profileGeneration) this.set({ redeem: { failed: inviteMessage(error) } })
+      this.#refusedToken(error, token)
       return false
     }
+  }
+
+  /** The Cloud refused the access token (the device was removed elsewhere, say): the session renews, or signs out. */
+  #refusedToken(error: unknown, token: string): void {
+    if (error instanceof ApiError && error.status === 401 && token !== "") void this.#session?.accessTokenRefused(token)
   }
 
   #forgetProfile(): void {
