@@ -303,6 +303,82 @@ struct AccountModelTests {
         #expect(try rig.keys.keys().count == 1)
     }
 
+    /// Waits (5 s at most) until the start waits for its next try at the held sleep.
+    private func waitingAtTheHeldSleep(_ rig: AccountRig) async -> Bool {
+        guard await rig.sleeps.held.reached() else { return false }
+        if case .waiting = rig.model.state { return true }
+        return false
+    }
+
+    /// A rig whose start got a `429` with an hour of `Retry-After` and now waits (for real) for its next try.
+    private func rateLimitedRig(web: any WebAuthenticator = FakeWeb.approving()) async -> (AccountRig, Task<Void, Never>) {
+        world.signUpReplies = [StubHost.Reply(429, #"{"error":"rate_limited","message":"slow down"}"#, headers: ["Retry-After": "3600"])]
+        let rig = AccountRig(world, web: web)
+        rig.sleeps.holding = 3600
+        await rig.model.appState.load()
+        let model = rig.model
+        let start = Task { await model.start() }
+        return (rig, start)
+    }
+
+    @Test func restoreDuringRateLimitedStartDoesNotWait() async throws {
+        let (rig, start) = await rateLimitedRig()
+        let model = rig.model
+        // A broken cut still ends the test (the start then makes an account, which fails the counts below).
+        let safety = Task { try? await Task.sleep(for: .seconds(10)); await rig.sleeps.held.open() }
+        defer { safety.cancel() }
+        #expect(await waitingAtTheHeldSleep(rig))
+
+        let clock = ContinuousClock()
+        let began = clock.now
+        try await model.restoreWithEmail()
+        await start.value
+
+        #expect(clock.now - began < .seconds(5))
+        #expect(model.state == .ready)
+        #expect(model.info?.account == AccountWorld.zitadelAccount)
+        // The start stopped for the restore: no account was made after it.
+        #expect(requests("POST", "/v1/accounts").count == 1)
+        #expect(requests("DELETE", "/v1/account").isEmpty)
+        await rig.sleeps.held.open()
+    }
+
+    @Test func failedRestoreDuringRateLimitedStartStartsAgain() async throws {
+        // The web sheet is closed: the restore fails before any sign-in.
+        let (rig, start) = await rateLimitedRig(web: FakeWeb(error: WebAuthenticatorError.couldNotStart))
+        let model = rig.model
+        let safety = Task { try? await Task.sleep(for: .seconds(10)); await rig.sleeps.held.open() }
+        defer { safety.cancel() }
+        #expect(await waitingAtTheHeldSleep(rig))
+
+        await #expect(throws: WebAuthenticatorError.self) { try await model.restoreWithEmail() }
+        await start.value
+        // The stopped start runs again (the Cloud's limit is over by now): the silent account is made.
+        await model.start()
+
+        #expect(model.state == .ready)
+        #expect(requests("POST", "/v1/accounts").count == 2)
+        await rig.sleeps.held.open()
+    }
+
+    @Test func tryAgainCutsTheRetryWait() async throws {
+        let (rig, start) = await rateLimitedRig()
+        let model = rig.model
+        let safety = Task { try? await Task.sleep(for: .seconds(10)); await rig.sleeps.held.open() }
+        defer { safety.cancel() }
+        #expect(await waitingAtTheHeldSleep(rig))
+
+        let clock = ContinuousClock()
+        let began = clock.now
+        await model.tryAgain()
+        await start.value
+
+        #expect(clock.now - began < .seconds(5))
+        #expect(model.state == .ready)
+        #expect(requests("POST", "/v1/accounts").count == 2)
+        await rig.sleeps.held.open()
+    }
+
     // MARK: - Plan
 
     @Test func redeemTreatsAlreadyEntitledAsSuccess() async throws {
@@ -459,7 +535,7 @@ struct AccountModelTests {
         #expect(await other.model.enrollCodeForWatch() == nil)
     }
 
-    // MARK: - The watch's enroll code (Task 13)
+    // MARK: - The watch's enroll code
 
     private func watchRig(installed: Bool = true) async -> (AccountRig, FakeWatchSession, WatchLink) {
         let rig = await readyRig()
@@ -535,7 +611,8 @@ struct AccountModelTests {
         let other = AccountKey.generate()
         try rig.keys.save(other, account: "acc_left")
         OnboardingStore.finish(in: rig.defaults)
-        DeadKeys.mark(.of("acc_old"), defaults: rig.defaults)
+        let old = StoredAccountKey.of("acc_old")
+        DeadKeys.mark(old, defaults: rig.defaults)
         try rig.keys.savePending(.generate())
         var hookRan = false
         model.accountDeleted = {
@@ -554,12 +631,44 @@ struct AccountModelTests {
         #expect(try rig.sessions.load() == nil)
         #expect(!OnboardingStore.isDone(in: rig.defaults))
         #expect(rig.lastID == nil)
-        #expect(rig.defaults.stringArray(forKey: "account.deadKeys") == nil)
+        // The refused keys are forgotten; the key left behind is set aside, so the next start makes a new account.
+        #expect(!DeadKeys.isDead(old, defaults: rig.defaults))
+        #expect(try DeadKeys.isDead(#require(rig.keys.keys().first), defaults: rig.defaults))
+        #expect(rig.defaults.bool(forKey: AccountModel.freshStartKey))
         #expect(hookRan)
         #expect(model.appState.servers.isEmpty)
         #expect(model.info == nil)
         #expect(model.state == .starting)
         #expect(requests("POST", "/v1/accounts").isEmpty)
+    }
+
+    @Test func startAfterDeleteMakesANewAccount() async throws {
+        let rig = await readyRig()
+        let model = rig.model
+        // An account left behind by `restoreWithEmail(leavingCurrent: true)`: still in the Cloud, its key here.
+        let left = AccountKey.generate()
+        world.addAccount("acc_left", key: left)
+        try rig.keys.save(left, account: "acc_left")
+
+        await model.deleteAccount()
+        await model.start()
+        await model.agenda?.idle()
+
+        #expect(model.state == .ready)
+        #expect(requests("POST", "/v1/accounts").count == 1)
+        let tried = requests("POST", "/v1/devices").compactMap { try? $0.json()["account_key"] as? String }
+        #expect(!tried.contains(left.value))
+        #expect(rig.lastID != nil)
+        #expect(rig.lastID != "acc_left")
+        #expect(model.info?.account == rig.lastID)
+        #expect(try rig.keys.keys().map(\.account).contains("acc_left"))
+        #expect(world.account("acc_left") != nil)
+        #expect(!rig.defaults.bool(forKey: AccountModel.freshStartKey))
+        // Back in the foreground: still the new account (C6 never moves it into the one left behind).
+        await model.start()
+        #expect(model.info?.account == rig.lastID)
+        #expect(rig.lastID != "acc_left")
+        #expect(!requests("POST", "/v1/devices").compactMap { try? $0.json()["account_key"] as? String }.contains(left.value))
     }
 
     @Test func failedDeleteKeepsTheAccount() async throws {

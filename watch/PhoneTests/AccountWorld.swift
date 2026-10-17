@@ -482,6 +482,9 @@ final class SleepLog {
     private(set) var delays: [TimeInterval] = []
     private(set) var states: [AccountModel.State] = []
     weak var model: AccountModel?
+    /// Waits of at least this many seconds really wait: at `held`, until the test opens it.
+    var holding: TimeInterval?
+    let held = Gate()
 
     nonisolated init() {}
 
@@ -490,8 +493,15 @@ final class SleepLog {
         if let model { states.append(model.state) }
     }
 
+    func park(_ seconds: TimeInterval) async {
+        if let holding, seconds >= holding { await held.wait() }
+    }
+
     nonisolated var sleep: @Sendable (TimeInterval) async -> Void {
-        { [self] seconds in await self.record(seconds) }
+        { [self] seconds in
+            await self.record(seconds)
+            await self.park(seconds)
+        }
     }
 }
 

@@ -25,7 +25,7 @@ struct SettingsTests {
 
     // MARK: - Rows
 
-    @Test func useOnTheWebWaitsForO7() {
+    @Test func useOnTheWebWaitsForTheWebSignIn() {
         #expect(WEB_SIGN_IN_READY == false)
         #expect(SettingsContent.accountRows() == [.devices])
         #expect(SettingsContent.accountRows(webSignInReady: false) == [.devices])
@@ -47,6 +47,16 @@ struct SettingsTests {
         #expect(SettingsContent.planRow(for: custom.model.plan).title == "Cloud with your models")
         let none = await makeRig()
         #expect(SettingsContent.planRow(for: none.model.plan).title == "No plan")
+    }
+
+    @Test func anUnknownPlanReadsAsCloudWithItsName() async {
+        #expect(SettingsContent.planRow(for: Plan(plan: .other("team"), source: "invite"))
+            == .init(title: "Wristcall Cloud", detail: "team"))
+        // The account still reads with a plan this version does not know.
+        let rig = await makeRig(account: AccountWorld.Account(plan: #"{"plan":"team","source":"invite"}"#))
+        #expect(rig.model.state == .ready)
+        #expect(rig.model.plan == Plan(plan: .other("team"), source: "invite"))
+        #expect(SettingsContent.planRow(for: rig.model.plan) == .init(title: "Wristcall Cloud", detail: "team"))
     }
 
     @Test func anApprovalNotificationOpensTheServerFromServers() {

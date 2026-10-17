@@ -1,7 +1,7 @@
 import SwiftUI
 import WristcallKit
 
-/// "Use on the web" waits for the web app's sign-in (O7, decision C13): the row only shows when this is true.
+/// "Use on the web" waits for the web app's sign-in (decision C13): the row only shows when this is true.
 let WEB_SIGN_IN_READY = false
 
 /// Where the Settings stack can go. Server details are routes here (not in `ServersView`) so that a tapped
@@ -29,8 +29,12 @@ enum SettingsContent {
     /// The top row: the plan of the account (Cloud, or Cloud with the user's models), or the way to choose one.
     static func planRow(for plan: Plan?) -> PlanRow {
         guard let plan else { return PlanRow(title: "No plan", detail: "Choose how to start") }
-        let title = plan.plan == .custom ? PlanOption.cloudCustom.title : PlanOption.cloud.title
-        return PlanRow(title: title, detail: "Beta · \(sourceText(plan.source))")
+        switch plan.plan {
+        case .full: return PlanRow(title: PlanOption.cloud.title, detail: "Beta · \(sourceText(plan.source))")
+        case .custom: return PlanRow(title: PlanOption.cloudCustom.title, detail: "Beta · \(sourceText(plan.source))")
+        // A plan this version does not know yet: the Cloud's name for it, as is.
+        case .other(let name): return PlanRow(title: PlanOption.cloud.title, detail: name)
+        }
     }
 
     /// The Cloud writes `beta` for every redeemed invite (and `invite` for older ones): both read "invite".
@@ -141,7 +145,11 @@ struct SettingsView: View {
                     }
                 } else if case .failed = account.state {
                     Text(note).foregroundStyle(.red)
-                    Button("Try again") { Task { await account.start() } }
+                    Button("Try again") { Task { await account.tryAgain() } }
+                } else if case .waiting = account.state {
+                    // Without waiting for the Cloud's `Retry-After`.
+                    Text(note).foregroundStyle(.secondary)
+                    Button("Try again") { Task { await account.tryAgain() } }
                 } else {
                     Text(note).foregroundStyle(.secondary)
                 }

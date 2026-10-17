@@ -18,7 +18,7 @@ enum RestoreError: Error, Equatable {
     case currentAccountHasData(servers: Int)
 }
 
-/// The Cloud account on this iPhone (spec O5): silent, with no sign-in screen. The device session lives in
+/// The Cloud account on this iPhone: silent, with no sign-in screen. The device session lives in
 /// the Keychain and the account key in iCloud Keychain; a 0.3.x Zitadel sign-in is moved over once, then its
 /// tokens go. Also: restoring an account by email, deleting it, redeeming invites, linking servers and keeping
 /// the agenda in sync.
@@ -43,6 +43,9 @@ final class AccountModel {
     /// The account this iPhone was last in, written on every `ready`. Set: a lost session never makes a new
     /// account, only signs in again with a stored key.
     static let lastIDKey = "account.lastID"
+    /// Set by a successful "Delete account", dropped once the next account exists: that start only creates
+    /// (`AccountBootstrap.run(usingStoredKeys: false)`), never signing in with a key another account left here.
+    static let freshStartKey = "account.freshStart"
     /// `lastIDKey` when the account is not known: a 0.3.x Zitadel sign-in that died before it was moved over.
     static let unknownAccount = "unknown"
 
@@ -82,6 +85,10 @@ final class AccountModel {
     @ObservationIgnored private var starting: Task<Void, Never>?
     /// The session ended while a start was running: it runs once more.
     @ObservationIgnored private var restartRequested = false
+    /// The wait of a start before its next try (`429`, network): a restore or "Try again" cuts it short.
+    @ObservationIgnored private var retryWait: RetryWait?
+    /// A start stopped for a restore without getting in: it runs again unless the restore got in.
+    @ObservationIgnored private var startAbandoned = false
     /// An email restore is running: its Zitadel tokens are not leftovers.
     @ObservationIgnored private var restoring = false
     /// The watch's enroll code, reused while it has more than a minute left (C8).
@@ -193,13 +200,46 @@ final class AccountModel {
                         break loop
                     }
                 case .retry(let delay):
-                    await sleep(delay)
+                    // A restore needs no account from this start (it brings its own): the loop stops for it.
+                    let wait = RetryWait()
+                    guard self?.beginRetryWait(wait) == true else { break loop }
+                    let sleeper = Task { await sleep(delay); wait.end() }
+                    await wait.wait()
+                    sleeper.cancel()
+                    guard self?.endRetryWait() == true else { break loop }
                 }
             }
             self?.starting = nil
         }
         starting = task
         return task
+    }
+
+    /// "Try again": a start waiting for its next try goes now (no wait for `Retry-After`); without one, a new
+    /// start.
+    func tryAgain() async {
+        guard session != nil, !restoring else { return }
+        retryWait?.end()
+        await start()
+    }
+
+    /// `false` (and the start counts as abandoned) when a restore runs.
+    private func beginRetryWait(_ wait: RetryWait) -> Bool {
+        guard !restoring else {
+            startAbandoned = true
+            return false
+        }
+        retryWait = wait
+        return true
+    }
+
+    private func endRetryWait() -> Bool {
+        retryWait = nil
+        guard !restoring else {
+            startAbandoned = true
+            return false
+        }
+        return true
     }
 
     private enum Next { case done, again, retry(TimeInterval) }
@@ -253,8 +293,11 @@ final class AccountModel {
             try await session.start(tokens)
             return .ready
         }
-        let (tokens, _) = try await bootstrap(session).run()
+        // Right after "Delete account": a new account, never another one a stored key opens.
+        let fresh = defaults.bool(forKey: Self.freshStartKey)
+        let (tokens, _) = try await bootstrap(session).run(usingStoredKeys: !fresh)
         try await session.start(tokens)
+        defaults.removeObject(forKey: Self.freshStartKey)
         return .ready
     }
 
@@ -407,11 +450,14 @@ final class AccountModel {
         restoring = true
         defer {
             restoring = false
-            if restartRequested {
-                restartRequested = false
-                launchStart()
-            }
+            // A start that stopped for this restore runs again when the restore did not get in.
+            let resume = restartRequested || (startAbandoned && state != .ready)
+            restartRequested = false
+            startAbandoned = false
+            if resume { launchStart() }
         }
+        // A start waiting for its next try (the Cloud's `429`, no network) stops now instead of after the wait.
+        retryWait?.end()
         await starting?.value
         // The confirmation's second call reuses the login of the first one: no second page.
         if !(await legacy.isSignedIn) {
@@ -475,7 +521,7 @@ final class AccountModel {
     /// Cloud deletes the agenda, the devices and the sign-ins). Then nothing of it stays here: its key (also on
     /// the user's other devices) and the pending key, session, the last account, dead keys, onboarding, push keys (`accountDeleted`)
     /// and the local servers. On failure the account stays and `error` says so. Nothing new is made until the
-    /// next `start()`.
+    /// next `start()`, which creates a new account (`freshStartKey`).
     func deleteAccount() async {
         guard let session, state == .ready, !restoring else { return }
         error = nil
@@ -500,6 +546,10 @@ final class AccountModel {
         try? await session.signOut()
         defaults.removeObject(forKey: Self.lastIDKey)
         DeadKeys.forgetAll(defaults: defaults)
+        // The next account is a new one: the keys left here stay in the Keychain, but this iPhone sets them aside
+        // like refused ones, so neither the next start nor C6 (`adoptOlderKey`) moves it into their accounts.
+        defaults.set(true, forKey: Self.freshStartKey)
+        for other in (try? keys.keys()) ?? [] { DeadKeys.mark(other, defaults: defaults) }
         OnboardingStore.reset(in: defaults)
         if let legacy, await legacy.isSignedIn { await legacy.signOut() }
         info = nil
@@ -933,5 +983,24 @@ final class AccountModel {
             agenda?.agentsChanged(server, list)
         }
         appState.hooks = hooks
+    }
+}
+
+/// The wait between two tries of a start: `end()` (the sleep is over, or a restore or "Try again" cut it) lets
+/// `wait()` return, once.
+@MainActor
+private final class RetryWait {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var ended = false
+
+    func wait() async {
+        guard !ended else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func end() {
+        ended = true
+        continuation?.resume()
+        continuation = nil
     }
 }
