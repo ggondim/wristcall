@@ -139,25 +139,31 @@ class PairingService:
             return await self._create_request(name)
         raise PairingDenied("invalid or expired code")
 
-    async def pair_for_user(self, user_id: str, device_name: str, *, approval: bool) -> Paired | Pending:
+    async def pair_for_user(
+        self, user_id: str, device_name: str, *, approval: bool, central_subject: str
+    ) -> Paired | Pending:
         """The caller already proved who the user is (central account login, linked to user_id).
 
         approval=False (attestation): the device is created right away. approval=True: a request aimed at the user,
         who approves or denies it; the watch polls it like a manual one. DeviceLimit is checked first either way.
+        The device, or the request and then its device, carries central_subject (the user's link): removing that
+        link revokes it.
         """
         name = clean_device_name(device_name)
         await self._check_device_limit(user_id)
         if not approval:
-            return await self._create_device(user_id, name)
-        return await self._create_request(name, target_user_id=user_id)
+            return await self._create_device(user_id, name, central_subject)
+        return await self._create_request(name, target_user_id=user_id, central_subject=central_subject)
 
-    async def _create_device(self, user_id: str, name: str) -> Paired:
+    async def _create_device(self, user_id: str, name: str, central_subject: str | None = None) -> Paired:
         device_id = secrets.token_hex(4)
         token = secrets.token_urlsafe(32)
-        await self._st.devices.create(device_id, user_id, name, hash_secret(token), self._now())
+        await self._st.devices.create(device_id, user_id, name, hash_secret(token), self._now(), central_subject)
         return Paired(device_id=device_id, token=token)
 
-    async def _create_request(self, name: str, *, target_user_id: str | None = None) -> Pending:
+    async def _create_request(
+        self, name: str, *, target_user_id: str | None = None, central_subject: str | None = None
+    ) -> Pending:
         now = self._now()
         await self._st.pairing.purge(now)
         pending = await self._st.pairing.list_pending(now)
@@ -178,7 +184,8 @@ class PairingService:
         poll_token = secrets.token_urlsafe(32)
         expires_at = now + self._request_ttl
         await self._st.pairing.add_request(
-            hash_secret(poll_token), request_id, name, now, expires_at, target_user_id=target_user_id
+            hash_secret(poll_token), request_id, name, now, expires_at, target_user_id=target_user_id,
+            central_subject=central_subject,
         )
         return Pending(request_id=request_id, poll_token=poll_token, expires_at=expires_at)
 
@@ -196,7 +203,7 @@ class PairingService:
             # deliver flips the status, so a refused collection can be retried once a device is revoked.
             await self._check_device_limit(req.user_id)
         if req.status == "approved" and req.user_id is not None and await self._st.pairing.deliver(poll_hash):
-            paired = await self._create_device(req.user_id, req.device_name)
+            paired = await self._create_device(req.user_id, req.device_name, req.central_subject)
             await self._st.pairing.set_request_device(poll_hash, paired.device_id)
             return paired
         raise PairingGone("request already delivered")

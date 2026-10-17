@@ -152,6 +152,26 @@ def test_relink_same_user_is_idempotent(client, issuer):
     assert linked_user(client).handle == "owner"
 
 
+def test_relink_another_account_logs_the_revoked_devices(client, issuer, caplog):
+    pat = api_token(client)
+    assert link(client, issuer.token(), pat).status_code == 200
+    user = linked_user(client)
+    storage = client.app.state.storage
+    run(storage.devices.create("d_acct", user.id, "Account watch", "hda", 2.0, central_subject=KEY))
+    run(storage.devices.create("d_code", user.id, "Code watch", "hdc", 2.0))
+    caplog.set_level(logging.INFO, logger="wristcall.account")
+    caplog.clear()
+    other = issuer.token(sub="central-user-2")
+    assert link(client, other, pat).status_code == 200
+    assert [d.id for d in run(storage.devices.list(user.id))] == ["d_code"]
+    assert "linked another account; 1 devices revoked" in caplog.text
+    # Neither the key nor the tokens are written.
+    assert KEY not in caplog.text and "central-user-2" not in caplog.text and other not in caplog.text
+    caplog.clear()
+    assert link(client, other, pat).status_code == 200  # the same account again: nothing changed, nothing logged
+    assert "linked another account" not in caplog.text
+
+
 def test_link_not_configured():
     with make_client() as c:
         pat = api_token(c)

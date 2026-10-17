@@ -173,7 +173,50 @@ describe("AgentsModel", () => {
 describe("AgentFormModel", () => {
   const form = (existing: AgentDetail | null, fetchMock = fakeServer([]), customEndpoints = true) =>
     new AgentFormModel(client(fetchMock), existing, PROVIDERS, { customEndpoints })
+  const withColor = (existing: AgentDetail | null, colorSupported = true) =>
+    new AgentFormModel(client(fakeServer([])), existing, PROVIDERS, { customEndpoints: true, colorSupported })
   const own = { type: "openai_stt", base_url: "https://stt.example/v1", model: "whisper-1", api_key: "***" }
+
+  test("new agent defaults mint", () => {
+    const f = withColor(null)
+    expect(f.state.color).toBe("mint")
+    f.update({ displayName: "Notes" })
+    expect(f.fields.color).toBe("mint")
+  })
+
+  test("editing keeps agent color", () => {
+    expect(withColor(agent({ color: "purple" })).state.color).toBe("purple")
+    // Missing or unknown (a newer server's) shows as mint.
+    expect(withColor(agent()).state.color).toBe("mint")
+    expect(withColor(agent({ color: "chartreuse" })).state.color).toBe("mint")
+  })
+
+  test("changed color sent", () => {
+    const f = withColor(agent({ color: "purple" }))
+    f.update({ color: "red" })
+    expect(f.fields).toEqual({ color: "red" })
+    expect(f.unchanged).toBe(false)
+  })
+
+  test("unchanged color not sent", () => {
+    const f = withColor(agent({ color: "purple" }))
+    f.update({ displayName: "Other" })
+    expect(f.fields).toEqual({ display_name: "Other" })
+    // An agent without a color shows mint; leaving it there sends nothing.
+    expect(withColor(agent()).fields).toEqual({})
+    expect(withColor(agent()).unchanged).toBe(true)
+  })
+
+  test("color is not sent to a server older than 0.8.1", () => {
+    const created = withColor(null, false)
+    created.update({ displayName: "Notes", color: "red" })
+    expect(created.fields).not.toHaveProperty("color")
+    const edited = withColor(agent(), false)
+    edited.update({ color: "red" })
+    expect(edited.fields).toEqual({})
+    edited.setColorSupported(true)
+    expect(edited.fields).toEqual({ color: "red" })
+  })
 
   test("formValidatesSlug", () => {
     const f = form(null)

@@ -4,6 +4,100 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-10-17
+
+### Changed
+
+- Removing a user's central account link revokes the devices paired through that account: `DELETE
+  /v1/account/link`, `wristcall users unlink <handle>`, and linking the user to a different account (linking the same
+  account again changes nothing). Their push keys are deleted, and the account's pairing requests not delivered yet
+  (pending, or approved but not collected by the watch) are dropped: the watch's next poll gets `410`. Devices paired
+  with a code, or by a manual (non-account) request, stay. Devices from account pairing requests are revoked, whoever
+  approved them (the request carries the account, not the approver). `wristcall users unlink` prints how many devices
+  it revoked; the log says `unlinked account; N devices revoked` (never the account), and linking another account logs
+  `linked another account; N devices revoked`.
+- Only devices paired through the account from 0.8.2 on fall: older ones carry no mark and stay paired (revoke them
+  with `wristcall devices revoke`).
+- Database schema 9 (new `devices.central_subject` and `pairing_requests.central_subject` columns, null for existing
+  rows). The server upgrades it on start; 0.8.1 does not open a database after 0.8.2 has run (restore a backup to go
+  back).
+
+## [watch-0.5.1] - 2026-10-17
+
+Watch app 0.5.1 (build 7), embedded in iPhone app 0.2.2. For Cloud 0.4.1 and servers 0.8.0 or later. No Cloud or server change.
+
+### Changed
+
+- With automatic setup paused, the first screen says "Automatic setup is paused." under "Open wristcall on your iPhone" (it said the watch would finish setting up on its own). "Set up again" is still the way out.
+- The watch app and the iPhone app carry version 0.5.1 (build 7).
+
+## [ios-0.2.2] - 2026-10-17
+
+For Cloud 0.4.1 and servers 0.8.0 or later. Carries watch app 0.5.1 (build 7). Approving the web app's QR code needs this version (web 0.3.0).
+
+### Added
+
+- "Use on the web" in Settings > Account scans the QR code the web app shows on its first screen and approves the browser, like WhatsApp Web. The row was built in 0.2.0 and stayed hidden until the web app had the code.
+
+### Changed
+
+- The iPhone app and the embedded watch app carry version 0.5.1 (the watch is build 7).
+
+## [web-0.3.0] - 2026-10-17
+
+Web app 0.3.0. For Cloud 0.4.1 (account sessions) and servers 0.7.0 or later (0.8.0 for server links, 0.8.1 for agent
+colors). The Cloud may run with `WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS` off: this version sends no Zitadel token to any
+Cloud route except the one `POST /v1/devices` that ends an email sign-in.
+
+### Added
+
+- First screen with a QR code: signed out and with no server saved, the app opens on "Your agents, on the web." with a
+  code to scan. The iPhone app (Settings > Use on the web) approves it and the browser signs in, like WhatsApp Web.
+  "Open wristcall app" (on iPhone and iPad) opens the app with the same code. A code that is left open renews itself up
+  to 3 times while the tab is visible, then shows "Code expired." and "Show a new code"; a hidden tab asks nothing.
+  An account at its device limit says so, and a Cloud that cannot be reached offers "Try again".
+- `/approve`: the page the code's link opens in a browser. It hands the code to the wristcall app ("Open in
+  wristcall") and warns "Only approve a code you opened yourself."
+- Agents home: the agents of every connected server in one list, each in its color (`.color-<name>` classes: the
+  Content Security Policy allows no inline style). A server that does not answer is marked and the others still show.
+  The editor and the Cloud agenda keep the agent's color.
+- Settings: the account's plan (as the iPhone app shows it), "Redeem invite", the account's devices (this browser is
+  marked; the others can be removed), "Device requests" with its pending count, "Servers" under Advanced, "Sign out"
+  and "Delete account".
+- "Use your own server without an account" on the first screen opens "Add server".
+
+### Changed
+
+- The session of the browser is a Cloud `web` device (an account token `wc-account+jwt` that renews through
+  `POST /v1/session/refresh`, a rotating refresh token). It lives in IndexedDB under `account.device`. "Sign in with
+  email" still goes to Zitadel, but ends in `POST /v1/devices` and nothing of Zitadel's is kept; email is the only
+  sign-in that has a Zitadel account behind it, so only these accounts can approve a watch's "Use code instead"
+  (`/settings/watch`, which now warns that an email with no account creates a new, empty one).
+- Sign out deletes this browser's device at the Cloud (`DELETE /v1/devices/{id}`, at most 2 seconds) and forgets the
+  session. No page of the identity provider opens any more.
+- "Delete account" first unlinks every linked server (`DELETE /v1/account/link`, best effort), like the iPhone app, so
+  the watches signed in through the account lose access, and then deletes the account.
+- Tabs are Agents, History and Settings. The Servers tab is gone: servers and "Add server" are in Settings >
+  Servers (`/settings/servers`). Old links keep working (`/` and `/agents` open Agents, `/servers` moves to
+  `/settings/servers`, `/servers/<id>/...` are unchanged).
+- Every route that needs the account (the agenda, server tokens, devices, plan, invite, deletion) takes the account
+  token. A Cloud with `WRISTCALL_CLOUD_SIGNING_KEY` and `WRISTCALL_CLOUD_PUBLIC_URL` set is required for it.
+
+### Migration
+
+- A browser that holds a 0.2.x session (a Zitadel refresh token in IndexedDB) is not asked to sign in again and does not
+  get a new account: the first start of 0.3.0 renews that session once, trades it at `POST /v1/devices` for a `web`
+  device, saves it and erases `account.refresh` and `account.id_token`. If Zitadel no longer accepts the session, the
+  app opens on the first screen and creates nothing. Two tabs migrate once.
+- The Cloud flag `WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS` can be turned off after this version is deployed (and the
+  iPhone 0.2.x and watch 0.5.x apps are already off Zitadel tokens).
+
+### Known limitations
+
+- Approving the QR code needs the wristcall iPhone app that has "Use on the web" (0.2.2 or later).
+- A refresh answer lost on the way leaves the browser with a token the Cloud already replaced: the next renewal
+  signs it out and the first screen opens. Signing in again fixes it.
+
 ## [watch-0.5.0] - 2026-10-17
 
 The watch app 0.5.0 (build 6), embedded in iPhone app 0.2.1. For Cloud 0.4.1 and servers 0.8.0 or later. No

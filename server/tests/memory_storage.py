@@ -46,21 +46,23 @@ class _Users:
         self._root.cascade(user_id)
         return True
 
-    async def link_central(self, user_id, subject):
+    async def link_central(self, user_id, subject, now):
         user = self.rows.get(user_id)
         if user is None:
-            return False
+            return None
         if any(u.central_subject == subject and u.id != user_id for u in self.rows.values()):
             raise Conflict("central account already linked to another user")
         self.rows[user_id] = replace(user, central_subject=subject)
-        return True
+        if user.central_subject is not None and user.central_subject != subject:
+            return self._root.drop_account(user_id, user.central_subject, now)
+        return 0
 
-    async def unlink_central(self, user_id):
+    async def unlink_central(self, user_id, now):
         user = self.rows.get(user_id)
         if user is None or user.central_subject is None:
-            return False
+            return None
         self.rows[user_id] = replace(user, central_subject=None)
-        return True
+        return self._root.drop_account(user_id, user.central_subject, now)
 
     async def by_central(self, subject):
         return next((u for u in self.rows.values() if u.central_subject == subject), None)
@@ -104,8 +106,8 @@ class _Devices:
     def add_orphan(self, device_id, name, token_hash, now):
         self.rows[device_id] = (Device(device_id, None, name, now, None), token_hash)
 
-    async def create(self, device_id, user_id, name, token_hash, now):
-        self.rows[device_id] = (Device(device_id, user_id, name, now, None), token_hash)
+    async def create(self, device_id, user_id, name, token_hash, now, central_subject=None):
+        self.rows[device_id] = (Device(device_id, user_id, name, now, None, central_subject), token_hash)
         return self.rows[device_id][0]
 
     async def by_token(self, token_hash):
@@ -191,15 +193,17 @@ class _Pairing:
             k: v for k, v in self.link_codes.items() if v["user_id"] != user_id or v["used_at"] is not None
         }
 
-    async def add_request(self, poll_hash, request_id, device_name, now, expires_at, target_user_id=None):
+    async def add_request(self, poll_hash, request_id, device_name, now, expires_at, target_user_id=None, central_subject=None):
         self.requests[poll_hash] = {
             "request_id": request_id, "device_name": device_name, "user_id": None, "status": "pending",
             "created_at": now, "expires_at": expires_at, "device_id": None, "target_user_id": target_user_id,
+            "central_subject": central_subject,
         }
 
     def _record(self, poll_hash, r):
         return PairingRequest(
-            poll_hash, r["request_id"], r["device_name"], r["user_id"], r["status"], r["expires_at"], r["target_user_id"]
+            poll_hash, r["request_id"], r["device_name"], r["user_id"], r["status"], r["expires_at"], r["target_user_id"],
+            r["central_subject"],
         )
 
     def _pending(self, now):
@@ -515,6 +519,23 @@ class MemoryStorage:
         self.pairing.requests = {
             k: v for k, v in self.pairing.requests.items() if user_id not in (v["user_id"], v["target_user_id"])
         }
+
+    def drop_account(self, user_id: str, subject: str, now: float) -> int:
+        """What unlinking `subject` drops: the user's active devices paired through it (and their push keys) and its
+        requests not delivered yet. Returns how many devices fell."""
+        fallen = [
+            k for k, (d, _) in self.devices.rows.items()
+            if d.user_id == user_id and d.central_subject == subject and d.revoked_at is None
+        ]
+        for k in fallen:
+            d, h = self.devices.rows[k]
+            self.devices.rows[k] = (replace(d, revoked_at=now), h)
+        self.push.rows = [r for r in self.push.rows if r["device_id"] not in fallen]
+        self.pairing.requests = {
+            k: v for k, v in self.pairing.requests.items()
+            if not (v["target_user_id"] == user_id and v["central_subject"] == subject and v["status"] in ("pending", "approved"))
+        }
+        return len(fallen)
 
     async def close(self) -> None:
         pass

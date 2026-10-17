@@ -35,7 +35,7 @@ function ServerItem({ row }: { row: ServerRow }) {
 }
 
 function PendingItem({ entry }: { entry: CloudServer }) {
-  const href = `/servers/add?url=${encodeURIComponent(entry.url)}&name=${encodeURIComponent(entry.name)}`
+  const href = `/settings/servers/add?url=${encodeURIComponent(entry.url)}&name=${encodeURIComponent(entry.name)}`
   return (
     <li>
       <Link class="row" href={href}>
@@ -52,10 +52,8 @@ function PendingItem({ entry }: { entry: CloudServer }) {
 function Empty({ loadError }: { loadError: string | null }) {
   return (
     <section class="empty">
-      <h2>Add your wristcall server</h2>
+      <h2>No servers yet.</h2>
       {loadError !== null ? <p class="problem">{loadError}</p> : null}
-      <p>Create a personal token on the server, then add the server here with its address and the token. Create one token per browser:</p>
-      <code class="command">wristcall users tokens add --name browser</code>
     </section>
   )
 }
@@ -70,7 +68,7 @@ export function ServersView({ model }: { model: ServersModel }) {
     <main class="screen">
       <header class="screen-head">
         <h1>Servers</h1>
-        <Link class="button" href="/servers/add">
+        <Link class="button" href="/settings/servers/add">
           Add server
         </Link>
       </header>

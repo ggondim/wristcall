@@ -1,10 +1,11 @@
 import { OidcError } from "../api/oidc"
-import type { CloudClient } from "../api/cloud"
+import type { CloudClient, CloudPlan, DeviceSession } from "../api/cloud"
 import type { AccountSession } from "../account/session"
 import { canonical, parseServerAddress } from "../lib/address"
-import { ApiError, NetworkError, TimeoutError } from "../lib/errors"
+import { ApiError, cloudMessage } from "../lib/errors"
 import { replaceRoute } from "../ui/route"
 import { BaseModel } from "../ui/useModel"
+import { CloudDevicesModel } from "./cloudDevices"
 import { hasPendingLink } from "./link"
 import type { ServersModel } from "./servers"
 
@@ -24,12 +25,26 @@ export interface AccountState {
   issuerReady: boolean
   /** Why the issuer could not be loaded; the screen offers a retry. */
   issuerError: string | null
+  /** The account's plan, once `loadProfile` has read it (null: no plan, or not read yet; see `identities`). */
+  plan: CloudPlan | null
+  /** The kinds of sign-in linked to the account (`["zitadel"]`), or null until `loadProfile` has read them. */
+  identities: string[] | null
+  /** Why the plan and identities could not be read; the screen offers a retry. */
+  profileError: string | null
+  /** The invite being redeemed, or why it was not. */
+  redeem: "idle" | "busy" | { failed: string }
 }
 
 /** What the account screens need from the sign-in (the real `AccountSession`, or a stand-in in a test). */
-export type AccountSessionPort = Pick<AccountSession, "state" | "beginSignIn" | "completeSignIn" | "signOut" | "accessToken" | "onSignedOut"> & {
+export type AccountSessionPort = Pick<
+  AccountSession,
+  "state" | "accountId" | "deviceId" | "beginSignIn" | "completeSignIn" | "adoptWebSession" | "signOut" | "accessToken" | "accessTokenRefused" | "onSignedOut"
+> & {
   config(): Promise<{ issuer: string }>
 }
+
+/** What the account screens ask the Cloud. */
+export type AccountCloud = Pick<CloudClient, "deleteAccount" | "account" | "redeemInvite" | "devices" | "removeDevice">
 
 /**
  * What the account screens need from the agenda mirror (the `AgendaSync` of the account agenda task implements it).
@@ -53,20 +68,26 @@ export interface PushHooks {
 }
 
 export interface AccountOptions {
-  /** The Cloud, for `DELETE /v1/account` (built from `/config.json`, never from what a server says). */
-  cloud?: Pick<CloudClient, "deleteAccount"> | null
-  /** Told when the account leaves, so the servers lose their account links (their tokens stay). */
-  servers?: Pick<ServersModel, "forgetAccount"> | null
-  /** Leaves the page for an address (the sign-in page, the end-session page). */
+  /** The Cloud (built from `/config.json`, never from what a server says). */
+  cloud?: AccountCloud | null
+  /** Told when the account leaves, so the servers lose their account links (their tokens stay); unlinks them before a deletion. */
+  servers?: Pick<ServersModel, "forgetAccount" | "unlinkAccounts"> | null
+  /** Leaves the page for an address (the email sign-in page). */
   assign?: (url: string) => void
 }
 
 const TAP_AGAIN = "Reaching wristcall Cloud. Tap again in a moment."
 const BAD_USER_CODE = "Enter the 8-character code the watch shows."
 const NOT_SET_UP = "wristcall Cloud isn't set up for this app."
-const CLOUD_DOWN = "Can't reach wristcall Cloud."
+const INVALID_INVITE = "This invite isn't valid."
+const ALREADY_PLAN = "This account already has a plan."
 const DELETE_FAILED = "Can't delete the account now. "
 const CALLBACK_PATH = "/auth/callback"
+/** Where a sign-in lands, unless a server link waited for it (`takePendingLink`). */
+const HOME_PATH = "/agents"
+
+/** Nothing read from the Cloud about the account yet. */
+const NO_PROFILE = { plan: null, identities: null, profileError: null, redeem: "idle" } as const
 
 const CODE_SHAPE = /^([A-Za-z0-9]{4})[ -]?([A-Za-z0-9]{4})$/
 
@@ -92,12 +113,16 @@ export function watchSignInUrl(issuer: string, userCode: string): string | null 
 
 /** Short text for the screen. Never the error's own text when it could carry what was sent. */
 function message(error: unknown): string {
-  if (error instanceof OidcError) return error.message
-  if (error instanceof NetworkError || error instanceof TimeoutError) return CLOUD_DOWN
+  return error instanceof OidcError ? error.message : cloudMessage(error)
+}
+
+/** `404` and `422` are a code the Cloud does not know or no longer accepts; `409` an account that has a plan already. */
+function inviteMessage(error: unknown): string {
   if (error instanceof ApiError) {
-    return error.status === 503 || error.status === 502 ? "wristcall Cloud is busy. Try again in a moment." : "wristcall Cloud refused the request."
+    if (error.status === 404 || error.status === 422) return INVALID_INVITE
+    if (error.status === 409) return ALREADY_PLAN
   }
-  return "Something went wrong. Try again."
+  return message(error)
 }
 
 function isSignedOut(error: unknown): boolean {
@@ -105,30 +130,37 @@ function isSignedOut(error: unknown): boolean {
 }
 
 /**
- * The central account in this browser: sign in (a full-page redirect), the callback, sign out, deletion, and the
- * watch sign-in page. Optional: without a Cloud (`session` null) the screen is `unavailable` and nothing here acts.
+ * The central account in this browser: sign in (email, a full-page redirect, or a device session handed over by the
+ * QR sign-in), the callback, sign out, deletion, and the watch sign-in page. Optional: without a Cloud (`session` null)
+ * the screen is `unavailable` and nothing here acts.
  */
 export class AccountModel extends BaseModel<AccountState> {
   readonly agenda: AgendaControl | null
+  /** The devices of the account (Settings); null without a Cloud. */
+  readonly devices: CloudDevicesModel | null
   readonly #session: AccountSessionPort | null
   readonly #push: PushHooks | null
-  readonly #cloud: Pick<CloudClient, "deleteAccount"> | null
-  readonly #servers: Pick<ServersModel, "forgetAccount"> | null
+  readonly #cloud: AccountCloud | null
+  readonly #servers: Pick<ServersModel, "forgetAccount" | "unlinkAccounts"> | null
   readonly #assign: (url: string) => void
   #completing: Promise<void> | null = null
   #leaving = false
   #issuer: string | null = null
   #issuerLoading: Promise<void> | null = null
+  #profileLoading: Promise<void> | null = null
+  /** Bumped when the account leaves: an answer for the old account is dropped. */
+  #profileGeneration = 0
 
   constructor(session: AccountSessionPort | null, agenda: AgendaControl | null, push: PushHooks | null, opts: AccountOptions = {}) {
-    super({ screen: session === null ? "unavailable" : session.state, error: null, busy: false, watch: "idle", issuerReady: false, issuerError: null })
+    super({ screen: session === null ? "unavailable" : session.state, error: null, busy: false, watch: "idle", issuerReady: false, issuerError: null, ...NO_PROFILE })
     this.#session = session
     this.agenda = agenda
     this.#push = push
     this.#cloud = opts.cloud ?? null
+    this.devices = session === null || this.#cloud === null ? null : new CloudDevicesModel(this.#cloud, session)
     this.#servers = opts.servers ?? null
     this.#assign = opts.assign ?? ((url) => globalThis.location.assign(url))
-    session?.onSignedOut(() => void this.#sessionEnded())
+    session?.onSignedOut((reason) => void this.#sessionEnded(reason))
   }
 
   /** At opening: a stored session mirrors the servers to the agenda. */
@@ -149,8 +181,21 @@ export class AccountModel extends BaseModel<AccountState> {
   }
 
   /**
+   * A device session the Cloud handed over (the QR sign-in): signed in, the agenda mirrored, and the Agents screen
+   * opens (or the server link that waited for the sign-in).
+   */
+  async adopt(device: DeviceSession): Promise<void> {
+    const session = this.#session
+    if (session === null) return
+    await session.adoptWebSession(device)
+    this.set({ screen: "signedIn", error: null })
+    this.agenda?.pushAll()
+    replaceRoute(hasPendingLink() ? "/link" : HOME_PATH)
+  }
+
+  /**
    * The callback route: trades the code (once, even if called twice), clears it from the address bar and opens
-   * Settings, or the server link that waited for the sign-in. A failure stays on the callback route, without the query, and shows the reason.
+   * Agents, or the server link that waited for the sign-in. A failure stays on the callback route, without the query, and shows the reason.
    */
   completeSignIn(href: string): Promise<void> {
     this.#completing ??= this.#complete(href).finally(() => {
@@ -173,13 +218,13 @@ export class AccountModel extends BaseModel<AccountState> {
     }
     this.set({ screen: "signedIn" })
     // A server link opened before the sign-in: its screen takes it (`takePendingLink`).
-    replaceRoute(hasPendingLink() ? "/link" : "/settings")
+    replaceRoute(hasPendingLink() ? "/link" : HOME_PATH)
     this.agenda?.pushAll()
   }
 
   /**
-   * Deletes the tokens, revokes the refresh token and opens the provider's end-session page (so the next sign-in can
-   * pick another user). The servers and their tokens stay. Can wait for a renewal in another tab: `busy` shows it.
+   * Deletes this browser's device at the Cloud (best effort, 2 s) and forgets the session; no provider page opens. The
+   * servers and their tokens stay. Can wait for a renewal in another tab: `busy` shows it.
    */
   async signOut(): Promise<void> {
     if (this.#session === null || this.state.busy || this.state.screen !== "signedIn") return
@@ -198,15 +243,24 @@ export class AccountModel extends BaseModel<AccountState> {
     // First: a mirror still running, or a change made meanwhile, must not add back what the deletion removes.
     this.agenda?.suspend()
     try {
-      await this.#cloud.deleteAccount(await session.accessToken())
+      // The linked servers drop their link to the account first (best effort, like the iPhone).
+      await this.#servers?.unlinkAccounts()
+    } catch {
+      // A server that cannot be reached keeps its link until the user unlinks it there.
+    }
+    let token = ""
+    try {
+      token = await session.accessToken()
+      await this.#cloud.deleteAccount(token)
     } catch (error) {
       this.agenda?.resume()
       if (isSignedOut(error)) {
         this.set({ busy: false })
-        await this.#sessionEnded()
+        await this.#sessionEnded(null) // the session told its reason already, if it had one
         return
       }
       this.set({ busy: false, error: DELETE_FAILED + message(error) })
+      this.#refusedToken(error, token)
       return
     }
     try {
@@ -222,11 +276,10 @@ export class AccountModel extends BaseModel<AccountState> {
     this.#leaving = true
     // First: a mirror still running must not write to the agenda once the tokens are gone.
     this.agenda?.suspend()
-    let endSession: string | null = null
     try {
-      endSession = await session.signOut()
+      await session.signOut()
     } catch {
-      // The tokens here are gone whatever happened at the provider.
+      // The session here is gone whatever happened at the Cloud.
     }
     try {
       await this.#servers?.forgetAccount()
@@ -236,15 +289,14 @@ export class AccountModel extends BaseModel<AccountState> {
     this.#leaving = false
     this.#issuer = null
     this.#issuerLoading = null
+    this.#forgetProfile()
     this.set({ screen: "signedOut", busy: false, error: null, watch: "idle", issuerReady: false, issuerError: null })
     this.agenda?.resume()
-    // The page leaves for the provider's end-session page; the app is signed out already.
-    if (endSession !== null) this.#assign(endSession)
   }
 
-  /** The session ended on its own (the renewal was refused): the tokens are gone already. */
-  async #sessionEnded(): Promise<void> {
-    if (this.#leaving || this.state.screen === "signedOut" || this.state.screen === "unavailable") return
+  /** The session ended on its own (the Cloud deleted the device, or another tab signed out): the tokens are gone already. */
+  async #sessionEnded(reason: string | null): Promise<void> {
+    if (this.#leaving || (this.state.screen !== "signedIn" && this.state.screen !== "signingIn")) return
     this.agenda?.suspend()
     try {
       await this.#servers?.forgetAccount()
@@ -253,8 +305,70 @@ export class AccountModel extends BaseModel<AccountState> {
     }
     this.#issuer = null
     this.#issuerLoading = null
-    this.set({ screen: "signedOut", busy: false, error: null, watch: "idle", issuerReady: false, issuerError: null })
+    this.#forgetProfile()
+    this.set({ screen: reason === null ? "signedOut" : { failed: reason }, busy: false, error: null, watch: "idle", issuerReady: false, issuerError: null })
     this.agenda?.resume()
+  }
+
+  // Plan and identities
+
+  /** Reads the plan and the sign-in kinds of the account (`GET /v1/account`); a read already running is shared. */
+  loadProfile(): Promise<void> {
+    const session = this.#session
+    const cloud = this.#cloud
+    if (session === null || cloud === null || this.state.screen !== "signedIn") return Promise.resolve()
+    if (this.#profileLoading !== null) return this.#profileLoading
+    const generation = this.#profileGeneration
+    const running = (async () => {
+      let token = ""
+      try {
+        token = await session.accessToken()
+        const info = await cloud.account(token)
+        if (generation === this.#profileGeneration) this.set({ plan: info.plan?.plan ? info.plan : null, identities: info.identities, profileError: null })
+      } catch (error) {
+        if (generation === this.#profileGeneration) this.set({ profileError: message(error) })
+        this.#refusedToken(error, token)
+      }
+    })()
+    this.#profileLoading = running
+    void running.finally(() => {
+      if (this.#profileLoading === running) this.#profileLoading = null
+    })
+    return running
+  }
+
+  /** Redeems an invite code (`POST /v1/entitlements/redeem`). True when the account has a plan now. */
+  async redeemInvite(code: string): Promise<boolean> {
+    const session = this.#session
+    const cloud = this.#cloud
+    const clean = code.trim()
+    if (session === null || cloud === null || clean === "" || this.state.screen !== "signedIn" || this.state.redeem === "busy") return false
+    const generation = this.#profileGeneration
+    this.set({ redeem: "busy" })
+    let token = ""
+    try {
+      token = await session.accessToken()
+      const plan = await cloud.redeemInvite(token, clean)
+      if (generation !== this.#profileGeneration) return false
+      this.set({ plan: plan.plan ? plan : null, redeem: "idle" })
+      return true
+    } catch (error) {
+      if (generation === this.#profileGeneration) this.set({ redeem: { failed: inviteMessage(error) } })
+      this.#refusedToken(error, token)
+      return false
+    }
+  }
+
+  /** The Cloud refused the access token (the device was removed elsewhere, say): the session renews, or signs out. */
+  #refusedToken(error: unknown, token: string): void {
+    if (error instanceof ApiError && error.status === 401 && token !== "") void this.#session?.accessTokenRefused(token)
+  }
+
+  #forgetProfile(): void {
+    this.#profileGeneration += 1
+    this.#profileLoading = null
+    this.devices?.reset()
+    this.set({ ...NO_PROFILE })
   }
 
   // Watch sign-in

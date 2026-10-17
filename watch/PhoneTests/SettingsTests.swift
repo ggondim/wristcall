@@ -25,9 +25,9 @@ struct SettingsTests {
 
     // MARK: - Rows
 
-    @Test func useOnTheWebWaitsForTheWebSignIn() {
-        #expect(WEB_SIGN_IN_READY == false)
-        #expect(SettingsContent.accountRows() == [.devices])
+    @Test func useOnTheWebRowShowsWithTheWebSignIn() {
+        #expect(WEB_SIGN_IN_READY == true)
+        #expect(SettingsContent.accountRows() == [.useOnTheWeb, .devices])
         #expect(SettingsContent.accountRows(webSignInReady: false) == [.devices])
         #expect(SettingsContent.accountRows(webSignInReady: true) == [.useOnTheWeb, .devices])
     }

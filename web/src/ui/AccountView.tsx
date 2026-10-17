@@ -1,9 +1,11 @@
 import { useEffect, useState } from "preact/hooks"
+import type { CloudPlan } from "../api/cloud"
 import type { AccountModel } from "../models/account"
+import type { CloudDevicesModel } from "../models/cloudDevices"
 import type { NotificationsModel } from "../push/notifications"
 import { Link } from "./Link"
 import { NotificationsSetting } from "./NotificationsSetting"
-import { useModel } from "./useModel"
+import { useModel, type Model } from "./useModel"
 
 /** Said by the iPhone app too: what deleting does and does not touch. */
 export const DELETE_EXPLANATION =
@@ -11,14 +13,145 @@ export const DELETE_EXPLANATION =
 
 type Action = "signOut" | "delete"
 
+/** The plan's name and its caption, as the iPhone app says them. */
+export function planRow(plan: CloudPlan | null): { title: string; detail: string | null } {
+  if (plan === null || !plan.plan) return { title: "No plan", detail: null }
+  // "beta" (a redeemed invite) and "invite" (older ones) both read "invite"; any other source is printed as it is.
+  const source = plan.source === "beta" || plan.source === "invite" ? "invite" : plan.source
+  const caption = source ? `Beta · ${source}` : "Beta"
+  if (plan.plan === "full") return { title: "Wristcall Cloud", detail: caption }
+  if (plan.plan === "custom") return { title: "Cloud with your models", detail: caption }
+  // A plan this version does not know yet: the Cloud's name for it.
+  return { title: "Wristcall Cloud", detail: plan.plan }
+}
+
+const PLATFORMS: Record<string, string> = { ios: "iPhone", ipados: "iPad", macos: "Mac", watchos: "Apple Watch", web: "Web" }
+
+/** A device name on one line (it comes from the device and may hold line breaks or control characters). */
+function oneLine(name: string): string {
+  const text = name.replace(/[\p{Cc}\u2028\u2029]+/gu, " ").replace(/\s+/g, " ").trim()
+  return text === "" ? "Device" : text
+}
+
+/** `Redeem invite`: a field and `Redeem`, and why a code did not work. */
+function RedeemInvite({ model }: { model: AccountModel }) {
+  const { redeem } = useModel(model)
+  const [code, setCode] = useState("")
+  const busy = redeem === "busy"
+  return (
+    <form
+      class="fields"
+      onSubmit={(event) => {
+        event.preventDefault()
+        if (busy || code.trim() === "") return
+        void model.redeemInvite(code).then((done) => {
+          if (done) setCode("")
+        })
+      }}
+    >
+      <label class="field">
+        <span>Redeem invite</span>
+        <input type="text" name="invite" value={code} autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck={false} onInput={(event) => setCode(event.currentTarget.value)} />
+      </label>
+      {typeof redeem === "object" ? (
+        <p class="problem" role="alert">
+          {redeem.failed}
+        </p>
+      ) : null}
+      <div class="actions">
+        <button class="button" type="submit" disabled={busy || code.trim() === ""}>
+          {busy ? "Redeeming…" : "Redeem"}
+        </button>
+      </div>
+    </form>
+  )
+}
+
+/** The plan of the account, once read; or why it could not be, with a retry. */
+function PlanSection({ model }: { model: AccountModel }) {
+  const { plan, identities, profileError } = useModel(model)
+  if (identities === null) {
+    return profileError === null ? null : (
+      <div>
+        <p class="problem" role="alert">
+          {profileError}
+        </p>
+        <div class="actions">
+          <button class="button quiet" type="button" onClick={() => void model.loadProfile()}>
+            Try again
+          </button>
+        </div>
+      </div>
+    )
+  }
+  const { title, detail } = planRow(plan)
+  return (
+    <section aria-labelledby="plan-title">
+      <h3 id="plan-title">Plan</h3>
+      <ul class="list" aria-label="Plan">
+        <li>
+          <div class="row">
+            <span class="row-title">{title}</span>
+            {detail !== null ? <span class="row-sub">{detail}</span> : null}
+          </div>
+        </li>
+      </ul>
+      <RedeemInvite model={model} />
+    </section>
+  )
+}
+
+/** The devices signed in to the account: this browser is marked, the others can be removed. */
+function DevicesSection({ model }: { model: CloudDevicesModel }) {
+  const { devices, loaded, error, removing } = useModel(model)
+  useEffect(() => {
+    void model.load()
+  }, [model])
+  if (!loaded && error === null) return null
+  return (
+    <section aria-labelledby="devices-title">
+      <h3 id="devices-title">Devices</h3>
+      {error !== null ? (
+        <p class="problem" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <ul class="list" aria-label="Devices">
+        {devices.map((device) => (
+          <li key={device.id}>
+            <div class="row">
+              <span class="row-title">
+                {oneLine(device.name)}
+                {device.thisBrowser ? (
+                  <span class="pill">This browser</span>
+                ) : (
+                  <button class="button quiet" type="button" disabled={removing !== null} onClick={() => void model.remove(device.id)}>
+                    {removing === device.id ? "Removing…" : "Remove"}
+                  </button>
+                )}
+              </span>
+              <span class="row-sub">{PLATFORMS[device.platform] ?? device.platform}</span>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
 /** The account part of Settings: sign in, sign out, delete. The caller leaves it out when the site has no Cloud. */
 export function AccountSection({ model }: { model: AccountModel }) {
-  const { screen, error, busy } = useModel(model)
+  const { screen, error, busy, identities } = useModel(model)
   const [confirming, setConfirming] = useState(false)
   const [action, setAction] = useState<Action | null>(null)
   // The mirror's warning is not part of the model's state: re-render when it says it changed.
   const [, setNoticeTick] = useState(0)
   useEffect(() => model.agenda?.onNoticeChange?.(() => setNoticeTick((n) => n + 1)), [model])
+
+  // The plan and the sign-in kinds are read once the account is signed in (and again for the next account).
+  useEffect(() => {
+    if (screen === "signedIn") void model.loadProfile()
+  }, [model, screen])
 
   if (screen === "unavailable") return null
 
@@ -49,13 +182,18 @@ export function AccountSection({ model }: { model: AccountModel }) {
               {error}
             </p>
           ) : null}
-          <ul class="list" aria-label="Account">
-            <li>
-              <Link class="row" href="/settings/watch">
-                Approve watch sign-in
-              </Link>
-            </li>
-          </ul>
+          <PlanSection model={model} />
+          {model.devices !== null ? <DevicesSection model={model.devices} /> : null}
+          {/* The watch's code page is a Zitadel (email) page: only an account with an email sign-in has one to approve. */}
+          {identities?.includes("zitadel") ? (
+            <ul class="list" aria-label="Account">
+              <li>
+                <Link class="row" href="/settings/watch">
+                  Approve watch sign-in
+                </Link>
+              </li>
+            </ul>
+          ) : null}
           <div class="actions">
             <button class="button quiet" type="button" disabled={busy} onClick={() => void run("signOut", () => model.signOut())}>
               {busy && action === "signOut" ? "Signing out…" : "Sign out"}
@@ -87,11 +225,13 @@ export function AccountSection({ model }: { model: AccountModel }) {
               {screen.failed}
             </p>
           ) : null}
-          <div class="actions">
-            <button class="button" type="button" onClick={() => void model.signIn()}>
-              Sign in
-            </button>
-          </div>
+          <ul class="list" aria-label="Sign in">
+            <li>
+              <Link class="row" href="/sign-in">
+                Sign in
+              </Link>
+            </li>
+          </ul>
           <p class="footnote">Sign in to add servers with a pairing code and to see them on your watch.</p>
         </>
       )}
@@ -99,13 +239,55 @@ export function AccountSection({ model }: { model: AccountModel }) {
   )
 }
 
-/** Settings: the account section appears only when the site has a Cloud, and notifications only when it also sends Web Push. */
-export function SettingsView({ account, notifications = null }: { account: AccountModel | null; notifications?: NotificationsModel | null }) {
+/** Stands in for the pending requests when the caller has none to show. */
+const NO_REQUESTS: Model<{ count: number }> = { state: { count: 0 }, subscribe: () => () => {} }
+
+/** Where the servers and the device requests live: both are advanced, so they sit in Settings. */
+function AdvancedSection({ requests }: { requests: Model<{ count: number }> }) {
+  const { count } = useModel(requests)
+  return (
+    <>
+      <ul class="list" aria-label="Servers and requests">
+        <li>
+          <Link class="row" href="/settings/servers">
+            <span class="row-title">
+              Servers
+              <span class="muted">Advanced</span>
+            </span>
+          </Link>
+        </li>
+        <li>
+          <Link class="row" href="/approvals">
+            <span class="row-title">
+              Device requests
+              {count > 0 ? <span class="row-action">{count}</span> : null}
+            </span>
+          </Link>
+        </li>
+      </ul>
+    </>
+  )
+}
+
+/**
+ * Settings: the account section appears only when the site has a Cloud, and notifications only when it also sends Web
+ * Push. `badge` counts the pending device requests.
+ */
+export function SettingsView({
+  account,
+  notifications = null,
+  badge = NO_REQUESTS,
+}: {
+  account: AccountModel | null
+  notifications?: NotificationsModel | null
+  badge?: Model<{ count: number }>
+}) {
   return (
     <main class="screen">
       <h1>Settings</h1>
       {account !== null ? <AccountSection model={account} /> : null}
       {notifications !== null ? <NotificationsSetting model={notifications} /> : null}
+      <AdvancedSection requests={badge} />
     </main>
   )
 }

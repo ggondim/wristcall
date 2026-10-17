@@ -474,31 +474,104 @@ async def test_sqlite_index_forgets_deleted_text():
 
 async def test_link_central_subject(storage):
     u = await storage.users.create("u_000000000001", "ana", "Ana", 1.0)
-    assert await storage.users.link_central(u.id, "https://i#sub-1")
+    assert await storage.users.link_central(u.id, "https://i#sub-1", 2.0) == 0
     assert (await storage.users.by_central("https://i#sub-1")).id == u.id
     assert (await storage.users.get(u.id)).central_subject == "https://i#sub-1"
-    assert await storage.users.link_central(u.id, "https://i#sub-1")  # idempotent
-    assert await storage.users.link_central("u_missing00000", "https://i#x") is False
+    assert await storage.users.link_central(u.id, "https://i#sub-1", 3.0) == 0  # idempotent
+    assert await storage.users.link_central("u_missing00000", "https://i#x", 3.0) is None
 
 
 async def test_central_subject_is_unique(storage):
     a = await storage.users.create("u_000000000001", "ana", "Ana", 1.0)
     b = await storage.users.create("u_000000000002", "bia", "Bia", 1.0)
-    await storage.users.link_central(a.id, "https://i#sub-1")
+    await storage.users.link_central(a.id, "https://i#sub-1", 2.0)
     with pytest.raises(Conflict):
-        await storage.users.link_central(b.id, "https://i#sub-1")
+        await storage.users.link_central(b.id, "https://i#sub-1", 3.0)
     assert (await storage.users.get(b.id)).central_subject is None
 
 
 async def test_relink_replaces_and_unlink_clears(storage):
     u = await storage.users.create("u_000000000001", "ana", "Ana", 1.0)
-    await storage.users.link_central(u.id, "https://i#old")
-    await storage.users.link_central(u.id, "https://i#new")
+    await storage.users.link_central(u.id, "https://i#old", 2.0)
+    await storage.users.link_central(u.id, "https://i#new", 3.0)
     assert await storage.users.by_central("https://i#old") is None
-    assert await storage.users.unlink_central(u.id) is True
-    assert await storage.users.unlink_central(u.id) is False
+    assert await storage.users.unlink_central(u.id, 4.0) == 0  # linked, no device paired through it
+    assert await storage.users.unlink_central(u.id, 5.0) is None  # not linked
+    assert await storage.users.unlink_central("u_missing00000", 5.0) is None
     assert await storage.users.by_central("https://i#new") is None
     assert (await storage.users.get(u.id)).central_subject is None
+
+
+ACCOUNT = "https://i#sub-1"
+
+
+async def _account_setup(storage):
+    """Ana linked to ACCOUNT: d_acct paired through it (push key set), d_code paired by a code."""
+    u = await storage.users.create("u_000000000001", "ana", "Ana", 1.0)
+    await storage.users.link_central(u.id, ACCOUNT, 1.0)
+    await storage.devices.create("d_acct", u.id, "Account watch", "hda", 2.0, central_subject=ACCOUNT)
+    await storage.devices.create("d_code", u.id, "Code watch", "hdc", 2.0)
+    await storage.push.set(u.id, "wc_push_acct", 3.0, device_id="d_acct")
+    await storage.push.set(u.id, "wc_push_code", 3.0, device_id="d_code")
+    return u
+
+
+async def test_devices_and_requests_keep_the_account(storage):
+    u = await _account_setup(storage)
+    assert {d.id: d.central_subject for d in await storage.devices.list(u.id)} == {"d_acct": ACCOUNT, "d_code": None}
+    await storage.pairing.add_request("h1", "0001", "watch", 10.0, 100.0, target_user_id=u.id, central_subject=ACCOUNT)
+    await storage.pairing.add_request("h2", "0002", "anon", 10.0, 100.0)
+    assert (await storage.pairing.get_request("h1", 20.0)).central_subject == ACCOUNT
+    assert (await storage.pairing.get_request("h2", 20.0)).central_subject is None
+
+
+async def test_unlink_revokes_devices_paired_through_the_account(storage):
+    u = await _account_setup(storage)
+    assert await storage.users.unlink_central(u.id, 10.0) == 1
+    assert [d.id for d in await storage.devices.list(u.id)] == ["d_code"]
+    assert await storage.devices.by_token("hda") is None
+    assert await storage.push.for_device("d_acct") is None  # no secret left behind
+    assert await storage.push.for_device("d_code") == "wc_push_code"
+    assert (await storage.users.get(u.id)).central_subject is None
+    assert await storage.users.unlink_central(u.id, 11.0) is None
+
+
+async def test_unlink_central_drops_only_undelivered_requests(storage):
+    u = await _account_setup(storage)
+    for h, status in (("h_pending", None), ("h_approved", "approve"), ("h_delivered", "deliver"), ("h_denied", "deny")):
+        await storage.pairing.add_request(h, h[-4:], "watch", 10.0, 100.0, target_user_id=u.id, central_subject=ACCOUNT)
+        if status in ("approve", "deliver"):
+            assert await storage.pairing.approve(h, u.id, 11.0, 100.0)
+        if status == "deliver":
+            assert await storage.pairing.deliver(h)
+        if status == "deny":
+            assert await storage.pairing.deny(h)
+    await storage.pairing.add_request("h_no_key", "0009", "watch", 10.0, 100.0, target_user_id=u.id)
+    await storage.users.unlink_central(u.id, 20.0)
+    left = {h for h in ("h_pending", "h_approved", "h_delivered", "h_denied", "h_no_key")
+            if await storage.pairing.get_request(h, 20.0) is not None}
+    assert left == {"h_delivered", "h_denied", "h_no_key"}
+
+
+async def test_relink_to_another_account_revokes_its_devices(storage):
+    u = await _account_setup(storage)
+    await storage.pairing.add_request("h1", "0001", "watch", 10.0, 100.0, target_user_id=u.id, central_subject=ACCOUNT)
+    assert await storage.users.link_central(u.id, ACCOUNT, 10.0) == 0  # the same account again: nothing falls
+    assert len(await storage.devices.list(u.id)) == 2
+    assert await storage.users.link_central(u.id, "https://i#sub-2", 11.0) == 1  # the one account device fell
+    assert [d.id for d in await storage.devices.list(u.id)] == ["d_code"]
+    assert await storage.push.for_device("d_acct") is None
+    assert await storage.pairing.get_request("h1", 20.0) is None
+
+
+async def test_relink_conflict_revokes_nothing(storage):
+    u = await _account_setup(storage)
+    other = await storage.users.create("u_000000000002", "bia", "Bia", 1.0)
+    await storage.users.link_central(other.id, "https://i#bia", 1.0)
+    with pytest.raises(Conflict):
+        await storage.users.link_central(u.id, "https://i#bia", 10.0)
+    assert (await storage.users.get(u.id)).central_subject == ACCOUNT
+    assert len(await storage.devices.list(u.id)) == 2
 
 
 async def test_targeted_requests(storage):

@@ -1,8 +1,9 @@
 import SwiftUI
 import WristcallKit
 
-/// "Use on the web" waits for the web app's sign-in (decision C13): the row only shows when this is true.
-let WEB_SIGN_IN_READY = false
+/// "Use on the web" shows once the web app signs in by QR code (decision C13, on since web 0.3.0): the row only
+/// shows when this is true.
+let WEB_SIGN_IN_READY = true
 
 /// Where the Settings stack can go. Server details are routes here (not in `ServersView`) so that a tapped
 /// approval notification can open one from the Settings tab.

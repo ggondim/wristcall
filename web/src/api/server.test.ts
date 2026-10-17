@@ -14,6 +14,18 @@ describe("ServerClient", () => {
     expect(fetchMock.lastInit().method).toBe("DELETE")
   })
 
+  test("server: unlinkAccount sends DELETE /v1/account/link with the token, and a 404 counts as done", async () => {
+    const fetchMock = mockFetch(() => new Response(null, { status: 204 }))
+    await new ServerClient(BASE, "wc_pat_x", fetchMock).unlinkAccount()
+    expect(fetchMock.lastUrl()).toBe("https://s.example/v1/account/link")
+    expect(fetchMock.lastInit().method).toBe("DELETE")
+    expect((fetchMock.lastInit().headers as Record<string, string>).Authorization).toBe("Bearer wc_pat_x")
+    const gone = mockFetch(() => ok({ error: "not_found", message: "this user is not linked to central account" }, 404))
+    await expect(new ServerClient(BASE, "wc_pat_x", gone).unlinkAccount()).resolves.toBeUndefined()
+    const refused = mockFetch(() => ok({ error: "unauthorized", message: "no" }, 401))
+    await expect(new ServerClient(BASE, "wc_pat_x", refused).unlinkAccount()).rejects.toMatchObject({ status: 401 })
+  })
+
   test("server: dot segments are refused without calling", async () => {
     const fetchMock = mockFetch(() => ok({}))
     const client = new ServerClient(BASE, "wc_pat_x", fetchMock)

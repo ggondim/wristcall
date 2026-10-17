@@ -16,6 +16,8 @@ export interface AgentDetail {
   display_name: string
   icon: string
   call_type: "conversation" | "one-shot" | "monologue"
+  /** One of the ten color names; absent on servers that predate colors. */
+  color?: string | null
   [field: string]: unknown
 }
 export interface Provider {
@@ -170,6 +172,16 @@ export class ServerClient {
     code: string,
   ): Promise<{ linked: true; issuer: string; user: { id: string; handle: string }; api_token: string }> {
     return json(this.#url("account/link"), { method: "POST", json: { token: serverToken, code } }, this.#fetch)
+  }
+
+  /** Unlinks the user of this token from the account (`DELETE /v1/account/link`). `404` (not linked) counts as done. */
+  async unlinkAccount(): Promise<void> {
+    try {
+      await this.#send("account/link", "DELETE")
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) return
+      throw error
+    }
   }
 
   async setPushKey(pushKey: string): Promise<void> {

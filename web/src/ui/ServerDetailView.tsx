@@ -24,7 +24,7 @@ export function ServerDetailView({ model, id, account = null }: { model: Servers
     return (
       <main class="screen">
         <h1>{loaded ? "Server removed" : "Server"}</h1>
-        {loaded ? <Link href="/servers">Back to servers</Link> : null}
+        {loaded ? <Link href="/settings/servers">Back to servers</Link> : null}
       </main>
     )
   }
@@ -67,7 +67,7 @@ export function ServerDetailView({ model, id, account = null }: { model: Servers
     setRemoveError(null)
     try {
       await model.remove(server.id)
-      navigate("/servers")
+      navigate("/settings/servers")
     } catch (e) {
       setRemoveError(e instanceof Error ? e.message : "The server could not be removed.")
       setRemoving(false)
@@ -78,7 +78,7 @@ export function ServerDetailView({ model, id, account = null }: { model: Servers
   return (
     <main class="screen">
       <p>
-        <Link href="/servers">Servers</Link>
+        <Link href="/settings/servers">Servers</Link>
       </p>
       <h1>{server.name}</h1>
       <form

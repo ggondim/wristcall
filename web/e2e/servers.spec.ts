@@ -17,7 +17,9 @@ test("manage a server with a personal token", async ({ page }) => {
 
   await test.step("add the server", async () => {
     await page.goto("/")
-    await expect(page.getByRole("heading", { name: "Add your wristcall server" })).toBeVisible()
+    await expect(page.getByRole("heading", { name: "No agents yet." })).toBeVisible()
+    await page.goto("/settings/servers")
+    await expect(page.getByRole("heading", { name: "No servers yet." })).toBeVisible()
     await page.getByRole("link", { name: "Add server" }).click()
     await page.locator("input[name=address]").fill(env.server)
     await page.locator("input[name=token]").fill(env.pat)
@@ -32,7 +34,8 @@ test("manage a server with a personal token", async ({ page }) => {
   await test.step("create an agent", async () => {
     await page.getByRole("link", { name: /E2E server/ }).click()
     await expect(page.getByRole("heading", { name: "E2E server" })).toBeVisible()
-    await page.getByRole("link", { name: "Agents" }).click()
+    // The tab bar has an "Agents" link too: take the one in the server detail's own list.
+    await page.getByRole("list", { name: "Manage" }).getByRole("link", { name: "Agents" }).click()
     await expect(page.getByRole("heading", { name: "No agents" })).toBeVisible()
     await page.getByRole("link", { name: "New agent" }).click()
     await page.locator("input[name=name]").fill("E2E agent")
@@ -79,10 +82,11 @@ test("manage a server with a personal token", async ({ page }) => {
   })
 
   await test.step("remove the server", async () => {
-    await page.getByRole("link", { name: "Servers" }).click()
+    await page.getByRole("link", { name: "Settings" }).click()
+    await page.getByRole("link", { name: /^Servers/ }).click()
     await page.getByRole("link", { name: /E2E server/ }).click()
     await page.getByRole("button", { name: "Remove server" }).click()
     await page.getByRole("region", { name: "Remove server" }).getByRole("button", { name: "Remove" }).click()
-    await expect(page.getByRole("heading", { name: "Add your wristcall server" })).toBeVisible()
+    await expect(page.getByRole("heading", { name: "No servers yet." })).toBeVisible()
   })
 })

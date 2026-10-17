@@ -70,6 +70,12 @@ async function run<T>(
   }
 }
 
+/** `Retry-After` as whole seconds; absent, a date or anything else is `null`. */
+function retryAfter(response: Response): number | null {
+  const value = response.headers.get("Retry-After")?.trim()
+  return value !== undefined && /^\d+$/.test(value) ? Number(value) : null
+}
+
 /** `{"error","message"}`, or FastAPI's `{"detail":[{"msg"}]}` (code "invalid"). */
 async function toApiError(response: Response): Promise<ApiError> {
   let body: unknown = null
@@ -90,7 +96,7 @@ async function toApiError(response: Response): Promise<ApiError> {
     code ??= "invalid"
     message ??= record.detail
   }
-  return new ApiError(response.status, code ?? "http_error", message ?? (response.statusText || "The server refused the request."))
+  return new ApiError(response.status, code ?? "http_error", message ?? (response.statusText || "The server refused the request."), retryAfter(response))
 }
 
 /** An HTTP error becomes `ApiError`, a failed fetch `NetworkError`, a late answer `TimeoutError`. The body is not read. */

@@ -6,6 +6,7 @@ import { CloudClient } from "./api/cloud"
 import { RelayClient } from "./api/relay"
 import { loadConfig } from "./config"
 import { AccountModel } from "./models/account"
+import { SignInModel } from "./models/signIn"
 import { ApprovalsBadge, ApprovalsModel, refreshWhenServersChange } from "./models/approvals"
 import { defaultServerClient, openServerStorage, ServersModel } from "./models/servers"
 import { parseWorkerMessage } from "./push/payload"
@@ -79,9 +80,11 @@ async function start(): Promise<void> {
           sync: push,
         })
   const account = session === null ? null : new AccountModel(session, agenda, push, { cloud, servers })
+  const signIn = cloud === null || account === null ? null : new SignInModel({ cloud, account })
   render(
     <App
       account={account}
+      signIn={signIn}
       notifications={notifications}
       approvals={approvals}
       badge={new ApprovalsBadge(approvals)}

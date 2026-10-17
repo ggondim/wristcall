@@ -15,6 +15,17 @@ describe("http", () => {
     expect(JSON.stringify(e) + String(e) + e.stack).not.toContain("wc_pat_secret")
   })
 
+  test("ApiError keeps Retry-After", async () => {
+    const answer = (headers: Record<string, string>) => mockFetch(() => new Response(JSON.stringify({ error: "rate_limited", message: "slow" }), { status: 429, headers }))
+    const seconds = await request("https://s.example/x", {}, answer({ "Retry-After": "7" })).catch((x) => x)
+    expect(seconds).toBeInstanceOf(ApiError)
+    expect(seconds.retryAfter).toBe(7)
+    for (const value of [undefined, "", "soon", "-3", "1.5", "Wed, 21 Oct 2026 07:28:00 GMT"]) {
+      const e = await request("https://s.example/x", {}, answer(value === undefined ? {} : { "Retry-After": value })).catch((x) => x)
+      expect(e.retryAfter).toBeNull()
+    }
+  })
+
   test("http: sends the bearer and a JSON body", async () => {
     const fetchMock = mockFetch(() => new Response("{}"))
     await json("https://s.example/v1/agents", { method: "POST", bearer: "wc_pat_x", json: { slug: "a" } }, fetchMock)

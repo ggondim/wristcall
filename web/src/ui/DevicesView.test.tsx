@@ -272,6 +272,6 @@ describe("ApprovalsView and the App", () => {
     fireEvent.click(link)
     expect(location.pathname).toBe("/approvals")
     expect(screen.getByRole("heading", { name: "Approvals" })).toBeTruthy()
-    expect(screen.getByRole("link", { name: "Servers" }).getAttribute("aria-current")).toBe("page")
+    expect(screen.getByRole("link", { name: /Settings/ }).getAttribute("aria-current")).toBe("page")
   })
 })

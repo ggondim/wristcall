@@ -92,9 +92,10 @@ export class AgentsModel extends BaseModel<AgentsState> {
   }
 
   /** The form of a new agent (`null`) or of an existing one; saving it reads the list again. */
-  form(existing: AgentDetail | null): AgentFormModel {
+  form(existing: AgentDetail | null, colorSupported = false): AgentFormModel {
     return new AgentFormModel(this.#client, existing, this.state.providers, {
       customEndpoints: this.state.customEndpoints,
+      colorSupported,
       onSaved: () => this.load(),
     })
   }
@@ -125,7 +126,7 @@ export class AgentsModel extends BaseModel<AgentsState> {
 }
 
 /** By `position`; ties and missing positions keep the server's order. */
-function sorted(agents: AgentDetail[]): AgentDetail[] {
+export function sorted(agents: AgentDetail[]): AgentDetail[] {
   const position = (agent: AgentDetail): number => (typeof agent.position === "number" ? agent.position : 0)
   return agents
     .map((agent, index) => ({ agent, index }))

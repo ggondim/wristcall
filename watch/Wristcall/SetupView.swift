@@ -24,6 +24,11 @@ struct SetupView: View {
         }
     }
 
+    /// The line under "Open wristcall on your iPhone": paused setup does not finish by itself.
+    static func waitingSubtitle(paused: Bool) -> String {
+        paused ? "Automatic setup is paused." : "Your watch finishes setting up on its own."
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -99,7 +104,7 @@ struct SetupView: View {
             Text("Open wristcall on your iPhone")
                 .font(.headline)
                 .multilineTextAlignment(.center)
-            Text("Your watch finishes setting up on its own.")
+            Text(Self.waitingSubtitle(paused: setup.isPaused))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

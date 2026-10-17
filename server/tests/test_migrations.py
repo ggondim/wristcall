@@ -253,7 +253,7 @@ def test_step_5_database_gains_push_targets(tmp_path):
     conn.execute("INSERT INTO users (id, handle, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1.0)")
     conn.close()
     db = Database(path)
-    assert db.version == LATEST == 8
+    assert db.version == LATEST == 9
     assert "push_targets" in tables(db)
     assert columns(db, "push_targets") == {"id", "user_id", "device_id", "token_id", "push_key", "created_at"}
     assert [r["handle"] for r in db.query("SELECT handle FROM users")] == ["owner"]
@@ -282,7 +282,7 @@ def test_step_7_database_gains_link_codes(tmp_path):
     conn.execute("INSERT INTO users (id, handle, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1.0)")
     conn.close()
     db = Database(path)
-    assert db.version == LATEST == 8
+    assert db.version == LATEST == 9
     assert columns(db, "link_codes") == {"code_hash", "user_id", "expires_at", "used_at"}
     assert [r["handle"] for r in db.query("SELECT handle FROM users")] == ["owner"]
     db.execute("INSERT INTO link_codes (code_hash, user_id, expires_at) VALUES ('h', 'u1', 9.0)")
@@ -356,7 +356,31 @@ def test_migration_8_adds_agent_color(tmp_path):
     )
     conn.close()
     db = Database(path)
-    assert db.version == LATEST == 8
+    assert db.version == LATEST == 9
     assert "color" in columns(db, "agents")
     assert [r["color"] for r in db.query("SELECT color FROM agents")] == [None]
+    db.close()
+
+
+def test_migration_9_marks_devices_and_requests_with_the_account(tmp_path):
+    # A 0.8.1 database (version 8) upgrades in place; devices and requests it already had carry no account.
+    path = database_path(tmp_path)
+    conn = sqlite3.connect(path, isolation_level=None)
+    conn.create_function("wristcall_terms", 1, database_module._terms)  # step 5 calls it
+    for step in MIGRATIONS[:8]:
+        for statement in step:
+            conn.execute(statement)
+    conn.execute("PRAGMA user_version = 8")
+    conn.execute("INSERT INTO users (id, handle, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1.0)")
+    conn.execute("INSERT INTO devices (id, user_id, name, token_hash, created_at) VALUES ('d1', 'u1', 'Watch', 'h1', 1.0)")
+    conn.execute(
+        "INSERT INTO pairing_requests (poll_hash, short_id, device_name, created_at, expires_at, status, target_user_id) "
+        "VALUES ('p1', '0001', 'Watch', 1.0, 9e9, 'pending', 'u1')"
+    )
+    conn.close()
+    db = Database(path)
+    assert db.version == LATEST == 9
+    assert "central_subject" in columns(db, "devices") and "central_subject" in columns(db, "pairing_requests")
+    assert [r["central_subject"] for r in db.query("SELECT central_subject FROM devices")] == [None]
+    assert [r["central_subject"] for r in db.query("SELECT central_subject FROM pairing_requests")] == [None]
     db.close()

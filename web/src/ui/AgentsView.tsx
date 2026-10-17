@@ -3,6 +3,7 @@ import type { AgentDetail } from "../api/server"
 import { AgentsModel } from "../models/agents"
 import { callTypeLabel } from "../models/agentForm"
 import type { ServersModel } from "../models/servers"
+import { resolvedColor, supportsAgentColor } from "./agentColor"
 import { AgentForm } from "./AgentForm"
 import { AgentIcon } from "./IconPicker"
 import { Link } from "./Link"
@@ -21,6 +22,7 @@ export function AgentsScreen({
   onAgentsChanged?: (serverId: string, agents: AgentDetail[]) => void
 }) {
   const [model, setModel] = useState<AgentsModel | "missing" | null>(null)
+  const { rows } = useModel(servers)
   const serverId = target.serverId
   useEffect(() => {
     let live = true
@@ -54,12 +56,14 @@ export function AgentsScreen({
     return (
       <main class="screen">
         <h1>Server removed</h1>
-        <Link href="/servers">Back to servers</Link>
+        <Link href="/settings/servers">Back to servers</Link>
       </main>
     )
   }
   if (target.screen === "list") return <AgentsView model={model} serverId={serverId} back={back} />
-  return <AgentForm model={model} serverId={serverId} agentId={target.screen === "edit" ? target.agentId : null} />
+  // The version comes from the server's health; unknown (not answered yet, or not at all) keeps color off.
+  const colorSupported = supportsAgentColor(rows.find((row) => row.server.id === serverId)?.health?.version)
+  return <AgentForm model={model} serverId={serverId} agentId={target.screen === "edit" ? target.agentId : null} colorSupported={colorSupported} />
 }
 
 export function AgentsView({ model, serverId, back }: { model: AgentsModel; serverId: string; back: string }) {
@@ -117,7 +121,12 @@ export function AgentsView({ model, serverId, back }: { model: AgentsModel; serv
               <Link class="row agent-row" href={`${list}/${encodeURIComponent(agent.id)}`}>
                 <AgentIcon name={agent.icon} />
                 <span class="agent-text">
-                  <span class="row-title">{agent.display_name}</span>
+                  <span class="row-title">
+                    <span class="agent-name">
+                      <span class={`agent-dot color-${resolvedColor(agent.color)}`} aria-hidden="true" />
+                      {agent.display_name}
+                    </span>
+                  </span>
                   <span class="row-sub">{callTypeLabel(agent.call_type)}</span>
                 </span>
               </Link>

@@ -12,7 +12,7 @@ export function CallbackView({ model }: { model: AccountModel | null }) {
         <h1>Signing in</h1>
         <p>Account sign-in is not available here.</p>
         <p>
-          <Link href="/servers">Back to servers</Link>
+          <Link href="/settings/servers">Back to servers</Link>
         </p>
       </main>
     )
@@ -24,7 +24,7 @@ function Callback({ model }: { model: AccountModel }) {
   const { screen } = useModel(model)
   useEffect(() => {
     // Already signed in (a reload after the callback): nothing to trade.
-    if (model.state.screen === "signedIn") replaceRoute("/settings")
+    if (model.state.screen === "signedIn") replaceRoute("/agents")
     else void model.completeSignIn(location.href)
   }, [model])
   return (
@@ -39,7 +39,7 @@ function Callback({ model }: { model: AccountModel }) {
             <button class="button" type="button" onClick={() => void model.signIn()}>
               Try again
             </button>
-            <Link class="button quiet" href="/servers">
+            <Link class="button quiet" href="/settings/servers">
               Back to servers
             </Link>
           </div>

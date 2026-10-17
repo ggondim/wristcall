@@ -1,5 +1,6 @@
 import type { AgentDetail, Provider, ServerClient } from "../api/server"
 import { userMessage } from "../lib/errors"
+import { type AgentColorName, resolvedColor } from "../ui/agentColor"
 import { BaseModel } from "../ui/useModel"
 
 // Same rules, fields and texts as `watch/Phone/AgentFormModel.swift`, so a refusal shows up before anything is sent.
@@ -44,6 +45,8 @@ export interface FormValues {
   slug: string
   displayName: string
   icon: string
+  /** The agent's color; only sent when the server takes colors (`colorSupported`). */
+  color: AgentColorName
   callType: string
   turnEnd: string
   language: string
@@ -74,11 +77,15 @@ export interface FormValues {
 
 export interface FormState extends FormValues {
   saving: boolean
+  /** Whether the server takes `color` (0.8.1 and later); the picker hides and nothing is sent without it. */
+  colorSupported: boolean
 }
 
 export interface FormOptions {
   /** Whether the server accepts the user's own endpoints. */
   customEndpoints?: boolean
+  /** Whether the server takes agent colors (see `supportsAgentColor`). */
+  colorSupported?: boolean
   /** Runs after a successful save (the list is read again). */
   onSaved?: () => Promise<void> | void
 }
@@ -158,6 +165,7 @@ function read(agent: AgentDetail | null): { values: FormValues; shownHeader: str
     slug: "",
     displayName: "",
     icon: "waveform",
+    color: "mint",
     callType: "conversation",
     turnEnd: "auto",
     language: "en",
@@ -186,6 +194,7 @@ function read(agent: AgentDetail | null): { values: FormValues; shownHeader: str
   values.slug = agent.slug
   values.displayName = agent.display_name
   values.icon = agent.icon
+  values.color = resolvedColor(agent.color)
   values.callType = agent.call_type
   values.turnEnd = text(agent.turn_end, "auto")
   values.language = text(agent.language, "en")
@@ -240,7 +249,7 @@ export class AgentFormModel extends BaseModel<FormState> {
   #slugEdited = false
 
   constructor(client: ServerClient, existing: AgentDetail | null, providers: readonly Provider[], options: FormOptions = {}) {
-    super({ ...read(existing).values, saving: false })
+    super({ ...read(existing).values, saving: false, colorSupported: options.colorSupported ?? false })
     this.#client = client
     this.existing = existing
     this.providers = providers
@@ -266,6 +275,11 @@ export class AgentFormModel extends BaseModel<FormState> {
   /** The request body (see the class comment). */
   get fields(): Record<string, unknown> {
     return this.#body()
+  }
+
+  /** The server's version arrived (or changed) after the form was built. */
+  setColorSupported(colorSupported: boolean): void {
+    if (colorSupported !== this.state.colorSupported) this.set({ colorSupported })
   }
 
   /** Changes fields. A new agent's slug follows the name until the user types a slug. */
@@ -495,6 +509,7 @@ export class AgentFormModel extends BaseModel<FormState> {
     if (agent !== null) {
       if (name !== agent.display_name) out.display_name = name
       if (s.icon !== agent.icon) out.icon = s.icon
+      if (s.colorSupported && s.color !== resolvedColor(agent.color)) out.color = s.color
       if (s.callType !== agent.call_type) out.call_type = s.callType
       if (s.turnEnd !== text(agent.turn_end, "auto")) out.turn_end = s.turnEnd
       if (language !== text(agent.language, "en")) out.language = language
@@ -514,6 +529,7 @@ export class AgentFormModel extends BaseModel<FormState> {
     out.slug = s.slug
     out.display_name = name
     out.icon = s.icon
+    if (s.colorSupported) out.color = s.color
     out.call_type = s.callType
     out.turn_end = s.turnEnd
     if (language !== "") out.language = language

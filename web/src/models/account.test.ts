@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import { OidcError } from "../api/oidc"
+import { ServerClient } from "../api/server"
+import type { CloudAccount } from "../api/cloud"
 import { ApiError, NetworkError } from "../lib/errors"
 import { openDb } from "../store/db"
 import { ServerStore, type SavedServer } from "../store/servers"
 import { FakeSession, ISSUER } from "../test/fakeAccount"
+import { mockFetch } from "../test/mockFetch"
 import { AccountModel, normalizeWatchCode, watchSignInUrl, type AgendaControl } from "./account"
 import { savePendingLink, takePendingLink } from "./link"
 import { ServersModel } from "./servers"
@@ -25,7 +28,16 @@ function saved(over: Partial<SavedServer> = {}): SavedServer {
 }
 
 async function world(
-  opts: { state?: "signedOut" | "signedIn"; session?: boolean; deleteAccount?: () => Promise<void>; push?: boolean; agenda?: boolean } = {},
+  opts: {
+    state?: "signedOut" | "signedIn"
+    session?: boolean
+    deleteAccount?: () => Promise<void>
+    push?: boolean
+    agenda?: boolean
+    /** The saved server answers (and `DELETE /v1/account/link` is recorded in `calls`); by default it is down. */
+    reachable?: boolean
+    unlinkStatus?: number
+  } = {},
 ) {
   const calls: string[] = []
   const session = new FakeSession(opts.state ?? "signedIn", calls)
@@ -37,11 +49,28 @@ async function world(
     invalidate: () => void calls.push("agenda.invalidate"),
   }
   const push = { accountDeleted: vi.fn(async () => void calls.push("push.accountDeleted")) }
-  const cloud = { deleteAccount: vi.fn(opts.deleteAccount ?? (async () => void calls.push("cloud.deleteAccount"))) }
+  const cloud = {
+    deleteAccount: vi.fn(opts.deleteAccount ?? (async () => void calls.push("cloud.deleteAccount"))),
+    account: vi.fn(async (): Promise<CloudAccount> => ({ account: "acc-1", created_at: "", servers: 0, plan: null, identities: ["zitadel"], key_set: true })),
+    redeemInvite: vi.fn(async () => ({ plan: "full", source: "beta", expires_at: null })),
+    devices: vi.fn(async () => []),
+    removeDevice: vi.fn(async () => {}),
+  }
   const store = new ServerStore(await openDb("t-" + crypto.randomUUID()))
   await store.put(saved())
-  const servers = new ServersModel(store, () => {
-    throw new Error("offline")
+  const servers = new ServersModel(store, (server) => {
+    if (opts.reachable !== true) throw new Error("offline")
+    return new ServerClient(
+      new URL(server.url),
+      server.token,
+      mockFetch((url, init) => {
+        if (init.method === "DELETE" && url.endsWith("/v1/account/link")) {
+          calls.push("server.unlink")
+          return new Response(null, { status: opts.unlinkStatus ?? 204 })
+        }
+        return new Response("{}", { status: 200 })
+      }),
+    )
   })
   await servers.load()
   const assigned: string[] = []
@@ -52,6 +81,8 @@ async function world(
   })
   return { calls, session, agenda, push, cloud, store, servers, assigned, model }
 }
+
+const QR_SESSION = { account: "acc-qr", device: "dev-qr", access_token: "at", refresh_token: "rt", expires_at: 2_000_000_000 }
 
 beforeEach(() => history.replaceState(null, "", "/auth/callback?code=the-code&state=s"))
 afterEach(() => {
@@ -112,8 +143,8 @@ describe("sign in", () => {
     const replace = vi.spyOn(history, "replaceState")
     const href = location.href
     await w.model.completeSignIn(href)
-    expect(replace).toHaveBeenCalledWith(null, "", "/settings")
-    expect(location.pathname + location.search).toBe("/settings")
+    expect(replace).toHaveBeenCalledWith(null, "", "/agents")
+    expect(location.pathname + location.search).toBe("/agents")
     expect(w.model.state.screen).toBe("signedIn")
     expect(w.calls).toEqual([`completeSignIn:${href}`, "agenda.pushAll"])
   })
@@ -130,7 +161,7 @@ describe("sign in", () => {
     expect(w.calls).toEqual([`completeSignIn:${href}`]) // the exchange got the address it had read
     release()
     await done
-    expect(location.pathname).toBe("/settings")
+    expect(location.pathname).toBe("/agents")
   })
 
   test("completeSignIn: a failure keeps the page, clears the code and offers a retry", async () => {
@@ -161,23 +192,46 @@ describe("sign in", () => {
     await Promise.all([w.model.completeSignIn(location.href), w.model.completeSignIn(location.href)])
     expect(w.calls.filter((c) => c.startsWith("completeSignIn"))).toHaveLength(1)
   })
+
+  test("adopt: a device session from the QR sign-in signs in, mirrors the agenda and opens Agents", async () => {
+    const w = await world({ state: "signedOut" })
+    history.replaceState(null, "", "/")
+    await w.model.adopt(QR_SESSION)
+    expect(w.calls).toEqual(["adoptWebSession:dev-qr", "agenda.pushAll"])
+    expect(w.model.state).toMatchObject({ screen: "signedIn", error: null })
+    expect(w.session).toMatchObject({ state: "signedIn", accountId: "acc-qr", deviceId: "dev-qr" })
+    expect(location.pathname).toBe("/agents")
+  })
+
+  test("adopt: a server link waiting for the sign-in opens again", async () => {
+    const w = await world({ state: "signedOut" })
+    savePendingLink("#v=1&s=https://home.example.com&c=K7Q2MZXW4RQT6PZJ3H5N2C7VBQ")
+    try {
+      await w.model.adopt(QR_SESSION)
+      expect(location.pathname).toBe("/link")
+    } finally {
+      sessionStorage.clear()
+    }
+  })
+
+  test("adopt: a session that cannot be stored stays signed out", async () => {
+    const w = await world({ state: "signedOut" })
+    history.replaceState(null, "", "/")
+    w.session.adoptError = new Error("Local storage failed.")
+    await expect(w.model.adopt(QR_SESSION)).rejects.toThrow("Local storage failed.")
+    expect(w.model.state.screen).toBe("signedOut")
+    expect(w.calls).not.toContain("agenda.pushAll")
+    expect(location.pathname).toBe("/")
+  })
 })
 
 describe("sign out", () => {
-  test("signOutStopsTheAgendaThenLeavesForTheEndSessionPage", async () => {
+  test("signOut stops the agenda, signs the session out and stays on the page (no end-session page)", async () => {
     const w = await world()
     await w.model.signOut()
     expect(w.calls).toEqual(["agenda.suspend", "session.signOut", "agenda.resume"])
     expect(w.model.state).toMatchObject({ screen: "signedOut", busy: false, error: null })
-    expect(w.assigned).toEqual([`${ISSUER}/oidc/v1/end_session?id_token_hint=x`])
-  })
-
-  test("signOut: no end-session URL means no navigation", async () => {
-    const w = await world()
-    w.session.endSession = null
-    await w.model.signOut()
     expect(w.assigned).toEqual([])
-    expect(w.model.state.screen).toBe("signedOut")
   })
 
   test("signOut: busy while it waits (a renewal in another tab), and the session's own notice does not flip the screen early", async () => {
@@ -208,13 +262,21 @@ describe("sign out", () => {
     expect(w.servers.state.fromAccount).toEqual([])
   })
 
-  test("a session ended by the provider moves to signed out and stops the agenda", async () => {
+  test("a session ended in another tab moves to signed out and stops the agenda", async () => {
     const w = await world()
-    for (const listener of w.session.ended) listener()
+    w.session.end(null)
     await vi.waitFor(() => expect(w.model.state.screen).toBe("signedOut"))
     expect(w.calls).toEqual(["agenda.suspend", "agenda.resume"])
     expect(await w.store.get("1")).toMatchObject({ token: "wc_pat_secret", linked: false })
     expect(w.assigned).toEqual([])
+  })
+
+  test("a device deleted by the Cloud signs out and says why", async () => {
+    const w = await world()
+    w.session.end("This browser was signed out. Sign in again.")
+    await vi.waitFor(() => expect(w.model.state.screen).toEqual({ failed: "This browser was signed out. Sign in again." }))
+    expect(w.calls).toEqual(["agenda.suspend", "agenda.resume"])
+    expect((await w.store.get("1"))?.linked).toBe(false)
   })
 })
 
@@ -258,7 +320,38 @@ describe("delete account", () => {
       "agenda.resume",
     ])
     expect(w.model.state.screen).toBe("signedOut")
-    expect(w.assigned).toHaveLength(1)
+    expect(w.assigned).toEqual([])
+  })
+
+  test("deleteAccount: linked servers are unlinked first, then the account goes", async () => {
+    const w = await world({ reachable: true })
+    await w.model.deleteAccount()
+    expect(w.calls.indexOf("server.unlink")).toBeGreaterThanOrEqual(0)
+    expect(w.calls.indexOf("server.unlink")).toBeLessThan(w.calls.indexOf("cloud.deleteAccount"))
+    expect(w.model.state.screen).toBe("signedOut")
+  })
+
+  test("deleteAccount: a server that was not linked, or is down, does not stop the deletion", async () => {
+    const notLinked = await world({ reachable: true, unlinkStatus: 404 })
+    await notLinked.model.deleteAccount()
+    expect(notLinked.cloud.deleteAccount).toHaveBeenCalledTimes(1)
+    const down = await world()
+    await down.model.deleteAccount()
+    expect(down.cloud.deleteAccount).toHaveBeenCalledTimes(1)
+    expect(down.model.state.screen).toBe("signedOut")
+  })
+
+  test("deleteAccount: a failed deletion comes after the unlinking, keeps the session and says so", async () => {
+    const w = await world({
+      reachable: true,
+      deleteAccount: async () => {
+        throw new TypeError("offline")
+      },
+    })
+    await w.model.deleteAccount()
+    expect(w.calls).toContain("server.unlink")
+    expect(w.model.state.screen).toBe("signedIn")
+    expect(w.model.state.error).toMatch(/^Can't delete the account now\./)
   })
 
   test("deleteAccount: a push cleanup that fails does not keep the user signed in", async () => {
@@ -374,5 +467,100 @@ describe("watch sign-in", () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null)
     w.model.approveWatchSignIn("ABCD-EFGH")
     expect(open).not.toHaveBeenCalled()
+  })
+})
+
+describe("plan and identities", () => {
+  test("loadProfile reads the plan and the sign-in kinds once at a time", async () => {
+    const w = await world()
+    w.cloud.account.mockResolvedValue({ account: "acc-1", created_at: "", servers: 0, plan: { plan: "custom", source: "beta", expires_at: null }, identities: ["apple"], key_set: true })
+    await Promise.all([w.model.loadProfile(), w.model.loadProfile()])
+    expect(w.cloud.account).toHaveBeenCalledTimes(1)
+    expect(w.cloud.account).toHaveBeenCalledWith("access-token")
+    expect(w.model.state).toMatchObject({ plan: { plan: "custom" }, identities: ["apple"], profileError: null })
+  })
+
+  test("loadProfile: no plan stays null, a failure says so and a retry fixes it", async () => {
+    const w = await world()
+    w.cloud.account.mockRejectedValueOnce(new NetworkError())
+    await w.model.loadProfile()
+    expect(w.model.state).toMatchObject({ identities: null, profileError: "Can't reach wristcall Cloud." })
+    await w.model.loadProfile()
+    expect(w.model.state).toMatchObject({ plan: null, identities: ["zitadel"], profileError: null })
+  })
+
+  test("loadProfile does nothing signed out", async () => {
+    const w = await world({ state: "signedOut" })
+    await w.model.loadProfile()
+    expect(w.cloud.account).not.toHaveBeenCalled()
+  })
+
+  test("signing out forgets the profile, and an answer that arrives later is dropped", async () => {
+    const w = await world()
+    let answer!: (value: CloudAccount) => void
+    w.cloud.account.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)))
+    const loading = w.model.loadProfile()
+    await w.model.signOut()
+    answer({ account: "acc-1", created_at: "", servers: 0, plan: null, identities: ["zitadel"], key_set: true })
+    await loading
+    expect(w.model.state.identities).toBeNull()
+  })
+
+  test("redeemInvite sends the trimmed code and shows the plan", async () => {
+    const w = await world()
+    expect(await w.model.redeemInvite("  CODE-1 ")).toBe(true)
+    expect(w.cloud.redeemInvite).toHaveBeenCalledWith("access-token", "CODE-1")
+    expect(w.model.state).toMatchObject({ plan: { plan: "full", source: "beta" }, redeem: "idle" })
+  })
+
+  test("redeemInvite: an empty code is not sent", async () => {
+    const w = await world()
+    expect(await w.model.redeemInvite("   ")).toBe(false)
+    expect(w.cloud.redeemInvite).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    [404, "This invite isn't valid."],
+    [422, "This invite isn't valid."],
+    [409, "This account already has a plan."],
+    [429, "wristcall Cloud refused the request."],
+  ])("redeemInvite: %i", async (status, text) => {
+    const w = await world()
+    w.cloud.redeemInvite.mockRejectedValueOnce(new ApiError(status, "x", "raw"))
+    expect(await w.model.redeemInvite("c")).toBe(false)
+    expect(w.model.state.redeem).toEqual({ failed: text })
+    expect(w.model.state.plan).toBeNull()
+  })
+
+  test("redeemInvite: a network failure says so", async () => {
+    const w = await world()
+    w.cloud.redeemInvite.mockRejectedValueOnce(new NetworkError())
+    await w.model.redeemInvite("c")
+    expect(w.model.state.redeem).toEqual({ failed: "Can't reach wristcall Cloud." })
+  })
+
+  test("a 401 in Settings forces a renewal", async () => {
+    const w = await world()
+    w.cloud.account.mockRejectedValueOnce(new ApiError(401, "unauthorized", "raw"))
+    await w.model.loadProfile()
+    expect(w.calls).toContain("accessTokenRefused:access-token")
+    w.cloud.redeemInvite.mockRejectedValueOnce(new ApiError(401, "unauthorized", "raw"))
+    expect(await w.model.redeemInvite("CODE-1")).toBe(false)
+    expect(w.calls.filter((c) => c.startsWith("accessTokenRefused"))).toHaveLength(2)
+  })
+
+  test("a 401 on the deletion forces a renewal, other failures do not", async () => {
+    const w = await world({
+      deleteAccount: async () => {
+        throw new ApiError(401, "unauthorized", "raw")
+      },
+    })
+    await w.model.deleteAccount()
+    expect(w.calls).toContain("accessTokenRefused:access-token")
+    expect(w.model.state.screen).toBe("signedIn")
+    const other = await world()
+    other.cloud.account.mockRejectedValueOnce(new ApiError(503, "busy", "raw"))
+    await other.model.loadProfile()
+    expect(other.calls.some((c) => c.startsWith("accessTokenRefused"))).toBe(false)
   })
 })

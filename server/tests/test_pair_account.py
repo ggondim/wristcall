@@ -409,3 +409,72 @@ def test_pair_account_pending_sends_approval_push(router, issuer):
             "body": '"Wrist" wants to use your account. Open the app to approve it.',
             "data": {"request_id": body["request_id"], "device_name": "Wrist", "expires_at": body["expires_at"]},
         }
+
+
+# --- 0.8.2: removing the account link revokes the devices paired through it ---
+
+
+def unlink(client, pat):
+    return client.delete("/v1/account/link", headers=h(pat))
+
+
+def me(client, token):
+    return client.get("/v1/me", headers=h(token)).status_code
+
+
+def test_unlink_revokes_devices_paired_through_the_account(att_client, issuer):
+    pat = api_token(att_client)
+    link(att_client, issuer.token(), pat)
+    by_account = pair_account(att_client, issuer.token()).json()["token"]
+    by_code = device_token(att_client)
+    assert me(att_client, by_account) == 200 and me(att_client, by_code) == 200
+    assert unlink(att_client, pat).status_code == 204
+    assert me(att_client, by_account) == 401
+    assert me(att_client, by_code) == 200  # paired by a code: stays
+    assert [d["name"] for d in att_client.get("/v1/devices", headers=h(pat)).json()["devices"]] == ["Watch"]
+
+
+def test_unlink_revokes_devices_approved_through_the_account(appr_client, issuer):
+    pat = api_token(appr_client)
+    body = pending_request(appr_client, issuer, pat)
+    assert approve(appr_client, body["request_id"], pat).status_code == 200
+    token = poll(appr_client, body["poll_token"]).json()["token"]
+    assert me(appr_client, token) == 200
+    assert unlink(appr_client, pat).status_code == 204
+    assert me(appr_client, token) == 401
+
+
+def test_unlink_drops_approved_undelivered_requests(appr_client, issuer):
+    pat = api_token(appr_client)
+    approved = pending_request(appr_client, issuer, pat, "Approved")
+    pending = pair_account(appr_client, issuer.token(), "Pending").json()
+    assert approve(appr_client, approved["request_id"], pat).status_code == 200
+    assert unlink(appr_client, pat).status_code == 204
+    # Neither becomes a device after the link is gone, not even the one approved before.
+    assert poll(appr_client, approved["poll_token"]).status_code == 410
+    assert poll(appr_client, pending["poll_token"]).status_code == 410
+    assert appr_client.get("/v1/pairing-requests", headers=h(pat)).json() == {"requests": []}
+    assert appr_client.get("/v1/devices", headers=h(pat)).json()["devices"] == []
+
+
+def test_relink_to_another_account_revokes_its_devices(att_client, issuer):
+    pat = api_token(att_client)
+    link(att_client, issuer.token(), pat)
+    token = pair_account(att_client, issuer.token()).json()["token"]
+    link(att_client, issuer.token(), pat)  # the same account again: the device stays
+    assert me(att_client, token) == 200
+    link(att_client, issuer.token(sub="central-user-2"), pat)
+    assert me(att_client, token) == 401
+    # The new account pairs its own devices.
+    assert me(att_client, pair_account(att_client, issuer.token(sub="central-user-2")).json()["token"]) == 200
+
+
+def test_unlink_logs_the_count_not_the_account(att_client, issuer, caplog):
+    caplog.set_level(logging.INFO)
+    pat = api_token(att_client)
+    link(att_client, issuer.token(), pat)
+    pair_account(att_client, issuer.token())
+    pair_account(att_client, issuer.token())
+    assert unlink(att_client, pat).status_code == 204
+    assert "unlinked account; 2 devices revoked" in caplog.text
+    assert "central-user-1" not in caplog.text

@@ -294,9 +294,10 @@ def management_router(
         who = await owner(authorization)
         if isinstance(who, JSONResponse):
             return who
-        if not await account.unlink(who.user_id):
+        revoked = await account.unlink(who.user_id)
+        if revoked is None:
             return _error("not_found", "this user is not linked to a central account", 404)
-        log.info("user %s unlinked from the central account", who.user_id)
+        log.info("user %s unlinked account; %d devices revoked", who.user_id, revoked)
         return Response(status_code=204)
 
     return router

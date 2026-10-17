@@ -6,27 +6,48 @@ app. It does not make calls; the watch does.
 
 It is a static site (TypeScript, Vite, Preact) that talks to your servers and, optionally, to the wristcall Cloud
 straight from the browser. There is no backend of its own: the site stores your server list and credentials in the
-browser and sends them only to the servers you added. Version 0.2.0, published as the image
+browser and sends them only to the servers you added. Version 0.3.0, published as the image
 `ghcr.io/ggondim/wristcall-web` by the `web-vX.Y.Z` tag. It is meant for servers 0.7.0 or later (older ones send no
-CORS headers, so a browser cannot call them) and, for the account features, Cloud 0.3.0. Server links (`/link`) and
-link codes need server 0.8.0.
+CORS headers, so a browser cannot call them) and, for the account features, Cloud 0.4.1 (account sessions). Server
+links (`/link`) and link codes need server 0.8.0; agent colors need server 0.8.1.
 
 What it does:
 
-- Servers: add one with its address and a personal token (`wristcall users tokens add --name browser`), or with a pairing
-  code when you are signed in; rename, remove.
+- Sign in (with a Cloud): the first screen shows a QR code. Approve it with the wristcall iPhone app (Settings > Use on
+  the web) and the browser is signed in, like WhatsApp Web; "Open wristcall app" does it in one tap on an iPhone or
+  iPad. "Sign in with email" is for accounts that already sign in with email. "Use your own server without an account"
+  skips the Cloud.
+- Agents: the agents of every connected server in one list, each in its color; create, edit and delete them.
+- History: the calls of every server in one list, with search, filters, export and redelivery.
+- Settings: the account's plan and "Redeem invite", the devices signed in to the account, notifications, "Device
+  requests" (watches waiting to pair: approve or deny), sign out and delete account.
+- Settings > Servers (advanced): add one with its address and a personal token (`wristcall users tokens add --name
+  browser`), or with a pairing code when you are signed in; rename, remove; paired watches and pairing codes.
 - Server links: `/link` opens the QR code a server 0.8.0 shows (`wristcall link`, or its startup log), asks you to
   confirm the host and connects the server to your account.
-- Agents: list, create, edit and delete.
-- Devices: paired watches, requests to approve or deny, pairing codes.
-- History: the calls of every server in one list, with search, filters, export and redelivery.
-- With a Cloud: sign in with the central account, mirror the server list to the account, approve a watch sign-in by
-  its code, delete the account, and get a notification when a watch asks to sign in (Web Push).
+- With a Cloud: mirror the server list to the account, approve a watch's "Use code instead" sign-in by its code (email
+  accounts only), and get a notification when a watch asks to sign in (Web Push).
+
+## The account in the browser
+
+With a Cloud, the browser is a `web` device of your wristcall account, like the iPhone and the watch. The Cloud gives it
+an account token (`wc-account+jwt`) and a refresh token that rotates at every renewal (`POST /v1/session/refresh`);
+both are kept in IndexedDB (`account.device`). The three ways in end the same way:
+
+- the QR code: the Cloud hands the device over once the iPhone approves the code (`/v1/web-sessions`);
+- "Sign in with email": Zitadel logs you in, then the app trades that login at once for a device (`POST /v1/devices`).
+  This is the only call that carries a Zitadel token, and nothing of Zitadel's is kept;
+- a session left by version 0.2.x: the first start of 0.3.0 renews it once and trades it for a device, with no new
+  login and no new account. If Zitadel no longer accepts it, the app opens on the first screen and creates nothing.
+
+The app sends no Zitadel token to any other Cloud route, so the Cloud may run with
+`WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS` off. "Sign out" deletes this browser's device at the Cloud
+(`DELETE /v1/devices/{id}`) and forgets the session; it does not end the session at Zitadel.
 
 ## Run it
 
 ```sh
-docker run -p 8080:8080 -e WRISTCALL_WEB_CLOUD_URL=https://cloud.example.com ghcr.io/ggondim/wristcall-web:0.2.0
+docker run -p 8080:8080 -e WRISTCALL_WEB_CLOUD_URL=https://cloud.example.com ghcr.io/ggondim/wristcall-web:0.3.0
 ```
 
 The image is nginx without root and serves the site on port 8080. Put TLS in front of it: a PWA, its service worker and
@@ -44,9 +65,10 @@ public address, the origin of the page):
 |---|---|---|
 | Each wristcall server | `server.cors_origins` in `wristcall.yaml` | `[https://app.example.com]`, or the server refuses every call from the browser |
 | The Cloud | `WRISTCALL_CLOUD_CORS_ORIGINS` | `https://app.example.com` |
-| The Cloud | `WRISTCALL_CLOUD_CLIENT_PWA` | the OIDC client id of the PWA (without it there is no sign-in from the site, and `DELETE /v1/account` answers `403`) |
+| The Cloud | `WRISTCALL_CLOUD_SIGNING_KEY` / `_FILE` and `WRISTCALL_CLOUD_PUBLIC_URL` | the account session signing key and the Cloud's public URL (without them `/v1/web-sessions`, `/v1/devices` and `/v1/session/refresh` answer `404 not_configured`) |
+| The Cloud | `WRISTCALL_CLOUD_CLIENT_PWA` | the OIDC client id of the PWA, for "Sign in with email" (without it a Zitadel login of the site is refused) |
+| The Cloud | `WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS` | may be `0` (the default): the site takes no Zitadel token to the Cloud's account routes |
 | Zitadel, application `wristcall-pwa` (PKCE, no secret) | redirect URI | `https://app.example.com/auth/callback` |
-| Zitadel, same application | post logout URI | `https://app.example.com/` |
 | The site's container | `WRISTCALL_WEB_CLOUD_URL` | the Cloud's canonical public URL, the same value as the Cloud's `WRISTCALL_CLOUD_PUBLIC_URL` (same scheme, host and port, no trailing slash). A server that names a different Cloud as its account issuer or push relay is refused |
 
 The server and the Cloud send no CORS headers by default, so nothing opens by itself. See "Browsers (CORS)" in
@@ -79,7 +101,8 @@ characters, typed with or without spaces and hyphens), for when the QR code cann
 
 - "Add watch" shows the 8 digit code and the server address to type on the watch. There is no WatchConnectivity in a
   browser, so nothing is handed over.
-- "Approve watch sign-in": you type the code the watch shows and the app opens the provider's approval page for it
+- "Approve watch sign-in" (Settings, only for an account with an email sign-in, since the watch's code page is a
+  Zitadel page): you type the code the watch shows and the app opens the provider's approval page for it
   (`{issuer}/device?user_code=XXXX-XXXX`, the issuer comes from the Cloud). The code is accepted with or without the
   hyphen and with a space in the middle (`ABCD EFGH`), unlike the watch app (`WristcallKit`), which does not take a
   space in the middle. The space is accepted on purpose: it is how people read a code aloud.
@@ -100,11 +123,18 @@ characters, typed with or without spaces and hyphens), for when the QR code cann
 - Chrome 142 and later (Local Network Access): a public site that calls a server on a private address asks for the
   permission for access to devices on the local network. The user must allow it once. A server with a
   public name behind TLS asks nothing.
-- Credentials (personal tokens, the account's refresh token) live in the browser's storage (IndexedDB), on this
-  device. Anyone who can use the browser profile can use them, and a script that runs in the page could read them: the
-  site ships a strict Content Security Policy (no inline script) for that reason, and loads nothing from a CDN. The access token of the account session stays in memory. After the
+- Credentials (personal tokens, and the account session: this browser's `web` device at the Cloud with its refresh
+  and access tokens) live in the browser's storage (IndexedDB), on this device. Anyone who can use the browser profile
+  can use them, and a script that runs in the page could read them: the site ships a strict Content Security Policy (no
+  inline script) for that reason, and loads nothing from a CDN. No Zitadel token is kept: "Sign in with email" trades
+  it at once for a device, and a session left by 0.2.x is moved to a device the first time 0.3.0 opens. After the
   first server is saved the app asks the browser for persistent storage (`navigator.storage.persist()`), so the data
   is not evicted when the device is short of space; a browser may refuse, and then the data can still be erased.
+- The account session's refresh token rotates at every renewal, and the Cloud deletes the device when an old one comes
+  back. Tabs take turns (a Web Lock, or a lease in IndexedDB without one) and always send the stored token, but an
+  answer lost on the way (the connection drops after the Cloud rotated) leaves the browser with a token the Cloud
+  already replaced: the next renewal signs it out ("This browser was signed out. Sign in again."). Accepted for now;
+  signing in again fixes it.
 - On iOS the Safari tab and the installed app have separate storage: servers added in the tab do not appear in the
   installed app (install first, then add your servers: the installed app is the one to rely on). In a Safari tab, Intelligent Tracking Prevention erases the
   storage of a site not used for 7 days; the installed app is exempt. With an account, "From your account" lists the
@@ -138,19 +168,22 @@ built site served by `npm run preview`, a local server and a local Cloud, with t
 worker:
 
 1. `servers.spec.ts`: a site without a Cloud and a personal token: add a server, agents, pairing code, history, remove.
-2. `push.spec.ts`: sign in, link the server with a pairing code, turn on notifications with a fixed Web Push
+2. `push.spec.ts`: sign in with email, link the server with a pairing code, turn on notifications with a fixed Web Push
    subscription (headless Chromium has no push service), register at the Cloud's relay and at the server, make a watch
    ask to sign in, see the Cloud's fake push channel accept it, deliver a push message to the service worker through
    the DevTools protocol, check the notification and open the approvals link it points at.
-3. `account.spec.ts`: sign in, link, agenda, approve a watch sign-in request, sign out at the provider, sign in again,
-   delete the account. It runs last because it deletes the account.
+3. `account.spec.ts`: sign in with email (the login ends in a Cloud `web` device: IndexedDB holds `account.device` and
+   no `account.refresh`), link, agenda, approve a watch sign-in request, sign out (`DELETE /v1/devices/{id}`), sign in
+   again, delete the account. It runs last because it deletes the account.
 
-The two account specs sign in at the real identity provider as a test user, so they need that setup. The variables
+The two account specs sign in with email at the real identity provider as a test user, so they need that setup. The
+token they use on the Cloud's routes is the one `POST /v1/devices` answers, never Zitadel's. The QR code sign-in needs
+an iPhone and is not part of them. The variables
 (`WRISTCALL_E2E_SERVER`, `_CLOUD`, `_PAT`, `_USER`, `_CLI`, `_CONFIG`, `_CLOUD_LOG`, `_ZITADEL_USER`,
 `_ZITADEL_PASSWORD_FILE`) are read in `e2e/env.ts`; a spec whose variables are missing skips with the reason.
 
-The Cloud of a local run needs: `WRISTCALL_CLOUD_CLIENT_PWA` (the PWA's client id; without it the verifier refuses the
-PWA's token and `DELETE /v1/account` answers `403`), `WRISTCALL_CLOUD_ALLOW_LOOPBACK_AUDIENCE=1` (so per-server tokens
+The Cloud of a local run needs: `WRISTCALL_CLOUD_CLIENT_PWA` (the PWA's client id; without it the Cloud refuses the
+site's Zitadel login at `POST /v1/devices`), `WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS` off, `WRISTCALL_CLOUD_ALLOW_LOOPBACK_AUDIENCE=1` (so per-server tokens
 can name `http://127.0.0.1:8765`), `WRISTCALL_CLOUD_PUBLIC_URL` on loopback (`http://127.0.0.1:8090`) with a signing key
 (`WRISTCALL_CLOUD_SIGNING_KEY_FILE`), `WRISTCALL_CLOUD_PUSH_FAKE=1`, a VAPID key
 (`WRISTCALL_CLOUD_VAPID_PRIVATE_KEY_FILE` and `_SUBJECT`), its log at INFO level (the push spec reads it, through

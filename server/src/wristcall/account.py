@@ -96,8 +96,9 @@ class AccountService:
             raise AccountError("invalid_code", "invalid or expired code")
         return user_id, await self._link(user_id, identity)
 
-    async def unlink(self, user_id: str) -> bool:
-        return await self._st.users.unlink_central(user_id)
+    async def unlink(self, user_id: str) -> int | None:
+        """Removes the link and revokes the devices paired through it. How many fell; None if it was not linked."""
+        return await self._st.users.unlink_central(user_id, self._now())
 
     async def issue_app_token(self, user_id: str) -> tuple[User, str]:
         """A new API token for the app that linked with a code, so it can manage this server from now on."""
@@ -109,10 +110,16 @@ class AccountService:
 
     async def _link(self, user_id: str, identity: Identity) -> str:
         key = account_key(identity.issuer, identity.subject)
+        user = await self._st.users.get(user_id)
+        previous = user.central_subject if user is not None else None
         try:
-            linked = await self._st.users.link_central(user_id, key)
+            # Another account than the linked one: the devices the old one paired fall (decision C12).
+            revoked = await self._st.users.link_central(user_id, key, self._now())
         except Conflict:
             raise AccountError("conflict", "this central account is already linked to another user") from None
-        if not linked:
+        if revoked is None:
             raise AccountError("not_found", "user not found")
+        if revoked > 0 or (previous is not None and previous != key):
+            # Never the key itself: it names the person's account.
+            log.info("user %s linked another account; %d devices revoked", user_id, revoked)
         return key

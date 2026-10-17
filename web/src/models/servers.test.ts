@@ -134,6 +134,26 @@ describe("ServersModel", () => {
     expect(events).toEqual([]) // the agenda belongs to the account that left: nothing to mirror
   })
 
+  test("unlinkAccountsUnlinksOnlyTheLinkedServersAndNeverFails", async () => {
+    const store = await fresh(
+      server({ id: "1", linked: true, cloudServerId: "c-1" }),
+      server({ id: "2", url: "https://office.example.com", token: "wc_pat_two", addedAt: 2 }),
+      server({ id: "3", url: "https://down.example.com", token: "wc_pat_three", linked: true, addedAt: 3 }),
+    )
+    const unlinked: string[] = []
+    const model = new ServersModel(
+      store,
+      clients((host, path) => {
+        if (host === "down.example.com") throw new TypeError("offline")
+        if (path === "/v1/account/link") unlinked.push(host)
+        return new Response(null, { status: 204 })
+      }),
+    )
+    await expect(model.unlinkAccounts()).resolves.toBeUndefined()
+    expect(unlinked).toEqual(["home.example.com"])
+    expect(await store.get("1")).toMatchObject({ linked: true }) // the local link goes with the sign-out, not here
+  })
+
   test("removeForgetsAndNotifiesThenCallsTheHook", async () => {
     const store = await fresh(server())
     const model = new ServersModel(store, clients(() => ok(HEALTH)))

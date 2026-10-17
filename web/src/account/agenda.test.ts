@@ -61,6 +61,10 @@ function world(
       if (this.tokenError !== null) throw this.tokenError
       return "access-token"
     },
+    refused: [] as string[],
+    async accessTokenRefused(token: string): Promise<void> {
+      this.refused.push(token)
+    },
     cloudClient: new CloudClient(CLOUD, cloudFetch),
   }
   const serverFetch = mockFetch((url) => {
@@ -224,6 +228,11 @@ describe("AgendaSync", () => {
     expect(w.writes().map((call) => `${call.method} ${call.path}`)).toEqual(["DELETE /v1/servers/c5", "DELETE /v1/servers/c7"])
   })
 
+  test("agenda mirror sends color", () => {
+    const sent = AgendaSync.snapshot([agent(1, { color: "purple" }), agent(2), agent(3, { color: "chartreuse" }), agent(4, { color: null })])
+    expect(sent.map((a) => a.color)).toEqual(["purple", null, null, null])
+  })
+
   test("agents are cut to 50, names to 64 characters, and invalid ones are left out", () => {
     const many = Array.from({ length: 60 }, (_, n) => agent(n))
     expect(AgendaSync.snapshot(many)).toHaveLength(50)
@@ -247,6 +256,15 @@ describe("AgendaSync", () => {
     expect((await w.agenda.fromAccount()).map((s) => s.id)).toEqual(["c2"])
     w.session.state = "signedOut"
     expect(await w.agenda.fromAccount()).toEqual([])
+  })
+
+  test("a 401 from the Cloud makes the session renew the access token it sent", async () => {
+    const w = world([saved()], () => json({ error: "unauthorized", message: "x" }, 401))
+    w.agenda.serverChanged(change("updated", saved()))
+    await w.agenda.idle()
+    expect(w.session.refused).toEqual(["access-token"])
+    expect(await w.agenda.fromAccount()).toEqual([])
+    expect(w.session.refused).toEqual(["access-token", "access-token"])
   })
 
   test("fromAccount failure sets the read notice and shows nothing", async () => {

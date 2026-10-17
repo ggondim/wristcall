@@ -29,14 +29,34 @@ def _token(r: sqlite3.Row) -> ApiToken:
 
 
 def _device(r: sqlite3.Row) -> Device:
-    return Device(id=r["id"], user_id=r["user_id"], name=r["name"], created_at=r["created_at"], revoked_at=r["revoked_at"])
+    return Device(
+        id=r["id"], user_id=r["user_id"], name=r["name"], created_at=r["created_at"], revoked_at=r["revoked_at"],
+        central_subject=r["central_subject"],
+    )
 
 
 def _request(r: sqlite3.Row) -> PairingRequest:
     return PairingRequest(
         poll_hash=r["poll_hash"], request_id=r["short_id"], device_name=r["device_name"],
         user_id=r["user_id"], status=r["status"], expires_at=r["expires_at"], target_user_id=r["target_user_id"],
+        central_subject=r["central_subject"],
     )
+
+
+def _drop_account(conn: sqlite3.Connection, user_id: str, subject: str, now: float) -> int:
+    """Inside a transaction: revokes the user's active devices paired through `subject` (and their push keys) and
+    deletes its requests not delivered yet. Returns how many devices it revoked."""
+    ids = [r["id"] for r in conn.execute(
+        "SELECT id FROM devices WHERE user_id = ? AND central_subject = ? AND revoked_at IS NULL", (user_id, subject)
+    )]
+    for device_id in ids:
+        conn.execute("UPDATE devices SET revoked_at = ? WHERE id = ?", (now, device_id))
+        conn.execute("DELETE FROM push_targets WHERE device_id = ?", (device_id,))  # no secret left behind
+    conn.execute(
+        "DELETE FROM pairing_requests WHERE target_user_id = ? AND central_subject = ? AND status IN ('pending', 'approved')",
+        (user_id, subject),
+    )
+    return len(ids)
 
 
 def _agent(r: sqlite3.Row) -> AgentRecord:
@@ -89,18 +109,29 @@ class _Users:
     async def delete(self, user_id: str) -> bool:
         return self._db.execute("DELETE FROM users WHERE id = ?", (user_id,)) == 1
 
-    async def link_central(self, user_id: str, subject: str) -> bool:
+    async def link_central(self, user_id: str, subject: str, now: float) -> int | None:
         try:
-            return self._db.execute("UPDATE users SET central_subject = ? WHERE id = ?", (subject, user_id)) == 1
+            with self._db.transaction() as conn:
+                row = conn.execute("SELECT central_subject FROM users WHERE id = ?", (user_id,)).fetchone()
+                if row is None:
+                    return None
+                conn.execute("UPDATE users SET central_subject = ? WHERE id = ?", (subject, user_id))
+                old = row["central_subject"]
+                if old is not None and old != subject:
+                    return _drop_account(conn, user_id, old, now)
+                return 0
         except sqlite3.IntegrityError as e:
             if not _unique(e):
                 raise
             raise Conflict("central account already linked to another user") from e
 
-    async def unlink_central(self, user_id: str) -> bool:
-        return self._db.execute(
-            "UPDATE users SET central_subject = NULL WHERE id = ? AND central_subject IS NOT NULL", (user_id,)
-        ) == 1
+    async def unlink_central(self, user_id: str, now: float) -> int | None:
+        with self._db.transaction() as conn:
+            row = conn.execute("SELECT central_subject FROM users WHERE id = ?", (user_id,)).fetchone()
+            if row is None or row["central_subject"] is None:
+                return None
+            conn.execute("UPDATE users SET central_subject = NULL WHERE id = ?", (user_id,))
+            return _drop_account(conn, user_id, row["central_subject"], now)
 
     async def by_central(self, subject: str) -> User | None:
         rows = self._db.query("SELECT * FROM users WHERE central_subject = ?", (subject,))
@@ -148,12 +179,16 @@ class _Devices:
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    async def create(self, device_id: str, user_id: str, name: str, token_hash: str, now: float) -> Device:
+    async def create(
+        self, device_id: str, user_id: str, name: str, token_hash: str, now: float, central_subject: str | None = None
+    ) -> Device:
         self._db.execute(
-            "INSERT INTO devices (id, user_id, name, token_hash, created_at) VALUES (?, ?, ?, ?, ?)",
-            (device_id, user_id, name, token_hash, now),
+            "INSERT INTO devices (id, user_id, name, token_hash, created_at, central_subject) VALUES (?, ?, ?, ?, ?, ?)",
+            (device_id, user_id, name, token_hash, now, central_subject),
         )
-        return Device(id=device_id, user_id=user_id, name=name, created_at=now, revoked_at=None)
+        return Device(
+            id=device_id, user_id=user_id, name=name, created_at=now, revoked_at=None, central_subject=central_subject
+        )
 
     async def by_token(self, token_hash: str) -> Device | None:
         rows = self._db.query("SELECT * FROM devices WHERE token_hash = ? AND revoked_at IS NULL", (token_hash,))
@@ -247,12 +282,13 @@ class _Pairing:
 
     async def add_request(
         self, poll_hash: str, request_id: str, device_name: str, now: float, expires_at: float,
-        target_user_id: str | None = None,
+        target_user_id: str | None = None, central_subject: str | None = None,
     ) -> None:
         self._db.execute(
-            "INSERT INTO pairing_requests (poll_hash, short_id, device_name, created_at, expires_at, status, target_user_id) "
-            "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
-            (poll_hash, request_id, device_name, now, expires_at, target_user_id),
+            "INSERT INTO pairing_requests "
+            "(poll_hash, short_id, device_name, created_at, expires_at, status, target_user_id, central_subject) "
+            "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+            (poll_hash, request_id, device_name, now, expires_at, target_user_id, central_subject),
         )
 
     async def pending_ids(self, now: float) -> set[str]:

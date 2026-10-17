@@ -236,7 +236,10 @@ def create_app(
             )
         approval = account.config.device_credential == "approval"
         try:
-            result = await pairing_svc.pair_for_user(user.id, body.device_name, approval=approval)
+            # The device carries the user's link: removing it (or linking another account) revokes the device.
+            result = await pairing_svc.pair_for_user(
+                user.id, body.device_name, approval=approval, central_subject=user.central_subject
+            )
         except DeviceLimit as e:  # a PairingDenied too: it must come first
             return JSONResponse({"error": "limit", "message": str(e)}, status_code=403)
         except PairingDenied as e:
