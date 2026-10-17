@@ -77,12 +77,19 @@ describe("ApproveView", () => {
 
 describe("ApproveWatchSignInView", () => {
   test("watch approval shows the new-account warning", async () => {
-    const account = new AccountModel(new FakeSession("signedIn", []), null, null, { assign: () => {} })
+    const cloud = {
+      deleteAccount: async () => {},
+      account: async () => ({ account: "acc-1", created_at: "", servers: 0, plan: null, identities: ["zitadel"], key_set: true }),
+      redeemInvite: async () => ({ plan: "full", source: "beta", expires_at: null }),
+      devices: async () => [],
+      removeDevice: async () => {},
+    }
+    const account = new AccountModel(new FakeSession("signedIn", []), null, null, { assign: () => {}, cloud })
     render(<ApproveWatchSignInView model={account} />)
+    const field = await screen.findByLabelText("Code shown on the watch")
     const warning = screen.getByText(
       "Sign in with the email of your wristcall account. An email with no account creates a new, empty account, and the watch shows no agents.",
     )
-    const field = screen.getByLabelText("Code shown on the watch")
     // Above the code field.
     expect(warning.compareDocumentPosition(field) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     fireEvent.input(field, { target: { value: "ABCD-EFGH" } })

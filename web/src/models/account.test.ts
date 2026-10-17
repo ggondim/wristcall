@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import { OidcError } from "../api/oidc"
+import { ServerClient } from "../api/server"
+import type { CloudAccount } from "../api/cloud"
 import { ApiError, NetworkError } from "../lib/errors"
 import { openDb } from "../store/db"
 import { ServerStore, type SavedServer } from "../store/servers"
 import { FakeSession, ISSUER } from "../test/fakeAccount"
+import { mockFetch } from "../test/mockFetch"
 import { AccountModel, normalizeWatchCode, watchSignInUrl, type AgendaControl } from "./account"
 import { savePendingLink, takePendingLink } from "./link"
 import { ServersModel } from "./servers"
@@ -25,7 +28,16 @@ function saved(over: Partial<SavedServer> = {}): SavedServer {
 }
 
 async function world(
-  opts: { state?: "signedOut" | "signedIn"; session?: boolean; deleteAccount?: () => Promise<void>; push?: boolean; agenda?: boolean } = {},
+  opts: {
+    state?: "signedOut" | "signedIn"
+    session?: boolean
+    deleteAccount?: () => Promise<void>
+    push?: boolean
+    agenda?: boolean
+    /** The saved server answers (and `DELETE /v1/account/link` is recorded in `calls`); by default it is down. */
+    reachable?: boolean
+    unlinkStatus?: number
+  } = {},
 ) {
   const calls: string[] = []
   const session = new FakeSession(opts.state ?? "signedIn", calls)
@@ -37,11 +49,28 @@ async function world(
     invalidate: () => void calls.push("agenda.invalidate"),
   }
   const push = { accountDeleted: vi.fn(async () => void calls.push("push.accountDeleted")) }
-  const cloud = { deleteAccount: vi.fn(opts.deleteAccount ?? (async () => void calls.push("cloud.deleteAccount"))) }
+  const cloud = {
+    deleteAccount: vi.fn(opts.deleteAccount ?? (async () => void calls.push("cloud.deleteAccount"))),
+    account: vi.fn(async (): Promise<CloudAccount> => ({ account: "acc-1", created_at: "", servers: 0, plan: null, identities: ["zitadel"], key_set: true })),
+    redeemInvite: vi.fn(async () => ({ plan: "full", source: "beta", expires_at: null })),
+    devices: vi.fn(async () => []),
+    removeDevice: vi.fn(async () => {}),
+  }
   const store = new ServerStore(await openDb("t-" + crypto.randomUUID()))
   await store.put(saved())
-  const servers = new ServersModel(store, () => {
-    throw new Error("offline")
+  const servers = new ServersModel(store, (server) => {
+    if (opts.reachable !== true) throw new Error("offline")
+    return new ServerClient(
+      new URL(server.url),
+      server.token,
+      mockFetch((url, init) => {
+        if (init.method === "DELETE" && url.endsWith("/v1/account/link")) {
+          calls.push("server.unlink")
+          return new Response(null, { status: opts.unlinkStatus ?? 204 })
+        }
+        return new Response("{}", { status: 200 })
+      }),
+    )
   })
   await servers.load()
   const assigned: string[] = []
@@ -294,6 +323,37 @@ describe("delete account", () => {
     expect(w.assigned).toEqual([])
   })
 
+  test("deleteAccount: linked servers are unlinked first, then the account goes", async () => {
+    const w = await world({ reachable: true })
+    await w.model.deleteAccount()
+    expect(w.calls.indexOf("server.unlink")).toBeGreaterThanOrEqual(0)
+    expect(w.calls.indexOf("server.unlink")).toBeLessThan(w.calls.indexOf("cloud.deleteAccount"))
+    expect(w.model.state.screen).toBe("signedOut")
+  })
+
+  test("deleteAccount: a server that was not linked, or is down, does not stop the deletion", async () => {
+    const notLinked = await world({ reachable: true, unlinkStatus: 404 })
+    await notLinked.model.deleteAccount()
+    expect(notLinked.cloud.deleteAccount).toHaveBeenCalledTimes(1)
+    const down = await world()
+    await down.model.deleteAccount()
+    expect(down.cloud.deleteAccount).toHaveBeenCalledTimes(1)
+    expect(down.model.state.screen).toBe("signedOut")
+  })
+
+  test("deleteAccount: a failed deletion comes after the unlinking, keeps the session and says so", async () => {
+    const w = await world({
+      reachable: true,
+      deleteAccount: async () => {
+        throw new TypeError("offline")
+      },
+    })
+    await w.model.deleteAccount()
+    expect(w.calls).toContain("server.unlink")
+    expect(w.model.state.screen).toBe("signedIn")
+    expect(w.model.state.error).toMatch(/^Can't delete the account now\./)
+  })
+
   test("deleteAccount: a push cleanup that fails does not keep the user signed in", async () => {
     const w = await world()
     w.push.accountDeleted.mockRejectedValueOnce(new Error("indexeddb"))
@@ -407,5 +467,75 @@ describe("watch sign-in", () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null)
     w.model.approveWatchSignIn("ABCD-EFGH")
     expect(open).not.toHaveBeenCalled()
+  })
+})
+
+describe("plan and identities", () => {
+  test("loadProfile reads the plan and the sign-in kinds once at a time", async () => {
+    const w = await world()
+    w.cloud.account.mockResolvedValue({ account: "acc-1", created_at: "", servers: 0, plan: { plan: "custom", source: "beta", expires_at: null }, identities: ["apple"], key_set: true })
+    await Promise.all([w.model.loadProfile(), w.model.loadProfile()])
+    expect(w.cloud.account).toHaveBeenCalledTimes(1)
+    expect(w.cloud.account).toHaveBeenCalledWith("access-token")
+    expect(w.model.state).toMatchObject({ plan: { plan: "custom" }, identities: ["apple"], profileError: null })
+  })
+
+  test("loadProfile: no plan stays null, a failure says so and a retry fixes it", async () => {
+    const w = await world()
+    w.cloud.account.mockRejectedValueOnce(new NetworkError())
+    await w.model.loadProfile()
+    expect(w.model.state).toMatchObject({ identities: null, profileError: "Can't reach wristcall Cloud." })
+    await w.model.loadProfile()
+    expect(w.model.state).toMatchObject({ plan: null, identities: ["zitadel"], profileError: null })
+  })
+
+  test("loadProfile does nothing signed out", async () => {
+    const w = await world({ state: "signedOut" })
+    await w.model.loadProfile()
+    expect(w.cloud.account).not.toHaveBeenCalled()
+  })
+
+  test("signing out forgets the profile, and an answer that arrives later is dropped", async () => {
+    const w = await world()
+    let answer!: (value: CloudAccount) => void
+    w.cloud.account.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)))
+    const loading = w.model.loadProfile()
+    await w.model.signOut()
+    answer({ account: "acc-1", created_at: "", servers: 0, plan: null, identities: ["zitadel"], key_set: true })
+    await loading
+    expect(w.model.state.identities).toBeNull()
+  })
+
+  test("redeemInvite sends the trimmed code and shows the plan", async () => {
+    const w = await world()
+    expect(await w.model.redeemInvite("  CODE-1 ")).toBe(true)
+    expect(w.cloud.redeemInvite).toHaveBeenCalledWith("access-token", "CODE-1")
+    expect(w.model.state).toMatchObject({ plan: { plan: "full", source: "beta" }, redeem: "idle" })
+  })
+
+  test("redeemInvite: an empty code is not sent", async () => {
+    const w = await world()
+    expect(await w.model.redeemInvite("   ")).toBe(false)
+    expect(w.cloud.redeemInvite).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    [404, "This invite isn't valid."],
+    [422, "This invite isn't valid."],
+    [409, "This account already has a plan."],
+    [429, "wristcall Cloud refused the request."],
+  ])("redeemInvite: %i", async (status, text) => {
+    const w = await world()
+    w.cloud.redeemInvite.mockRejectedValueOnce(new ApiError(status, "x", "raw"))
+    expect(await w.model.redeemInvite("c")).toBe(false)
+    expect(w.model.state.redeem).toEqual({ failed: text })
+    expect(w.model.state.plan).toBeNull()
+  })
+
+  test("redeemInvite: a network failure says so", async () => {
+    const w = await world()
+    w.cloud.redeemInvite.mockRejectedValueOnce(new NetworkError())
+    await w.model.redeemInvite("c")
+    expect(w.model.state.redeem).toEqual({ failed: "Can't reach wristcall Cloud." })
   })
 })

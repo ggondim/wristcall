@@ -1,10 +1,11 @@
 import { OidcError } from "../api/oidc"
-import type { CloudClient, DeviceSession } from "../api/cloud"
+import type { CloudClient, CloudPlan, DeviceSession } from "../api/cloud"
 import type { AccountSession } from "../account/session"
 import { canonical, parseServerAddress } from "../lib/address"
-import { ApiError, NetworkError, TimeoutError } from "../lib/errors"
+import { ApiError, cloudMessage } from "../lib/errors"
 import { replaceRoute } from "../ui/route"
 import { BaseModel } from "../ui/useModel"
+import { CloudDevicesModel } from "./cloudDevices"
 import { hasPendingLink } from "./link"
 import type { ServersModel } from "./servers"
 
@@ -24,6 +25,14 @@ export interface AccountState {
   issuerReady: boolean
   /** Why the issuer could not be loaded; the screen offers a retry. */
   issuerError: string | null
+  /** The account's plan, once `loadProfile` has read it (null: no plan, or not read yet; see `identities`). */
+  plan: CloudPlan | null
+  /** The kinds of sign-in linked to the account (`["zitadel"]`), or null until `loadProfile` has read them. */
+  identities: string[] | null
+  /** Why the plan and identities could not be read; the screen offers a retry. */
+  profileError: string | null
+  /** The invite being redeemed, or why it was not. */
+  redeem: "idle" | "busy" | { failed: string }
 }
 
 /** What the account screens need from the sign-in (the real `AccountSession`, or a stand-in in a test). */
@@ -33,6 +42,9 @@ export type AccountSessionPort = Pick<
 > & {
   config(): Promise<{ issuer: string }>
 }
+
+/** What the account screens ask the Cloud. */
+export type AccountCloud = Pick<CloudClient, "deleteAccount" | "account" | "redeemInvite" | "devices" | "removeDevice">
 
 /**
  * What the account screens need from the agenda mirror (the `AgendaSync` of the account agenda task implements it).
@@ -56,10 +68,10 @@ export interface PushHooks {
 }
 
 export interface AccountOptions {
-  /** The Cloud, for `DELETE /v1/account` (built from `/config.json`, never from what a server says). */
-  cloud?: Pick<CloudClient, "deleteAccount"> | null
-  /** Told when the account leaves, so the servers lose their account links (their tokens stay). */
-  servers?: Pick<ServersModel, "forgetAccount"> | null
+  /** The Cloud (built from `/config.json`, never from what a server says). */
+  cloud?: AccountCloud | null
+  /** Told when the account leaves, so the servers lose their account links (their tokens stay); unlinks them before a deletion. */
+  servers?: Pick<ServersModel, "forgetAccount" | "unlinkAccounts"> | null
   /** Leaves the page for an address (the email sign-in page). */
   assign?: (url: string) => void
 }
@@ -67,11 +79,15 @@ export interface AccountOptions {
 const TAP_AGAIN = "Reaching wristcall Cloud. Tap again in a moment."
 const BAD_USER_CODE = "Enter the 8-character code the watch shows."
 const NOT_SET_UP = "wristcall Cloud isn't set up for this app."
-const CLOUD_DOWN = "Can't reach wristcall Cloud."
+const INVALID_INVITE = "This invite isn't valid."
+const ALREADY_PLAN = "This account already has a plan."
 const DELETE_FAILED = "Can't delete the account now. "
 const CALLBACK_PATH = "/auth/callback"
 /** Where a sign-in lands, unless a server link waited for it (`takePendingLink`). */
 const HOME_PATH = "/agents"
+
+/** Nothing read from the Cloud about the account yet. */
+const NO_PROFILE = { plan: null, identities: null, profileError: null, redeem: "idle" } as const
 
 const CODE_SHAPE = /^([A-Za-z0-9]{4})[ -]?([A-Za-z0-9]{4})$/
 
@@ -97,12 +113,16 @@ export function watchSignInUrl(issuer: string, userCode: string): string | null 
 
 /** Short text for the screen. Never the error's own text when it could carry what was sent. */
 function message(error: unknown): string {
-  if (error instanceof OidcError) return error.message
-  if (error instanceof NetworkError || error instanceof TimeoutError) return CLOUD_DOWN
+  return error instanceof OidcError ? error.message : cloudMessage(error)
+}
+
+/** `404` and `422` are a code the Cloud does not know or no longer accepts; `409` an account that has a plan already. */
+function inviteMessage(error: unknown): string {
   if (error instanceof ApiError) {
-    return error.status === 503 || error.status === 502 ? "wristcall Cloud is busy. Try again in a moment." : "wristcall Cloud refused the request."
+    if (error.status === 404 || error.status === 422) return INVALID_INVITE
+    if (error.status === 409) return ALREADY_PLAN
   }
-  return "Something went wrong. Try again."
+  return message(error)
 }
 
 function isSignedOut(error: unknown): boolean {
@@ -116,22 +136,28 @@ function isSignedOut(error: unknown): boolean {
  */
 export class AccountModel extends BaseModel<AccountState> {
   readonly agenda: AgendaControl | null
+  /** The devices of the account (Settings); null without a Cloud. */
+  readonly devices: CloudDevicesModel | null
   readonly #session: AccountSessionPort | null
   readonly #push: PushHooks | null
-  readonly #cloud: Pick<CloudClient, "deleteAccount"> | null
-  readonly #servers: Pick<ServersModel, "forgetAccount"> | null
+  readonly #cloud: AccountCloud | null
+  readonly #servers: Pick<ServersModel, "forgetAccount" | "unlinkAccounts"> | null
   readonly #assign: (url: string) => void
   #completing: Promise<void> | null = null
   #leaving = false
   #issuer: string | null = null
   #issuerLoading: Promise<void> | null = null
+  #profileLoading: Promise<void> | null = null
+  /** Bumped when the account leaves: an answer for the old account is dropped. */
+  #profileGeneration = 0
 
   constructor(session: AccountSessionPort | null, agenda: AgendaControl | null, push: PushHooks | null, opts: AccountOptions = {}) {
-    super({ screen: session === null ? "unavailable" : session.state, error: null, busy: false, watch: "idle", issuerReady: false, issuerError: null })
+    super({ screen: session === null ? "unavailable" : session.state, error: null, busy: false, watch: "idle", issuerReady: false, issuerError: null, ...NO_PROFILE })
     this.#session = session
     this.agenda = agenda
     this.#push = push
     this.#cloud = opts.cloud ?? null
+    this.devices = session === null || this.#cloud === null ? null : new CloudDevicesModel(this.#cloud, session)
     this.#servers = opts.servers ?? null
     this.#assign = opts.assign ?? ((url) => globalThis.location.assign(url))
     session?.onSignedOut((reason) => void this.#sessionEnded(reason))
@@ -217,6 +243,12 @@ export class AccountModel extends BaseModel<AccountState> {
     // First: a mirror still running, or a change made meanwhile, must not add back what the deletion removes.
     this.agenda?.suspend()
     try {
+      // The linked servers drop their link to the account first (best effort, like the iPhone).
+      await this.#servers?.unlinkAccounts()
+    } catch {
+      // A server that cannot be reached keeps its link until the user unlinks it there.
+    }
+    try {
       await this.#cloud.deleteAccount(await session.accessToken())
     } catch (error) {
       this.agenda?.resume()
@@ -254,6 +286,7 @@ export class AccountModel extends BaseModel<AccountState> {
     this.#leaving = false
     this.#issuer = null
     this.#issuerLoading = null
+    this.#forgetProfile()
     this.set({ screen: "signedOut", busy: false, error: null, watch: "idle", issuerReady: false, issuerError: null })
     this.agenda?.resume()
   }
@@ -269,8 +302,59 @@ export class AccountModel extends BaseModel<AccountState> {
     }
     this.#issuer = null
     this.#issuerLoading = null
+    this.#forgetProfile()
     this.set({ screen: reason === null ? "signedOut" : { failed: reason }, busy: false, error: null, watch: "idle", issuerReady: false, issuerError: null })
     this.agenda?.resume()
+  }
+
+  // Plan and identities
+
+  /** Reads the plan and the sign-in kinds of the account (`GET /v1/account`); a read already running is shared. */
+  loadProfile(): Promise<void> {
+    const session = this.#session
+    const cloud = this.#cloud
+    if (session === null || cloud === null || this.state.screen !== "signedIn") return Promise.resolve()
+    if (this.#profileLoading !== null) return this.#profileLoading
+    const generation = this.#profileGeneration
+    const running = (async () => {
+      try {
+        const info = await cloud.account(await session.accessToken())
+        if (generation === this.#profileGeneration) this.set({ plan: info.plan?.plan ? info.plan : null, identities: info.identities, profileError: null })
+      } catch (error) {
+        if (generation === this.#profileGeneration) this.set({ profileError: message(error) })
+      }
+    })()
+    this.#profileLoading = running
+    void running.finally(() => {
+      if (this.#profileLoading === running) this.#profileLoading = null
+    })
+    return running
+  }
+
+  /** Redeems an invite code (`POST /v1/entitlements/redeem`). True when the account has a plan now. */
+  async redeemInvite(code: string): Promise<boolean> {
+    const session = this.#session
+    const cloud = this.#cloud
+    const clean = code.trim()
+    if (session === null || cloud === null || clean === "" || this.state.screen !== "signedIn" || this.state.redeem === "busy") return false
+    const generation = this.#profileGeneration
+    this.set({ redeem: "busy" })
+    try {
+      const plan = await cloud.redeemInvite(await session.accessToken(), clean)
+      if (generation !== this.#profileGeneration) return false
+      this.set({ plan: plan.plan ? plan : null, redeem: "idle" })
+      return true
+    } catch (error) {
+      if (generation === this.#profileGeneration) this.set({ redeem: { failed: inviteMessage(error) } })
+      return false
+    }
+  }
+
+  #forgetProfile(): void {
+    this.#profileGeneration += 1
+    this.#profileLoading = null
+    this.devices?.reset()
+    this.set({ ...NO_PROFILE })
   }
 
   // Watch sign-in

@@ -283,6 +283,20 @@ export class ServersModel extends BaseModel<ServersState> {
   }
 
   /**
+   * Before the account is deleted: each linked server drops its account link (`DELETE /v1/account/link`), best effort
+   * (a server that is down, or has no token here, keeps its link until the user unlinks it there).
+   */
+  async unlinkAccounts(): Promise<void> {
+    let servers: SavedServer[]
+    try {
+      servers = await this.#store.list()
+    } catch {
+      return
+    }
+    await Promise.allSettled(servers.filter((server) => server.linked).map(async (server) => this.#clientFor(server).unlinkAccount()))
+  }
+
+  /**
    * After signing out: the agenda ids and the links belonged to that account, and its list is no longer shown. The
    * servers and their tokens stay. No change event: nobody mirrors this to the (gone) agenda.
    */
