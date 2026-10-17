@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 import VisionKit
 
-/// "Scan QR code" (spec O5, mockup `iphone-06`): the camera reads a wristcall QR code and hands it to the
+/// "Scan QR code" (mockup `iphone-06`): the camera reads a wristcall QR code and hands it to the
 /// router. Without a camera (the simulator, or no permission) the link can be pasted. In server mode,
 /// "Enter address instead" opens the manual form.
 struct QRScannerView: View {
@@ -65,7 +65,7 @@ struct QRScannerView: View {
         }
         .environment(\.colorScheme, .dark)
         .sheet(isPresented: $enteringAddress) {
-            AddServerView(onAdded: { router.close(token) })
+            AddServerView(onAdded: { router.close(token) }).closesForLinks()
         }
     }
 

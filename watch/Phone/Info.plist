@@ -5,7 +5,7 @@
 	<!-- The app uses only the encryption of the system (HTTPS): no export compliance question. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
-	<!-- Links: wristcall://link?... opens the app (server QR codes, web app hand-off). -->
+	<!-- Links: wristcall://link#... opens the app (server QR codes, web app hand-off). -->
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

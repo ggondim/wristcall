@@ -25,8 +25,10 @@ struct ServersView: View {
                 Button("Add server", systemImage: "plus") { adding = true }
             }
         }
-        .sheet(isPresented: $adding) { AddServerView() }
-        .sheet(item: $settingUp) { entry in AddServerView(initialURL: entry.url, initialName: entry.name) }
+        .sheet(isPresented: $adding) { AddServerView().closesForLinks() }
+        .sheet(item: $settingUp) { entry in
+            AddServerView(initialURL: entry.url, initialName: entry.name).closesForLinks()
+        }
         .task(id: PendingKey(signedIn: account.state == .ready, servers: state.servers.map(\.url))) {
             await loadPending()
         }

@@ -90,7 +90,10 @@ struct PhoneApp: App {
                     NavigationStack {
                         ApproveWatchSignInView(code: code.value, isSheet: true)
                     }
+                    .closesForLinks()
                     .environment(account)
+                    // Outside `RootView`: the router reaches this sheet only through here.
+                    .environment(router)
                 }
                 .task { await start() }
                 .onChange(of: scenePhase) { _, phase in
@@ -177,6 +180,11 @@ struct RootView: View {
         return .welcome
     }
 
+    /// Onboarding not gone through and the servers not read yet (nor failed to read).
+    private var isDeciding: Bool {
+        !onboardingDone && !state.didLoad && state.loadError == nil
+    }
+
     private var entryStep: OnboardingStep? {
         OnboardingGate.entryStep(
             isDone: onboardingDone, serversLoaded: state.didLoad,
@@ -186,7 +194,10 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            if entryStep != nil {
+            if isDeciding {
+                // Not known yet whether the welcome shows: a blank screen, not a frame of the empty tabs.
+                Color(.systemBackground).ignoresSafeArea()
+            } else if entryStep != nil {
                 onboarding
             } else {
                 tabs
@@ -203,6 +214,8 @@ struct RootView: View {
             set: { _ in }
         )) {
             RestoreView(account: account, allowsStartOver: true) { OnboardingStore.finish() }
+                // Never closed for a link: the link waits until the account is back (the sheet goes on its own).
+                .closesForLinks(keepsOpen: true)
         }
         .modifier(LinkRouterPresenter())
         .sheet(isPresented: $choosingPlan, onDismiss: {
@@ -220,6 +233,7 @@ struct RootView: View {
                     ToolbarItem(placement: .cancellationAction) { Button("Close") { choosingPlan = false } }
                 }
             }
+            .closesForLinks()
         }
     }
 

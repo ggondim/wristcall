@@ -79,6 +79,7 @@ struct WelcomeView: View {
                 restoring = false
                 onRestored()
             }
+            .closesForLinks()
         }
     }
 

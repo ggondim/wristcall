@@ -170,7 +170,7 @@ private struct PlanContent: View {
         .background(Color(.systemGroupedBackground))
         .safeAreaInset(edge: .bottom) { footer }
         .sheet(isPresented: $model.enteringCode) {
-            InviteCodeSheet(model: model)
+            InviteCodeSheet(model: model).closesForLinks()
         }
     }
 

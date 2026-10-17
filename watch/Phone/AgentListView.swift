@@ -104,6 +104,7 @@ private struct AgentListContent: View {
             AgentEditorView(server: server, editing: target.agent, agents: model) { _ in
                 await model.load()
             }
+            .closesForLinks()
         }
         .confirmationDialog(
             "Delete \(pendingDelete?.displayName ?? "agent")?",

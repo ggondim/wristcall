@@ -201,6 +201,7 @@ struct AgentEditorView: View {
                     }
             }
             .presentationDetents([.medium, .large])
+            .closesForLinks()
         }
     }
 

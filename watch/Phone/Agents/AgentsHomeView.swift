@@ -83,6 +83,7 @@ private struct AgentsHomeContent: View {
             AgentEditorView(server: session.server, editing: session.editing) { server in
                 await model.reload(server: server)
             }
+            .closesForLinks()
         }
         .alert("Wristcall Cloud", isPresented: $cloudNotice) {
             Button("OK", role: .cancel) {}

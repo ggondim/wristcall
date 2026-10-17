@@ -91,7 +91,7 @@ private struct HistoryContent: View {
             ToolbarItem(placement: .topBarTrailing) { moreMenu }
         }
         .sheet(item: $exported, onDismiss: { model.discardExport() }) { file in
-            ExportSheet(url: file.url)
+            ExportSheet(url: file.url).closesForLinks()
         }
         .confirmationDialog(
             deleteAllTitle, isPresented: $confirmingDeleteAll, titleVisibility: .visible

@@ -5,7 +5,7 @@ import WristcallKit
 import WristcallKitTesting
 @testable import WristcallPhone
 
-/// wristcall links on the iPhone (spec O5): the router, linking a server by its QR code (Cloud and server
+/// wristcall links on the iPhone: the router, linking a server by its QR code (Cloud and server
 /// stubbed) and approving a web sign-in.
 @MainActor
 struct LinkFlowTests {
@@ -65,6 +65,56 @@ struct LinkFlowTests {
         #expect(router.open(URL(string: "wristcall://auth/callback?code=x")!) == false)
         #expect(router.open(URL(string: "wristcall://auth/logout")!) == false)
         #expect(router.sheet == nil)
+    }
+
+    @Test func linkClosesOtherSheetsFirstThenShows() {
+        let router = LinkRouter()
+        let server = URL(string: "https://home.example.com")!
+        let addServer = UUID()
+        let editor = UUID()
+        router.localSheetShown(addServer)
+        router.localSheetShown(editor)
+        let before = router.dismissRequest
+
+        #expect(router.open(link(to: server)))
+
+        // The other sheets are asked to close; the link waits for them (SwiftUI would drop it).
+        #expect(router.dismissRequest == before + 1)
+        #expect(router.sheet == nil)
+        #expect(router.pending == .server(server, Self.code))
+        router.localSheetGone(addServer)
+        #expect(router.sheet == nil)
+        router.localSheetGone(editor)
+        #expect(router.sheet == .server(server, Self.code))
+        #expect(router.pending == nil)
+
+        // With no other sheet up, a link shows at once.
+        router.sheet = nil
+        #expect(router.open(link(to: server)))
+        #expect(router.sheet == .server(server, Self.code))
+        #expect(router.dismissRequest == before + 2)
+    }
+
+    @Test func linkDuringNeedsSignInWaitsForTheAccount() async throws {
+        // No session and a previous account: the restore screen covers the app (it stays open for a link).
+        let rig = AccountRig(world, lastID: "acc_gone")
+        let model = await rig.started()
+        #expect(OnboardingGate.showsRestore(for: model.state))
+        let router = LinkRouter()
+        let restoreSheet = UUID()
+        router.localSheetShown(restoreSheet)
+        let server = URL(string: "https://home.example.com")!
+
+        #expect(router.open(link(to: server)))
+        #expect(router.sheet == nil)
+        #expect(router.pending == .server(server, Self.code))
+
+        try await model.restoreWithEmail()
+        #expect(model.state == .ready)
+        #expect(!OnboardingGate.showsRestore(for: model.state))
+        // The restore screen goes once the account is back: the link shows then, with the account ready.
+        router.localSheetGone(restoreSheet)
+        #expect(router.sheet == .server(server, Self.code))
     }
 
     @Test func routerOpensServerAndWebLinks() {
