@@ -213,3 +213,22 @@ a.button.quiet { background: var(--line); color: var(--fg); }
 .button.brand { background: var(--brand); color: #101418; }
 .button.wide { justify-content: center; width: 100%; }
 .sign-in-panel .button.wide + .separator, .sign-in-panel .sign-in-waiting + .button.wide { margin-top: 1rem; }
+
+/* Agent colors: the ten names of the protocol, system colors of the iPhone (light mode). Classes only: the CSP forbids style attributes. */
+.color-red { background: #FF3B30; }
+.color-orange { background: #FF9500; }
+.color-yellow { background: #FFCC00; }
+.color-green { background: #34C759; }
+.color-mint { background: #00C7BE; }
+.color-teal { background: #30B0C7; }
+.color-blue { background: #007AFF; }
+.color-indigo { background: #5856D6; }
+.color-purple { background: #AF52DE; }
+.color-pink { background: #FF2D55; }
+.agent-disc { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 44px; height: 44px; border-radius: 50%; color: #fff; }
+.agent-disc .agent-icon { background: transparent; color: inherit; }
+.agent-name { display: inline-flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.agent-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; }
+.agents-section { margin-bottom: 1.5rem; }
+.agents-section .screen-head { margin-bottom: 0.5rem; }
+.agents-section .section-title { margin: 0; }

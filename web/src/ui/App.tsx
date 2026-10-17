@@ -1,6 +1,7 @@
 import type { AgentDetail } from "../api/server"
 import type { AccountModel, AccountScreen } from "../models/account"
 import { AddServerModel } from "../models/addServer"
+import { AgentsHomeModel } from "../models/agentsHome"
 import { ApprovalsModel } from "../models/approvals"
 import { HistoryModel } from "../models/history"
 import type { AccountLink, ServersModel } from "../models/servers"
@@ -8,6 +9,7 @@ import type { SignInModel } from "../models/signIn"
 import type { NotificationsModel } from "../push/notifications"
 import { SettingsView } from "./AccountView"
 import { AddServerView } from "./AddServerView"
+import { AgentsHome } from "./AgentsHome"
 import { AgentsScreen } from "./AgentsView"
 import { ApproveView } from "./ApproveView"
 import { ApproveWatchSignInView } from "./ApproveWatchSignInView"
@@ -67,8 +69,8 @@ function Screen({
   onAgentsChanged?: (serverId: string, agents: AgentDetail[]) => void
 }) {
   const addServer = useMemo(() => new AddServerModel(servers, session), [servers, session])
-  // Provisional (R-pre1): the servers list stands in for the Agents home until Task 5b.
-  if (route.tab === "agents") return <ServersView model={servers} />
+  const home = useMemo(() => new AgentsHomeModel(servers), [servers])
+  if (route.tab === "agents") return <AgentsHome model={home} servers={servers} />
   if (route.tab === "servers") {
     const agents = parseAgentsTarget(route.path)
     if (agents !== null) return <AgentsScreen servers={servers} target={agents} onAgentsChanged={onAgentsChanged} />

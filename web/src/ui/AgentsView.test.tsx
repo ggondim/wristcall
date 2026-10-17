@@ -56,6 +56,14 @@ describe("agents routes", () => {
 })
 
 describe("AgentsScreen", () => {
+  test("the list shows each agent's color dot", async () => {
+    const { servers } = await setup([agent("ag_a", "Alpha", { color: "purple" }), agent("ag_b", "Beta", { position: 1 })])
+    render(<AgentsScreen servers={servers} target={{ serverId: "s1", screen: "list" }} />)
+    await screen.findByText("Alpha")
+    const dots = [...document.querySelectorAll(".agent-dot")].map((d) => d.className)
+    expect(dots).toEqual(["agent-dot color-purple", "agent-dot color-mint"])
+  })
+
   test("listsAgentsAndMovesOne", async () => {
     const { servers, fetchMock } = await setup([agent("ag_a", "Alpha"), agent("ag_b", "Beta", { position: 1, call_type: "monologue" })])
     render(<AgentsScreen servers={servers} target={{ serverId: "s1", screen: "list" }} />)

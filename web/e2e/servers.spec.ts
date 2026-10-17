@@ -17,6 +17,8 @@ test("manage a server with a personal token", async ({ page }) => {
 
   await test.step("add the server", async () => {
     await page.goto("/")
+    await expect(page.getByRole("heading", { name: "No agents yet." })).toBeVisible()
+    await page.goto("/settings/servers")
     await expect(page.getByRole("heading", { name: "No servers yet." })).toBeVisible()
     await page.getByRole("link", { name: "Add server" }).click()
     await page.locator("input[name=address]").fill(env.server)

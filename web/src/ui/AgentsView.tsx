@@ -3,6 +3,7 @@ import type { AgentDetail } from "../api/server"
 import { AgentsModel } from "../models/agents"
 import { callTypeLabel } from "../models/agentForm"
 import type { ServersModel } from "../models/servers"
+import { resolvedColor } from "./agentColor"
 import { AgentForm } from "./AgentForm"
 import { AgentIcon } from "./IconPicker"
 import { Link } from "./Link"
@@ -117,7 +118,12 @@ export function AgentsView({ model, serverId, back }: { model: AgentsModel; serv
               <Link class="row agent-row" href={`${list}/${encodeURIComponent(agent.id)}`}>
                 <AgentIcon name={agent.icon} />
                 <span class="agent-text">
-                  <span class="row-title">{agent.display_name}</span>
+                  <span class="row-title">
+                    <span class="agent-name">
+                      <span class={`agent-dot color-${resolvedColor(agent.color)}`} aria-hidden="true" />
+                      {agent.display_name}
+                    </span>
+                  </span>
                   <span class="row-sub">{callTypeLabel(agent.call_type)}</span>
                 </span>
               </Link>

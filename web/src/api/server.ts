@@ -16,6 +16,8 @@ export interface AgentDetail {
   display_name: string
   icon: string
   call_type: "conversation" | "one-shot" | "monologue"
+  /** One of the ten color names; absent on servers that predate colors. */
+  color?: string | null
   [field: string]: unknown
 }
 export interface Provider {

@@ -110,6 +110,18 @@ describe("App servers routes", () => {
   })
 })
 
+describe("App home", () => {
+  test("/ and /agents show Agents", async () => {
+    for (const path of ["/", "/agents"]) {
+      history.replaceState(null, "", path)
+      const view = render(<App badge={new FakeBadge(0)} servers={servers} />)
+      expect(await screen.findByRole("heading", { name: "Agents", level: 1 })).toBeTruthy()
+      expect(await screen.findByText("No agents yet.")).toBeTruthy()
+      view.unmount()
+    }
+  })
+})
+
 describe("App", () => {
   test("tabs are Agents, History, Settings", () => {
     render(<App badge={new FakeBadge(0)} servers={servers} />)
@@ -242,7 +254,7 @@ describe("sign-in screen (C2)", () => {
   test("signed out with a local server shows Agents", async () => {
     history.replaceState(null, "", "/agents")
     const w = setup({ servers: [local] })
-    expect(await screen.findByRole("link", { name: /home/ })).toBeTruthy()
+    expect(await screen.findByRole("heading", { name: "home" })).toBeTruthy()
     expect(screen.getByRole("navigation", { name: "Main" })).toBeTruthy()
     expect(screen.queryByRole("heading", { name: "Scan with your iPhone" })).toBeNull()
     expect(w.cloud.createWebSession).not.toHaveBeenCalled()
@@ -312,7 +324,7 @@ describe("sign-in screen (C2)", () => {
     expect(timers.pending).toHaveLength(1)
     act(() => timers.pending.shift()!())
     await waitFor(() => expect(location.pathname).toBe("/agents"))
-    expect(await screen.findByRole("heading", { name: "Servers" })).toBeTruthy()
+    expect(await screen.findByRole("heading", { name: "Agents", level: 1 })).toBeTruthy()
     expect(screen.queryByRole("heading", { name: "Scan with your iPhone" })).toBeNull()
     expect(session.state).toBe("signedIn")
     expect(f.calls.filter((c) => new URL(c.url).pathname === "/v1/web-sessions" && c.init.method === "POST")).toHaveLength(1)
