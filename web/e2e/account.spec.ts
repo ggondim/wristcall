@@ -1,25 +1,28 @@
-import { expect, test, type APIRequestContext } from "@playwright/test"
+import { expect, test, type APIRequestContext, type Page } from "@playwright/test"
 import { accountSkipReason, e2eEnv } from "./env"
-import { bearer, newPairingCode, ORIGIN, signIn as signInTo } from "./signin"
+import { bearer, newPairingCode, signIn as signInTo, storedAccountKeys } from "./signin"
 
 // The account flows against the local Cloud and server and the real Zitadel (the test user of the E7 setup):
-// sign in, add the server by pairing code, check the agenda, approve a watch sign-in request, sign out, sign in again
+// sign in with email (the login ends in a Cloud web device), add the server by pairing code, check the agenda, approve a watch sign-in request, sign out, sign in again
 // and delete the account (the Cloud here has no Zitadel machine credentials: it deletes the agenda only, the test
-// user stays). Signing in is in `signin.ts` (the access token stays in memory and is never printed).
+// user stays). Signing in is in `signin.ts` (the account token stays in memory and is never printed).
 const env = e2eEnv()
 const skip = accountSkipReason(env)
 
 test.skip(skip !== null, skip ?? "")
 
-/** Prints which audiences and client the PWA's access token carries (claims only, never the token). */
+/** Prints what the PWA's account token says about itself (claims only, never the token): a Cloud account token, not Zitadel's. */
 function describeToken(token: string): void {
-  try {
-    const claims = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as Record<string, unknown>
-    const show = (value: unknown): string => (Array.isArray(value) ? value.join(",") : String(value))
-    console.log(`[account-e2e] access token claims: aud=${show(claims.aud)} client_id=${show(claims.client_id ?? claims.azp)} iss=${show(claims.iss)}`)
-  } catch {
-    console.log("[account-e2e] access token is not a JWT")
-  }
+  const [header, payload] = token.split(".").slice(0, 2).map((part) => JSON.parse(Buffer.from(part ?? "", "base64url").toString("utf8")) as Record<string, unknown>)
+  const show = (value: unknown): string => (Array.isArray(value) ? value.join(",") : String(value))
+  console.log(`[account-e2e] account token claims: typ=${show(header?.typ)} aud=${show(payload?.aud)} iss=${show(payload?.iss)}`)
+  expect(header?.typ, "the PWA's token is a Cloud account token").toBe("wc-account+jwt")
+}
+
+/** The signed-out app: the sign-in screen (nothing saved here), or Settings with its Sign in row. */
+async function signedOutScreen(page: Page): Promise<void> {
+  await page.goto("/settings")
+  await expect(page.getByRole("button", { name: "Sign in with email" }).or(page.getByRole("link", { name: "Sign in", exact: true }))).toBeVisible()
 }
 
 async function agendaUrls(request: APIRequestContext, token: string): Promise<string[]> {
@@ -32,9 +35,11 @@ test("account: sign in, link, agenda, approval, sign out, delete", async ({ page
   const serverHost = new URL(env.server).host
   let token = ""
 
-  await test.step("sign in at Zitadel", async () => {
+  await test.step("sign in with email: the session is a Cloud web device", async () => {
     token = await signInTo(page, env)
     describeToken(token)
+    // The Cloud's device is stored; no Zitadel refresh token (or ID token) is kept.
+    expect(await storedAccountKeys(page)).toEqual({ device: true, refresh: false, idToken: false })
   })
 
   await test.step("add the server with a pairing code", async () => {
@@ -91,14 +96,12 @@ test("account: sign in, link, agenda, approval, sign out, delete", async ({ page
   await test.step("sign out", async () => {
     await page.goto("/settings")
     await expect(page.getByText("Signed in", { exact: true })).toBeVisible()
-    // The sign-out must reach the provider: the page asks Zitadel's end_session endpoint.
-    const endSession = page.waitForRequest((r) => new URL(r.url()).pathname === "/oidc/v1/end_session", { timeout: 60_000 })
+    // The sign-out deletes this browser's device at the Cloud; it does not go to Zitadel.
+    const removed = page.waitForResponse((r) => /^\/v1\/devices\/[^/]+$/.test(new URL(r.url()).pathname) && r.request().method() === "DELETE")
     await page.getByRole("button", { name: "Sign out" }).click()
-    expect((await endSession).method(), "the end_session request fired").toBe("GET")
-    // Then back to the site's start page.
-    await page.waitForURL(`${ORIGIN}/`, { timeout: 60_000 })
-    await page.goto("/settings")
-    await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible()
+    expect((await removed).status(), "DELETE /v1/devices/{self}").toBe(204)
+    await signedOutScreen(page)
+    expect((await storedAccountKeys(page)).device, "the device session is forgotten").toBe(false)
   })
 
   await test.step("sign in again and delete the account", async () => {
@@ -109,10 +112,8 @@ test("account: sign in, link, agenda, approval, sign out, delete", async ({ page
     const deleted = page.waitForResponse((r) => new URL(r.url()).pathname === "/v1/account" && r.request().method() === "DELETE")
     await confirm.getByRole("button", { name: "Delete account" }).click()
     expect((await deleted).status(), "DELETE /v1/account").toBe(204)
-    // Deleting signs out, which ends the session at Zitadel and comes back to the start page.
-    await page.waitForURL(`${ORIGIN}/`, { timeout: 60_000 })
-    await page.goto("/settings")
-    await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible()
+    // Deleting signs the browser out; no page of the identity provider opens.
+    await signedOutScreen(page)
     // The agenda is gone with the account: the old token still names it, and the Cloud answers with an empty one.
     const after = await request.get(`${env.cloud}/v1/servers`, { headers: bearer(token) })
     expect([200, 401, 404], "GET /v1/servers after the deletion").toContain(after.status())

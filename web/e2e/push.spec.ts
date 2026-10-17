@@ -10,7 +10,7 @@ import { bearer, newPairingCode, ORIGIN, signIn } from "./signin"
 // of the relay's shape to the service worker through the DevTools protocol, check the notification and open the
 // approvals screen it points at.
 //
-// The access token lives only in the page's memory and is never printed. The relay answers the registration with a
+// The account token (a Cloud web device's) lives only in the page's memory and is never printed. The relay answers the registration with a
 // push key, which the spec never reads.
 const env = e2eEnv()
 const skip = pushSkipReason(env)
@@ -73,7 +73,7 @@ test("push: subscribe, relay send, notification, approvals link", async ({ page,
   let tag = ""
   let label = ""
 
-  await test.step("sign in at Zitadel", async () => {
+  await test.step("sign in with email", async () => {
     token = await signIn(page, env)
   })
 

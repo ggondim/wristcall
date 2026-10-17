@@ -4,6 +4,61 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 
 ## [Unreleased]
 
+## [web-0.3.0] - 2026-10-17
+
+Web app 0.3.0. For Cloud 0.4.1 (account sessions) and servers 0.7.0 or later (0.8.0 for server links, 0.8.1 for agent
+colors). The Cloud may run with `WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS` off: this version sends no Zitadel token to any
+Cloud route except the one `POST /v1/devices` that ends an email sign-in.
+
+### Added
+
+- First screen with a QR code: signed out and with no server saved, the app opens on "Your agents, on the web." with a
+  code to scan. The iPhone app (Settings > Use on the web) approves it and the browser signs in, like WhatsApp Web.
+  "Open wristcall app" (on iPhone and iPad) opens the app with the same code. A code that is left open renews itself up
+  to 3 times while the tab is visible, then shows "Code expired." and "Show a new code"; a hidden tab asks nothing.
+  An account at its device limit says so, and a Cloud that cannot be reached offers "Try again".
+- `/approve`: the page the code's link opens in a browser. It hands the code to the wristcall app ("Open in
+  wristcall") and warns "Only approve a code you opened yourself."
+- Agents home: the agents of every connected server in one list, each in its color (`.color-<name>` classes: the
+  Content Security Policy allows no inline style). A server that does not answer is marked and the others still show.
+  The editor and the Cloud agenda keep the agent's color.
+- Settings: the account's plan (as the iPhone app shows it), "Redeem invite", the account's devices (this browser is
+  marked; the others can be removed), "Device requests" with its pending count, "Servers" under Advanced, "Sign out"
+  and "Delete account".
+- "Use your own server without an account" on the first screen opens "Add server".
+
+### Changed
+
+- The session of the browser is a Cloud `web` device (an account token `wc-account+jwt` that renews through
+  `POST /v1/session/refresh`, a rotating refresh token). It lives in IndexedDB under `account.device`. "Sign in with
+  email" still goes to Zitadel, but ends in `POST /v1/devices` and nothing of Zitadel's is kept; email is the only
+  sign-in that has a Zitadel account behind it, so only these accounts can approve a watch's "Use code instead"
+  (`/settings/watch`, which now warns that an email with no account creates a new, empty one).
+- Sign out deletes this browser's device at the Cloud (`DELETE /v1/devices/{id}`, at most 2 seconds) and forgets the
+  session. No page of the identity provider opens any more.
+- "Delete account" first unlinks every linked server (`DELETE /v1/account/link`, best effort), like the iPhone app, so
+  the watches signed in through the account lose access, and then deletes the account.
+- Tabs are Agents, History and Settings. The Servers tab is gone: servers and "Add server" are in Settings >
+  Servers (`/settings/servers`). Old links keep working (`/` and `/agents` open Agents, `/servers` moves to
+  `/settings/servers`, `/servers/<id>/...` are unchanged).
+- Every route that needs the account (the agenda, server tokens, devices, plan, invite, deletion) takes the account
+  token. A Cloud with `WRISTCALL_CLOUD_SIGNING_KEY` and `WRISTCALL_CLOUD_PUBLIC_URL` set is required for it.
+
+### Migration
+
+- A browser that holds a 0.2.x session (a Zitadel refresh token in IndexedDB) is not asked to sign in again and does not
+  get a new account: the first start of 0.3.0 renews that session once, trades it at `POST /v1/devices` for a `web`
+  device, saves it and erases `account.refresh` and `account.id_token`. If Zitadel no longer accepts the session, the
+  app opens on the first screen and creates nothing. Two tabs migrate once.
+- The Cloud flag `WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS` can be turned off after this version is deployed (and the
+  iPhone 0.2.x and watch 0.5.x apps are already off Zitadel tokens).
+
+### Known limitations
+
+- Approving the QR code needs the wristcall iPhone app that has "Use on the web" (0.2.2 or later).
+- A refresh answer lost on the way leaves the browser with a token the Cloud already replaced: the next renewal
+  signs it out and the first screen opens. Signing in again fixes it.
+
 ## [watch-0.5.0] - 2026-10-17
 
 The watch app 0.5.0 (build 6), embedded in iPhone app 0.2.1. For Cloud 0.4.1 and servers 0.8.0 or later. No
