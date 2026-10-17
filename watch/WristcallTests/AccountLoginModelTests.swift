@@ -211,6 +211,19 @@ struct AccountLoginModelTests {
         #expect(!backend.calls.contains("servers"))
     }
 
+    @Test func deviceLimitOnTheExchangeSaysSo() async throws {
+        backend.script(start: .success(authorization), complete: .failure(APIError.limit("10 devices")))
+        let model = await makeAppModel()
+        let sent = Recorder<WatchLinkMessage>()
+        let login = makeLogin(model: model) { sent.append($0) }
+        await login.signIn()
+
+        #expect(login.phase == .failed(SetupModel.deviceLimitMessage))
+        #expect(!sent.all.contains(.signedIn))
+        #expect(!login.isSignedIn)
+        #expect(!backend.calls.contains("servers"))
+    }
+
     @Test func busySetupRefusesSignInAndSync() async throws {
         backend.signedIn = true
         backend.script(start: .success(authorization), servers: [URL(string: "https://a.example.com")!])

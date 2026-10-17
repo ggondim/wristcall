@@ -692,6 +692,8 @@ struct SetupModelTests {
         await setup.start()
         await setup.settle()
         #expect(setup.message == SetupModel.deviceLimitMessage)
+        // No servers: the spinner stops, so "Use a code instead" shows with the message.
+        #expect(setup.phase == .waitingForPhone)
         #expect(backend.enrolls.count == 1)
 
         clock.advance(by: .seconds(30))

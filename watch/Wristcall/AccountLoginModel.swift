@@ -12,7 +12,8 @@ protocol AccountLoginBackend: Sendable {
     /// A device code (RFC 8628) for the watch's client, with the Cloud's scopes.
     func startDeviceAuthorization() async throws -> DeviceAuthorization
     /// Polls until approved, then exchanges the Zitadel token for the watch's Cloud device session and returns its
-    /// account. An exchange that gives no session throws `AccountError.signedOut`.
+    /// account. An exchange that gives no session throws `AccountError.signedOut`; one refused at the device limit
+    /// throws `APIError.limit`.
     func completeDeviceAuthorization(_ authorization: DeviceAuthorization) async throws -> String
     /// The agenda (`GET /v1/servers`), over the device session.
     func servers() async throws -> [CloudServer]
@@ -36,9 +37,9 @@ struct LiveAccountLoginBackend: AccountLoginBackend {
 
     func completeDeviceAuthorization(_ authorization: DeviceAuthorization) async throws -> String {
         try await legacy.completeDeviceAuthorization(authorization)
-        guard case .enrolled(let tokens, _) = try await enrollment.exchangeLegacy() else {
-            throw AccountError.signedOut
-        }
+        let result = try await enrollment.exchangeLegacy()
+        if result == .deviceLimit { throw APIError.limit("device limit") }
+        guard case .enrolled(let tokens, _) = result else { throw AccountError.signedOut }
         try await session.start(tokens)
         return tokens.account
     }
@@ -201,6 +202,9 @@ final class AccountLoginModel {
         } catch AccountError.signedOut {
             // Approved, but the Cloud gave no session for the token: nothing to sign in again to.
             throw DeviceFlowError.incomplete
+        } catch APIError.limit {
+            // Approved, but the account has no room for another device.
+            throw DeviceFlowError.deviceLimit
         }
         isSignedIn = true
         onSignedIn?(account)
@@ -280,6 +284,8 @@ final class AccountLoginModel {
             phase = .failed(Message.signInAgain)
         case DeviceFlowError.incomplete:
             phase = .failed(Message.incomplete)
+        case DeviceFlowError.deviceLimit:
+            phase = .failed(SetupModel.deviceLimitMessage)
         case AccountError.notConfigured, OIDCError.deviceFlowUnavailable:
             phase = .failed(Message.notConfigured)
         case OIDCError.network, APIError.network:
@@ -312,5 +318,5 @@ final class AccountLoginModel {
     }
 }
 
-/// The device flow's approval gave no Cloud session.
-private enum DeviceFlowError: Error { case incomplete }
+/// The device flow's approval gave no Cloud session (`deviceLimit`: the account has no room for the watch).
+private enum DeviceFlowError: Error { case incomplete, deviceLimit }

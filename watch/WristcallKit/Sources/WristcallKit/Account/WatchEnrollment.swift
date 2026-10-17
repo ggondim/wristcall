@@ -39,8 +39,8 @@ public struct WatchEnrollment: Sendable {
         self.now = now
     }
 
-    /// The keys (the one of `code?.account` first), then `code` (if it has not expired), then the old Zitadel
-    /// login if `tryLegacy`. Network and other errors are thrown; what is refused moves on to the next way.
+    /// The keys (only the one of `code?.account` when it names an account), then `code` (if it has not
+    /// expired), then the old Zitadel login if `tryLegacy`. Network and other errors are thrown; what is refused moves on to the next way.
     /// An old login is signed out once any way worked: the device session replaces it.
     public func enroll(code: PhoneLinkContext?, tryLegacy: Bool) async throws -> Result {
         let result = try await tryKeysThenCode(code, tryLegacy: tryLegacy)
@@ -65,8 +65,11 @@ public struct WatchEnrollment: Sendable {
     private func tryKeysThenCode(_ code: PhoneLinkContext?, tryLegacy: Bool) async throws -> Result {
         // A Keychain read error is no reason to stop: the code and the old login do not need the Keychain.
         let stored = (try? keys.keys()) ?? []
-        let ordered = stored.filter { $0.account == code?.account } + stored.filter { $0.account != code?.account }
-        for key in ordered where !DeadKeys.isDead(key, defaults: defaults) {
+        // When the iPhone announces its account, only that account's key is tried: another key would put the
+        // watch in an account other than the iPhone's. Without one, every key, oldest first.
+        let announced = code?.account.flatMap { $0.isEmpty ? nil : $0 }
+        let candidates = announced.map { account in stored.filter { $0.account == account } } ?? stored
+        for key in candidates where !DeadKeys.isDead(key, defaults: defaults) {
             do {
                 return .enrolled(try await client.enrollDevice(key: key.key, account: key.account, device: device), .accountKey)
             } catch APIError.unauthorized {

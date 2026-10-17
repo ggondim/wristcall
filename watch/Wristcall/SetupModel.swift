@@ -284,6 +284,8 @@ final class SetupModel {
                 }
             case .deviceLimit?:
                 message = Self.deviceLimitMessage
+                // The loop stops here: without servers the spinner goes, so "Use a code instead" shows too.
+                if model.servers.isEmpty { phase = .waitingForPhone }
                 return
             case nil:
                 break

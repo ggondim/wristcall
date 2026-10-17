@@ -56,7 +56,7 @@ struct WatchEnrollmentTests {
 
     // MARK: - Keys
 
-    @Test func keyOfTheCodesAccountGoesFirst() async throws {
+    @Test func keyOfTheCodesAccountIsUsed() async throws {
         let old = Self.stored("acc_old", at: 1_000)
         let new = Self.stored("acc_new", at: 2_000)
         let host = StubHost(replies: [(201, Self.session(account: "acc_new"))])
@@ -70,6 +70,31 @@ struct WatchEnrollmentTests {
         #expect(sent["account"] as? String == "acc_new")
         #expect(sent["account_key"] as? String == new.key.value)
         #expect((sent["device"] as? [String: Any])?["platform"] as? String == "watchos")
+    }
+
+    @Test func onlyTheAnnouncedAccountsKeyIsTried() async throws {
+        let old = Self.stored("acc_old", at: 1_000)
+        let new = Self.stored("acc_new", at: 2_000)
+        let host = StubHost { request in
+            request.path == "/v1/devices" ? Self.unauthorized : StubHost.Reply(201, Self.session(account: "acc_new"))
+        }
+        let result = try await enrollment(host, keys: InMemoryAccountKeyStore([old, new]))
+            .enroll(code: Self.code(account: "acc_new"), tryLegacy: false)
+
+        guard case .enrolled(_, .enrollCode) = result else { Issue.record("got \(result)"); return }
+        #expect(host.requests.map(\.path) == ["/v1/devices", "/v1/devices/enroll"])
+        // acc_old's key is never sent: the watch would land in another account than the iPhone's.
+        #expect(try host.requests[0].json()["account_key"] as? String == new.key.value)
+    }
+
+    @Test func noKeyForTheAnnouncedAccountUsesTheCode() async throws {
+        let other = Self.stored("acc_old", at: 1_000)
+        let host = StubHost(replies: [(201, Self.session(account: "acc_x"))])
+        let result = try await enrollment(host, keys: InMemoryAccountKeyStore([other]))
+            .enroll(code: Self.code(account: "acc_x"), tryLegacy: false)
+
+        guard case .enrolled(_, .enrollCode) = result else { Issue.record("got \(result)"); return }
+        #expect(host.requests.map(\.path) == ["/v1/devices/enroll"])
     }
 
     @Test func oldestKeyFirstWithoutACode() async throws {
