@@ -3,17 +3,20 @@ import Foundation
 /// iPhone → watch application context (`updateApplicationContext`): an enroll code the watch signs in with
 /// (`POST /v1/devices`), so the user never types anything on the watch. The latest context replaces the
 /// previous one; `expiresAt` (Unix seconds) is when the code stops working, and a context delivered later
-/// is ignored by the watch. The dictionary holds plist types only. The code is a secret: it prints as `<redacted>`.
+/// is ignored by the watch. `account` is the account the code belongs to, so the watch can tell it from the one it
+/// is signed into. The dictionary holds plist types only. The code is a secret: it prints as `<redacted>`.
 public struct PhoneLinkContext: Equatable, Sendable {
     /// Protocol version, the `"v"` of the dictionary. Any other value is ignored.
     public static let version = 1
 
     public let enrollCode: String
     public let expiresAt: Double
+    public var account: String?
 
-    public init(enrollCode: String, expiresAt: Double) {
+    public init(enrollCode: String, expiresAt: Double, account: String? = nil) {
         self.enrollCode = enrollCode
         self.expiresAt = expiresAt
+        self.account = account
     }
 
     /// `nil` for anything malformed: another version, no or empty `enroll_code`, no `expires_at`.
@@ -24,10 +27,13 @@ public struct PhoneLinkContext: Equatable, Sendable {
         else { return nil }
         self.enrollCode = code
         self.expiresAt = expiresAt
+        self.account = (dictionary["account"] as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
 
     public var dictionary: [String: Any] {
-        ["v": Self.version, "enroll_code": enrollCode, "expires_at": expiresAt]
+        var dictionary: [String: Any] = ["v": Self.version, "enroll_code": enrollCode, "expires_at": expiresAt]
+        if let account { dictionary["account"] = account }
+        return dictionary
     }
 }
 

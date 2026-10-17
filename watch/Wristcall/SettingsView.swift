@@ -1,29 +1,12 @@
 import SwiftUI
 
-/// Settings: pairing directory, the paired servers (`ServersView`), version.
+/// Settings: the paired servers (`ServersView`), "Advanced" (pairing with a code, the pairing directory, the
+/// account), version.
 struct SettingsView: View {
     let model: AppModel
-    @Environment(AccountLoginModel.self) private var login
-    @State private var directoryText = ""
-    @State private var confirmingSignOut = false
 
     var body: some View {
         List {
-            Section("Pairing directory") {
-                TextField("Directory URL", text: $directoryText)
-                    .textContentType(.URL)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .onSubmit {
-                        if !model.setDirectory(directoryText) {
-                            directoryText = model.directoryURL.absoluteString
-                        }
-                    }
-                Button("Reset to default") {
-                    model.resetDirectory()
-                    directoryText = model.directoryURL.absoluteString
-                }
-            }
             if model.hasServers {
                 Section {
                     NavigationLink {
@@ -33,34 +16,16 @@ struct SettingsView: View {
                     }
                 }
             }
-            if login.isAvailable {
-                Section("Account") {
-                    if login.isSignedIn {
-                        Button("Sync with account") { Task { await login.sync() } }
-                            .disabled(login.isRunning || model.isBusy)
-                        Button("Sign out of account", role: .destructive) { confirmingSignOut = true }
-                    } else {
-                        Button("Sign in with account") { Task { await login.signIn() } }
-                            .disabled(login.isRunning || model.isBusy)
-                    }
+            Section {
+                NavigationLink("Advanced") {
+                    AdvancedView(model: model)
                 }
-            }
-            if let message = model.message {
-                Text(message)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
             }
             Section {
                 LabeledContent("Version", value: AppModel.version())
             }
         }
         .navigationTitle("Settings")
-        .confirmationDialog("Sign out of account?", isPresented: $confirmingSignOut, titleVisibility: .visible) {
-            Button("Sign out", role: .destructive) { Task { await login.signOut() } }
-        } message: {
-            Text("The servers on this watch stay.")
-        }
-        .onAppear { directoryText = model.directoryURL.absoluteString }
     }
 }
 

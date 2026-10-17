@@ -14,11 +14,15 @@ struct WatchStripTests {
         .init(server: server, agents: (0..<agents).map { .sample(slug: "a\($0)") }, error: nil)
     }
 
+    /// `account` is the watch's (`.none`: a 0.4.0 watch, which sends none); `mine` is the iPhone's; `cloud`:
+    /// whether this iPhone build has a Cloud.
     private func kind(
-        paired: Bool = true, installed: Bool = true, watch: Set<String>, sections: [AllAgentsModel.Section],
-        at: Date? = nil
+        paired: Bool = true, installed: Bool = true, cloud: Bool = true, account: String?? = .none,
+        mine: String? = "acc_1", watch: Set<String>, sections: [AllAgentsModel.Section], at: Date? = nil
     ) -> WatchStripState.Kind {
-        WatchStripState.make(paired: paired, appInstalled: installed, watchServers: watch, sections: sections, lastContextAt: at)
+        WatchStripState.make(
+            paired: paired, appInstalled: installed, cloudAvailable: cloud, watchAccount: account, myAccount: mine,
+            watchServers: watch, sections: sections, lastContextAt: at)
     }
 
     @Test func hiddenWithoutAPairedWatch() {
@@ -46,6 +50,46 @@ struct WatchStripTests {
         // The watch has the server, which has no agent (or none of the watch's servers loaded).
         #expect(kind(watch: [homeCanonical], sections: [section(home, agents: 0)]) == .ready)
         #expect(kind(watch: [homeCanonical], sections: [section(work, agents: 2)]) == .ready)
+    }
+
+    @Test func watchOnSameAccountWithoutServersIsReady() {
+        #expect(kind(account: .some("acc_1"), mine: "acc_1", watch: [], sections: []) == .ready)
+        // The same account: its codes are on their way, nothing to do on the watch.
+        #expect(kind(account: .some("acc_1"), mine: "acc_1", watch: [], sections: [section(home, agents: 2)]) == .ready)
+        let at = Date(timeIntervalSince1970: 100)
+        #expect(kind(account: .some("acc_1"), watch: [homeCanonical], sections: [section(home, agents: 2)], at: at)
+            == .synced(agents: 2, at: at))
+    }
+
+    @Test func watchOnAnotherAccountIsNotSynced() {
+        #expect(kind(account: .some("acc_2"), mine: "acc_1", watch: [homeCanonical], sections: [section(home, agents: 2)])
+            == .openOnWatch)
+        #expect(kind(account: .some("acc_2"), mine: nil, watch: [], sections: []) == .openOnWatch)
+    }
+
+    @Test func newWatchWithoutAccountIsOpenOnWatch() {
+        #expect(kind(account: .some(nil), watch: [], sections: []) == .openOnWatch)
+        #expect(kind(account: .some(nil), mine: nil, watch: [homeCanonical], sections: [section(home, agents: 2)])
+            == .openOnWatch)
+        #expect(kind(paired: false, account: .some(nil), watch: [], sections: []) == .hidden)
+    }
+
+    @Test func oldWatchKeepsTheOldRule() {
+        let at = Date(timeIntervalSince1970: 100)
+        #expect(kind(account: .none, watch: [], sections: [section(home, agents: 2)]) == .openOnWatch)
+        #expect(kind(account: .none, watch: [homeCanonical], sections: [section(home, agents: 2)], at: at)
+            == .synced(agents: 2, at: at))
+        #expect(kind(installed: false, account: .some("acc_1"), watch: [homeCanonical], sections: []) == .openOnWatch)
+    }
+
+    @Test func withoutCloudTheWatchAccountIsIgnored() {
+        // A build without Cloud has no account: a new watch (which sends "") is judged by its servers alone.
+        let at = Date(timeIntervalSince1970: 100)
+        #expect(kind(cloud: false, account: .some(nil), mine: nil, watch: [homeCanonical], sections: [section(home, agents: 2)], at: at)
+            == .synced(agents: 2, at: at))
+        #expect(kind(cloud: false, account: .some("acc_2"), mine: nil, watch: [homeCanonical], sections: [section(home, agents: 2)], at: at)
+            == .synced(agents: 2, at: at))
+        #expect(kind(cloud: false, account: .some(nil), mine: nil, watch: [], sections: [section(home, agents: 2)]) == .openOnWatch)
     }
 
     @Test func syncedTextSaysHowLongAgo() {

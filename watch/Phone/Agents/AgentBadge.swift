@@ -1,26 +1,6 @@
 import SwiftUI
 import WristcallKit
 
-extension AgentColor {
-    /// The system color of the same name (a missing color wears `AgentColor.fallback`).
-    var swiftUI: Color {
-        switch self {
-        case .red: .red
-        case .orange: .orange
-        case .yellow: .yellow
-        case .green: .green
-        case .mint: .mint
-        case .teal: .teal
-        case .blue: .blue
-        case .indigo: .indigo
-        case .purple: .purple
-        case .pink: .pink
-        }
-    }
-
-    static func swiftUI(_ color: AgentColor?) -> Color { resolved(color).swiftUI }
-}
-
 /// An agent's mark: a circle in its color with the icon in white.
 struct AgentBadge: View {
     let icon: String

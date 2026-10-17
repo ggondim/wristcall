@@ -4,10 +4,74 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 
 ## [Unreleased]
 
+## [watch-0.5.0] - 2026-10-17
+
+The watch app 0.5.0 (build 6), embedded in iPhone app 0.2.1. For Cloud 0.4.1 and servers 0.8.0 or later. No
+Cloud or server change.
+
+### Added
+
+- Sets itself up on first open, with no sign-in on the watch. In this order: a saved session; the account key that
+  iCloud Keychain syncs into the access group shared with the iPhone app (only the iPhone's account when the iPhone
+  names it); the enroll code in the iPhone's application context; a 0.4 sign-in, exchanged once for the new session.
+  After 10 seconds without any of them the watch says "Open wristcall on your iPhone" and offers "Use a code instead"
+  (the device code flow, which ends in a Cloud session for the watch, approved on the iPhone or on the web).
+- The agenda syncs by itself after enrolling and whenever the app becomes active (at most once every 60 seconds).
+  Servers that pair at once are paired; a server that needs approval gets a pairing code from the iPhone.
+- The agent grid shows each agent in its color, with its name under the circle. A watch with no agents says "No agents
+  yet" and "Add one in wristcall on your iPhone."
+- Settings > Advanced: "Pair with a code", "Pairing directory", "Sync with account" and "Sign out of this watch",
+  which pauses the automatic setup until "Set up again".
+- The watch app joins the iPhone app's Keychain access group (`...wristcall.shared`) next to its own, so items that
+  already exist stay where they are. Debug builds take `-debugSetup signingIn|gettingAgents|waitingForPhone|noAgents|paused`
+  to show a setup screen on its own (screenshots).
+
+### Changed
+
+- "Use a code instead" (the device code flow) ends in a Cloud session: the watch becomes a device of the account.
+- The watch no longer sends Zitadel tokens to the agenda and server token routes, so it works with
+  `WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS` off. A Zitadel token only goes to `POST /v1/devices`, freshly renewed, to enroll
+  once.
+- The 8-digit pairing code left the first screen and, with the pairing directory, moved to Settings > Advanced.
+- Build 6 of version 0.5.0 (the 0.5.0 build 5 embedded in iPhone app 0.2.0 was the previous watch app).
+
+### Known limitations
+
+- The watch reads the account key only through iCloud Keychain (the synced item in the shared access group). The
+  simulator only proved that the watch can read and write its own shared group; delivery from the iPhone through
+  iCloud Keychain is untested (no real devices) and needs a paid team's provisioning for the shared group.
+- An account without an email identity cannot approve "Use a code instead" on the iPhone.
+- Approving "Use a code instead" on the web with an email that has no account creates a new, empty account.
+- Complications and controls show no color.
+
+## [ios-0.2.1] - 2026-10-17
+
+For Cloud 0.4.1 and servers 0.8.0 or later. Carries the watch app 0.5.0 (build 6).
+
+### Added
+
+- The Apple Watch strip follows the account the watch reports, and the enroll code the iPhone sends now carries the
+  account, so the watch enrolls into the iPhone's account.
+- Pairing codes for the servers that need approval and that the watch lacks: one code per server, sent again after it
+  expires. A server counts as tried only once it is paired, queued, pending or still pairing.
+
+### Changed
+
+- Pairing codes still waiting to be sent are cancelled per server, no longer all together.
+- The iPhone app and the embedded watch app carry version 0.5.0 (the watch is at build 6).
+
 ### Fixed
 
-- iPhone: "Delete account" and `-resetOnboarding` bring the welcome back even when a done flag sits in another
+- "Delete account" and `-resetOnboarding` bring the welcome back even when a done flag sits in another
   preferences domain.
+
+### Known limitations
+
+- No App Attest yet: the Cloud limits new accounts to 3 an hour per IP address instead.
+- An account without an identity (no email sign-in) that loses its key and its iCloud Keychain copy cannot be recovered.
+- "Scan from your other iPhone" is not included.
+- "Use on the web" stays hidden until the web app shows its sign-in QR code.
+- The watch limitations of [watch-0.5.0](#watch-050---2026-10-17) apply.
 
 ## [web-0.2.1] - 2026-10-16
 
@@ -65,7 +129,7 @@ For servers 0.8.0 or later (link codes; 0.8.1 for agent colors) and Cloud 0.4.1.
 ### Known limitations
 
 - The watch app embedded in this release still shows 0.5.0: no watch app change, built with the updated shared Kit
-  (there is no `watch-v0.5.0` tag).
+  (there is no `watch-v0.5.0` tag); the embedded 0.5.0 (5) was the old watch, and watch 0.5.0 (6) ships with ios 0.2.1.
 - No App Attest yet: the Cloud limits new accounts to 3 an hour per IP address instead.
 - An account without an identity (no email sign-in) that loses its key and its iCloud Keychain copy cannot be recovered.
 - The watch of a new account only pairs through the codes the iPhone sends until a future watch update; the watch's own

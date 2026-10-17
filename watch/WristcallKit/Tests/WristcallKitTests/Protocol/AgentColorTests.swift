@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 @testable import WristcallKit
 
@@ -17,6 +18,12 @@ struct AgentColorTests {
         #expect(AgentColor.resolved(.pink) == .pink)
         #expect(AgentColor.allCases.map(\.rawValue)
             == ["red", "orange", "yellow", "green", "mint", "teal", "blue", "indigo", "purple", "pink"])
+    }
+
+    @Test func swiftUIMappingIsDistinct() {
+        #expect(Set(AgentColor.allCases.map { "\($0.swiftUI)" }).count == 10)
+        #expect(AgentColor.swiftUI(nil) == AgentColor.mint.swiftUI)
+        #expect(AgentColor.swiftUI(.pink) == AgentColor.pink.swiftUI)
     }
 
     @Test func cloudAgentDecodesTolerantly() throws {

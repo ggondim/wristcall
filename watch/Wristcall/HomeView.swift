@@ -41,14 +41,19 @@ struct HomeView: View {
                         }
                     }
                     if showsNoAgents {
-                        Text("No agents on your servers.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
+                        VStack(spacing: 4) {
+                            Text("No agents yet")
+                                .font(.headline)
+                            Text("Add one in wristcall on your iPhone.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        .multilineTextAlignment(.center)
                     }
                 }
             }
-            .navigationTitle("Wristcall")
+            .navigationTitle("Agents")
+            .toolbarForegroundStyle(.mint, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     NavigationLink {
@@ -128,8 +133,20 @@ private struct AgentOptionsList: View {
     }
 }
 
-/// One agent: its icon in a circle and its name (two lines at most). An agent of a `call_type` this
-/// build does not know is dimmed; tapping it says to update the app (decision W7).
+/// How an agent's cell looks: a circle in the agent's own color, 54 pt wide.
+enum AgentCellStyle {
+    static let diameter: CGFloat = 54
+
+    /// The agent's color; a missing one wears the fallback (`AgentColor.fallback`).
+    static func fill(for agent: Agent) -> Color { AgentColor.swiftUI(agent.color) }
+
+    /// An agent of a `call_type` this build does not know is dimmed.
+    static func opacity(supported: Bool) -> Double { supported ? 1 : 0.4 }
+}
+
+/// One agent: a white icon in a circle of its color, and its name below (two lines at most). An
+/// agent of a `call_type` this build does not know is dimmed; tapping it says to update the app
+/// (decision W7).
 private struct AgentCell: View {
     let target: AgentTarget
     let onTap: () -> Void
@@ -138,10 +155,10 @@ private struct AgentCell: View {
     var body: some View {
         VStack(spacing: 4) {
             AgentIconView(icon: target.agent.icon)
-                .font(.title3)
-                .foregroundStyle(tint)
-                .frame(width: 44, height: 44)
-                .background(tint.opacity(0.25), in: Circle())
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: AgentCellStyle.diameter, height: AgentCellStyle.diameter)
+                .background(AgentCellStyle.fill(for: target.agent), in: Circle())
             Text(target.agent.displayName)
                 .font(.caption2)
                 .lineLimit(2)
@@ -151,7 +168,7 @@ private struct AgentCell: View {
         .frame(maxWidth: .infinity, minHeight: 44)
         .padding(.vertical, 4)
         .contentShape(Rectangle())
-        .opacity(target.agent.callType.isSupported ? 1 : 0.4)
+        .opacity(AgentCellStyle.opacity(supported: target.agent.callType.isSupported))
         // Not a `Button`: its tap would swallow the long press.
         .onTapGesture(perform: onTap)
         .onLongPressGesture(perform: onOptions)
@@ -161,10 +178,6 @@ private struct AgentCell: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityAction(.default, onTap)
         .accessibilityAction(named: "Options", onOptions)
-    }
-
-    private var tint: Color {
-        target.agent.callType.isOneWay ? .blue : .green
     }
 }
 

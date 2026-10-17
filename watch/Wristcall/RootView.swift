@@ -5,6 +5,7 @@ import SwiftUI
 struct RootView: View {
     let model: AppModel
     @Environment(AccountLoginModel.self) private var login
+    @Environment(SetupModel.self) private var setup: SetupModel?
 
     var body: some View {
         // The account login stays up while it adds servers underneath (the phase moves to Home), but a call
@@ -23,7 +24,14 @@ struct RootView: View {
         switch model.phase {
         case .launching:
             ProgressView()
-        case .unpaired, .pairing(requestId: nil):
+        case .unpaired:
+            // No server: the setup screen, unless pairing was asked for or the build has no Cloud.
+            if let setup, setup.showsSetup {
+                SetupView(model: model, setup: setup)
+            } else {
+                PairingView(model: model)
+            }
+        case .pairing(requestId: nil):
             PairingView(model: model)
         case .pairing(let requestId?):
             ApprovalView(model: model, requestId: requestId)

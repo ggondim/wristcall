@@ -110,7 +110,7 @@ struct WatchLinkReceiverTests {
         #expect(model.phase == .home)
         #expect(model.servers.map(\.credentials.serverURL) == [first.serverURL, home])
         #expect(pairing.calls.first == "me https://agent.example.com")
-        #expect(receiver.lastContext == WatchLinkContext(servers: ["https://agent.example.com", "https://home.example.com"]))
+        #expect(receiver.lastContext == WatchLinkContext(servers: ["https://agent.example.com", "https://home.example.com"], account: nil))
         // The scene's own launch afterwards does not read the Keychain again.
         await model.launchIfNeeded()
         #expect(pairing.calls.filter { $0 == "me https://agent.example.com" }.count == 1)
@@ -242,10 +242,10 @@ struct WatchLinkReceiverTests {
 
         await model.launch()
 
-        #expect(receiver.lastContext == WatchLinkContext(servers: ["https://agent.example.com", "https://home.example.com/wc"]))
-        // Only addresses: no token, no device id.
+        #expect(receiver.lastContext == WatchLinkContext(servers: ["https://agent.example.com", "https://home.example.com/wc"], account: nil))
+        // Only addresses and the account id (empty until the watch has one): no token, no device id.
         let published = try #require(receiver.lastContext?.dictionary)
-        #expect(Set(published.keys) == ["v", "servers"])
+        #expect(Set(published.keys) == ["v", "servers", "account"])
     }
 
     @Test func contextFollowsPairingAndRemoval() async throws {
@@ -255,16 +255,41 @@ struct WatchLinkReceiverTests {
         pairing.setMeResults([.success(homeInfo)], for: home)
 
         _ = await receiver.handle(.pair(server: home, code: code, name: "Home", expiresAt: soon))
-        #expect(receiver.lastContext == WatchLinkContext(servers: ["https://agent.example.com", "https://home.example.com"]))
+        #expect(receiver.lastContext == WatchLinkContext(servers: ["https://agent.example.com", "https://home.example.com"], account: nil))
 
         await model.removeServer(id: "srv-1")
-        #expect(receiver.lastContext == WatchLinkContext(servers: ["https://home.example.com"]))
+        #expect(receiver.lastContext == WatchLinkContext(servers: ["https://home.example.com"], account: nil))
     }
 
     @Test func emptyWatchPublishesEmptyContext() async {
         let model = makeModel()
         let receiver = WatchLinkReceiver(model: model)
         await model.launch()
-        #expect(receiver.lastContext == WatchLinkContext(servers: []))
+        #expect(receiver.lastContext == WatchLinkContext(servers: [], account: nil))
+    }
+
+    @Test func phoneContextReachesTheCallback() {
+        let receiver = WatchLinkReceiver(model: makeModel())
+        let received = Recorder<String>()
+        receiver.onPhoneContext = { received.append($0.enrollCode) }
+        receiver.receive(WatchLinkReceiver.parsePhoneContext(["v": 1, "enroll_code": "wce_x", "expires_at": 2e9]))
+        #expect(received.all == ["wce_x"])
+        receiver.receive(WatchLinkReceiver.parsePhoneContext(["v": 1, "expires_at": 2e9]))
+        receiver.receive(WatchLinkReceiver.parsePhoneContext(["v": 2, "enroll_code": "wce_y", "expires_at": 2e9]))
+        receiver.receive(nil)
+        #expect(received.all == ["wce_x"])
+    }
+
+    @Test func contextCarriesAccount() {
+        let receiver = WatchLinkReceiver(model: makeModel())
+        receiver.publishContext([])
+        #expect(receiver.lastContext?.hasAccountField == true)
+        #expect(receiver.lastContext?.account == nil)
+        receiver.account = "acc_1"
+        #expect(receiver.lastContext?.account == "acc_1")
+        #expect(receiver.lastContext?.servers == [])
+        receiver.account = nil
+        #expect(receiver.lastContext?.account == nil)
+        #expect(receiver.lastContext?.hasAccountField == true)
     }
 }

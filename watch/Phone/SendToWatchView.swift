@@ -91,7 +91,7 @@ struct SendToWatchView: View {
 
     /// `PairingCodeView` asks for a code itself when it opens; a code still queued for the watch goes.
     private func showCode() {
-        watchLink.cancelQueuedPair()
+        watchLink.cancelQueuedPair(for: server)
         codeModel = DevicesModel(api: state.api(for: server))
     }
 }

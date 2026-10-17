@@ -146,11 +146,38 @@ struct WatchLinkMessageTests {
     }
 
     @Test func contextRoundTrip() {
-        let context = WatchLinkContext(servers: ["https://srv.test", "http://127.0.0.1:8765"])
+        let context = WatchLinkContext(servers: ["https://srv.test", "http://127.0.0.1:8765"], account: nil)
         #expect(WatchLinkContext(context.dictionary) == context)
         #expect(WatchLinkContext([:]) == nil)
         #expect(WatchLinkContext(["v": 1, "servers": [1, 2]]) == nil)
         #expect(WatchLinkContext(["v": 2, "servers": ["https://srv.test"]]) == nil)
-        #expect(WatchLinkContext(WatchLinkContext(servers: []).dictionary) == WatchLinkContext(servers: []))
+        let empty = WatchLinkContext(servers: [], account: nil)
+        #expect(WatchLinkContext(empty.dictionary) == empty)
+    }
+
+    @Test func accountRoundTrips() {
+        let context = WatchLinkContext(servers: ["https://a.test"], account: "acc_1")
+        #expect(context.hasAccountField)
+        #expect(context.dictionary["account"] as? String == "acc_1")
+        #expect(WatchLinkContext(context.dictionary) == context)
+        #expect(WatchLinkContext(context.dictionary)?.account == "acc_1")
+
+        // A watch without an account says so with an empty string: new watch, not an old one.
+        let none = WatchLinkContext(servers: [], account: nil)
+        #expect(none.dictionary["account"] as? String == "")
+        let back = WatchLinkContext(none.dictionary)
+        #expect(back?.hasAccountField == true)
+        #expect(back?.account == nil)
+
+        // No key at all: a watch before this field (0.4.0).
+        let old = WatchLinkContext(["v": 1, "servers": []])
+        #expect(old?.hasAccountField == false)
+        #expect(old?.account == nil)
+        #expect(old != none)
+
+        // Not a string: the field is there but names no account.
+        let odd = WatchLinkContext(["v": 1, "servers": [], "account": 7])
+        #expect(odd?.hasAccountField == true)
+        #expect(odd?.account == nil)
     }
 }

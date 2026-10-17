@@ -21,6 +21,22 @@ struct PhoneLinkContextTests {
         #expect(PhoneLinkContext(["v": 1, "enroll_code": 42, "expires_at": 1.0]) == nil)
     }
 
+    @Test func accountIsOptional() {
+        let without = PhoneLinkContext(enrollCode: "wce_CODE", expiresAt: 1_800_000_000)
+        #expect(without.account == nil)
+        #expect(without.dictionary["account"] == nil)
+        #expect(PhoneLinkContext(without.dictionary) == without)
+
+        let with = PhoneLinkContext(enrollCode: "wce_CODE", expiresAt: 1_800_000_000, account: "acc_1")
+        #expect(with.dictionary["account"] as? String == "acc_1")
+        #expect(PhoneLinkContext(with.dictionary) == with)
+        #expect(PhoneLinkContext(with.dictionary)?.account == "acc_1")
+        #expect(with != without)
+        #expect(PhoneLinkContext(["v": 1, "enroll_code": "wce_CODE", "expires_at": 1.0, "account": 7])?.account == nil)
+        #expect(with.description.contains("<redacted>"))
+        #expect(!with.description.contains("wce_CODE"))
+    }
+
     @Test func isRedacted() {
         let context = PhoneLinkContext(enrollCode: "wce_SECRET-CODE", expiresAt: 1_800_000_000)
         var dumped = ""

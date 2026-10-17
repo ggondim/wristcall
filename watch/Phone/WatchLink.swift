@@ -63,6 +63,9 @@ final class WatchLink {
 
     /// `ServerAddress.canonical` of each server the watch is paired with (its `applicationContext`).
     private(set) var watchServers: Set<String> = []
+    /// The Cloud account the watch is signed into (C7): `.none` when its context has no `account` (a 0.4.0
+    /// watch), `.some(nil)` for a new watch without an account yet.
+    private(set) var watchAccount: String?? = .none
     /// The user code the watch shows for the account login (Task 11), until it expires.
     var incomingDeviceCode: String? {
         guard let deviceCodeOffer, now().timeIntervalSince1970 < deviceCodeOffer.expiresAt else { return nil }
@@ -85,13 +88,20 @@ final class WatchLink {
     /// The watch app just got installed (or the session just activated with it there): the account sends its
     /// enroll code then.
     @ObservationIgnored var onWatchAppInstalled: (@MainActor () -> Void)?
+    /// Each context the watch's state arrives in (at activation and on delivery): the account sends pairing
+    /// codes for the servers the watch lacks (C6).
+    @ObservationIgnored var onWatchContext: (@MainActor () -> Void)?
+    /// A server's queued code expired (its `ServerAddress.canonical`), delivered or not: the account may send
+    /// that server a new one on the next context.
+    @ObservationIgnored var onQueuedCodeExpired: (@MainActor (String) -> Void)?
     @ObservationIgnored private let session: (any WatchSessionProtocol)?
     @ObservationIgnored private let timeout: Duration
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     @ObservationIgnored private let defaults: UserDefaults
-    /// Sweeps the queued `pair` once its code expires (M8), while the app runs.
-    @ObservationIgnored private var expiryTask: Task<Void, Never>?
+    /// Sweeps a server's queued `pair` once its code expires (M8), while the app runs; one per server
+    /// (`ServerAddress.canonical`).
+    @ObservationIgnored private var expiryTasks: [String: Task<Void, Never>] = [:]
     /// Forgets the login code once it expires, so screens reading it update.
     @ObservationIgnored private var deviceCodeTask: Task<Void, Never>?
 
@@ -139,11 +149,11 @@ final class WatchLink {
         guard let session, canReachWatch else { return .unavailable }
         guard let code = PairingCode(grant.code) else { return .failed(Message.unexpected) }
         let message = WatchLinkMessage.pair(server: server.url, code: code, name: server.name, expiresAt: grant.expiresAt)
-        // M8: an older code waiting in the queue is useless now.
-        cancelQueuedPair()
+        // M8: an older code of this server waiting in the queue is useless now (C6: other servers' stay).
+        cancelQueuedPair(for: server)
         guard session.isReachable else {
             session.transferUserInfo(message.dictionary)
-            scheduleExpiry(of: grant)
+            scheduleExpiry(of: grant, for: ServerAddress.canonical(server.url))
             return .queued
         }
         switch await request(message) {
@@ -161,11 +171,17 @@ final class WatchLink {
         }
     }
 
-    /// Cancels every queued `pair` ("Show the code instead", or a new code on the way).
-    func cancelQueuedPair() {
-        expiryTask?.cancel()
-        expiryTask = nil
-        session?.cancelOutstandingTransfers { $0["type"] as? String == "pair" }
+    /// Cancels the queued `pair`s of `server` ("Show the code instead", or a new code on the way); those of
+    /// other servers stay.
+    func cancelQueuedPair(for server: ManagedServer) {
+        let canonical = ServerAddress.canonical(server.url)
+        expiryTasks.removeValue(forKey: canonical)?.cancel()
+        session?.cancelOutstandingTransfers { userInfo in
+            guard userInfo["type"] as? String == "pair", let address = userInfo["server_url"] as? String,
+                let url = URL(string: address)
+            else { return false }
+            return ServerAddress.canonical(url) == canonical
+        }
     }
 
     /// I2: cancels the queued `pair` transfers whose code expired (or that carry no expiry). Runs at
@@ -209,6 +225,9 @@ final class WatchLink {
 
     func contextDidChange(_ context: WatchLinkContext) {
         watchServers = Set(context.servers)
+        let account: String?? = context.hasAccountField ? .some(context.account) : .none
+        if account != watchAccount { watchAccount = account }
+        onWatchContext?()
     }
 
     /// The session is active: reads the watch's context and drops expired queued codes.
@@ -313,18 +332,21 @@ final class WatchLink {
         return result
     }
 
-    private func scheduleExpiry(of grant: PairingCodeGrant) {
+    private func scheduleExpiry(of grant: PairingCodeGrant, for server: String) {
         let seconds = max(0, grant.expiresAt - now().timeIntervalSince1970)
         let sleep = sleep
-        expiryTask = Task { [weak self] in
+        expiryTasks[server]?.cancel()
+        expiryTasks[server] = Task { [weak self] in
             do {
                 try await sleep(.milliseconds(Int64((seconds * 1000).rounded(.up))))
             } catch {
                 return
             }
+            // Not cancelled: still this server's task (a replaced one is cancelled first).
             guard !Task.isCancelled, let self else { return }
             self.sweepExpiredTransfers()
-            self.expiryTask = nil
+            self.expiryTasks[server] = nil
+            self.onQueuedCodeExpired?(server)
         }
     }
 }
