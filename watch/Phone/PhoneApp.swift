@@ -348,7 +348,7 @@ enum DebugLaunch {
 /// `-debugOpen history|history-detail` opens the History tab (or its first call), `-debugOpen settings` the
 /// Settings tab, `-debugOpen plan` the plan screen of the onboarding (with `-resetOnboarding`); `-debugOpen server|agents|form-new|form-edit|devices|code|watch` opens that screen at launch (a way to reach a screen
 /// without tapping, for screenshots from the command line): the first server, its agents, the form for a new agent, the form of the last agent, the devices of the server, its
-/// pairing code, or "Add to watch" (which sends a new code to the paired watch at once).
+/// pairing code, or "Add to watch" (which sends a new code to the paired watch at once). `-debugOpen newAgent|editAgent` opens the agent editor (new, or the last agent of the first server) on the Agents tab.
 enum DebugRoute {
     static let value: String? = {
         let args = ProcessInfo.processInfo.arguments
@@ -359,9 +359,10 @@ enum DebugRoute {
     static var opensHistory: Bool { ["history", "history-detail"].contains(value ?? "") }
     static var opensSettings: Bool { value == "settings" }
     static var opensPlan: Bool { value == "plan" }
-    static var opensServer: Bool { value != nil && !opensHistory && !opensSettings && !opensPlan }
+    static var opensServer: Bool { value != nil && !opensHistory && !opensSettings && !opensPlan && !opensEditor }
     static var opensDevices: Bool { ["devices", "code"].contains(value ?? "") }
     static var opensAgents: Bool { ["agents", "form-new", "form-edit"].contains(value ?? "") }
+    static var opensEditor: Bool { ["newAgent", "editAgent"].contains(value ?? "") }
     static var opensSendToWatch: Bool { value == "watch" }
 }
 #endif

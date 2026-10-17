@@ -411,4 +411,160 @@ struct AgentFormModelTests {
             "headers": .object(["X-Other": .string("new-secret")]),
         ]))
     }
+
+    // MARK: Templates, chat URL and color (O5)
+
+    @Test func templatesFillTypeIconAndColor() {
+        let voice = creating()
+        voice.apply(.voiceNotes)
+        #expect(voice.callType == "one-shot")
+        #expect(voice.icon == "note.text")
+        #expect(voice.color == .yellow)
+        #expect(voice.displayName == "Voice notes")
+        #expect(voice.action == .none)
+
+        let chat = creating()
+        chat.apply(.openAICompatible)
+        #expect(chat.callType == "conversation")
+        #expect(chat.icon == "sparkles")
+        #expect(chat.color == .indigo)
+        #expect(chat.displayName == "Assistant")
+        #expect(chat.action == .custom)
+
+        let hook = creating()
+        hook.apply(.webhook)
+        #expect(hook.callType == "one-shot")
+        #expect(hook.icon == "bolt.horizontal")
+        #expect(hook.color == .orange)
+        #expect(hook.displayName == "Webhook")
+        #expect(hook.action == .custom)
+    }
+
+    @Test func templatesKeepATypedName() {
+        let model = creating()
+        model.displayName = "Mine"
+        model.apply(.webhook)
+        #expect(model.displayName == "Mine")
+        // A name a template gave is replaced by the next one.
+        let other = creating()
+        other.apply(.voiceNotes)
+        other.apply(.openAICompatible)
+        #expect(other.displayName == "Assistant")
+    }
+
+    @Test func templatesOnAServerWithoutCustomEndpointsOnlyChangeTypeIconAndColor() {
+        let model = creating(.noCustom)
+        model.apply(.openAICompatible)
+        #expect(model.callType == "conversation" && model.icon == "sparkles" && model.color == .indigo)
+        #expect(model.action == .none)
+        model.apply(.webhook)
+        #expect(model.callType == "one-shot")
+        #expect(model.action == .none)
+        #expect(model.choices(for: .action) == [.none, .provider("hook")])
+    }
+
+    @Test func aServerWithOnlyCustomEndpointsKeepsTheEndpointWhenTheCallTypeChanges() {
+        let model = creating(.customOnly)
+        model.apply(.openAICompatible)
+        model.selectCallType("one-shot")
+        #expect(model.action == .custom)
+        #expect(model.template == nil)
+        model.apply(.voiceNotes)
+        #expect(model.action == .none)
+        #expect(model.showsEndpoint == false)
+        model.selectCallType("monologue")
+        #expect(model.template == .voiceNotes)
+        #expect(model.action == .none)
+        model.selectCallType("conversation")
+        #expect(model.action == .custom)
+        #expect(model.showsEndpoint)
+        #expect(model.endpointHasPicker == false)
+    }
+
+    @Test func chatURLDropsTheCompletionsSuffix() {
+        #expect(AgentFormModel.chatBaseURL("https://api.openai.com/v1/chat/completions") == "https://api.openai.com/v1")
+        #expect(AgentFormModel.chatBaseURL("https://x.example/v1/") == "https://x.example/v1")
+        #expect(AgentFormModel.chatBaseURL(" http://localhost:11434/v1/chat/completions/ ") == "http://localhost:11434/v1")
+        #expect(AgentFormModel.chatBaseURL("ftp://x") == nil)
+        #expect(AgentFormModel.chatBaseURL("not a url") == nil)
+
+        let model = creating()
+        model.slug = "chat"
+        model.apply(.openAICompatible)
+        model.chatModel = "gpt-4o-mini"
+        model.chatURL = "ftp://x"
+        #expect(model.validationMessage == "Enter an http(s) URL.")
+        model.chatURL = "https://api.openai.com/v1/chat/completions"
+        #expect(model.validationMessage == nil)
+        #expect(model.fields()["action"] == .object([
+            "type": .string("openai_chat"), "base_url": .string("https://api.openai.com/v1"),
+            "model": .string("gpt-4o-mini"),
+        ]))
+    }
+
+    @Test func openAICompatibleNeedsAModel() {
+        let model = creating()
+        model.slug = "chat"
+        model.apply(.openAICompatible)
+        model.chatURL = "https://api.openai.com/v1"
+        #expect(model.validationMessage == "Enter the model name.")
+        model.chatModel = "gpt-4o-mini"
+        #expect(model.validationMessage == nil)
+    }
+
+    @Test func colorIsSentOnCreateAndOnlyWhenChangedOnEdit() {
+        let model = AgentFormModel(editing: nil, providers: .sample, serverVersion: "0.8.1")
+        model.slug = "inbox"
+        model.displayName = "Inbox"
+        #expect(model.fields()["color"] == nil)
+        model.color = .teal
+        #expect(model.fields()["color"] == .string("teal"))
+
+        let stored = AgentDetail.sample(color: .red)
+        let edit = AgentFormModel(editing: stored, providers: .sample, serverVersion: "0.8.1")
+        #expect(edit.color == .red)
+        #expect(edit.fields().isEmpty)
+        edit.color = .blue
+        #expect(edit.fields() == ["color": .string("blue")])
+        edit.color = .red
+        #expect(edit.fields().isEmpty)
+        // An agent without a color keeps none until one is picked.
+        let plain = AgentFormModel(editing: .sample(), providers: .sample, serverVersion: "0.9.0")
+        #expect(plain.fields().isEmpty)
+        plain.color = .mint
+        #expect(plain.fields() == ["color": .string("mint")])
+    }
+
+    @Test func colorIsOmittedForServersBefore081() {
+        for version in ["0.8.0", "0.7.9", "0.6.0", nil] as [String?] {
+            let model = AgentFormModel(editing: nil, providers: .sample, serverVersion: version)
+            model.slug = "inbox"
+            model.displayName = "Inbox"
+            model.color = .teal
+            #expect(model.supportsColor == false, "\(version ?? "nil")")
+            #expect(model.fields()["color"] == nil, "\(version ?? "nil")")
+            let edit = AgentFormModel(editing: .sample(), providers: .sample, serverVersion: version)
+            edit.color = .teal
+            #expect(edit.fields().isEmpty)
+        }
+    }
+
+    @Test func serverVersionsCompareNumerically() {
+        for version in ["0.8.1", "0.8.2", "0.10.0", "1.0", "0.8.1rc1", "0.9.0-dev"] {
+            #expect(AgentFormModel.version(version, isAtLeast: "0.8.1"), "\(version)")
+        }
+        for version in ["0.8.0", "0.7.12", "0.8", "dev", ""] {
+            #expect(!AgentFormModel.version(version, isAtLeast: "0.8.1"), "\(version)")
+        }
+    }
+
+    @Test func suggestedIconsAreTheTwelveOfTheEditor() {
+        #expect(IconPicker.suggested == [
+            "sparkles", "note.text", "house", "cart", "book", "briefcase",
+            "waveform", "person.wave.2", "bubble.left", "phone", "calendar", "envelope",
+        ])
+        for symbol in IconPicker.suggested {
+            #expect(symbol.wholeMatch(of: /[a-z0-9]+(\.[a-z0-9]+)*/) != nil, "\(symbol)")
+        }
+    }
 }

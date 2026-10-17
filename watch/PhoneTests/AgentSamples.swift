@@ -15,7 +15,8 @@ extension AgentDetail {
         stt: JSONValue? = .object(["provider": .string("whisper")]),
         action: JSONValue? = nil,
         tts: JSONValue? = nil,
-        retentionDays: JSONValue = .null
+        retentionDays: JSONValue = .null,
+        color: AgentColor? = nil
     ) -> AgentDetail {
         let oneWay = callType != "conversation"
         return AgentDetail(
@@ -23,7 +24,7 @@ extension AgentDetail {
             turnEnd: turnEnd, position: position, language: language, stt: stt,
             action: action ?? .object(["provider": .string(oneWay ? "hook" : "chat")]),
             tts: tts, systemPrompt: "", fallbackMessage: "Sorry.", vad: ["silence_ms": .int(800)],
-            retentionDays: retentionDays
+            retentionDays: retentionDays, color: color
         )
     }
 }
@@ -39,6 +40,9 @@ extension ProviderList {
         ],
         customEndpoints: true
     )
+
+    /// A server with no provider at all that takes custom endpoints (the Cloud-like case).
+    static let customOnly = ProviderList(providers: [], customEndpoints: true)
 
     static let noCustom = ProviderList(providers: ProviderList.sample.providers, customEndpoints: false)
 }

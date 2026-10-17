@@ -33,11 +33,10 @@ struct AgentsHomeView: View {
     }
 }
 
-/// An agent form to show: a new agent, or one to edit, on the model of its server.
-private struct FormSession: Identifiable {
+/// An editor to show: a new agent, or one to edit, on its server.
+private struct EditorSession: Identifiable {
     let id = UUID()
     let server: ManagedServer
-    let agents: AgentsModel
     let editing: AgentDetail?
 }
 
@@ -50,11 +49,11 @@ private struct AgentsHomeContent: View {
     @Environment(AccountModel.self) private var account
     @Environment(WatchLink.self) private var watchLink
     @Environment(\.scenePhase) private var scenePhase
-    @State private var form: FormSession?
-    @State private var choosingServer = false
+    @State private var editor: EditorSession?
     @State private var cloudNotice = false
-    @State private var openError: String?
-    @State private var opening = false
+    #if DEBUG
+    @State private var debugOpened = false
+    #endif
 
     var body: some View {
         Group {
@@ -68,30 +67,27 @@ private struct AgentsHomeContent: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("New agent", systemImage: "plus") { newAgent() }
-                    .disabled(state.servers.isEmpty || opening)
+                    .disabled(state.servers.isEmpty)
             }
         }
-        .task(id: state.servers.map(\.id)) { await model.load() }
+        .task(id: state.servers.map(\.id)) {
+            await model.load()
+            #if DEBUG
+            openDebugRoute()
+            #endif
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await model.load() } }
         }
-        .sheet(item: $form, onDismiss: { Task { await model.load() } }) { session in
-            AgentFormView(editing: session.editing, model: session.agents)
-        }
-        .confirmationDialog("New agent on", isPresented: $choosingServer, titleVisibility: .visible) {
-            ForEach(state.servers) { server in
-                Button(server.name) { open(server, editing: nil) }
+        .sheet(item: $editor) { session in
+            AgentEditorView(server: session.server, editing: session.editing) { server in
+                await model.reload(server: server)
             }
         }
         .alert("Wristcall Cloud", isPresented: $cloudNotice) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(AgentsHomeView.cloudSoonMessage)
-        }
-        .alert("Can't open the agent", isPresented: Binding(get: { openError != nil }, set: { if !$0 { openError = nil } })) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(openError ?? "")
         }
     }
 
@@ -144,7 +140,7 @@ private struct AgentsHomeContent: View {
             }
         }
         ForEach(section.agents) { agent in
-            Button { open(section.server, editing: agent) } label: {
+            Button { editor = EditorSession(server: section.server, editing: agent) } label: {
                 AgentRow(
                     icon: agent.icon, color: agent.color, name: agent.displayName,
                     subtitle: AgentSummary.subtitle(agent)
@@ -240,34 +236,26 @@ private struct AgentsHomeContent: View {
         .padding(.top, 4)
     }
 
-    // MARK: - Forms
+    // MARK: - Editor
 
-    /// "+": the only server, or a choice among them.
+    /// "+": the editor opens on the first server that answered (it offers the others in its own picker).
     private func newAgent() {
-        if state.servers.count == 1, let server = state.servers.first {
-            open(server, editing: nil)
-        } else if state.servers.count > 1 {
-            choosingServer = true
-        }
+        guard let server = model.sections.first(where: { $0.error == nil })?.server ?? state.servers.first else { return }
+        editor = EditorSession(server: server, editing: nil)
     }
 
-    /// The form needs the server's providers: reads them first, then shows it.
-    private func open(_ server: ManagedServer, editing: AgentDetail?) {
-        guard !opening else { return }
-        opening = true
-        Task {
-            defer { opening = false }
-            let agents = AgentsModel(server: server, api: state.api(for: server)) { [state] list in
-                await state.hooks.agentsChanged?(server, list)
-            }
-            await agents.load()
-            guard agents.providers != nil else {
-                openError = agents.error ?? "Can't reach the server."
-                return
-            }
-            form = FormSession(server: server, agents: agents, editing: editing)
+    #if DEBUG
+    /// `-debugOpen newAgent` (or `editAgent`): opens the editor without a tap, for screenshots.
+    private func openDebugRoute() {
+        guard !debugOpened, let route = DebugRoute.value, ["newAgent", "editAgent"].contains(route) else { return }
+        debugOpened = true
+        if route == "newAgent" {
+            newAgent()
+        } else if let section = model.sections.first(where: { !$0.agents.isEmpty }), let agent = section.agents.last {
+            editor = EditorSession(server: section.server, editing: agent)
         }
     }
+    #endif
 }
 
 /// A row: badge, name, subtitle and whatever trails (chevron, "Soon").

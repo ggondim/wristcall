@@ -2,6 +2,51 @@ import Foundation
 import Observation
 import WristcallKit
 
+/// The starting points of a new agent (the chips at the top of the editor).
+enum AgentTemplate: CaseIterable, Hashable {
+    case voiceNotes, openAICompatible, webhook
+
+    var title: String {
+        switch self {
+        case .voiceNotes: "Voice notes"
+        case .openAICompatible: "OpenAI-compatible"
+        case .webhook: "Webhook"
+        }
+    }
+
+    /// The name a new agent gets when the user has not typed one.
+    var defaultName: String {
+        switch self {
+        case .voiceNotes: "Voice notes"
+        case .openAICompatible: "Assistant"
+        case .webhook: "Webhook"
+        }
+    }
+
+    var callType: String {
+        switch self {
+        case .voiceNotes, .webhook: "one-shot"
+        case .openAICompatible: "conversation"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .voiceNotes: "note.text"
+        case .openAICompatible: "sparkles"
+        case .webhook: "bolt.horizontal"
+        }
+    }
+
+    var color: AgentColor {
+        switch self {
+        case .voiceNotes: .yellow
+        case .openAICompatible: .indigo
+        case .webhook: .orange
+        }
+    }
+}
+
 /// State of the create/edit agent form, and the rules the server applies to it (`agents.py`), so most
 /// refusals show up before anything is sent.
 ///
@@ -47,6 +92,10 @@ final class AgentFormModel {
     var slug = ""
     var displayName = ""
     var icon = "waveform"
+    /// The accent color; sent only to servers that know it (`supportsColor`).
+    var color: AgentColor?
+    /// The template a new agent started from (highlights its chip).
+    private(set) var template: AgentTemplate?
     var callType = "conversation"
     var turnEnd = "auto"
     var language = "en"
@@ -79,19 +128,23 @@ final class AgentFormModel {
 
     let editing: AgentDetail?
     let providers: ProviderList
+    /// `version` of the server's `/v1/health`; `nil` while unknown.
+    let serverVersion: String?
 
     /// Endpoints as the form builds them right after loading; what `fields()` compares with.
     @ObservationIgnored private var initialEndpoints: [Stage: JSONValue] = [:]
     /// The one header the form shows when the stored webhook has several.
     @ObservationIgnored private var shownHeaderName = ""
 
-    init(editing agent: AgentDetail?, providers: ProviderList) {
+    init(editing agent: AgentDetail?, providers: ProviderList, serverVersion: String? = nil) {
         self.editing = agent
         self.providers = providers
+        self.serverVersion = serverVersion
         guard let agent else { return }
         slug = agent.slug
         displayName = agent.displayName
         icon = agent.icon
+        color = agent.color
         callType = agent.callType
         turnEnd = agent.turnEnd
         language = agent.language
@@ -113,6 +166,83 @@ final class AgentFormModel {
     var isEditing: Bool { editing != nil }
     var isOneWay: Bool { callType != "conversation" }
     var allowsCustom: Bool { providers.customEndpoints }
+
+    /// The first server version that stores an agent `color`.
+    static let colorVersion = "0.8.1"
+
+    /// Servers before 0.8.1 refuse unknown fields, so the color is neither offered nor sent to them. An unknown
+    /// version counts as old.
+    var supportsColor: Bool {
+        guard let serverVersion else { return false }
+        return Self.version(serverVersion, isAtLeast: Self.colorVersion)
+    }
+
+    /// Numeric comparison of dotted versions (`0.10.0` is after `0.8.1`); a suffix such as `rc1` or `-dev` is
+    /// ignored and a version without digits is never enough.
+    static func version(_ text: String, isAtLeast minimum: String) -> Bool {
+        func parts(_ text: String) -> [Int] {
+            var out: [Int] = []
+            for piece in text.split(separator: ".") {
+                guard let number = Int(piece.prefix { $0.isNumber }) else { break }
+                out.append(number)
+            }
+            return out
+        }
+        let have = parts(text), need = parts(minimum)
+        guard !have.isEmpty else { return false }
+        for index in 0..<max(have.count, need.count) {
+            let left = index < have.count ? have[index] : 0
+            let right = index < need.count ? need[index] : 0
+            if left != right { return left > right }
+        }
+        return true
+    }
+
+    // MARK: Templates and chat URL
+
+    /// What the URL field holds (the pasted `…/chat/completions` address is accepted as it is).
+    var chatURL: String {
+        get { chatBaseURL }
+        set { chatBaseURL = newValue }
+    }
+
+    /// The base URL of an OpenAI-compatible service out of what the user typed: without `/chat/completions` and
+    /// the trailing slash. `nil` when it is not an http(s) address.
+    static func chatBaseURL(_ text: String) -> String? {
+        var url = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isHTTPURL(url, httpsOnly: false) else { return nil }
+        func dropSlashes() { while url.hasSuffix("/") { url.removeLast() } }
+        dropSlashes()
+        let suffix = "/chat/completions"
+        if url.lowercased().hasSuffix(suffix) {
+            url.removeLast(suffix.count)
+            dropSlashes()
+        }
+        return url
+    }
+
+    private var nameIsATemplateDefault: Bool {
+        let name = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty || AgentTemplate.allCases.contains { $0.defaultName == name }
+    }
+
+    /// Fills type, icon, color and (when the server allows custom endpoints) the endpoint kind. A name the user
+    /// typed stays; the name a previous template gave is replaced.
+    func apply(_ template: AgentTemplate) {
+        selectCallType(template.callType)
+        self.template = template
+        icon = template.icon
+        color = template.color
+        if nameIsATemplateDefault { displayName = template.defaultName }
+        guard allowsCustom else { return }
+        switch template {
+        case .voiceNotes:
+            // Notes only go to History: no endpoint of its own.
+            if action == .custom { action = .none }
+        case .openAICompatible, .webhook:
+            action = .custom
+        }
+    }
 
     // MARK: Pickers
 
@@ -152,8 +282,42 @@ final class AgentFormModel {
     /// Changes the call type and drops a provider choice that does not fit the new one.
     func selectCallType(_ type: String) {
         callType = type
+        // The chip stays lit while the call stays of the same family (one-way or conversation).
+        if let template, (template.callType != "conversation") != isOneWay { self.template = nil }
         if case .provider(let name) = action, !providerNames(for: .action).contains(name) { action = .none }
+        // A server that only takes custom endpoints has nothing else to pick: the endpoint is the custom one.
+        if allowsCustom, action == .none, providerNames(for: .action).isEmpty, template != .voiceNotes || !isOneWay {
+            action = .custom
+        }
     }
+
+    /// Copies what the user typed from the form of another server (the picker rebuilds the form with that
+    /// server's providers).
+    func carryOver(from other: AgentFormModel) {
+        displayName = other.displayName
+        slug = other.slug
+        selectCallType(other.callType)
+        template = other.template
+        icon = other.icon
+        color = other.color
+        if other.action == .custom, allowsCustom { action = .custom }
+        webhookURL = other.webhookURL
+        webhookHeaderName = other.webhookHeaderName
+        webhookHeaderValue = other.webhookHeaderValue
+        chatBaseURL = other.chatBaseURL
+        chatModel = other.chatModel
+        chatAPIKey = other.chatAPIKey
+    }
+
+    /// `true` when the endpoint section needs the picker (the server has providers for it, or there is nothing
+    /// else to show); without it the custom fields stand alone.
+    var endpointHasPicker: Bool {
+        if !allowsCustom || (isEditing && action == .none) { return true }
+        return choices(for: .action).contains { if case .provider = $0 { true } else { false } }
+    }
+
+    /// `true` when the editor shows the endpoint section.
+    var showsEndpoint: Bool { endpointHasPicker || action == .custom }
 
     /// `my-notes` out of `My Notes!`, for the slug field until the user types their own.
     static func suggestSlug(from name: String) -> String {
@@ -274,7 +438,7 @@ final class AgentFormModel {
     private func openAIFields(_ stage: Stage) -> (String, String, String) {
         switch stage {
         case .stt: (sttBaseURL, sttModel, sttAPIKey)
-        case .action: (chatBaseURL, chatModel, chatAPIKey)
+        case .action: (Self.chatBaseURL(chatBaseURL) ?? chatBaseURL, chatModel, chatAPIKey)
         case .tts: (ttsBaseURL, ttsModel, ttsAPIKey)
         }
     }
@@ -372,10 +536,14 @@ final class AgentFormModel {
             return nil
         }
         let (url, model, key) = openAIFields(stage)
+        let isChat = stage == .action
         guard Self.isHTTPURL(url.trimmingCharacters(in: .whitespacesAndNewlines), httpsOnly: false) else {
-            return "\(label(stage)): enter the base URL (http:// or https://, no credentials or query)."
+            return isChat ? "Enter an http(s) URL."
+                : "\(label(stage)): enter the base URL (http:// or https://, no credentials or query)."
         }
-        if model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "\(label(stage)): enter the model name." }
+        if model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return isChat ? "Enter the model name." : "\(label(stage)): enter the model name."
+        }
         return masked(key) ? reenter : nil
     }
 
@@ -389,6 +557,7 @@ final class AgentFormModel {
         if let agent = editing {
             if name != agent.displayName { out["display_name"] = .string(name) }
             if icon != agent.icon { out["icon"] = .string(icon) }
+            if supportsColor, let color, color != agent.color { out["color"] = .string(color.rawValue) }
             if callType != agent.callType { out["call_type"] = .string(callType) }
             if turnEnd != agent.turnEnd { out["turn_end"] = .string(turnEnd) }
             if lang != agent.language { out["language"] = .string(lang) }
@@ -407,6 +576,7 @@ final class AgentFormModel {
         out["slug"] = .string(slug)
         out["display_name"] = .string(name)
         out["icon"] = .string(icon)
+        if supportsColor, let color { out["color"] = .string(color.rawValue) }
         out["call_type"] = .string(callType)
         out["turn_end"] = .string(turnEnd)
         if !lang.isEmpty { out["language"] = .string(lang) }

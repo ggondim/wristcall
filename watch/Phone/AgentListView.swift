@@ -101,7 +101,9 @@ private struct AgentListContent: View {
             }
         }
         .sheet(item: $target) { target in
-            AgentFormView(editing: target.agent, model: model)
+            AgentEditorView(server: server, editing: target.agent, agents: model) { _ in
+                await model.load()
+            }
         }
         .confirmationDialog(
             "Delete \(pendingDelete?.displayName ?? "agent")?",
