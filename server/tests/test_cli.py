@@ -156,11 +156,18 @@ def test_users_unlink(tmp_path):
     ok(cfg, "users", "list")
     st = open_sqlite_storage(tmp_path / "data")
     owner = run(st.users.by_handle("owner"))
-    assert run(st.users.link_central(owner.id, "https://issuer.test#central-user-1"))
+    key = "https://issuer.test#central-user-1"
+    assert run(st.users.link_central(owner.id, key, 1.0))
+    svc = PairingService(st)
+    by_account = run(svc.pair_for_user(owner.id, "Account watch", approval=False, central_subject=key))
+    by_code = run(svc.pair(run(svc.create_code(owner.id)).code, "Code watch"))
     assert "linked yes" in ok(cfg, "users", "list")
-    assert "Unlinked owner" in ok(cfg, "users", "unlink", "owner")
+    out = ok(cfg, "users", "unlink", "owner")
+    assert "Unlinked owner from the central account; 1 device revoked." in out
     assert "linked -" in ok(cfg, "users", "list")
-    assert run(st.users.by_central("https://issuer.test#central-user-1")) is None
+    assert run(st.users.by_central(key)) is None
+    assert run(svc.authenticate(by_account.token)) is None
+    assert run(svc.authenticate(by_code.token)).name == "Code watch"
 
 
 def test_users_unlink_not_linked_fails(tmp_path):
@@ -328,7 +335,7 @@ def test_cli_approve_respects_target(tmp_path):
     st = open_sqlite_storage(tmp_path / "data")
     ana = run(st.users.by_handle("ana"))
     svc = svc_for(tmp_path, "manual")
-    pending = run(svc.pair_for_user(ana.id, "Ana's Watch", approval=True))
+    pending = run(svc.pair_for_user(ana.id, "Ana's Watch", approval=True, central_subject="https://issuer.test#ana"))
     r = invoke(cfg, "devices", "approve", pending.request_id, "--user", "bia")
     assert r.exit_code == 1 and "no pending request" in r.output
     assert "Approved" in ok(cfg, "devices", "approve", pending.request_id, "--user", "ana")
@@ -462,7 +469,7 @@ def test_cli_link_notes_a_user_already_linked(tmp_path):
     assert first.exit_code == 0 and "already linked" not in first.stderr
     store = open_sqlite_storage(tmp_path / "data")
     try:
-        run(store.users.link_central(handle_id(tmp_path, "owner"), "https://issuer.test#someone"))
+        run(store.users.link_central(handle_id(tmp_path, "owner"), "https://issuer.test#someone", 1.0))
     finally:
         run(store.close())
     r = invoke(cfg, "link")

@@ -19,6 +19,8 @@ from wristcall.pairing import (
 from wristcall.ratelimit import RateLimiter
 from wristcall.storage import open_sqlite_storage
 
+ACCOUNT = "https://issuer.test#central-user-1"
+
 
 class Clock:
     def __init__(self, t: float = 1_000_000.0) -> None:
@@ -295,27 +297,29 @@ async def other_user(svc):
 
 
 async def test_pair_for_user_attestation_creates_device(svc, user):
-    r = await svc.pair_for_user(user.id, "Watch\x1b[2J", approval=False)
+    r = await svc.pair_for_user(user.id, "Watch\x1b[2J", approval=False, central_subject=ACCOUNT)
     assert isinstance(r, Paired)
     dev = await svc.authenticate(r.token)
     assert dev.user_id == user.id and dev.name == "Watch[2J"
+    assert dev.central_subject == ACCOUNT  # unlinking that account revokes it
     assert await svc.list_pending() == []
 
 
 async def test_pair_for_user_approval_creates_targeted_request(svc, user):
-    p = await svc.pair_for_user(user.id, "  ", approval=True)
+    p = await svc.pair_for_user(user.id, "  ", approval=True, central_subject=ACCOUNT)
     assert isinstance(p, Pending)
     assert isinstance(await svc.poll(p.poll_token), Pending)
     assert [(r.request_id, r.device_name) for r in await svc.pending_for(user.id)] == [(p.request_id, "watch")]
     assert await svc.approve(p.request_id, user.id, targeted_only=True) == "watch"
     paired = await svc.poll(p.poll_token)
     assert isinstance(paired, Paired)
-    assert (await svc.authenticate(paired.token)).user_id == user.id
+    dev = await svc.authenticate(paired.token)
+    assert dev.user_id == user.id and dev.central_subject == ACCOUNT  # the request's account, at delivery
     assert await svc.pending_for(user.id) == []
 
 
 async def test_cannot_approve_someone_elses_request(svc, user, other_user):
-    pending = await svc.pair_for_user(user.id, "watch", approval=True)
+    pending = await svc.pair_for_user(user.id, "watch", approval=True, central_subject=ACCOUNT)
     with pytest.raises(NotFound):
         await svc.approve(pending.request_id, other_user.id)
     with pytest.raises(NotFound):
@@ -327,7 +331,7 @@ async def test_cannot_approve_someone_elses_request(svc, user, other_user):
 
 
 async def test_denied_request_is_gone_for_the_device(svc, user):
-    p = await svc.pair_for_user(user.id, "Watch", approval=True)
+    p = await svc.pair_for_user(user.id, "Watch", approval=True, central_subject=ACCOUNT)
     assert await svc.deny(p.request_id, user.id) == "Watch"
     with pytest.raises(PairingGone, match="denied"):
         await svc.poll(p.poll_token)
@@ -339,7 +343,7 @@ async def test_denied_request_is_gone_for_the_device(svc, user):
 
 async def test_operator_denies_any_pending_request(svc_manual, user):
     anonymous = await svc_manual.pair(None, "Anon")
-    targeted = await svc_manual.pair_for_user(user.id, "Mine", approval=True)
+    targeted = await svc_manual.pair_for_user(user.id, "Mine", approval=True, central_subject=ACCOUNT)
     assert await svc_manual.deny(anonymous.request_id, None) == "Anon"
     assert await svc_manual.deny(targeted.request_id, None) == "Mine"
     for p in (anonymous, targeted):
@@ -356,11 +360,11 @@ async def test_user_cannot_deny_untargeted_request(svc_manual, user):
 
 async def test_targeted_pending_cap(svc, user, other_user):
     for _ in range(5):
-        await svc.pair_for_user(user.id, "watch", approval=True)
+        await svc.pair_for_user(user.id, "watch", approval=True, central_subject=ACCOUNT)
     with pytest.raises(PairingDenied):
-        await svc.pair_for_user(user.id, "watch", approval=True)
+        await svc.pair_for_user(user.id, "watch", approval=True, central_subject=ACCOUNT)
     # Someone else's queue is untouched.
-    assert isinstance(await svc.pair_for_user(other_user.id, "watch", approval=True), Pending)
+    assert isinstance(await svc.pair_for_user(other_user.id, "watch", approval=True, central_subject=ACCOUNT), Pending)
 
 
 async def test_targeted_requests_do_not_count_against_the_global_cap(svc_manual, user):
@@ -368,7 +372,7 @@ async def test_targeted_requests_do_not_count_against_the_global_cap(svc_manual,
         await svc_manual.pair(None, "anon")
     with pytest.raises(PairingDenied):
         await svc_manual.pair(None, "anon")
-    p = await svc_manual.pair_for_user(user.id, "mine", approval=True)
+    p = await svc_manual.pair_for_user(user.id, "mine", approval=True, central_subject=ACCOUNT)
     assert isinstance(p, Pending)
     # ... and the targeted request does not use up an anonymous slot either.
     assert p.request_id not in {r.request_id for r in await svc_manual.list_pending() if r.device_name == "anon"}
@@ -376,11 +380,11 @@ async def test_targeted_requests_do_not_count_against_the_global_cap(svc_manual,
 
 async def test_pair_for_user_checks_the_device_limit_early():
     s, _ = await service(max_devices_per_user=1)
-    await s.pair_for_user("u_a", "Watch 1", approval=False)
+    await s.pair_for_user("u_a", "Watch 1", approval=False, central_subject=ACCOUNT)
     with pytest.raises(DeviceLimit):
-        await s.pair_for_user("u_a", "Watch 2", approval=False)
+        await s.pair_for_user("u_a", "Watch 2", approval=False, central_subject=ACCOUNT)
     with pytest.raises(DeviceLimit):
-        await s.pair_for_user("u_a", "Watch 2", approval=True)
+        await s.pair_for_user("u_a", "Watch 2", approval=True, central_subject=ACCOUNT)
     assert await s.pending_for("u_a") == []
 
 
@@ -393,7 +397,7 @@ async def test_cli_style_approve_still_takes_untargeted(svc_manual, user):
 
 
 async def test_operator_approval_respects_the_target(svc_manual, user, other_user):
-    p = await svc_manual.pair_for_user(user.id, "Watch", approval=True)
+    p = await svc_manual.pair_for_user(user.id, "Watch", approval=True, central_subject=ACCOUNT)
     with pytest.raises(NotFound):
         await svc_manual.approve(p.request_id, other_user.id)
     assert await svc_manual.approve(p.request_id, user.id) == "Watch"
@@ -423,7 +427,7 @@ async def test_approve_filters_targets_before_the_collision_rule(svc, user, othe
 
 async def test_device_limit_holds_when_approved_requests_are_collected_later():
     s, _ = await service(max_devices_per_user=2)
-    requests = [await s.pair_for_user("u_a", f"Watch {i}", approval=True) for i in range(5)]
+    requests = [await s.pair_for_user("u_a", f"Watch {i}", approval=True, central_subject=ACCOUNT) for i in range(5)]
     for p in requests:
         await s.approve(p.request_id, "u_a", targeted_only=True)
     results = []

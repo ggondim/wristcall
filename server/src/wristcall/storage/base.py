@@ -38,15 +38,19 @@ class UserStore(Protocol):
         """Also deletes the user's devices, tokens and agents."""
         ...
 
-    async def link_central(self, user_id: str, subject: str) -> bool:
+    async def link_central(self, user_id: str, subject: str, now: float) -> bool:
         """Links the central account `subject` ("<issuer>#<sub>"), replacing the user's previous link.
 
-        False if the user does not exist; raises Conflict if another user has the subject. Idempotent.
+        Replacing a link with another account drops what the old one paired, as unlink_central does, in the same
+        transaction. False if the user does not exist; raises Conflict if another user has the subject (nothing
+        changes). Idempotent: the same subject again keeps everything.
         """
         ...
 
-    async def unlink_central(self, user_id: str) -> bool:
-        """True if the user had a link."""
+    async def unlink_central(self, user_id: str, now: float) -> int | None:
+        """Removes the link and, atomically, what it paired: revokes the user's active devices paired through that
+        account (deleting their push keys) and deletes its requests not delivered yet (pending or approved).
+        Returns how many devices it revoked; None if the user had no link (or does not exist)."""
         ...
 
     async def by_central(self, subject: str) -> User | None: ...
@@ -69,7 +73,11 @@ class TokenStore(Protocol):
 
 
 class DeviceStore(Protocol):
-    async def create(self, device_id: str, user_id: str, name: str, token_hash: str, now: float) -> Device: ...
+    async def create(
+        self, device_id: str, user_id: str, name: str, token_hash: str, now: float, central_subject: str | None = None
+    ) -> Device:
+        """central_subject: the central account it is paired through (unlinking it revokes the device)."""
+        ...
 
     async def by_token(self, token_hash: str) -> Device | None:
         """Active device with this token hash."""
@@ -127,9 +135,10 @@ class PairingStore(Protocol):
 
     async def add_request(
         self, poll_hash: str, request_id: str, device_name: str, now: float, expires_at: float,
-        target_user_id: str | None = None,
+        target_user_id: str | None = None, central_subject: str | None = None,
     ) -> None:
-        """target_user_id: the user who must approve it (central account flow); None for the code and manual flows."""
+        """target_user_id: the user who must approve it (central account flow); None for the code and manual flows.
+        central_subject: the central account that made it (its device carries it)."""
         ...
 
     async def pending_ids(self, now: float) -> set[str]: ...

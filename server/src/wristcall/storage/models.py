@@ -46,6 +46,7 @@ class Device:
     name: str
     created_at: float
     revoked_at: float | None
+    central_subject: str | None = None  # the central account it was paired through; None: a code or the operator
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,7 @@ class PairingRequest:
     status: str
     expires_at: float
     target_user_id: str | None = None
+    central_subject: str | None = None  # the central account that made it; its device carries it too
 
 
 @dataclass(frozen=True)

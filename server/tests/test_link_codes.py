@@ -215,7 +215,7 @@ async def test_startup_is_silent_once_a_user_is_linked(st):
     users = UserService(st)
     ana = await users.create("ana")
     bob = await users.create("bob")
-    await st.users.link_central(bob.id, "https://issuer.test#sub-1")
+    await st.users.link_central(bob.id, "https://issuer.test#sub-1", 1.0)
     assert await startup(st, central()) is None
     await st.users.delete(ana.id)
     assert await startup(st, central()) is None

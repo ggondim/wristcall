@@ -4,6 +4,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-10-17
+
+### Changed
+
+- Removing a user's central account link revokes the devices paired through that account: `DELETE
+  /v1/account/link`, `wristcall users unlink <handle>`, and linking the user to a different account (linking the same
+  account again changes nothing). Their push keys are deleted, and the account's pairing requests not delivered yet
+  (pending, or approved but not collected by the watch) are dropped: the watch's next poll gets `410`. Devices paired
+  with a code or approved by the operator stay. `wristcall users unlink` prints how many devices it revoked; the log
+  says `unlinked account; N devices revoked` (never the account).
+- Only devices paired through the account from 0.8.2 on fall: older ones carry no mark and stay paired (revoke them
+  with `wristcall devices revoke`).
+- Database schema 9 (new `devices.central_subject` and `pairing_requests.central_subject` columns, null for existing
+  rows). The server upgrades it on start; 0.8.1 does not open a database after 0.8.2 has run (restore a backup to go
+  back).
+
 ## [watch-0.5.1] - 2026-10-17
 
 Watch app 0.5.1 (build 7), embedded in iPhone app 0.2.2. For Cloud 0.4.1 and servers 0.8.0 or later. No Cloud or server change.

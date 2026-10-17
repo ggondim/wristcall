@@ -162,6 +162,12 @@ MIGRATIONS: list[list[str]] = [
     [
         "ALTER TABLE agents ADD COLUMN color TEXT",
     ],
+    # 9: the central account a device was paired through, or a request was made with (null: a code, the operator or
+    # a server before 0.8.2), so removing that link revokes its devices. Rolling back to 0.8.1 needs a backup.
+    [
+        "ALTER TABLE devices ADD COLUMN central_subject TEXT",
+        "ALTER TABLE pairing_requests ADD COLUMN central_subject TEXT",
+    ],
 ]
 
 LATEST = len(MIGRATIONS)

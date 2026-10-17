@@ -127,7 +127,7 @@ or a pairing code), and the token only opens the door to pairing.
 | Route | Body | Responses |
 |---|---|---|
 | `POST /v1/account/link` | `{"token": "<per-server token>"}` with `Authorization: Bearer <API token>`, or `{"token": "...", "code": "12345678"}` without `Authorization` | With an API token: `200 {"linked":true,"issuer"}` (a `code` sent along is ignored and not spent). With a code: `200 {"linked":true,"issuer","user":{"id","handle"},"api_token"}`. Errors below |
-| `DELETE /v1/account/link` | | `204`: the user's link removed. `404 {"error":"not_found"}`: not linked. `401`, `403 forbidden` (device token) |
+| `DELETE /v1/account/link` | | `204`: the user's link removed, and the devices paired through it revoked (0.8.2+). `404 {"error":"not_found"}`: not linked. `401`, `403 forbidden` (device token) |
 
 Errors of `POST /v1/account/link`, in the order they are checked. Like every error of this API, the body is
 `{"error": <code>, "message": <text>}`:
@@ -147,7 +147,8 @@ Errors of `POST /v1/account/link`, in the order they are checked. Like every err
 
 Rules:
 - A user links one central account; one central account links one user per server. Linking again with the same user
-  replaces the previous link.
+  replaces the previous link; from 0.8.2 on, replacing it with a different account revokes what the old one paired,
+  as unlinking does (the same account again keeps everything).
 - The central token is checked before the code is claimed, so a bad token or an unreachable issuer
   does not spend the code. A code is spent as soon as it is claimed, even when the link then fails
   with `409 conflict`: ask for a new one.
@@ -156,8 +157,11 @@ Rules:
   sees a code first, for example a code shown on a screen, links to that user and gets a full management
   token (agents, devices, webhooks, unlinking). Treat the code as a secret until it is used. A token
   created this way can be revoked with `wristcall users tokens revoke`.
-- `DELETE /v1/account/link` or `wristcall users unlink <handle>` removes the link. Devices already
-  paired stay paired.
+- `DELETE /v1/account/link` or `wristcall users unlink <handle>` removes the link. From 0.8.2 on it also revokes the
+  devices paired through that account (`POST /v1/pair/account`, right away or after approval; their push keys go too)
+  and deletes its pairing requests not delivered yet, approved or not: the watch's next `POST /v1/pair/poll` gets
+  `410 gone`. Devices paired with a code or approved by the operator stay, as do devices paired through the account
+  by a server before 0.8.2 (they carry no mark).
 
 ### Link URL
 
@@ -247,7 +251,8 @@ A request lives 10 minutes. Each user can have 5 pending at once.
   Cloud whether a login is still valid. A per-server token lives 5 minutes, and the Cloud issues one for as long as
   the central account's access token is valid, so a session revoked at the central account keeps working until that
   token expires: keep access tokens short (minutes) at the account issuer.
-- `unlink` does not revoke devices already paired: use `wristcall devices revoke` or `DELETE /v1/devices/{id}`.
+- `unlink` revokes the devices paired through the account (0.8.2+). Others, and those paired through it before
+  0.8.2, need `wristcall devices revoke` or `DELETE /v1/devices/{id}`.
 - In `attestation` mode a leaked per-server token of a linked account pairs a device until it expires; revoke the
   device afterwards. `approval` mode puts the user between the token and the device.
 - A per-server token works only at the server whose URL it names: a server operator who receives one cannot replay it

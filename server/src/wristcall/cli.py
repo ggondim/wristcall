@@ -309,17 +309,18 @@ def users_edit(
 
 @users_app.command("unlink")
 def users_unlink(handle: str, config: ConfigOpt = DEFAULT_CONFIG) -> None:
-    """Removes the user's link to the central account (the link itself is made in the app)."""
+    """Removes the user's link to the central account (the link itself is made in the app) and revokes the devices
+    paired through that account. Devices paired with a code stay."""
 
     async def body(ctx: Ctx):
         user = await ctx.users.resolve(handle)
-        return user, await ctx.storage.users.unlink_central(user.id)
+        return user, await ctx.storage.users.unlink_central(user.id, time.time())
 
-    u, unlinked = _run(config, body)
-    if not unlinked:
+    u, revoked = _run(config, body)
+    if revoked is None:
         typer.echo(f"error: {u.handle} is not linked to a central account", err=True)
         raise typer.Exit(1)
-    typer.echo(f"Unlinked {u.handle} from the central account.")
+    typer.echo(f"Unlinked {u.handle} from the central account; {revoked} device{'' if revoked == 1 else 's'} revoked.")
 
 
 @users_app.command("rm")

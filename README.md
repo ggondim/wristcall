@@ -164,7 +164,8 @@ central_account:
   - `attestation`: any login linked to a user pairs a device right away.
 
 A user has to be linked first: with an API token (`POST /v1/account/link` from the app, or
-the app sends a pairing code from `wristcall pair`). Remove the link with `wristcall users unlink <handle>`.
+the app sends a pairing code from `wristcall pair`). Remove the link with `wristcall users unlink <handle>`: the
+devices paired through the account are revoked with it.
 Routes and error codes: [docs/protocol.md](docs/protocol.md#central-account-optional).
 
 ### Link QR code
@@ -200,8 +201,10 @@ Know before you turn it on:
   show codes in public places.
 - The server does not ask the Cloud whether a login was revoked: a per-server token lives 5 minutes, and the Cloud
   issues one while the central account's access token is valid. Configure short access tokens at the account issuer.
-- `users unlink` does not revoke devices already paired (`wristcall devices revoke`). In `attestation`
-  mode a leaked login pairs a device until the token expires.
+- `users unlink` (or `DELETE /v1/account/link`, or linking the user to another account) revokes the devices paired
+  through the account and drops its pairing requests not collected yet. Devices paired with a code, and devices
+  paired through the account before server 0.8.2, stay (`wristcall devices revoke`). In `attestation` mode a leaked
+  login pairs a device until the token expires.
 - A per-server token is made for this server's URL only: its operator cannot replay it at another server or at the
   Cloud API. Apps ask the Cloud of their own configuration, never one a server names.
 - Keys of the Cloud are cached for 1 hour (stale keys are used if the Cloud is down; at most one fetch a minute).
@@ -335,7 +338,7 @@ With more than one user, add `--user <handle>` to `pair`, `devices list|approve|
 | `wristcall devices revoke <id>` | revokes a watch |
 | `wristcall devices assign <id> --user <handle>` | gives a watch to a user |
 | `wristcall users list\|add\|edit\|rm` | manages users (`list` shows which are linked to the central account) |
-| `wristcall users unlink <handle>` | removes a user's link to the central account |
+| `wristcall users unlink <handle>` | removes a user's link to the central account and revokes the devices paired through it |
 | `wristcall users tokens add\|list\|revoke` | API tokens for the management API |
 | `wristcall agents list\|show\|add\|edit\|rm` | manages a user's agents (`--retention` for the history) |
 | `wristcall history list\|show\|rm\|clear\|export\|redeliver` | a user's call history |
