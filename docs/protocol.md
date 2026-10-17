@@ -57,7 +57,7 @@ Rules:
 - A device belongs to the user who issued the code (`wristcall pair --user`, or
   `POST /v1/pairing-codes`) or who approved the request. `GET /v1/me` lists that
   user's agents in the watch's order: `agents` holds the agent summary
-  (`{"id","slug","display_name","icon","call_type","turn_end"}`, see
+  (`{"id","slug","display_name","icon","color","call_type","turn_end"}`, see
   [Agents](#agents)); `profiles` repeats `slug` and `display_name` as `name` and
   `display_name`, the 0.2.x shape. Clients that call "the first one" call the
   user's first agent.
@@ -278,7 +278,7 @@ Text frames are JSON control messages. Binary frames are audio.
    ```json
    {"type":"session.ready","session_id":"9f2c...","profile":{"name":"default","display_name":"Agent"},
     "agent":{"id":"ag_3f9c0a1b2c3d","slug":"default","display_name":"Agent","icon":"waveform",
-             "call_type":"conversation","turn_end":"auto"},
+             "color":null,"call_type":"conversation","turn_end":"auto"},
     "turn_end":"auto","audio_out":{"codec":"pcm16","sample_rate":24000,"channels":1}}
    ```
    `agent` is the agent being called and `turn_end` the mode in force for this
@@ -556,6 +556,7 @@ An agent is what a call talks to. Its summary, as devices see it:
 | `slug` | short name, unique per user: 1 to 32 of `a-z`, `0-9`, `-`, starting with a letter or digit |
 | `display_name` | name on the watch (1 to 64 characters) |
 | `icon` | SF Symbol name (default `waveform`) |
+| `color` | one of `red`, `orange`, `yellow`, `green`, `mint`, `teal`, `blue`, `indigo`, `purple`, `pink` (lowercase), or `null` when none was set. Optional on create and update; an update without `color` keeps it, and there is no way to clear it. Any other value is a `422` |
 | `call_type` | `conversation` (talk and listen), `one-shot` or `monologue` (only listens; see [One-way calls](#one-way-calls-one-shot-monologue)) |
 | `turn_end` | `auto` or `manual`: the mode used when `session.start` has no `turn_end` |
 

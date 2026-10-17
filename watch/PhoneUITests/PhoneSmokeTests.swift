@@ -1,15 +1,17 @@
 import XCTest
 
-/// Smoke test of the iPhone app against a running test server (`make -C watch test-server`): add a server,
-/// open its agents, create a one-shot agent, open History and Settings, then remove the server again (so a rerun
-/// starts from the same state; a failed run may leave it, and adding the same address again just replaces it).
+/// Smoke test of the iPhone app against a running test server (`make -C watch test-server`): from the welcome
+/// (`-resetOnboarding`) through the plan screen ("Not now"), add a server in Settings > Servers, open its agents,
+/// create a one-shot agent, open History and Settings, then remove the server again (so a rerun starts from the
+/// same state; a failed run may leave it, and adding the same address again just replaces it). The app makes a
+/// silent account on the build's Cloud (`make test-ios-ui` requires an explicit `CLOUD_URL` for that).
 /// Every screen is attached as a screenshot (`XCTAttachment`, kept in the result bundle) and, when
 /// `WRISTCALL_UI_SHOTS` names a folder, also written there as `t12-<name>.png`.
 ///
 /// Runs only through the `WristcallPhoneUI` scheme (`make -C watch test-ios-ui`), never in CI. Variables reach the
 /// test process with the `TEST_RUNNER_` prefix:
 ///
-///     TEST_RUNNER_WRISTCALL_UI_TOKEN=wc_pat_... make -C watch test-ios-ui
+///     CLOUD_URL=http://127.0.0.1:8090 TEST_RUNNER_WRISTCALL_UI_TOKEN=wc_pat_... make -C watch test-ios-ui
 ///
 /// `WRISTCALL_UI_TOKEN` (a personal token of the test server) is required, the test skips without it;
 /// `WRISTCALL_UI_SERVER` defaults to `http://127.0.0.1:8765`.
@@ -34,6 +36,8 @@ final class PhoneSmokeTests: XCTestCase {
         // A slug of its own per run: the test only touches the agent it created.
         slug = "ui-\(UUID().uuidString.prefix(8).lowercased())"
         app = XCUIApplication()
+        // The welcome comes back (unless a server is still there from a failed run: then the tabs open).
+        app.launchArguments = ["-resetOnboarding"]
         app.launch()
     }
 
@@ -51,8 +55,19 @@ final class PhoneSmokeTests: XCTestCase {
     func testAddServerCreateAgentHistorySettings() throws {
         let timeout: TimeInterval = 15
 
-        // 1. Add the server.
-        XCTAssertTrue(app.navigationBars["Servers"].waitForExistence(timeout: timeout))
+        // 1. The onboarding: welcome, then "Not now" on the plan screen.
+        let start = app.buttons["Get started"]
+        if start.waitForExistence(timeout: timeout) {
+            shot("0-welcome")
+            start.tap()
+            let notNow = app.buttons["Not now"]
+            XCTAssertTrue(notNow.waitForExistence(timeout: timeout), "no plan screen")
+            notNow.tap()
+        }
+        XCTAssertTrue(app.tabBars.buttons["Agents"].waitForExistence(timeout: timeout), "the tabs never showed")
+
+        // 2. Add the server: Settings > Servers > Add server.
+        openServers()
         app.buttons["Add server"].firstMatch.tap()
         let address = app.textFields["Address (https://…)"]
         XCTAssertTrue(address.waitForExistence(timeout: timeout))
@@ -72,7 +87,7 @@ final class PhoneSmokeTests: XCTestCase {
         XCTAssertFalse(app.navigationBars["Add server"].exists)
         shot("2-servers")
 
-        // 2. Its agents.
+        // 3. Its agents.
         row.tap()
         let agentsLink = app.buttons["Agents"].firstMatch
         XCTAssertTrue(agentsLink.waitForExistence(timeout: timeout))
@@ -86,7 +101,7 @@ final class PhoneSmokeTests: XCTestCase {
         XCTAssertEqual(XCTWaiter().wait(for: [enabled], timeout: timeout), .completed, "the providers never loaded")
         shot("4-agents")
 
-        // 3. A one-shot agent with a webhook.
+        // 4. A one-shot agent with a webhook.
         newAgent.tap()
         let nameField = app.textFields["Name"]
         XCTAssertTrue(nameField.waitForExistence(timeout: timeout))
@@ -112,17 +127,15 @@ final class PhoneSmokeTests: XCTestCase {
         XCTAssertTrue(created.waitForExistence(timeout: timeout), "the new agent never showed in the list")
         shot("6-agent-created")
 
-        // 4. History and Settings.
+        // 5. History and Settings.
         app.tabBars.buttons["History"].tap()
         XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: timeout))
         shot("7-history")
-        app.tabBars.buttons["Settings"].tap()
-        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: timeout))
-        XCTAssertTrue(app.staticTexts["Version"].exists)
+        openSettings()
         shot("8-settings")
 
-        // 5. Remove the server again, so a rerun starts from the same state.
-        app.tabBars.buttons["Servers"].tap()
+        // 6. Remove the server again, so a rerun starts from the same state.
+        openServers()
         let added = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Smoke server")).firstMatch
         XCTAssertTrue(added.waitForExistence(timeout: timeout))
         added.tap()
@@ -146,6 +159,24 @@ final class PhoneSmokeTests: XCTestCase {
     }
 
     // MARK: Helpers
+
+    /// The root of the Settings tab (the servers and agents screens are pushed on its stack).
+    private func openSettings() {
+        let settings = app.tabBars.buttons["Settings"]
+        settings.tap()
+        // A second tap on the selected tab pops its stack back to the root.
+        if !app.navigationBars["Settings"].waitForExistence(timeout: 2) { settings.tap() }
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 15), "no Settings screen")
+    }
+
+    /// Settings > Servers.
+    private func openServers() {
+        openSettings()
+        let servers = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Servers")).firstMatch
+        XCTAssertTrue(servers.waitForExistence(timeout: 15), "no Servers row in Settings")
+        servers.tap()
+        XCTAssertTrue(app.navigationBars["Servers"].waitForExistence(timeout: 15), "no Servers screen")
+    }
 
     /// Opens a menu picker whose row starts with `title` and chooses `option`.
     private func pick(_ title: String, _ option: String) {

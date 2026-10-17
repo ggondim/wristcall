@@ -45,6 +45,18 @@ struct CloudClientTests {
         #expect(!config.serverTokens)
     }
 
+    @Test func configDecodesSessions() async throws {
+        let withSessions = StubHost(replies: [(200, """
+        {"issuer":"https://auth.test","project_id":null,"clients":{"ios":"i"},"scopes":["openid"],"server_tokens":true,
+         "push":{"apns":false,"webpush":false,"vapid_public_key":null,"apns_topics":[]},
+         "sessions":{"enabled":true,"zitadel_max_age_s":600,"legacy_zitadel_tokens":true}}
+        """)])
+        let config = try await client(withSessions).config()
+        #expect(config.sessions == .init(enabled: true, zitadelMaxAgeS: 600, legacyZitadelTokens: true))
+        let without = StubHost(replies: [(200, AccountFixtures.config(issuer: "https://auth.test"))])
+        #expect(try await client(without).config().sessions == nil)
+    }
+
     @Test func serversDecode() async throws {
         let host = StubHost(replies: [(200, #"{"servers":[\#(Self.serverJSON)]}"#)])
         let servers = try await client(host).servers(accessToken: "at")

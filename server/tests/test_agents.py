@@ -278,7 +278,8 @@ async def test_delete(svc):
 async def test_summary_has_no_endpoints_or_prompts(svc):
     a = await svc.create("u_a", {"slug": "one", "system_prompt": "secret plan"})
     assert agent_summary(a) == {
-        "id": a.id, "slug": "one", "display_name": "one", "icon": "waveform", "call_type": "conversation", "turn_end": "auto",
+        "id": a.id, "slug": "one", "display_name": "one", "icon": "waveform", "color": None, "call_type": "conversation",
+        "turn_end": "auto",
     }
 
 
@@ -500,3 +501,12 @@ async def test_changing_the_retention_moves_the_expiry_of_past_calls():
     updated = await svc.update("u_a", "note", {"retention_days": None})  # back to the operator's default
     assert updated.spec.retention_days is None
     assert (await st.calls.get("u_a", "c_1")).expires_at == 1000.0 + 30 * 86_400
+
+
+def test_agent_color_type_matches_the_list():
+    from typing import get_args
+
+    from wristcall.agents import AGENT_COLORS, AgentColor
+
+    # The CLI help and validation read the tuple, the API model the Literal: they must not drift apart.
+    assert get_args(AgentColor) == AGENT_COLORS

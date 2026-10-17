@@ -60,7 +60,7 @@ struct APIHTTP: Sendable {
         }
     }
 
-    static func error(status: Int, data: Data) -> APIError {
-        APIError.error(status: status, data: data)
+    static func error(status: Int, data: Data, headers: [String: String] = [:]) -> APIError {
+        APIError.error(status: status, data: data, headers: headers)
     }
 }

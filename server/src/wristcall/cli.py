@@ -15,7 +15,7 @@ import httpx
 import typer
 import uvicorn
 
-from .agents import Agent, AgentError, AgentService, agent_detail
+from .agents import AGENT_COLORS, Agent, AgentError, AgentService, agent_detail
 from .bootstrap import bootstrap
 from .config import AppConfig, ConfigError, HistoryConfig, load_config
 from .directory_client import DirectoryClient, DirectoryError
@@ -403,6 +403,7 @@ def _agent_input(
     from_json: Path | None,
     name: str | None,
     icon: str | None,
+    color: str | None,
     language: str | None,
     turn_end: str | None,
     silence_ms: int | None,
@@ -429,7 +430,7 @@ def _agent_input(
         for key in ("id", "created_at", "updated_at", "effective_retention_days"):  # `agents show` output fed back
             data.pop(key, None)
     flags: dict[str, Any] = {
-        "display_name": name, "icon": icon, "language": language, "turn_end": turn_end, "call_type": call_type,
+        "display_name": name, "icon": icon, "color": color, "language": language, "turn_end": turn_end, "call_type": call_type,
         "position": position, "fallback_message": fallback,
     }
     data.update({k: v for k, v in flags.items() if v is not None})
@@ -457,6 +458,7 @@ def _retention(value: str) -> int | str | None:
 
 NameOpt = Annotated[str | None, typer.Option("--name", help="Display name on the watch.")]
 IconOpt = Annotated[str | None, typer.Option("--icon", help="SF Symbol name, e.g. waveform, figure.run.")]
+ColorOpt = Annotated[str | None, typer.Option("--color", help="Agent color: " + ", ".join(AGENT_COLORS) + ".")]
 LanguageOpt = Annotated[str | None, typer.Option("--language", help="Language code for STT, e.g. pt, en.")]
 TurnEndOpt = Annotated[str | None, typer.Option("--turn-end", help="auto (silence ends the turn) or manual (mute ends it).")]
 SilenceOpt = Annotated[int | None, typer.Option("--silence-ms", help="Silence that ends a turn in auto mode.")]
@@ -520,6 +522,7 @@ def agents_add(
     user: UserOpt = None,
     name: NameOpt = None,
     icon: IconOpt = None,
+    color: ColorOpt = None,
     language: LanguageOpt = None,
     turn_end: TurnEndOpt = None,
     silence_ms: SilenceOpt = None,
@@ -538,7 +541,7 @@ def agents_add(
 
     async def body(ctx: Ctx):
         data = _agent_input(
-            from_json, name, icon, language, turn_end, silence_ms, call_type, position, stt, action, tts, prompt,
+            from_json, name, icon, color, language, turn_end, silence_ms, call_type, position, stt, action, tts, prompt,
             prompt_file, fallback, retention,
         )
         data["slug"] = slug
@@ -556,6 +559,7 @@ def agents_edit(
     slug: Annotated[str | None, typer.Option("--slug", help="New slug.")] = None,
     name: NameOpt = None,
     icon: IconOpt = None,
+    color: ColorOpt = None,
     language: LanguageOpt = None,
     turn_end: TurnEndOpt = None,
     silence_ms: SilenceOpt = None,
@@ -574,7 +578,7 @@ def agents_edit(
 
     async def body(ctx: Ctx):
         data = _agent_input(
-            from_json, name, icon, language, turn_end, silence_ms, call_type, position, stt, action, tts, prompt,
+            from_json, name, icon, color, language, turn_end, silence_ms, call_type, position, stt, action, tts, prompt,
             prompt_file, fallback, retention,
         )
         if slug is not None:

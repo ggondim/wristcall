@@ -4,7 +4,7 @@ import Foundation
 /// per-server tokens. Every route but `/v1/config` takes the account's access token. Errors are `APIError`.
 public struct CloudClient: Sendable {
     public let cloud: URL
-    private let http: APIHTTP
+    let http: APIHTTP
 
     public init(cloud: URL, session: URLSession = .shared, timeout: TimeInterval = 15) {
         self.cloud = cloud
@@ -33,19 +33,19 @@ public struct CloudClient: Sendable {
         let canonical = ServerAddress.canonical(serverURL)
         let body = NewServer(name: name, url: canonical, linked: linked)
         let request = try http.request(url("v1/servers"), method: "POST", bearer: accessToken, json: body)
-        let (status, data, _) = try await http.send(request)
+        let (status, data, headers) = try await http.send(request)
         switch status {
         case 201:
             return try http.decode(data)
         case 409:
-            let conflict = APIHTTP.error(status: status, data: data)
+            let conflict = APIHTTP.error(status: status, data: data, headers: headers)
             let existing = try await servers(accessToken: accessToken).first { server in
                 URL(string: server.url).map(ServerAddress.canonical) == canonical
             }
             guard let existing else { throw conflict }
             return existing
         default:
-            throw APIHTTP.error(status: status, data: data)
+            throw APIHTTP.error(status: status, data: data, headers: headers)
         }
     }
 
@@ -57,8 +57,8 @@ public struct CloudClient: Sendable {
 
     /// `DELETE /v1/servers/{id}`; `404` counts as done.
     public func deleteServer(id: String, accessToken: String) async throws {
-        let (status, data, _) = try await http.send(try http.request(server(id), method: "DELETE", bearer: accessToken))
-        guard status == 204 || status == 404 else { throw APIHTTP.error(status: status, data: data) }
+        let (status, data, headers) = try await http.send(try http.request(server(id), method: "DELETE", bearer: accessToken))
+        guard status == 204 || status == 404 else { throw APIHTTP.error(status: status, data: data, headers: headers) }
     }
 
     /// `PUT /v1/servers/{id}/agents`: the full list.
@@ -66,8 +66,8 @@ public struct CloudClient: Sendable {
         let request = try http.request(
             server(serverID).appending(path: "agents"), method: "PUT", bearer: accessToken, json: AgentList(agents: agents)
         )
-        let (status, data, _) = try await http.send(request)
-        guard status == 200 else { throw APIHTTP.error(status: status, data: data) }
+        let (status, data, headers) = try await http.send(request)
+        guard status == 200 else { throw APIHTTP.error(status: status, data: data, headers: headers) }
     }
 
     /// `POST /v1/server-tokens` for `audience` (the server's URL, canonical form).
@@ -78,20 +78,20 @@ public struct CloudClient: Sendable {
 
     // MARK: - Plumbing
 
-    private func url(_ path: String) -> URL { cloud.appending(path: path) }
+    func url(_ path: String) -> URL { cloud.appending(path: path) }
 
     /// One path segment per server id: an id can never add segments (`/` is percent-encoded).
     private func server(_ id: String) -> URL { url("v1/servers").appending(component: id) }
 
-    private func expect<T: Decodable>(_ success: Int, _ request: URLRequest) async throws -> T {
-        let (status, data, _) = try await http.send(request)
-        guard status == success else { throw APIHTTP.error(status: status, data: data) }
+    func expect<T: Decodable>(_ success: Int, _ request: URLRequest) async throws -> T {
+        let (status, data, headers) = try await http.send(request)
+        guard status == success else { throw APIHTTP.error(status: status, data: data, headers: headers) }
         return try http.decode(data)
     }
 
-    private func expectNoContent(_ request: URLRequest) async throws {
-        let (status, data, _) = try await http.send(request)
-        guard status == 204 else { throw APIHTTP.error(status: status, data: data) }
+    func expectNoContent(_ request: URLRequest) async throws {
+        let (status, data, headers) = try await http.send(request)
+        guard status == 204 else { throw APIHTTP.error(status: status, data: data, headers: headers) }
     }
 }
 

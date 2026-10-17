@@ -34,8 +34,8 @@ public struct HistoryClient: Sendable {
 
     /// `DELETE /v1/calls/{id}`.
     public func deleteCall(_ id: String) async throws {
-        let (status, data, _) = try await http.send(request(callURL(id), "DELETE"))
-        guard status == 204 else { throw APIHTTP.error(status: status, data: data) }
+        let (status, data, headers) = try await http.send(request(callURL(id), "DELETE"))
+        guard status == 204 else { throw APIHTTP.error(status: status, data: data, headers: headers) }
     }
 
     /// `DELETE /v1/calls?agent=…`, or `?all=true` for `agent == nil`: how many calls were deleted. A blank agent
@@ -67,7 +67,7 @@ public struct HistoryClient: Sendable {
         var request = try request(calls.appending(component: "export"), "GET", query: items)
         request.setValue("*/*", forHTTPHeaderField: "Accept")
         let (status, data, headers) = try await http.send(request)
-        guard status == 200 else { throw APIHTTP.error(status: status, data: data) }
+        guard status == 200 else { throw APIHTTP.error(status: status, data: data, headers: headers) }
         let fallback = "wristcall-history.\(format.rawValue)"
         return HistoryExport(filename: Self.filename(from: headers["content-disposition"], fallback: fallback), data: data)
     }

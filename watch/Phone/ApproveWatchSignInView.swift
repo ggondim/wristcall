@@ -22,7 +22,8 @@ enum DeviceVerification {
     }
 }
 
-/// When the approval sheet is up: the watch sent a login code (still valid), the account is signed in here,
+/// When the approval sheet is up: the watch sent a login code (still valid), the account here is a migrated
+/// one (C9: a silent account has no Zitadel user to approve with),
 /// and the user neither closed the sheet for that very code nor approved it from Settings. While a device page
 /// opened from the sheet is up, the sheet stays (even once the code expired or the watch signed in): the page
 /// is never left without the screen that waits for it. A page opened from Settings never brings the sheet
@@ -33,7 +34,7 @@ enum WatchSignInSheet {
         if account.watchApproval == .open {
             return account.watchApprovalOrigin == .sheet ? account.approvingCode : nil
         }
-        guard account.state == .signedIn, let code = link.incomingDeviceCode,
+        guard account.state == .ready, account.isMigratedAccount, let code = link.incomingDeviceCode,
               code != dismissed, code != account.settingsApprovedCode
         else { return nil }
         return code

@@ -115,9 +115,12 @@ function Confirm({ link, model, account }: { link: ServerLink; model: AddServerM
           )
         ) : null}
         {APP_OPENS_LINKS ? (
-          <a class="button quiet" href={appLinkURL(link)}>
-            Open in wristcall
-          </a>
+          <>
+            <a class="button quiet" href={appLinkURL(link)}>
+              Open in wristcall
+            </a>
+            <p class="footnote">Requires the wristcall iPhone app.</p>
+          </>
         ) : null}
       </div>
       {account === null ? (

@@ -117,16 +117,30 @@ public actor AccountSession {
     /// `.signedOut`; a network failure keeps them. A refresh outlived by `signIn` or `signOut` is discarded:
     /// its waiters start over with the new state (the new tokens, or `.signedOut`).
     public func accessToken() async throws -> String {
+        try await token(forcing: false)
+    }
+
+    /// A new access token: refreshes at the provider even when the current one is still valid (the Cloud wants a
+    /// recent `iat`, e.g. to move an old Zitadel login to a device session). Goes through the same single refresh
+    /// as `accessToken()`: parallel callers share it, and the result is saved the same way.
+    public func freshAccessToken() async throws -> String {
+        try await token(forcing: true)
+    }
+
+    private func token(forcing: Bool) async throws -> String {
+        var forcing = forcing
         while true {
             if let refreshing {
                 switch await refreshing.task.result {
                 case .success(let tokens): return tokens.accessToken
-                case .failure(let error) where error is Superseded: continue
+                case .failure(let error) where error is Superseded:
+                    forcing = false // the tokens it was renewing were replaced: the new ones are new enough
+                    continue
                 case .failure(let error): throw error
                 }
             }
             guard let tokens = try currentTokens() else { throw AccountError.signedOut }
-            if tokens.isFresh(at: now()) { return tokens.accessToken }
+            if !forcing, tokens.isFresh(at: now()) { return tokens.accessToken }
             guard let refreshToken = tokens.refreshToken else {
                 // Nothing to renew it with: the session is over.
                 try? store.delete()
@@ -143,24 +157,12 @@ public actor AccountSession {
             if refreshing?.id == id { refreshing = nil }
             switch result {
             case .success(let tokens): return tokens.accessToken
-            case .failure(let error) where error is Superseded: continue
+            case .failure(let error) where error is Superseded:
+                forcing = false
+                continue
             case .failure(let error): throw error
             }
         }
-    }
-
-    /// A per-server token for `server`, only when the server's central account is this Cloud
-    /// (`health.account.issuer` against the Cloud URL, canonical forms). The reply must name `server` as audience.
-    public func serverToken(for server: URL, health: ServerHealth) async throws -> String {
-        guard let account = health.account else { throw AccountError.serverWithoutAccount }
-        guard let issuer = URL(string: account.issuer),
-              ServerAddress.canonical(issuer) == ServerAddress.canonical(cloud)
-        else { throw AccountError.foreignIssuer(account.issuer) }
-        let token = try await cloudClient.serverToken(audience: server, accessToken: try await accessToken())
-        guard URL(string: token.audience).map(ServerAddress.canonical) == ServerAddress.canonical(server) else {
-            throw APIError.malformedResponse
-        }
-        return token.token
     }
 
     /// Deletes the tokens, then revokes the refresh token (the access token when there is none) at the

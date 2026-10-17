@@ -250,9 +250,22 @@ final class FakeServerAPI: ServerAPI, @unchecked Sendable {
         return try linkResult.get()
     }
 
+    var unlinkError: (any Error)?
+
+    func unlinkAccount() async throws {
+        calls.append("unlinkAccount")
+        if let unlinkError { throw unlinkError }
+    }
+
     func linkAccount(serverToken: String, code: PairingCode) async throws -> AccountLink {
         calls.append("linkAccountWithCode")
         linkRequests.append((serverToken, code.digits))
+        return try linkResult.get()
+    }
+
+    func linkAccount(serverToken: String, code: LinkCode) async throws -> AccountLink {
+        calls.append("linkAccountWithLinkCode")
+        linkRequests.append((serverToken, code.value))
         return try linkResult.get()
     }
 }

@@ -11,14 +11,17 @@ struct ApproveWatchSignInTests {
 
     let world = AccountWorld()
 
-    func account(signedIn: Bool, web: any WebAuthenticator = FakeWeb(error: CancellationError())) async -> AccountModel {
-        let tokens = signedIn
-            ? InMemoryTokenStore(TokenSet(accessToken: "fresh-at", refreshToken: "rt", expiresAt: Self.clock.addingTimeInterval(3600)))
-            : InMemoryTokenStore()
-        let session = AccountSession(cloud: world.cloud.url, kind: .ios, store: tokens, session: .stubbed(), now: { Self.clock })
-        let model = AccountModel(cloudURL: world.cloud.url, session: session, web: web, state: AppState(store: InMemoryManagedServerStore()))
-        await model.restore()
-        return model
+    /// Ready in the migrated account (`zitadel` identity) by default; `migrated: false` is a silent account,
+    /// `signedIn: false` an iPhone waiting for a sign-in (`.needsSignIn`).
+    func account(
+        signedIn: Bool, migrated: Bool = true, web: any WebAuthenticator = FakeWeb(error: CancellationError())
+    ) async -> AccountModel {
+        let id = migrated ? AccountWorld.zitadelAccount : "acc_1"
+        world.addAccount(id, AccountWorld.Account(identities: migrated ? ["zitadel"] : []))
+        let rig = signedIn
+            ? AccountRig(world, session: world.storedSession(id), web: web)
+            : AccountRig(world, lastID: id, web: web)
+        return await rig.started()
     }
 
     func link() -> WatchLink {
@@ -66,7 +69,10 @@ struct ApproveWatchSignInTests {
     @Test func unavailableWithoutCloudShowsNoSheet() async {
         let link = link()
         link.receive(.deviceCode(userCode: "ZXSG-KCPN", expiresAt: Self.clock.timeIntervalSince1970 + 600))
-        let model = AccountModel(cloudURL: nil, session: nil, web: FakeWeb(error: CancellationError()), state: AppState(store: InMemoryManagedServerStore()))
+        let model = AccountModel(
+            cloudURL: nil, session: nil, keys: InMemoryAccountKeyStore(), legacy: nil, web: FakeWeb(error: CancellationError()),
+            state: AppState(store: InMemoryManagedServerStore()), device: CloudDeviceInfo(name: "iPhone", platform: .ios)
+        )
         #expect(WatchSignInSheet.code(link: link, account: model, dismissed: nil) == nil)
     }
 
@@ -82,6 +88,36 @@ struct ApproveWatchSignInTests {
         // The page never comes back to the app: closing it ends the step.
         #expect(model.watchApproval == .done)
         #expect(AccountModel.checkWatch == "Check your watch.")
+    }
+
+    @Test func migratedAccountStillApprovesWatchSignIn() async throws {
+        // No Zitadel tokens are left after the migration (C7): the page only needs the issuer.
+        let web = FakeWeb(error: CancellationError())
+        let model = await account(signedIn: true, web: web)
+        #expect(model.isMigratedAccount)
+        let link = link()
+        link.receive(.deviceCode(userCode: "ZXSG-KCPN", expiresAt: Self.clock.timeIntervalSince1970 + 600))
+        #expect(WatchSignInSheet.code(link: link, account: model, dismissed: nil) == "ZXSG-KCPN")
+
+        await model.approveWatchSignIn(userCode: "ZXSG-KCPN", from: .sheet)
+
+        #expect(web.opened.map(\.url.absoluteString) == [deviceURL])
+        #expect(model.watchApproval == .done)
+        #expect(world.endpoints.requests.isEmpty)
+    }
+
+    @Test func silentAccountIgnoresWatchDeviceCodes() async {
+        let web = FakeWeb(error: CancellationError())
+        let model = await account(signedIn: true, migrated: false, web: web)
+        #expect(model.state == .ready)
+        #expect(!model.isMigratedAccount)
+        let link = link()
+        link.receive(.deviceCode(userCode: "ZXSG-KCPN", expiresAt: Self.clock.timeIntervalSince1970 + 600))
+
+        #expect(WatchSignInSheet.code(link: link, account: model, dismissed: nil) == nil)
+        await model.approveWatchSignIn(userCode: "ZXSG-KCPN")
+        #expect(web.opened.isEmpty)
+        #expect(model.watchApproval == .idle)
     }
 
     @Test func approveIgnoresBadCode() async {

@@ -9,6 +9,8 @@ public struct CloudConfig: Decodable, Sendable, Equatable {
     /// Whether the Cloud issues per-server tokens (`POST /v1/server-tokens`).
     public var serverTokens: Bool
     public var push: Push
+    /// The Cloud session routes (`/v1/sessions`); `nil` on a Cloud that predates them.
+    public var sessions: SessionsConfig?
 
     /// The client id of each app; `nil` when the Cloud has none for it.
     public struct Clients: Decodable, Sendable, Equatable {
@@ -40,19 +42,43 @@ public struct CloudConfig: Decodable, Sendable, Equatable {
         }
     }
 
-    public init(issuer: URL, projectId: String?, clients: Clients, scopes: [String], serverTokens: Bool, push: Push) {
+    public struct SessionsConfig: Decodable, Sendable, Equatable {
+        public var enabled: Bool
+        /// How recent a Zitadel login must be for sensitive session actions, in seconds.
+        public var zitadelMaxAgeS: Int
+        /// Whether the Cloud still accepts Zitadel access tokens next to its own session tokens.
+        public var legacyZitadelTokens: Bool
+
+        public init(enabled: Bool, zitadelMaxAgeS: Int, legacyZitadelTokens: Bool) {
+            self.enabled = enabled
+            self.zitadelMaxAgeS = zitadelMaxAgeS
+            self.legacyZitadelTokens = legacyZitadelTokens
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case enabled
+            case zitadelMaxAgeS = "zitadel_max_age_s"
+            case legacyZitadelTokens = "legacy_zitadel_tokens"
+        }
+    }
+
+    public init(
+        issuer: URL, projectId: String?, clients: Clients, scopes: [String], serverTokens: Bool, push: Push,
+        sessions: SessionsConfig? = nil
+    ) {
         self.issuer = issuer
         self.projectId = projectId
         self.clients = clients
         self.scopes = scopes
         self.serverTokens = serverTokens
         self.push = push
+        self.sessions = sessions
     }
 
     private enum CodingKeys: String, CodingKey {
         case issuer
         case projectId = "project_id"
-        case clients, scopes, push
+        case clients, scopes, push, sessions
         case serverTokens = "server_tokens"
     }
 }
@@ -65,19 +91,42 @@ public struct CloudAgent: Codable, Sendable, Equatable {
     public var icon: String
     /// `conversation`, `one-shot` or `monologue`.
     public var callType: String
+    /// The accent color; omitted from the agenda when `nil`.
+    public var color: AgentColor?
 
-    public init(id: String, slug: String, displayName: String, icon: String, callType: String) {
+    public init(id: String, slug: String, displayName: String, icon: String, callType: String, color: AgentColor? = nil) {
         self.id = id
         self.slug = slug
         self.displayName = displayName
         self.icon = icon
         self.callType = callType
+        self.color = color
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, slug, icon
+        case id, slug, icon, color
         case displayName = "display_name"
         case callType = "call_type"
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        slug = try container.decode(String.self, forKey: .slug)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        icon = try container.decode(String.self, forKey: .icon)
+        callType = try container.decode(String.self, forKey: .callType)
+        color = container.decodeAgentColor(forKey: .color)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(slug, forKey: .slug)
+        try container.encode(displayName, forKey: .displayName)
+        try container.encode(icon, forKey: .icon)
+        try container.encode(callType, forKey: .callType)
+        try container.encodeIfPresent(color, forKey: .color)
     }
 }
 

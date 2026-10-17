@@ -87,6 +87,13 @@ struct ManagementClientTests {
         }
     }
 
+    @Test(arguments: [(#","color":"teal""#, AgentColor.teal as AgentColor?), (#","color":"magenta""#, nil), (#","color":null"#, nil), ("", nil)])
+    func agentDetailDecodesColorTolerantly(extra: String, expected: AgentColor?) async throws {
+        let json = Self.agentJSON.replacingOccurrences(of: #""updated_at":2.5"#, with: #""updated_at":2.5\#(extra)"#)
+        let host = StubHost(replies: [(200, json)])
+        #expect(try await client(host).agent("notes").color == expected)
+    }
+
     @Test func conversationAgentIsNotOneWay() async throws {
         let json = Self.agentJSON.replacingOccurrences(of: "one-shot", with: "conversation")
         let host = StubHost(replies: [(200, json)])

@@ -5,6 +5,25 @@
 	<!-- The app uses only the encryption of the system (HTTPS): no export compliance question. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<!-- Links: wristcall://link#... opens the app (server QR codes, web app hand-off). -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>io.github.ggondim.wristcall</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>wristcall</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Scan the QR code your wristcall server or the web app shows.</string>
+	<!-- Keychain access group of the account keys; same value as the entitlement (empty prefix without a team). -->
+	<key>WristcallKeychainGroup</key>
+	<string>$(AppIdentifierPrefix)io.github.ggondim.wristcall.shared</string>
 	<!-- The Cloud for the account (empty: no account, servers and tokens alone). -->
 	<key>WristcallCloudURL</key>
 	<string>$(WRISTCALL_CLOUD_URL)</string>

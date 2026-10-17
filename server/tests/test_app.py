@@ -61,7 +61,7 @@ def test_flow_a_me_and_unpair(client):
     assert me["user"]["handle"] == "owner"
     (agent,) = me["agents"]
     assert agent["slug"] == "default" and agent["icon"] == "waveform" and agent["call_type"] == "conversation"
-    assert set(agent) == {"id", "slug", "display_name", "icon", "call_type", "turn_end"}
+    assert set(agent) == {"id", "slug", "display_name", "icon", "color", "call_type", "turn_end"}
     assert client.delete("/v1/me", headers=auth(token)).status_code == 204
     assert client.get("/v1/me", headers=auth(token)).status_code == 401
     assert client.get("/v1/me").status_code == 401
@@ -664,3 +664,12 @@ def test_startup_survives_a_failing_link_invite(monkeypatch, caplog):
         r.name == "wristcall.app" and r.levelno == logging.WARNING and "could not prepare the link QR code" in r.getMessage()
         for r in caplog.records
     )
+
+
+def test_agent_without_color_reports_null(client):
+    token = pair(client)
+    (agent,) = client.get("/v1/me", headers=auth(token)).json()["agents"]
+    assert "color" in agent and agent["color"] is None
+    run(client.app.state.agents.create(owner(client).id, {"slug": "tinted", "color": "pink"}))
+    colors = {a["slug"]: a["color"] for a in client.get("/v1/me", headers=auth(token)).json()["agents"]}
+    assert colors == {"default": None, "tinted": "pink"}

@@ -25,6 +25,7 @@ final class FakeWatchSession: WatchSessionProtocol, @unchecked Sendable {
     private var _transfers: [[String: Any]] = []
     private var _outstanding: [[String: Any]] = []
     private var _cancelled: [[String: Any]] = []
+    private var _contexts: [[String: Any]] = []
     var sent: [[String: Any]] { lock.withLock { _sent } }
     /// Every `transferUserInfo`, delivered or not.
     var transfers: [[String: Any]] { lock.withLock { _transfers } }
@@ -58,6 +59,16 @@ final class FakeWatchSession: WatchSessionProtocol, @unchecked Sendable {
         }
     }
 
+    /// Every `updateApplicationContext`.
+    var contexts: [[String: Any]] { lock.withLock { _contexts } }
+    /// What `updateApplicationContext` throws, when set.
+    var contextError: (any Error)?
+
+    func updateApplicationContext(_ context: [String: Any]) throws {
+        if let contextError { throw contextError }
+        lock.withLock { _contexts.append(context) }
+    }
+
     func cancelOutstandingTransfers(where shouldCancel: ([String: Any]) -> Bool) {
         lock.withLock {
             _cancelled += _outstanding.filter(shouldCancel)
@@ -85,10 +96,56 @@ struct WatchLinkTests {
 
     private func makeLink(
         _ session: FakeWatchSession?, timeout: Duration = .seconds(15),
-        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        defaults: UserDefaults = UserDefaults(suiteName: "WatchLinkTests-\(UUID().uuidString)")!
     ) -> WatchLink {
         let clock = clock
-        return WatchLink(session: session, timeout: timeout, now: { Date(timeIntervalSince1970: clock.value.withLock { $0 }) }, sleep: sleep)
+        return WatchLink(
+            session: session, timeout: timeout, now: { Date(timeIntervalSince1970: clock.value.withLock { $0 }) },
+            sleep: sleep, defaults: defaults
+        )
+    }
+
+    // MARK: - The watch's enroll code
+
+    @Test func publishesTheEnrollCodeAsApplicationContext() {
+        let session = FakeWatchSession()
+        let link = makeLink(session)
+        let context = PhoneLinkContext(enrollCode: "wce_CODE", expiresAt: 1_600)
+        #expect(link.publish(context))
+        #expect(session.contexts.count == 1)
+        #expect(NSDictionary(dictionary: session.contexts[0]).isEqual(to: context.dictionary))
+        #expect(PhoneLinkContext(session.contexts[0]) == context)
+    }
+
+    @Test func noEnrollCodeWithoutTheWatchApp() {
+        let session = FakeWatchSession()
+        session.isWatchAppInstalled = false
+        let link = makeLink(session)
+        #expect(!link.publish(PhoneLinkContext(enrollCode: "wce_CODE", expiresAt: 1_600)))
+        #expect(session.contexts.isEmpty)
+        #expect(!makeLink(nil).publish(PhoneLinkContext(enrollCode: "wce_CODE", expiresAt: 1_600)))
+    }
+
+    @Test func aFailedPublishIsNotAnError() {
+        struct Failure: Error {}
+        let session = FakeWatchSession()
+        session.contextError = Failure()
+        #expect(!makeLink(session).publish(PhoneLinkContext(enrollCode: "wce_CODE", expiresAt: 1_600)))
+    }
+
+    @Test func installingTheWatchAppTellsTheAccount() {
+        let session = FakeWatchSession()
+        session.isWatchAppInstalled = false
+        let link = makeLink(session)
+        var told = 0
+        link.onWatchAppInstalled = { told += 1 }
+        link.sessionStateDidChange()
+        #expect(told == 0)
+        session.isWatchAppInstalled = true
+        link.sessionStateDidChange()
+        link.sessionStateDidChange()
+        #expect(told == 1)
     }
 
     private func pairTransfer(code: String, expires: Double?) -> [String: Any] {
@@ -330,6 +387,34 @@ struct WatchLinkTests {
         #expect(!link.isOnWatch(server))
         link.contextDidChange(WatchLinkContext(servers: ["https://home.example.com:8443"]))
         #expect(link.isOnWatch(server))
+    }
+
+    /// The Agents home's "synced 2 minutes ago": only a delivered context is stamped, and it survives a relaunch.
+    @Test func receivedContextIsStampedAndKept() {
+        let suite = "WatchLinkTests-stamp-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let session = FakeWatchSession()
+        session.receivedApplicationContext = WatchLinkContext(servers: ["https://home.example.com:8443"]).dictionary
+        let link = makeLink(session, defaults: defaults)
+        // The context the session already held at launch was not delivered now.
+        #expect(link.lastContextAt == nil)
+        clock.value.withLock { $0 = 1_500 }
+        link.contextReceived(WatchLinkContext(servers: []))
+        #expect(link.lastContextAt == Date(timeIntervalSince1970: 1_500))
+        #expect(defaults.double(forKey: "watch.lastContextAt") == 1_500)
+        #expect(makeLink(session, defaults: defaults).lastContextAt == Date(timeIntervalSince1970: 1_500))
+    }
+
+    @Test func exposesPairedAndInstalledSeparately() {
+        let session = FakeWatchSession()
+        session.isWatchAppInstalled = false
+        let link = makeLink(session)
+        #expect(link.isPaired && !link.isWatchAppInstalled && !link.canReachWatch)
+        session.isWatchAppInstalled = true
+        link.sessionStateDidChange()
+        #expect(link.isPaired && link.isWatchAppInstalled && link.canReachWatch)
+        #expect(!makeLink(nil).isPaired)
     }
 
     @Test func refreshSendsMessage() async {

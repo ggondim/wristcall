@@ -21,6 +21,8 @@ SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 ICON = re.compile(r"^[a-z0-9]+(\.[a-z0-9]+)*$")
 DEFAULT_ICON = "waveform"
 CallType = Literal["conversation", "one-shot", "monologue"]
+AGENT_COLORS: tuple[str, ...] = ("red", "orange", "yellow", "green", "mint", "teal", "blue", "indigo", "purple", "pink")
+AgentColor = Literal["red", "orange", "yellow", "green", "mint", "teal", "blue", "indigo", "purple", "pink"]
 # Days the agent's calls stay in the history; "forever"; None = the operator's default. The ceiling applies to all.
 RetentionDays = Annotated[StrictInt, Field(ge=1, le=36_500)] | Literal["forever"] | None
 # One-way calls: the transcript goes to a webhook (the action); no answer, no voice.
@@ -116,6 +118,7 @@ class AgentInput(BaseModel):
     slug: str | None = None
     display_name: str | None = Field(default=None, min_length=1, max_length=64)
     icon: str | None = Field(default=None, max_length=64)
+    color: AgentColor | None = None  # its own column, never in the spec; absent keeps it, there is no way to clear it
     call_type: CallType | None = None
     position: int | None = Field(default=None, ge=0)
     language: str | None = None
@@ -142,20 +145,21 @@ class Agent:
     spec: AgentSpec
     created_at: float
     updated_at: float
+    color: str | None = None
 
     @classmethod
     def from_record(cls, r: AgentRecord) -> "Agent":
         return cls(
             id=r.id, user_id=r.user_id, slug=r.slug, display_name=r.display_name, icon=r.icon,
             call_type=r.call_type, position=r.position, spec=AgentSpec.model_validate(r.spec),
-            created_at=r.created_at, updated_at=r.updated_at,
+            created_at=r.created_at, updated_at=r.updated_at, color=r.color,
         )
 
     def to_record(self) -> AgentRecord:
         return AgentRecord(
             id=self.id, user_id=self.user_id, slug=self.slug, display_name=self.display_name, icon=self.icon,
             call_type=self.call_type, position=self.position, spec=self.spec.model_dump(mode="json"),
-            created_at=self.created_at, updated_at=self.updated_at,
+            created_at=self.created_at, updated_at=self.updated_at, color=self.color,
         )
 
 
@@ -287,6 +291,7 @@ def agent_summary(agent: Agent) -> dict[str, Any]:
         "slug": agent.slug,
         "display_name": agent.display_name,
         "icon": agent.icon,
+        "color": agent.color,
         "call_type": agent.call_type,
         "turn_end": agent.spec.turn_end,
     }
@@ -448,7 +453,7 @@ class AgentService:
         inp = self._parse_input(data)
         if inp.slug is None:
             raise AgentError("invalid", "slug is required")
-        given = inp.model_dump(exclude_none=True, exclude={"slug", "display_name", "icon", "call_type", "position"})
+        given = inp.model_dump(exclude_none=True, exclude={"slug", "display_name", "icon", "color", "call_type", "position"})
         call_type = inp.call_type or "conversation"
         for field in stage_kinds(call_type):
             if field not in given:
@@ -459,7 +464,7 @@ class AgentService:
         now = self._now()
         agent = Agent(
             id=new_agent_id(), user_id=user_id, slug=inp.slug, display_name=inp.display_name or inp.slug,
-            icon=icon, call_type=call_type, position=0, spec=spec, created_at=now, updated_at=now,
+            icon=icon, call_type=call_type, position=0, spec=spec, created_at=now, updated_at=now, color=inp.color,
         )
         limit = self._config.limits.max_agents_per_user
         try:
@@ -500,7 +505,7 @@ class AgentService:
         updated = Agent(
             id=current.id, user_id=user_id, slug=slug, display_name=inp.display_name or current.display_name,
             icon=icon, call_type=call_type, position=current.position,
-            spec=spec, created_at=current.created_at, updated_at=self._now(),
+            spec=spec, created_at=current.created_at, updated_at=self._now(), color=inp.color or current.color,
         )
         try:
             saved = Agent.from_record(await self._st.agents.update(updated.to_record()))

@@ -158,6 +158,10 @@ MIGRATIONS: list[list[str]] = [
           used_at REAL
         )""",
     ],
+    # 8: agent color: its own column, outside the spec JSON. Rolling back to 0.8.0 needs a backup.
+    [
+        "ALTER TABLE agents ADD COLUMN color TEXT",
+    ],
 ]
 
 LATEST = len(MIGRATIONS)

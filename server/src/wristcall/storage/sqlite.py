@@ -43,7 +43,7 @@ def _agent(r: sqlite3.Row) -> AgentRecord:
     return AgentRecord(
         id=r["id"], user_id=r["user_id"], slug=r["slug"], display_name=r["display_name"], icon=r["icon"],
         call_type=r["call_type"], position=r["position"], spec=json.loads(r["spec"]),
-        created_at=r["created_at"], updated_at=r["updated_at"],
+        created_at=r["created_at"], updated_at=r["updated_at"], color=r["color"],
     )
 
 
@@ -313,13 +313,13 @@ class _Agents:
         # One statement: the count check and the insert cannot interleave with another writer.
         try:
             rows = self._db.query(
-                "INSERT INTO agents (id, user_id, slug, display_name, icon, call_type, position, spec, created_at, updated_at) "
-                "SELECT ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM agents WHERE user_id = ?), ?, ?, ? "
+                "INSERT INTO agents (id, user_id, slug, display_name, icon, call_type, position, spec, created_at, updated_at, color) "
+                "SELECT ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM agents WHERE user_id = ?), ?, ?, ?, ? "
                 "WHERE ? IS NULL OR (SELECT COUNT(*) FROM agents WHERE user_id = ?) < ? "
                 "RETURNING *",
                 (
                     record.id, record.user_id, record.slug, record.display_name, record.icon, record.call_type,
-                    record.user_id, json.dumps(record.spec), record.created_at, record.updated_at,
+                    record.user_id, json.dumps(record.spec), record.created_at, record.updated_at, record.color,
                     max_count, record.user_id, max_count,
                 ),
             )
@@ -342,10 +342,10 @@ class _Agents:
     async def update(self, record: AgentRecord) -> AgentRecord:
         try:
             rows = self._db.query(
-                "UPDATE agents SET slug = ?, display_name = ?, icon = ?, call_type = ?, spec = ?, updated_at = ? "
+                "UPDATE agents SET slug = ?, display_name = ?, icon = ?, color = ?, call_type = ?, spec = ?, updated_at = ? "
                 "WHERE id = ? AND user_id = ? RETURNING *",
                 (
-                    record.slug, record.display_name, record.icon, record.call_type, json.dumps(record.spec),
+                    record.slug, record.display_name, record.icon, record.color, record.call_type, json.dumps(record.spec),
                     record.updated_at, record.id, record.user_id,
                 ),
             )

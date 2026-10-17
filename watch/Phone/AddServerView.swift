@@ -19,8 +19,12 @@ struct AddServerView: View {
     @State private var error: String?
     @State private var busy = false
 
+    /// Runs after the server was added and the form closed (the scanner closes too).
+    private let onAdded: (() -> Void)?
+
     /// `initialURL`: an agenda server to set up here ("From your account").
-    init(initialURL: String = "", initialName: String = "") {
+    init(initialURL: String = "", initialName: String = "", onAdded: (() -> Void)? = nil) {
+        self.onAdded = onAdded
         _urlText = State(initialValue: initialURL)
         _name = State(initialValue: initialName)
         // An agenda server most likely uses the account: start with the code (needs the sign-in, see `current`).
@@ -28,7 +32,7 @@ struct AddServerView: View {
     }
 
     /// The pairing code needs the account: without it, only the token is offered.
-    private var canUseCode: Bool { account.state == .signedIn }
+    private var canUseCode: Bool { account.state == .ready }
     private var current: Method { canUseCode ? method : .token }
 
     var body: some View {
@@ -105,6 +109,7 @@ struct AddServerView: View {
                 try await account.addLinkedServer(urlText: urlText, code: code, name: name)
             }
             dismiss()
+            onAdded?()
         } catch let failure as AddServerError {
             error = failure.message
         } catch {

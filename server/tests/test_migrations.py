@@ -253,7 +253,7 @@ def test_step_5_database_gains_push_targets(tmp_path):
     conn.execute("INSERT INTO users (id, handle, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1.0)")
     conn.close()
     db = Database(path)
-    assert db.version == LATEST == 7
+    assert db.version == LATEST == 8
     assert "push_targets" in tables(db)
     assert columns(db, "push_targets") == {"id", "user_id", "device_id", "token_id", "push_key", "created_at"}
     assert [r["handle"] for r in db.query("SELECT handle FROM users")] == ["owner"]
@@ -282,7 +282,7 @@ def test_step_7_database_gains_link_codes(tmp_path):
     conn.execute("INSERT INTO users (id, handle, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1.0)")
     conn.close()
     db = Database(path)
-    assert db.version == LATEST == 7
+    assert db.version == LATEST == 8
     assert columns(db, "link_codes") == {"code_hash", "user_id", "expires_at", "used_at"}
     assert [r["handle"] for r in db.query("SELECT handle FROM users")] == ["owner"]
     db.execute("INSERT INTO link_codes (code_hash, user_id, expires_at) VALUES ('h', 'u1', 9.0)")
@@ -337,4 +337,26 @@ def test_step_5_leaves_no_old_call_text_in_the_files(tmp_path):
     db.query("PRAGMA wal_checkpoint(TRUNCATE)")
     raw = b"".join(p.read_bytes() for p in tmp_path.iterdir() if p.is_file())
     assert b"zebrasecret" not in raw
+    db.close()
+
+
+def test_migration_8_adds_agent_color(tmp_path):
+    # A 0.8.0 database (version 7) upgrades in place; the old agent gets a NULL color.
+    path = database_path(tmp_path)
+    conn = sqlite3.connect(path, isolation_level=None)
+    conn.create_function("wristcall_terms", 1, database_module._terms)  # step 5 calls it
+    for step in MIGRATIONS[:7]:
+        for statement in step:
+            conn.execute(statement)
+    conn.execute("PRAGMA user_version = 7")
+    conn.execute("INSERT INTO users (id, handle, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1.0)")
+    conn.execute(
+        "INSERT INTO agents (id, user_id, slug, display_name, icon, call_type, position, spec, created_at, updated_at) "
+        "VALUES ('ag1', 'u1', 'old', 'Old', 'waveform', 'conversation', 0, '{}', 1.0, 1.0)"
+    )
+    conn.close()
+    db = Database(path)
+    assert db.version == LATEST == 8
+    assert "color" in columns(db, "agents")
+    assert [r["color"] for r in db.query("SELECT color FROM agents")] == [None]
     db.close()

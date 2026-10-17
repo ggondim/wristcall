@@ -10,6 +10,12 @@ struct IconPicker: View {
         "book", "globe", "terminal", "wrench", "phone",
     ]
 
+    /// The twelve the editor shows up front, in this order ("More…" opens the whole grid).
+    static let suggested = [
+        "sparkles", "note.text", "house", "cart", "book", "briefcase",
+        "waveform", "person.wave.2", "bubble.left", "phone", "calendar", "envelope",
+    ]
+
     @Binding var selection: String
 
     private var choices: [String] {

@@ -39,7 +39,7 @@ public enum ServerAddress {
     public static func canonical(_ url: URL) -> String {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let scheme = components.scheme?.lowercased(),
-              let host = components.host?.lowercased()
+              let host = components.encodedHost?.lowercased()
         else { return url.absoluteString }
         var authority = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
         let defaultPort = scheme == "https" ? 443 : (scheme == "http" ? 80 : nil)
@@ -51,5 +51,16 @@ public enum ServerAddress {
             path.removeLast()
         }
         return "\(scheme)://\(authority)\(path)"
+    }
+
+    /// The host as shown to the user: the ASCII (punycode) form `canonical` uses, plus `:port` when the URL has
+    /// one. Never `url.host()`: it returns the Unicode host percent-encoded.
+    public static func displayHost(_ url: URL) -> String {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let encoded = components.encodedHost?.lowercased()
+        else { return url.absoluteString }
+        let host = encoded.contains(":") && !encoded.hasPrefix("[") ? "[\(encoded)]" : encoded
+        guard let port = components.port else { return host }
+        return "\(host):\(port)"
     }
 }

@@ -13,15 +13,24 @@ struct AgendaSyncTests {
                              linked: true)
     let lab = ManagedServer(id: "lab", name: "Lab", url: URL(string: "https://Lab.test:443/x/")!, token: "wc_pat_l")
 
-    var fresh: TokenSet { TokenSet(accessToken: "fresh-at", refreshToken: "rt", expiresAt: Self.clock.addingTimeInterval(3600)) }
+    /// The device session of account `acc_1`, fresh for an hour.
+    func deviceSession(_ stored: StoredDeviceSession? = nil) -> DeviceSession {
+        world.addAccount("acc_1")
+        return DeviceSession(cloud: world.cloud.url, store: InMemoryDeviceSessionStore(stored ?? world.storedSession("acc_1")),
+                             session: .stubbed(), now: { Self.clock })
+    }
+
+    /// The app's account on this world: `acc_1`, started (servers read, launch mirror done).
+    func accountModel(_ servers: [ManagedServer], makeAPI: @escaping ServerAPIFactory) async -> AccountModel {
+        world.addAccount("acc_1")
+        let rig = AccountRig(world, session: world.storedSession("acc_1"), servers: servers, makeAPI: makeAPI)
+        return await rig.started()
+    }
 
     /// `agents`: what every server answers. Each server gets its own fake (`AppState` checks them in parallel,
     /// and a fake is not safe to share across tasks).
-    func sync(_ servers: [ManagedServer], agents: [AgentDetail] = [], tokens: TokenSet? = nil)
-        async -> (AgendaSync, AppState)
-    {
-        let session = AccountSession(cloud: world.cloud.url, kind: .ios, store: InMemoryTokenStore(tokens ?? fresh),
-                                     session: .stubbed(), now: { Self.clock })
+    func sync(_ servers: [ManagedServer], agents: [AgentDetail] = []) async -> (AgendaSync, AppState) {
+        let session = deviceSession()
         let state = AppState(store: InMemoryManagedServerStore(servers), makeAPI: { _, _ in
             let fake = FakeServerAPI()
             fake.agentList = agents
@@ -29,6 +38,12 @@ struct AgendaSyncTests {
         })
         await state.load()
         return (AgendaSync(session: session, state: state), state)
+    }
+
+    @Test func snapshotCopiesTheAgentColor() {
+        let colored = AgentDetail(id: "ag1", slug: "a", displayName: "A", color: .indigo)
+        let plain = AgentDetail(id: "ag2", slug: "b", displayName: "B")
+        #expect(AgendaSync.snapshot([colored, plain]).map(\.color) == [.indigo, nil])
     }
 
     func agents(_ count: Int) -> [AgentDetail] {
@@ -48,7 +63,9 @@ struct AgendaSyncTests {
         #expect(state.servers.map(\.cloudServerID) == ["cs-1", "cs-2"])
         #expect(sync.notice == nil)
         let post = try #require(world.cloudRequests("POST", "/v1/servers").first)
-        #expect(post.headers["Authorization"] == "Bearer fresh-at")
+        #expect(post.headers["Authorization"] == "Bearer at-acc_1-0")
+        // Every Cloud request carries the device session's token, never another one.
+        #expect(world.cloud.requests.allSatisfy { $0.headers["Authorization"] == "Bearer at-acc_1-0" })
     }
 
     @Test func pushAllUpdatesKnownEntriesAndReaddsMissingOnes() async throws {
@@ -163,8 +180,8 @@ struct AgendaSyncTests {
     }
 
     @Test func signedOutSyncDoesNothing() async throws {
-        let session = AccountSession(cloud: world.cloud.url, kind: .ios, store: InMemoryTokenStore(),
-                                     session: .stubbed(), now: { Self.clock })
+        let session = DeviceSession(cloud: world.cloud.url, store: InMemoryDeviceSessionStore(), session: .stubbed(),
+                                    now: { Self.clock })
         let state = AppState(store: InMemoryManagedServerStore([home]), makeAPI: { _, _ in FakeServerAPI() })
         await state.load()
         let sync = AgendaSync(session: session, state: state)
@@ -182,13 +199,13 @@ struct AgendaSyncTests {
     }
 
     @Test func hooksMirrorAddRenameAndRemove() async throws {
-        let session = AccountSession(cloud: world.cloud.url, kind: .ios, store: InMemoryTokenStore(fresh),
-                                     session: .stubbed(), now: { Self.clock })
-        let state = AppState(store: InMemoryManagedServerStore(), makeAPI: { _, _ in FakeServerAPI() })
+        world.addAccount("acc_1")
         var earlierHook = 0
-        state.hooks.serverAdded = { _ in earlierHook += 1 }
-        let model = AccountModel(cloudURL: world.cloud.url, session: session, web: FakeWeb.approving(), state: state)
-        await model.restore()
+        let rig = AccountRig(world, session: world.storedSession("acc_1"), configure: { state in
+            state.hooks.serverAdded = { _ in earlierHook += 1 }
+        })
+        let model = await rig.started()
+        let state = model.appState
 
         let saved = try await state.addServer(urlText: "https://new.test", token: "wc_pat_n", name: "New")
         #expect(earlierHook == 1)  // hooks already hung stay
@@ -206,18 +223,11 @@ struct AgendaSyncTests {
     // MARK: - Background queue
 
     func accountModel(_ servers: [ManagedServer]) async -> AccountModel {
-        let session = AccountSession(cloud: world.cloud.url, kind: .ios, store: InMemoryTokenStore(fresh),
-                                     session: .stubbed(), now: { Self.clock })
-        let state = AppState(store: InMemoryManagedServerStore(servers), makeAPI: { _, _ in
+        await accountModel(servers) { _, _ in
             let fake = FakeServerAPI()
             fake.agentList = (0..<2).map { AgentDetail(id: "ag\($0)", slug: "agent-\($0)", displayName: "Agent \($0)") }
             return fake
-        })
-        await state.load()
-        let model = AccountModel(cloudURL: world.cloud.url, session: session, web: FakeWeb.approving(), state: state)
-        await model.restore()
-        await model.agenda?.idle()
-        return model
+        }
     }
 
     @Test func hungCloudDoesNotDelayServerChanges() async throws {
@@ -296,7 +306,7 @@ struct AgendaSyncTests {
         let writesAfter = requests[(deleteIndex + 1)...].filter { $0.method != "GET" && $0.path.hasPrefix("/v1/servers") }
         #expect(writesAfter.isEmpty)
         #expect(world.entries.isEmpty)
-        #expect(model.state == .signedOut)
+        #expect(model.state == .starting)
         #expect(model.appState.servers.allSatisfy { $0.cloudServerID == nil })
     }
 
@@ -334,43 +344,19 @@ struct AgendaSyncTests {
 
         #expect(world.cloudRequests("POST", "/v1/servers").isEmpty)
         #expect(world.entries.isEmpty)
-        #expect(model.state == .signedOut)
+        #expect(model.state == .starting)
     }
 
     @Test func failedDeleteResumesTheSync() async throws {
         let model = await accountModel([])
         world.cloudFailure = 503
         await model.deleteAccount()
-        #expect(model.state == .signedIn)
+        #expect(model.state == .ready)
         world.cloudFailure = nil
 
         _ = try await model.appState.addServer(urlText: "https://after.test", token: "wc_pat_a", name: "After")
         await model.agenda?.idle()
         #expect(world.entries.map(\.name) == ["After"])
-    }
-
-    @Test func signOutDuringSyncWritesNothingAfter() async throws {
-        let model = await accountModel([home])
-        let sync = try #require(model.agenda)
-        world.hold()
-        defer { world.release() }
-
-        sync.agentsChanged(model.appState.servers[0], agents(1))
-        try await waitUntil { world.waiting == 1 }
-        let before = world.cloud.requests.count
-        // The stub serves every host on one loading thread, so the held write also holds the revocation:
-        // release once sign out has stopped the queue (a real hung Cloud would not hold the provider).
-        let generation = sync.generation
-        let signingOut = Task { await model.signOut() }
-        try await waitUntil { sync.generation != generation }
-        world.release()
-        await signingOut.value
-        await sync.idle()
-
-        // Only the write that was already on its way lands; nothing is sent after it.
-        let after = world.cloud.requests[before...].filter { $0.method != "GET" && $0.path.hasPrefix("/v1/servers") }
-        #expect(after.isEmpty)
-        #expect(model.appState.servers.first?.cloudServerID == nil)
     }
 
     private func waitUntil(_ condition: () -> Bool) async throws {
