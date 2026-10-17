@@ -4,6 +4,8 @@ export class ApiError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    /** Whole seconds from the `Retry-After` header; `null` when absent or not a whole number. */
+    readonly retryAfter: number | null = null,
   ) {
     super(message)
     this.name = "ApiError"

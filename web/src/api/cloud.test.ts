@@ -1,5 +1,5 @@
-import { describe, expect, test } from "vitest"
-import { ApiError } from "../lib/errors"
+import { describe, expect, test, vi } from "vitest"
+import { ApiError, TimeoutError } from "../lib/errors"
 import { mockFetch } from "../test/mockFetch"
 import { type CloudAgent, type CloudServer, CloudClient } from "./cloud"
 
@@ -94,5 +94,107 @@ describe("CloudClient", () => {
     expect(JSON.parse(String(f.lastInit().body))).toEqual({ audience: "https://home.example" })
     expect(auth(f.lastInit())).toBe("Bearer at")
     expect(token.token).toBe("t")
+  })
+
+  const session = { account: "acc_1", device: "dev_1", access_token: "wc-at", refresh_token: "wcr_x", expires_at: 99 }
+
+  test("createWebSession sends name and web platform without auth", async () => {
+    const start = { id: "ws_0123456789abcdef", approve_key: "ak", poll_key: "wcp_x", expires_at: 300 }
+    const f = mockFetch(() => reply(start, 201))
+    expect(await new CloudClient(BASE, f).createWebSession("Chrome on macOS")).toEqual(start)
+    expect(f.lastUrl()).toBe(`${BASE}/v1/web-sessions`)
+    expect(f.lastInit().method).toBe("POST")
+    expect(f.lastInit().body).toBe('{"device":{"name":"Chrome on macOS","platform":"web"}}')
+    expect(auth(f.lastInit())).toBeUndefined()
+  })
+
+  test("pollWebSession sends the poll key", async () => {
+    const answers = [{ status: "pending", expires_at: 300 }, { status: "approved", ...session }]
+    const f = mockFetch(() => reply(answers.shift()))
+    const cloud = new CloudClient(BASE, f)
+    expect(await cloud.pollWebSession("ws_a", "wcp_x")).toEqual({ status: "pending", expires_at: 300 })
+    expect(f.lastUrl()).toBe(`${BASE}/v1/web-sessions/ws_a`)
+    expect(f.lastInit().method).toBe("GET")
+    expect(auth(f.lastInit())).toBe("Bearer wcp_x")
+    expect(await cloud.pollWebSession("ws_a", "wcp_x")).toEqual({ status: "approved", ...session })
+  })
+
+  test("pollWebSession 404 is ApiError 404", async () => {
+    const f = mockFetch(() => reply({ error: "not_found", message: "web session not found" }, 404))
+    const e = await new CloudClient(BASE, f).pollWebSession("ws_a", "wcp_x").catch((x) => x)
+    expect(e).toBeInstanceOf(ApiError)
+    expect(e.status).toBe(404)
+  })
+
+  test("exchangeSignIn posts the web device with the Zitadel token", async () => {
+    const f = mockFetch(() => reply({ ...session, key_set: true }, 201))
+    expect(await new CloudClient(BASE, f).exchangeSignIn("zt", "Safari on iPhone")).toEqual({ ...session, key_set: true })
+    expect(f.lastUrl()).toBe(`${BASE}/v1/devices`)
+    expect(f.lastInit().method).toBe("POST")
+    expect(auth(f.lastInit())).toBe("Bearer zt")
+    expect(JSON.parse(String(f.lastInit().body))).toEqual({ device: { name: "Safari on iPhone", platform: "web" } })
+  })
+
+  test("refreshSession posts the refresh token", async () => {
+    const f = mockFetch(() => reply(session))
+    expect(await new CloudClient(BASE, f).refreshSession("wcr_old")).toEqual(session)
+    expect(f.lastUrl()).toBe(`${BASE}/v1/session/refresh`)
+    expect(f.lastInit().method).toBe("POST")
+    expect(JSON.parse(String(f.lastInit().body))).toEqual({ refresh_token: "wcr_old" })
+    expect(auth(f.lastInit())).toBeUndefined()
+  })
+
+  test("refreshSession waits 60 s before giving up", async () => {
+    vi.useFakeTimers()
+    try {
+      let aborted = false
+      const f = mockFetch((_url, init) => new Promise<Response>((_resolve, reject) => init.signal?.addEventListener("abort", () => { aborted = true; reject(new Error("aborted")) })))
+      const pending = new CloudClient(BASE, f).refreshSession("wcr_old").catch((x) => x)
+      await vi.advanceTimersByTimeAsync(59_000)
+      expect(aborted).toBe(false)
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(aborted).toBe(true)
+      expect(await pending).toBeInstanceOf(TimeoutError)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  test("devices lists with the access token; removeDevice treats 404 as done", async () => {
+    const device = { id: "d1", name: "iPhone", platform: "ios", created_at: 1, last_seen_at: null, current: true }
+    const f = mockFetch((_url, init) => (init.method === "DELETE" ? reply({ error: "not_found", message: "no" }, 404) : reply({ devices: [device] })))
+    const cloud = new CloudClient(BASE, f)
+    expect(await cloud.devices("at")).toEqual([device])
+    expect(f.lastUrl()).toBe(`${BASE}/v1/devices`)
+    expect(auth(f.lastInit())).toBe("Bearer at")
+    await expect(cloud.removeDevice("at", "d/1")).resolves.toBeUndefined()
+    expect(f.lastUrl()).toBe(`${BASE}/v1/devices/d%2F1`)
+    expect(f.lastInit().method).toBe("DELETE")
+    const broken = mockFetch(() => reply({ error: "boom", message: "x" }, 500))
+    await expect(new CloudClient(BASE, broken).removeDevice("at", "d1")).rejects.toMatchObject({ status: 500 })
+  })
+
+  test("redeemInvite returns the plan", async () => {
+    const plan = { plan: "beta", source: "invite", expires_at: 123 }
+    const f = mockFetch(() => reply(plan))
+    expect(await new CloudClient(BASE, f).redeemInvite("at", "CODE")).toEqual(plan)
+    expect(f.lastUrl()).toBe(`${BASE}/v1/entitlements/redeem`)
+    expect(f.lastInit().method).toBe("POST")
+    expect(auth(f.lastInit())).toBe("Bearer at")
+    expect(JSON.parse(String(f.lastInit().body))).toEqual({ code: "CODE" })
+  })
+
+  test("account carries plan, identities and key_set", async () => {
+    const body = { account: "a", created_at: "t", servers: 0, plan: { plan: "beta", source: "invite", expires_at: null }, identities: ["zitadel"], key_set: false }
+    const f = mockFetch(() => reply(body))
+    expect(await new CloudClient(BASE, f).account("at")).toEqual(body)
+  })
+
+  test("ApiError keeps the error code", async () => {
+    const f = mockFetch(() => reply({ error: "limit", message: "device limit" }, 403))
+    const e = await new CloudClient(BASE, f).exchangeSignIn("zt", "n").catch((x) => x)
+    expect(e).toBeInstanceOf(ApiError)
+    expect(e.status).toBe(403)
+    expect(e.code).toBe("limit")
   })
 })

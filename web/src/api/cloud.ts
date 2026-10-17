@@ -17,7 +17,55 @@ export interface CloudAgent {
   display_name: string
   icon: string
   call_type: string
+  color?: string | null
 }
+
+/** What the Cloud hands a signed-in device: its tokens, the access token valid until `expires_at` (epoch seconds). */
+export interface DeviceSession {
+  account: string
+  device: string
+  access_token: string
+  refresh_token: string
+  expires_at: number
+}
+
+export interface WebSessionStart {
+  id: string
+  approve_key: string
+  poll_key: string
+  expires_at: number
+}
+
+export type WebSessionPoll = { status: "pending"; expires_at: number } | ({ status: "approved" } & DeviceSession)
+
+export interface CloudDevice {
+  id: string
+  name: string
+  platform: string
+  created_at: number
+  last_seen_at: number | null
+  current: boolean
+}
+
+export interface CloudPlan {
+  plan: string | null
+  source: string | null
+  expires_at: number | null
+}
+
+export interface CloudAccount {
+  account: string
+  created_at: string
+  servers: number
+  plan: CloudPlan | null
+  identities: string[]
+  key_set: boolean
+}
+
+/** A rotation the Cloud may finish after the default limit: aborting early would lose the new refresh token. */
+const REFRESH_TIMEOUT_MS = 60_000
+
+const WEB = "web"
 
 export interface CloudServer {
   id: string
@@ -64,8 +112,46 @@ export class CloudClient {
     return json<CloudConfig>(this.#url("v1/config"), {}, this.#fetch)
   }
 
-  account(accessToken: string): Promise<{ account: string; created_at: string; servers: number }> {
+  account(accessToken: string): Promise<CloudAccount> {
     return json(this.#url("v1/account"), { bearer: accessToken }, this.#fetch)
+  }
+
+  /** Starts a web sign-in: the QR carries `id` and `approve_key`; `poll_key` stays in the browser. No token. */
+  createWebSession(name: string): Promise<WebSessionStart> {
+    return json(this.#url("v1/web-sessions"), { method: "POST", json: { device: { name, platform: WEB } } }, this.#fetch)
+  }
+
+  /** `pending`, or `approved` with the device session (once). `404`: expired or already taken (`ApiError`). */
+  pollWebSession(id: string, pollKey: string): Promise<WebSessionPoll> {
+    return json(this.#url(`v1/web-sessions/${segment(id)}`), { bearer: pollKey }, this.#fetch)
+  }
+
+  /** Trades a fresh Zitadel access token for a `web` device of the token's account. */
+  exchangeSignIn(zitadelAccessToken: string, name: string): Promise<DeviceSession & { key_set: boolean }> {
+    return json(this.#url("v1/devices"), { method: "POST", bearer: zitadelAccessToken, json: { device: { name, platform: WEB } } }, this.#fetch)
+  }
+
+  /** Rotates the refresh token: the old one stops working, and reusing it signs the device out. */
+  refreshSession(refreshToken: string): Promise<DeviceSession> {
+    return json(this.#url("v1/session/refresh"), { method: "POST", json: { refresh_token: refreshToken }, timeoutMs: REFRESH_TIMEOUT_MS }, this.#fetch)
+  }
+
+  async devices(accessToken: string): Promise<CloudDevice[]> {
+    return (await json<{ devices: CloudDevice[] }>(this.#url("v1/devices"), { bearer: accessToken }, this.#fetch)).devices
+  }
+
+  /** `404` counts as done. */
+  async removeDevice(accessToken: string, id: string): Promise<void> {
+    try {
+      await request(this.#url(`v1/devices/${segment(id)}`), { method: "DELETE", bearer: accessToken }, this.#fetch)
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) return
+      throw error
+    }
+  }
+
+  redeemInvite(accessToken: string, code: string): Promise<CloudPlan> {
+    return json(this.#url("v1/entitlements/redeem"), { method: "POST", bearer: accessToken, json: { code } }, this.#fetch)
   }
 
   /** Deletes the agenda and the sign-in. `503 account_unavailable` is an `ApiError`: the same call again finishes it. */
