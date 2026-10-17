@@ -32,7 +32,8 @@ test("manage a server with a personal token", async ({ page }) => {
   await test.step("create an agent", async () => {
     await page.getByRole("link", { name: /E2E server/ }).click()
     await expect(page.getByRole("heading", { name: "E2E server" })).toBeVisible()
-    await page.getByRole("link", { name: "Agents" }).click()
+    // The tab bar has an "Agents" link too: take the one in the server detail's own list.
+    await page.getByRole("list", { name: "Manage" }).getByRole("link", { name: "Agents" }).click()
     await expect(page.getByRole("heading", { name: "No agents" })).toBeVisible()
     await page.getByRole("link", { name: "New agent" }).click()
     await page.locator("input[name=name]").fill("E2E agent")
