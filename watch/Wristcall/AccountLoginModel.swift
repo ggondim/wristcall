@@ -2,46 +2,54 @@ import Foundation
 import Observation
 import WristcallKit
 
-/// What `AccountLoginModel` needs from the account: the Kit's `AccountSession` and `AccountPairing` (live), a
-/// fake in tests. On watchOS, `URLProtocol` stubs never see the Kit's requests (they ask for
-/// `.reloadIgnoringLocalCacheData`, which the watch's network stack serves itself), so the HTTP side of the
-/// login is tested in the Kit (macOS) and the screen's logic here.
+/// What `AccountLoginModel` needs from the account: the Kit's `AccountSession` (device flow only), `WatchEnrollment`,
+/// the app's `DeviceSession` and `AccountPairing` (live), a fake in tests. On watchOS, `URLProtocol` stubs never see
+/// the Kit's requests (they ask for `.reloadIgnoringLocalCacheData`, which the watch's network stack serves itself),
+/// so the HTTP side of the login is tested in the Kit (macOS) and the screen's logic here.
 protocol AccountLoginBackend: Sendable {
+    /// Whether the watch has its Cloud device session.
     func isSignedIn() async -> Bool
     /// A device code (RFC 8628) for the watch's client, with the Cloud's scopes.
     func startDeviceAuthorization() async throws -> DeviceAuthorization
-    /// Polls until approved, then stores the tokens.
-    func completeDeviceAuthorization(_ authorization: DeviceAuthorization) async throws
-    /// The agenda (`GET /v1/servers`).
+    /// Polls until approved, then exchanges the Zitadel token for the watch's Cloud device session and returns its
+    /// account. An exchange that gives no session throws `AccountError.signedOut`.
+    func completeDeviceAuthorization(_ authorization: DeviceAuthorization) async throws -> String
+    /// The agenda (`GET /v1/servers`), over the device session.
     func servers() async throws -> [CloudServer]
     func pair(_ server: URL, deviceName: String) async -> AccountPairing.Outcome
-    func signOut() async
 }
 
 struct LiveAccountLoginBackend: AccountLoginBackend {
-    let session: AccountSession
+    /// The Zitadel login of the device flow: `WatchEnrollment.exchangeLegacy()` trades it (and drops it).
+    let legacy: AccountSession
+    let enrollment: WatchEnrollment
+    /// The app's one device session (shared with `LiveSetupBackend`).
+    let session: DeviceSession
+    /// Over `session`.
     let pairing: AccountPairing
 
     func isSignedIn() async -> Bool { await session.isSignedIn }
 
     func startDeviceAuthorization() async throws -> DeviceAuthorization {
-        try await session.startDeviceAuthorization()
+        try await legacy.startDeviceAuthorization()
     }
 
-    func completeDeviceAuthorization(_ authorization: DeviceAuthorization) async throws {
-        try await session.completeDeviceAuthorization(authorization)
+    func completeDeviceAuthorization(_ authorization: DeviceAuthorization) async throws -> String {
+        try await legacy.completeDeviceAuthorization(authorization)
+        guard case .enrolled(let tokens, _) = try await enrollment.exchangeLegacy() else {
+            throw AccountError.signedOut
+        }
+        try await session.start(tokens)
+        return tokens.account
     }
 
     func servers() async throws -> [CloudServer] {
         try await session.cloudClient.servers(accessToken: try await session.accessToken())
     }
 
+    /// The manual sync asks the owner's approval, as before (the automatic one does not).
     func pair(_ server: URL, deviceName: String) async -> AccountPairing.Outcome {
-        await pairing.pair(server, deviceName: deviceName)
-    }
-
-    func signOut() async {
-        await session.signOut()
+        await pairing.pair(server, deviceName: deviceName, allowApproval: true)
     }
 }
 
@@ -86,7 +94,7 @@ final class AccountLoginModel {
     private(set) var message: String?
     /// The login screen is up (over whatever `AppModel` shows, but a call).
     private(set) var isPresented = false
-    /// Tokens are stored: "Sync with account" and "Sign out of account" apply.
+    /// The watch has its Cloud device session: "Sync with account" and "Sign out of account" apply.
     private(set) var isSignedIn = false
     /// The build has a Cloud (`WristcallCloudURL` in Info.plist not empty).
     let isAvailable: Bool
@@ -98,19 +106,12 @@ final class AccountLoginModel {
     /// The lines of the sync running now (kept for a cancellation).
     @ObservationIgnored private var lines: [String] = []
 
-    /// No Cloud in the build (`cloudURL` or `session` `nil`): unavailable, every action does nothing.
-    convenience init(
-        cloudURL: URL?,
-        session: AccountSession?,
-        model: AppModel,
-        sendToPhone: (@MainActor (WatchLinkMessage) -> Void)?
-    ) {
-        let backend = cloudURL == nil ? nil : session.map {
-            LiveAccountLoginBackend(session: $0, pairing: AccountPairing(access: $0))
-        }
-        self.init(backend: backend, model: model, sendToPhone: sendToPhone)
-    }
+    /// Told the account once the device flow got the watch its Cloud session (`SetupModel.didSignIn(account:)`).
+    @ObservationIgnored var onSignedIn: (@MainActor (String) -> Void)?
+    /// The automatic setup is enrolling or syncing (`SetupModel.isBusy`): the login and the sync do not start.
+    @ObservationIgnored var isSetupBusy: @MainActor () -> Bool = { false }
 
+    /// `backend` `nil` (no Cloud in the build): unavailable, every action does nothing.
     init(backend: (any AccountLoginBackend)?, model: AppModel, sendToPhone: (@MainActor (WatchLinkMessage) -> Void)?) {
         self.backend = backend
         self.model = model
@@ -127,7 +128,7 @@ final class AccountLoginModel {
 
     var isRunning: Bool { task != nil }
 
-    /// At launch: whether tokens are stored.
+    /// At launch, and after the setup signs in or out: whether the device session is there.
     func restore() async {
         guard let backend else { return }
         isSignedIn = await backend.isSignedIn()
@@ -135,9 +136,9 @@ final class AccountLoginModel {
 
     // MARK: - Actions
 
-    /// Device flow → tokens stored → `.signedIn` to the iPhone (M13) → `sync()`'s work.
+    /// Device flow → Zitadel token exchanged for the Cloud session → `.signedIn` to the iPhone (M13) → `sync()`'s work.
     func signIn() async {
-        guard let backend, task == nil else { return }
+        guard let backend, task == nil, !isSetupBusy() else { return }
         isPresented = true
         await run { [self] in
             try await deviceFlow(backend)
@@ -147,7 +148,7 @@ final class AccountLoginModel {
 
     /// The agenda's servers this watch is not paired with, one after the other (`AccountPairing`).
     func sync() async {
-        guard let backend, task == nil else { return }
+        guard let backend, task == nil, !isSetupBusy() else { return }
         isPresented = true
         await run { [self] in try await pairServers(backend) }
     }
@@ -162,16 +163,6 @@ final class AccountLoginModel {
     func dismiss() {
         task?.cancel()
         isPresented = false
-        phase = .idle
-        message = nil
-    }
-
-    /// Deletes the tokens and revokes the refresh token. The servers stay paired.
-    func signOut() async {
-        guard let backend else { return }
-        task?.cancel()
-        await backend.signOut()
-        isSignedIn = false
         phase = .idle
         message = nil
     }
@@ -204,8 +195,15 @@ final class AccountLoginModel {
         )
         // The user code only: the device code is the poll's secret and stays here.
         sendToPhone?(.deviceCode(userCode: authorization.userCode, expiresAt: authorization.expiresAt.timeIntervalSince1970))
-        try await backend.completeDeviceAuthorization(authorization)
+        let account: String
+        do {
+            account = try await backend.completeDeviceAuthorization(authorization)
+        } catch AccountError.signedOut {
+            // Approved, but the Cloud gave no session for the token: nothing to sign in again to.
+            throw DeviceFlowError.incomplete
+        }
         isSignedIn = true
+        onSignedIn?(account)
         sendToPhone?(.signedIn)
     }
 
@@ -280,6 +278,8 @@ final class AccountLoginModel {
         case AccountError.signedOut:
             isSignedIn = false
             phase = .failed(Message.signInAgain)
+        case DeviceFlowError.incomplete:
+            phase = .failed(Message.incomplete)
         case AccountError.notConfigured, OIDCError.deviceFlowUnavailable:
             phase = .failed(Message.notConfigured)
         case OIDCError.network, APIError.network:
@@ -311,3 +311,6 @@ final class AccountLoginModel {
         return String(canonical[range.upperBound...])
     }
 }
+
+/// The device flow's approval gave no Cloud session.
+private enum DeviceFlowError: Error { case incomplete }

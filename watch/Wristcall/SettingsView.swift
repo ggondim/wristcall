@@ -4,6 +4,7 @@ import SwiftUI
 struct SettingsView: View {
     let model: AppModel
     @Environment(AccountLoginModel.self) private var login
+    @Environment(SetupModel.self) private var setup: SetupModel?
     @State private var directoryText = ""
     @State private var confirmingSignOut = false
 
@@ -56,7 +57,12 @@ struct SettingsView: View {
         }
         .navigationTitle("Settings")
         .confirmationDialog("Sign out of account?", isPresented: $confirmingSignOut, titleVisibility: .visible) {
-            Button("Sign out", role: .destructive) { Task { await login.signOut() } }
+            Button("Sign out", role: .destructive) {
+                Task {
+                    await setup?.signOut()
+                    await login.restore()
+                }
+            }
         } message: {
             Text("The servers on this watch stay.")
         }

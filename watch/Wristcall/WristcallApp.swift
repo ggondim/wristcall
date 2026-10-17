@@ -20,6 +20,8 @@ struct WristcallApp: App {
     private let link: WatchLinkReceiver
     /// The login with the central account (decision R11); unavailable when the build has no Cloud.
     @State private var login: AccountLoginModel
+    /// First open and automatic agenda sync over the Cloud device session; `nil` when the build has no Cloud.
+    @State private var setup: SetupModel?
     #if WRISTCALL_PUSH
     @WKApplicationDelegateAdaptor private var appDelegate: AppDelegate
     #endif
@@ -50,16 +52,27 @@ struct WristcallApp: App {
         push = Self.makePush(model)
         let link = WatchLinkReceiver(model: model)
         self.link = link
-        // The Cloud comes from the build only (never from a server or the iPhone); empty: no account login.
-        let cloud = AccountLoginModel.cloudURL(
-            fromInfoValue: Bundle.main.object(forInfoDictionaryKey: "WristcallCloudURL") as? String)
-        let session = cloud.map {
-            AccountSession(cloud: $0, kind: .watch, store: KeychainTokenStore(service: KeychainTokenStore.defaultService))
+        let cloud = Self.makeCloud(model)
+        let login = AccountLoginModel(
+            backend: cloud?.login, model: model, sendToPhone: { [weak link] in link?.send($0) })
+        // Unit tests run inside this app: they talk to their own receiver, never to WatchConnectivity, and make
+        // their own setup (this one would read the simulator's Keychain every 5 s while they run).
+        let isTesting = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        let setup = isTesting ? nil : cloud.map { SetupModel(backend: $0.setup, model: model) }
+        // Wired before `link.activate()`: the iPhone's context can arrive right after it.
+        link.onPhoneContext = { setup?.receive($0) }
+        setup?.onAccountReady = { [weak link] account in
+            link?.account = account
+            // "Sync with account" follows the session the setup made or lost.
+            Task { await login.restore() }
         }
-        _login = State(initialValue: AccountLoginModel(
-            cloudURL: cloud, session: session, model: model, sendToPhone: { [weak link] in link?.send($0) }))
-        // Unit tests run inside this app: they talk to their own receiver, never to WatchConnectivity.
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+        // One of them at a time: the automatic setup and the manual login share the device session.
+        setup?.isManualRunning = { login.isRunning }
+        login.isSetupBusy = { setup?.isBusy ?? false }
+        login.onSignedIn = { setup?.didSignIn(account: $0) }
+        _login = State(initialValue: login)
+        _setup = State(initialValue: setup)
+        if !isTesting {
             link.activate()
         }
     }
@@ -68,10 +81,13 @@ struct WristcallApp: App {
         WindowGroup {
             RootView(model: model)
                 .environment(login)
+                .environment(setup)
                 .task {
                     // A message from the iPhone may have started it already (WatchLinkReceiver).
                     await model.launchIfNeeded()
                     await login.restore()
+                    // After the servers are read: an account announced now goes out with them (C7).
+                    await setup?.start()
                     // Once the servers are read: every one of them gets its push key.
                     push?.start()
                     // On a cold start the intent may record its request before `onReceive`
@@ -89,6 +105,7 @@ struct WristcallApp: App {
                         // A result still waiting asks again (decision W10).
                         model.sceneDidBecomeActive()
                         push?.sceneDidBecomeActive()
+                        Task { await setup?.becameActive() }
                         Task { await shortcuts.check() }
                     }
                 }
@@ -141,6 +158,27 @@ struct WristcallApp: App {
         }
         #endif
         return CallController()
+    }
+
+    /// The Cloud comes from the build only (never from a server or the iPhone); empty: no account, no setup.
+    /// One `DeviceSession` for the whole app (its refresh token is single use); the Zitadel `AccountSession` is only
+    /// the device flow's and the 0.4.0 migration's.
+    @MainActor
+    private static func makeCloud(_ model: AppModel) -> (setup: LiveSetupBackend, login: LiveAccountLoginBackend)? {
+        guard let cloud = AccountLoginModel.cloudURL(
+            fromInfoValue: Bundle.main.object(forInfoDictionaryKey: "WristcallCloudURL") as? String) else { return nil }
+        let session = DeviceSession(cloud: cloud, store: KeychainDeviceSessionStore())
+        let legacy = AccountSession(cloud: cloud, kind: .watch, store: KeychainTokenStore(service: KeychainTokenStore.defaultService))
+        let keys = KeychainAccountKeyStore(accessGroup: KeychainGroup.shared(
+            infoValue: Bundle.main.object(forInfoDictionaryKey: "WristcallKeychainGroup") as? String))
+        let enrollment = WatchEnrollment(
+            client: session.cloudClient, keys: keys, legacy: legacy,
+            device: CloudDeviceInfo(name: model.deviceName, platform: .watchos))
+        let pairing = AccountPairing(access: session)
+        return (
+            LiveSetupBackend(session: session, enrollment: enrollment, pairing: pairing),
+            LiveAccountLoginBackend(legacy: legacy, enrollment: enrollment, session: session, pairing: pairing)
+        )
     }
 
     @MainActor

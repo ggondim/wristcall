@@ -585,6 +585,49 @@ struct SetupModelTests {
         #expect(probe.announced == ["acc_1"])
     }
 
+    @Test func manualLoginRunningSkipsTheEnrollment() async throws {
+        let model = try await makeModel()
+        backend.script(enroll: [.enrolled(account: "acc_1")])
+        let manual = ManualFlag(true)
+        let setup = makeSetup(model, isManualRunning: { manual.value })
+        await setup.start()
+        await clock.waitForSleepers()
+        // The device flow makes the session itself: a second one would leave an extra device in the Cloud.
+        #expect(backend.enrolls.isEmpty)
+        #expect(!setup.isBusy)
+
+        manual.value = false
+        clock.advance(by: .seconds(5))
+        await setup.settle()
+        // The skipped round's 0.4.0 sign-in is still asked for.
+        #expect(backend.enrolls == [.init(code: nil, tryLegacy: true)])
+        #expect(setup.account == "acc_1")
+    }
+
+    @Test func notBusyWhileWaitingForTheNextPoll() async throws {
+        let model = try await makeModel()
+        let setup = makeSetup(model)
+        await setup.start()
+        await clock.waitForSleepers()
+        // Between two rounds "Use a code instead" may start (it is what the wait is for).
+        #expect(backend.enrolls.count == 1)
+        #expect(!setup.isBusy)
+        await setup.signOut()
+    }
+
+    @Test func busyWhileSyncing() async throws {
+        let model = try await makeModel(paired: true)
+        backend.script(restore: ["acc_1"])
+        let gate = backend.holdAgenda()
+        let setup = makeSetup(model)
+        await setup.start()
+        await backend.agendaReached.wait()
+        #expect(setup.isBusy)
+        gate.open()
+        await setup.settle()
+        #expect(!setup.isBusy)
+    }
+
     @Test func signedInIgnoresCodes() async throws {
         let model = try await makeModel(paired: true)
         backend.script(restore: ["acc_1"])
@@ -769,4 +812,10 @@ struct SetupModelTests {
         #expect(backend.enrolls.count == 1)
         #expect(backend.agendaCount == 0)
     }
+}
+
+@MainActor
+private final class ManualFlag {
+    var value: Bool
+    init(_ value: Bool) { self.value = value }
 }

@@ -10,7 +10,7 @@ final class FakeAccountBackend: AccountLoginBackend {
     private struct State {
         var signedIn = false
         var start: Result<DeviceAuthorization, any Error> = .failure(OIDCError.malformedResponse)
-        var complete: Result<Void, any Error> = .success(())
+        var complete: Result<String, any Error> = .success("acc_1")
         var servers: Result<[CloudServer], any Error> = .success([])
         var outcomes: [URL: AccountPairing.Outcome] = [:]
         var calls: [String] = []
@@ -26,7 +26,7 @@ final class FakeAccountBackend: AccountLoginBackend {
 
     func script(
         start: Result<DeviceAuthorization, any Error>? = nil,
-        complete: Result<Void, any Error>? = nil,
+        complete: Result<String, any Error>? = nil,
         servers: [URL]? = nil,
         outcomes: [URL: AccountPairing.Outcome] = [:]
     ) {
@@ -51,7 +51,7 @@ final class FakeAccountBackend: AccountLoginBackend {
         }.get()
     }
 
-    func completeDeviceAuthorization(_ authorization: DeviceAuthorization) async throws {
+    func completeDeviceAuthorization(_ authorization: DeviceAuthorization) async throws -> String {
         try state.withLock { state in
             state.calls.append("complete \(authorization.deviceCode)")
             if case .success = state.complete { state.signedIn = true }
@@ -70,13 +70,6 @@ final class FakeAccountBackend: AccountLoginBackend {
         state.withLock { state in
             state.calls.append("pair \(server.absoluteString) \(deviceName)")
             return state.outcomes[server] ?? .skipped(server, "unscripted")
-        }
-    }
-
-    func signOut() async {
-        state.withLock { state in
-            state.calls.append("signOut")
-            state.signedIn = false
         }
     }
 }
@@ -184,20 +177,71 @@ struct AccountLoginModelTests {
         #expect(login.message == nil)
     }
 
+    @Test func deviceFlowEndsWithCloudSession() async throws {
+        backend.script(start: .success(authorization), complete: .success("acc_1"))
+        let model = await makeAppModel()
+        let events = Recorder<String>()
+        let backend = backend
+        let login = makeLogin(model: model) { message in
+            if message == .signedIn { events.append("signedIn after \(backend.calls.last ?? "nothing")") }
+        }
+        login.onSignedIn = { events.append("onSignedIn \($0)") }
+        await login.signIn()
+
+        // The iPhone hears of it only once the Zitadel token became the watch's Cloud session.
+        #expect(events.all == ["onSignedIn acc_1", "signedIn after complete device-secret"])
+        #expect(login.isSignedIn)
+        #expect(login.phase == .finished([]))
+    }
+
+    @Test func exchangeFailureShowsIncomplete() async throws {
+        backend.script(start: .success(authorization), complete: .failure(AccountError.signedOut))
+        let model = await makeAppModel()
+        let sent = Recorder<WatchLinkMessage>()
+        let signedIn = Recorder<String>()
+        let login = makeLogin(model: model) { sent.append($0) }
+        login.onSignedIn = { signedIn.append($0) }
+        await login.signIn()
+
+        #expect(login.phase == .failed(AccountLoginModel.Message.incomplete))
+        #expect(signedIn.all.isEmpty)
+        #expect(!sent.all.contains(.signedIn))
+        #expect(sent.all.count == 1)
+        #expect(!login.isSignedIn)
+        #expect(!backend.calls.contains("servers"))
+    }
+
+    @Test func busySetupRefusesSignInAndSync() async throws {
+        backend.signedIn = true
+        backend.script(start: .success(authorization), servers: [URL(string: "https://a.example.com")!])
+        let model = await makeAppModel()
+        let busy = Flag(true)
+        let login = makeLogin(model: model)
+        login.isSetupBusy = { busy.value }
+
+        // The automatic setup is enrolling or syncing: the manual login does not start alongside it.
+        await login.signIn()
+        await login.sync()
+        #expect(backend.calls.isEmpty)
+        #expect(!login.isPresented)
+        #expect(login.phase == .idle)
+
+        busy.value = false
+        await login.sync()
+        #expect(backend.calls.first == "servers")
+        #expect(login.isPresented)
+    }
+
     @Test func unavailableWithoutCloud() async throws {
         let model = await makeAppModel()
         let sent = Recorder<WatchLinkMessage>()
-        let login = AccountLoginModel(cloudURL: nil, session: nil, model: model, sendToPhone: { sent.append($0) })
+        let login = AccountLoginModel(backend: nil, model: model, sendToPhone: { sent.append($0) })
         #expect(!login.isAvailable)
         await login.signIn()
         await login.sync()
         #expect(login.phase == .idle)
         #expect(!login.isPresented)
         #expect(sent.all.isEmpty)
-        // A session without the build's Cloud URL counts as no Cloud.
-        let session = AccountSession(cloud: URL(string: "https://cloud.test")!, kind: .watch, store: InMemoryTokenStore())
-        #expect(!AccountLoginModel(cloudURL: nil, session: session, model: model, sendToPhone: nil).isAvailable)
-        #expect(AccountLoginModel(cloudURL: URL(string: "https://cloud.test")!, session: session, model: model, sendToPhone: nil).isAvailable)
     }
 
     @Test func cloudURLComesOnlyFromASafeBuildValue() {
@@ -365,20 +409,6 @@ struct AccountLoginModelTests {
         _ = await other.value
     }
 
-    @Test func signOutKeepsServers() async throws {
-        try store.save([Credentials(serverURL: URL(string: "https://agent.example.com")!, device: PairedDevice(deviceId: "dev-1", token: "t"))])
-        pairing.meResults = [.success(info("dev-1", user: "usr_1"))]
-        backend.signedIn = true
-        let model = await makeAppModel()
-        let login = makeLogin(model: model)
-        await login.restore()
-        #expect(login.isSignedIn)
-        await login.signOut()
-        #expect(!login.isSignedIn)
-        #expect(backend.calls == ["signOut"])
-        #expect(model.servers.count == 1)
-    }
-
     @Test func shortForms() {
         #expect(AccountLoginModel.shortForm(URL(string: "https://auth.trigram.com.br/device")!) == "auth.trigram.com.br/device")
         #expect(AccountLoginModel.shortForm(URL(string: "https://auth.test:8443/device/?x=1")!) == "auth.test:8443/device")
@@ -393,13 +423,18 @@ private struct FailingAgendaBackend: AccountLoginBackend {
 
     func isSignedIn() async -> Bool { false }
     func startDeviceAuthorization() async throws -> DeviceAuthorization { throw error }
-    func completeDeviceAuthorization(_ authorization: DeviceAuthorization) async throws { throw error }
+    func completeDeviceAuthorization(_ authorization: DeviceAuthorization) async throws -> String { throw error }
     func servers() async throws -> [CloudServer] { throw error }
     func pair(_ server: URL, deviceName: String) async -> AccountPairing.Outcome { .skipped(server, "") }
-    func signOut() async {}
 }
 
 @MainActor
 private final class LoginBox {
     var login: AccountLoginModel?
+}
+
+@MainActor
+private final class Flag {
+    var value: Bool
+    init(_ value: Bool) { self.value = value }
 }

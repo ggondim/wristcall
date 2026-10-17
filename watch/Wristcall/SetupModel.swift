@@ -49,8 +49,12 @@ final class SetupModel {
     /// Told the account once it is known (a restored session at once, a new one after its first sync) and `nil`
     /// when it is gone, for the watch's link context (C7).
     var onAccountReady: (@MainActor (String?) -> Void)?
-    /// Device flow or manual sync running (`AccountLoginModel.isRunning`): the automatic one does not start.
+    /// Device flow or manual sync running (`AccountLoginModel.isRunning`): the automatic enrollment and sync do
+    /// not start.
     var isManualRunning: @MainActor () -> Bool = { false }
+    /// An enrollment round or a sync is in flight (`AccountLoginModel.isSetupBusy`): the manual login does not
+    /// start. The wait between two rounds is not busy: it is when "Use a code instead" is needed.
+    var isBusy: Bool { enrolling > 0 || syncTask.map { !$0.isCancelled } ?? false }
 
     @ObservationIgnored private let backend: any SetupBackend
     @ObservationIgnored private let model: AppModel
@@ -77,6 +81,8 @@ final class SetupModel {
     @ObservationIgnored private var wakeRequested = false
     /// An activation asked for the 0.4.0 sign-in on the next round.
     @ObservationIgnored private var legacyRequested = false
+    /// `backend.enroll` calls running (a counter: a cancelled loop's call may still end after a new loop's starts).
+    @ObservationIgnored private var enrolling = 0
     @ObservationIgnored private var syncTask: Task<Void, Never>?
     @ObservationIgnored private var syncID = 0
     /// A new enrollment waits for its first sync to be announced.
@@ -226,6 +232,13 @@ final class SetupModel {
         var tryLegacy = first
         while !Task.isCancelled {
             updateWaitingPhase()
+            guard !isManualRunning() else {
+                // The device flow makes the session itself (a second one would leave an extra device in the
+                // Cloud); the round, its 0.4.0 sign-in included, waits.
+                guard model.servers.isEmpty else { return }
+                await waitForNextRound()
+                continue
+            }
             let code = pendingCode
             let legacy = tryLegacy || legacyRequested
             tryLegacy = false
@@ -233,12 +246,14 @@ final class SetupModel {
             wakeRequested = false
 
             let result: SetupEnrollResult?
+            enrolling += 1
             do {
                 result = try await backend.enroll(code: code, tryLegacy: legacy)
             } catch {
                 // Network, `429` or anything else: try again later.
                 result = nil
             }
+            enrolling -= 1
             guard !Task.isCancelled else { return }
 
             switch result {
