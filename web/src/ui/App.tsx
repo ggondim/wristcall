@@ -20,7 +20,7 @@ import { LinkView } from "./LinkView"
 import { ServerDetailView } from "./ServerDetailView"
 import { ServersView } from "./ServersView"
 import { SignInView } from "./SignInView"
-import { onNavigate, parseAgentsTarget, parseApprovalTarget, parseDevicesTarget, parseHistoryServer, parseHistoryTarget, parseRoute, replaceRoute, type Route } from "./route"
+import { legacyRedirect, onNavigate, parseAgentsTarget, parseApprovalTarget, parseDevicesTarget, parseHistoryServer, parseHistoryTarget, parseRoute, replaceRoute, type Route } from "./route"
 import { Tabs } from "./Tabs"
 import { useEffect, useMemo, useState } from "preact/hooks"
 import { useModel, type Model } from "./useModel"
@@ -28,7 +28,7 @@ import { useModel, type Model } from "./useModel"
 export { navigate, parseRoute, type Route } from "./route"
 
 export interface AppProps {
-  /** Pending approval requests, shown on the Servers tab. */
+  /** Pending approval requests, shown on the Settings tab and the Device requests row. */
   badge: Model<{ count: number }>
   /** The requests behind the badge; the approvals route opens from the badge or a notification. Made over `servers` when left out. */
   approvals?: ApprovalsModel
@@ -49,6 +49,7 @@ function Screen({
   route,
   servers,
   approvals,
+  badge,
   history,
   session,
   account,
@@ -56,6 +57,7 @@ function Screen({
   onAgentsChanged,
 }: {
   route: Route
+  badge: Model<{ count: number }>
   servers: ServersModel
   approvals: ApprovalsModel
   history: HistoryModel
@@ -65,9 +67,9 @@ function Screen({
   onAgentsChanged?: (serverId: string, agents: AgentDetail[]) => void
 }) {
   const addServer = useMemo(() => new AddServerModel(servers, session), [servers, session])
+  // Provisional (R-pre1): the servers list stands in for the Agents home until Task 5b.
+  if (route.tab === "agents") return <ServersView model={servers} />
   if (route.tab === "servers") {
-    if (route.path === "/" || route.path === "/servers" || route.path === "/agents") return <ServersView model={servers} />
-    if (route.path === "/servers/add") return <AddServerView model={addServer} />
     const agents = parseAgentsTarget(route.path)
     if (agents !== null) return <AgentsScreen servers={servers} target={agents} onAgentsChanged={onAgentsChanged} />
     const devices = parseDevicesTarget(route.path)
@@ -83,8 +85,9 @@ function Screen({
   if (route.tab === "link") return <LinkView model={addServer} account={account} />
   if (route.tab === "approve") return <ApproveView />
   if (route.path === "/settings/watch" && account !== null) return <ApproveWatchSignInView model={account} />
+  if (route.path === "/settings/servers") return <ServersView model={servers} />
   if (route.path === "/settings/servers/add") return <AddServerView model={addServer} />
-  return <SettingsView account={account} notifications={notifications} />
+  return <SettingsView account={account} notifications={notifications} badge={badge} />
 }
 
 function decodeId(segment: string): string {
@@ -104,7 +107,7 @@ const NO_ACCOUNT: Model<{ screen: AccountScreen }> = { state: { screen: "unavail
  */
 function coveredByFirstScreen(route: Route): boolean {
   if (route.tab === "callback" || route.tab === "link" || route.tab === "signIn" || route.tab === "approve") return false
-  return route.path !== "/servers/add" && route.path !== "/settings/servers/add"
+  return route.path !== "/settings/servers/add"
 }
 
 export function App({ badge, approvals: given, servers, session = null, account = null, signIn = null, notifications = null, onAgentsChanged }: AppProps) {
@@ -112,6 +115,11 @@ export function App({ badge, approvals: given, servers, session = null, account 
   const [search, setSearch] = useState(() => location.search)
   useEffect(() => {
     const read = () => {
+      const moved = legacyRedirect(location.pathname, location.search)
+      if (moved !== null) {
+        replaceRoute(moved) // fires the navigate event, which comes back here with the new address
+        return
+      }
       const next = parseRoute(location.pathname)
       setRoute((now) => (now.tab === next.tab && now.path === next.path ? now : next))
       setSearch(location.search)
@@ -151,7 +159,7 @@ export function App({ badge, approvals: given, servers, session = null, account 
   if (leaveSignIn || (firstScreen && !loaded)) return <main class="screen" aria-busy="true" />
   return (
     <>
-      <Screen route={route} servers={servers} approvals={approvals} history={historyModel} session={session} account={account} notifications={notifications} onAgentsChanged={onAgentsChanged} />
+      <Screen route={route} servers={servers} approvals={approvals} badge={badge} history={historyModel} session={session} account={account} notifications={notifications} onAgentsChanged={onAgentsChanged} />
       {route.tab === "callback" || route.tab === "link" || route.tab === "signIn" || route.tab === "approve" ? null : <Tabs route={route} badge={badge} />}
     </>
   )

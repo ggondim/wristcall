@@ -56,7 +56,7 @@ afterEach(() => {
 describe("history routes", () => {
   test("historyAddressesParse", () => {
     expect(parseRoute("/history/home/c%2F1")).toEqual({ tab: "history", path: "/history/home/c%2F1" })
-    expect(parseRoute("/history/a/b/c")).toEqual({ tab: "servers", path: "/servers" })
+    expect(parseRoute("/history/a/b/c")).toEqual({ tab: "agents", path: "/agents" })
     expect(parseHistoryTarget(historyPath("a/b", "c 1"))).toEqual({ serverId: "a/b", callId: "c 1" })
     expect(parseHistoryTarget("/history")).toBeNull()
     expect(parseHistoryTarget("/history/home")).toBeNull()

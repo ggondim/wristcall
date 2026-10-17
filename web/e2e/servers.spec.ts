@@ -17,7 +17,7 @@ test("manage a server with a personal token", async ({ page }) => {
 
   await test.step("add the server", async () => {
     await page.goto("/")
-    await expect(page.getByRole("heading", { name: "Add your wristcall server" })).toBeVisible()
+    await expect(page.getByRole("heading", { name: "No servers yet." })).toBeVisible()
     await page.getByRole("link", { name: "Add server" }).click()
     await page.locator("input[name=address]").fill(env.server)
     await page.locator("input[name=token]").fill(env.pat)
@@ -79,10 +79,11 @@ test("manage a server with a personal token", async ({ page }) => {
   })
 
   await test.step("remove the server", async () => {
-    await page.getByRole("link", { name: "Servers" }).click()
+    await page.getByRole("link", { name: "Settings" }).click()
+    await page.getByRole("link", { name: /^Servers/ }).click()
     await page.getByRole("link", { name: /E2E server/ }).click()
     await page.getByRole("button", { name: "Remove server" }).click()
     await page.getByRole("region", { name: "Remove server" }).getByRole("button", { name: "Remove" }).click()
-    await expect(page.getByRole("heading", { name: "Add your wristcall server" })).toBeVisible()
+    await expect(page.getByRole("heading", { name: "No servers yet." })).toBeVisible()
   })
 })

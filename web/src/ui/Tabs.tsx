@@ -1,19 +1,11 @@
-import { navigate, type Route } from "./route"
+import { activeTab, navigate, type Route, type TabId } from "./route"
 import { useModel, type Model } from "./useModel"
 
-type Tab = "servers" | "history" | "settings"
-
-const TABS: { id: Tab; label: string; path: string }[] = [
-  { id: "servers", label: "Servers", path: "/servers" },
+const TABS: { id: TabId; label: string; path: string }[] = [
+  { id: "agents", label: "Agents", path: "/agents" },
   { id: "history", label: "History", path: "/history" },
   { id: "settings", label: "Settings", path: "/settings" },
 ]
-
-/** Which tab a route belongs to: the approvals screen is opened by the badge on the Servers tab, which stays current. */
-function tabOf(route: Route): Tab | null {
-  if (route.tab === "callback" || route.tab === "link" || route.tab === "signIn" || route.tab === "approve") return null
-  return route.tab === "approvals" ? "servers" : route.tab
-}
 
 function Badge({ model }: { model: Model<{ count: number }> }) {
   const { count } = useModel(model)
@@ -35,7 +27,7 @@ function Badge({ model }: { model: Model<{ count: number }> }) {
 }
 
 export function Tabs({ route, badge }: { route: Route; badge: Model<{ count: number }> }) {
-  const current = tabOf(route)
+  const current = activeTab(route)
   return (
     <nav class="tabs" aria-label="Main">
       {TABS.map((tab) => (
@@ -52,7 +44,7 @@ export function Tabs({ route, badge }: { route: Route; badge: Model<{ count: num
           >
             <span class="tab-label">{tab.label}</span>
           </a>
-          {tab.id === "servers" ? <Badge model={badge} /> : null}
+          {tab.id === "settings" ? <Badge model={badge} /> : null}
         </div>
       ))}
     </nav>

@@ -51,7 +51,7 @@ export function AddServerView({ model }: { model: AddServerModel }) {
       if (result.ok) {
         setToken("")
         setCode("")
-        navigate("/servers")
+        navigate("/settings/servers")
         return
       }
       setError(result.message)
@@ -64,7 +64,7 @@ export function AddServerView({ model }: { model: AddServerModel }) {
   return (
     <main class="screen">
       <p>
-        <Link href="/servers">Servers</Link>
+        <Link href="/settings/servers">Servers</Link>
       </p>
       <h1>Add server</h1>
       <form

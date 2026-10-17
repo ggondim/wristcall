@@ -42,7 +42,7 @@ export function DevicesScreen({ servers, approvals, target }: { servers: Servers
     return (
       <main class="screen">
         <h1>Server removed</h1>
-        <Link href="/servers">Back to servers</Link>
+        <Link href="/settings/servers">Back to servers</Link>
       </main>
     )
   }

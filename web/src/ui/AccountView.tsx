@@ -3,7 +3,7 @@ import type { AccountModel } from "../models/account"
 import type { NotificationsModel } from "../push/notifications"
 import { Link } from "./Link"
 import { NotificationsSetting } from "./NotificationsSetting"
-import { useModel } from "./useModel"
+import { useModel, type Model } from "./useModel"
 
 /** Said by the iPhone app too: what deleting does and does not touch. */
 export const DELETE_EXPLANATION =
@@ -99,13 +99,55 @@ export function AccountSection({ model }: { model: AccountModel }) {
   )
 }
 
-/** Settings: the account section appears only when the site has a Cloud, and notifications only when it also sends Web Push. */
-export function SettingsView({ account, notifications = null }: { account: AccountModel | null; notifications?: NotificationsModel | null }) {
+/** Stands in for the pending requests when the caller has none to show. */
+const NO_REQUESTS: Model<{ count: number }> = { state: { count: 0 }, subscribe: () => () => {} }
+
+/** Where the servers and the device requests live: both are advanced, so they sit in Settings. */
+function AdvancedSection({ requests }: { requests: Model<{ count: number }> }) {
+  const { count } = useModel(requests)
+  return (
+    <>
+      <ul class="list" aria-label="Servers and requests">
+        <li>
+          <Link class="row" href="/settings/servers">
+            <span class="row-title">
+              Servers
+              <span class="muted">Advanced</span>
+            </span>
+          </Link>
+        </li>
+        <li>
+          <Link class="row" href="/approvals">
+            <span class="row-title">
+              Device requests
+              {count > 0 ? <span class="row-action">{count}</span> : null}
+            </span>
+          </Link>
+        </li>
+      </ul>
+    </>
+  )
+}
+
+/**
+ * Settings: the account section appears only when the site has a Cloud, and notifications only when it also sends Web
+ * Push. `badge` counts the pending device requests.
+ */
+export function SettingsView({
+  account,
+  notifications = null,
+  badge = NO_REQUESTS,
+}: {
+  account: AccountModel | null
+  notifications?: NotificationsModel | null
+  badge?: Model<{ count: number }>
+}) {
   return (
     <main class="screen">
       <h1>Settings</h1>
       {account !== null ? <AccountSection model={account} /> : null}
       {notifications !== null ? <NotificationsSetting model={notifications} /> : null}
+      <AdvancedSection requests={badge} />
     </main>
   )
 }

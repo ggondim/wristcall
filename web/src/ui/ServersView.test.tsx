@@ -26,11 +26,11 @@ beforeEach(() => history.replaceState(null, "", "/servers"))
 afterEach(() => history.replaceState(null, "", "/"))
 
 describe("ServersView", () => {
-  test("serversViewShowsEmptyState", async () => {
+  test("servers empty state has no terminal hint", async () => {
     render(<ServersView model={await modelWith([])} />)
-    await screen.findByText("Add your wristcall server")
-    expect(screen.getByText("wristcall users tokens add --name browser")).toBeTruthy()
-    expect(screen.getByRole("link", { name: "Add server" }).getAttribute("href")).toBe("/servers/add")
+    await screen.findByText("No servers yet.")
+    expect(screen.getByRole("link", { name: "Add server" }).getAttribute("href")).toBe("/settings/servers/add")
+    expect(document.body.textContent).not.toMatch(/terminal|wristcall users|command|token/i)
   })
 
   test("serversViewListsRows", async () => {
@@ -57,7 +57,7 @@ describe("ServersView", () => {
     act(() => down.setFromAccount([{ id: "c", name: "Office", url: "https://office.example.com", kind: "self-hosted", linked: false, agents: [], created_at: "", updated_at: "" } satisfies CloudServer]))
     expect(screen.getByText("From your account")).toBeTruthy()
     const setUp = screen.getByRole("link", { name: /Office/ })
-    expect(setUp.getAttribute("href")).toBe("/servers/add?url=https%3A%2F%2Foffice.example.com&name=Office")
+    expect(setUp.getAttribute("href")).toBe("/settings/servers/add?url=https%3A%2F%2Foffice.example.com&name=Office")
   })
 })
 

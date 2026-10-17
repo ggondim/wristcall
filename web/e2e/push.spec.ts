@@ -78,7 +78,7 @@ test("push: subscribe, relay send, notification, approvals link", async ({ page,
   })
 
   await test.step("add the local server with a pairing code", async () => {
-    await page.goto("/servers/add")
+    await page.goto("/settings/servers/add")
     // Linked to the account with a pairing code: the server only takes account tokens from a linked account.
     await page.getByRole("button", { name: "Pairing code" }).click()
     await page.locator("input[name=address]").fill(env.server)
@@ -194,7 +194,7 @@ test("push: subscribe, relay send, notification, approvals link", async ({ page,
   })
 
   await test.step("removing the server takes its push key along", async () => {
-    await page.goto("/servers")
+    await page.goto("/settings/servers")
     await page.getByRole("link", { name: /E2E push server/ }).click()
     const cleared = page.waitForResponse((r) => r.url() === `${env.server}/v1/push` && r.request().method() === "DELETE")
     const forgotten = page.waitForResponse((r) => r.url() === `${env.cloud}/v1/push/registrations/current` && r.request().method() === "DELETE")
@@ -203,6 +203,6 @@ test("push: subscribe, relay send, notification, approvals link", async ({ page,
     expect((await cleared).status(), "DELETE /v1/push").toBe(204)
     // The server's own clean-up may have removed the registration at the relay first: then the app's call finds nothing.
     expect([204, 404], "DELETE /v1/push/registrations/current").toContain((await forgotten).status())
-    await expect(page.getByRole("heading", { name: "Add your wristcall server" })).toBeVisible()
+    await expect(page.getByRole("heading", { name: "No servers yet." })).toBeVisible()
   })
 })

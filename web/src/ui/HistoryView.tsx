@@ -231,7 +231,7 @@ export function HistoryView({ model, servers, serverId = null }: { model: Histor
         <section class="empty">
           <h2>No servers</h2>
           <p>Add a server to see its calls here.</p>
-          <Link class="button" href="/servers/add">
+          <Link class="button" href="/settings/servers/add">
             Add server
           </Link>
         </section>

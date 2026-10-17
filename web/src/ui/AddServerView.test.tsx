@@ -50,7 +50,7 @@ async function world(opts: { signedIn?: boolean; initial?: SavedServer[]; fetch?
   return { store, servers, session, f }
 }
 
-beforeEach(() => history.replaceState(null, "", "/servers/add"))
+beforeEach(() => history.replaceState(null, "", "/settings/servers/add"))
 afterEach(() => {
   history.replaceState(null, "", "/")
   vi.unstubAllGlobals()
@@ -115,7 +115,7 @@ describe("AddServerView", () => {
   })
 
   test("setUpRowPrefillsAddressAndNameForAnAccountServerAndStartsWithTheCode", async () => {
-    history.replaceState(null, "", "/servers/add?url=https%3A%2F%2FOffice.example.com%3A443%2F&name=Whatever")
+    history.replaceState(null, "", "/settings/servers/add?url=https%3A%2F%2FOffice.example.com%3A443%2F&name=Whatever")
     const { servers, session } = await world({ signedIn: true })
     servers.setFromAccount([office])
     render(<AddServerView model={new AddServerModel(servers, session)} />)
@@ -125,7 +125,7 @@ describe("AddServerView", () => {
   })
 
   test("prefillWaitsForTheAccountList", async () => {
-    history.replaceState(null, "", "/servers/add?url=https%3A%2F%2Foffice.example.com")
+    history.replaceState(null, "", "/settings/servers/add?url=https%3A%2F%2Foffice.example.com")
     const { servers, session } = await world({ signedIn: true })
     render(<AddServerView model={new AddServerModel(servers, session)} />)
     expect((screen.getByLabelText("Address") as HTMLInputElement).value).toBe("")
@@ -134,7 +134,7 @@ describe("AddServerView", () => {
   })
 
   test("aLinkToAnotherAddressDoesNotFillTheForm", async () => {
-    history.replaceState(null, "", "/servers/add?url=https%3A%2F%2Fevil.example&name=Home")
+    history.replaceState(null, "", "/settings/servers/add?url=https%3A%2F%2Fevil.example&name=Home")
     const { servers, session } = await world({ signedIn: true })
     servers.setFromAccount([office])
     render(<AddServerView model={new AddServerModel(servers, session)} />)
@@ -156,7 +156,7 @@ describe("AddServerView", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Add" }))
     })
-    await waitFor(() => expect(location.pathname).toBe("/servers"))
+    await waitFor(() => expect(location.pathname).toBe("/settings/servers"))
     expect((await store.list()).map((s) => s.token)).toEqual(["wc_pat_abc"])
   })
 
@@ -169,7 +169,7 @@ describe("AddServerView", () => {
       fireEvent.click(screen.getByRole("button", { name: "Add" }))
     })
     expect((await screen.findByRole("alert")).textContent).toContain("starts with wc_pat_")
-    expect(location.pathname).toBe("/servers/add")
+    expect(location.pathname).toBe("/settings/servers/add")
     expect((screen.getByLabelText("Address") as HTMLInputElement).value).toBe("https://home.example.com")
   })
 })
@@ -186,7 +186,7 @@ describe("ServerDetailView actions", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Remove" }))
     })
-    await waitFor(() => expect(location.pathname).toBe("/servers"))
+    await waitFor(() => expect(location.pathname).toBe("/settings/servers"))
     await servers.cleanupsDone()
     expect(await store.list()).toEqual([])
     expect(f.calls.some((c) => c.url.endsWith("/v1/push") && c.init.method === "DELETE")).toBe(true)

@@ -1,19 +1,18 @@
 export type Route =
-  | { tab: "servers"; path: "/" | "/servers" | "/agents" }
-  | { tab: "servers"; path: "/servers/add" }
+  | { tab: "agents"; path: "/" | "/agents" }
   | { tab: "servers"; path: `/servers/${string}` }
   | { tab: "history"; path: "/history" | `/history/${string}` }
   | { tab: "approvals"; path: "/approvals" }
-  | { tab: "settings"; path: "/settings" | "/settings/watch" | "/settings/servers/add" }
+  | { tab: "settings"; path: "/settings" | "/settings/watch" | "/settings/servers" | "/settings/servers/add" }
   | { tab: "callback"; path: "/auth/callback" }
   | { tab: "link"; path: "/link" }
   | { tab: "signIn"; path: "/sign-in" }
   | { tab: "approve"; path: "/approve" }
 
-const FALLBACK: Route = { tab: "servers", path: "/servers" }
+const FALLBACK: Route = { tab: "agents", path: "/agents" }
 const NAVIGATE_EVENT = "wristcall:navigate"
 
-/** Path (History API) to route; anything unknown is the servers list. */
+/** Path (History API) to route; anything unknown is the Agents tab. */
 export function parseRoute(pathname: string): Route {
   const path = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname
   const parts = path.split("/").slice(1)
@@ -28,18 +27,17 @@ export function parseRoute(pathname: string): Route {
   }
   // /history/:server/:call
   if (head === "history" && id && rest.length === 1 && rest[0] !== "") return { tab: "history", path: `/history/${id}/${rest[0]}` }
-  // Where the sign-in screen's "own server" link goes (Task 5 moves Servers under Settings).
-  if (path === "/settings/servers/add") return { tab: "settings", path: "/settings/servers/add" }
+  // Servers live under Settings; `/servers` and `/servers/add` are old addresses that `legacyRedirect` moves.
+  if (path === "/settings/servers/add" || path === "/servers/add") return { tab: "settings", path: "/settings/servers/add" }
   if (rest.length > 0) return FALLBACK
   switch (path) {
     case "/":
-      return { tab: "servers", path: "/" }
-    case "/servers":
-      return { tab: "servers", path: "/servers" }
+      return { tab: "agents", path: "/" }
     case "/agents":
-      return { tab: "servers", path: "/agents" } // provisional: the servers list until Task 5 brings the Agents tab
-    case "/servers/add":
-      return { tab: "servers", path: "/servers/add" }
+      return { tab: "agents", path: "/agents" }
+    case "/servers":
+    case "/settings/servers":
+      return { tab: "settings", path: "/settings/servers" }
     case "/history":
       return { tab: "history", path: "/history" }
     case "/approvals":
@@ -60,6 +58,38 @@ export function parseRoute(pathname: string): Route {
   if (head === "servers" && id) return { tab: "servers", path: `/servers/${id}` }
   if (head === "history" && id) return { tab: "history", path: `/history/${id}` }
   return FALLBACK
+}
+
+/** Old addresses of the Servers screens, now under Settings: where to go instead (the query goes along), or null. */
+export function legacyRedirect(pathname: string, search = ""): string | null {
+  const path = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname
+  if (path === "/servers") return "/settings/servers"
+  if (path === "/servers/add") return `/settings/servers/add${search}`
+  return null
+}
+
+/** The tab bar entries. */
+export type TabId = "agents" | "history" | "settings"
+
+/**
+ * Which tab a route marks as current, or null for the screens without a tab bar. The server detail and devices
+ * screens belong to Settings (Servers are there); the agents of a server belong to Agents; the approvals screen is
+ * opened from Settings.
+ */
+export function activeTab(route: Route): TabId | null {
+  switch (route.tab) {
+    case "callback":
+    case "link":
+    case "signIn":
+    case "approve":
+      return null
+    case "approvals":
+      return "settings"
+    case "servers":
+      return parseAgentsTarget(route.path) !== null ? "agents" : "settings"
+    default:
+      return route.tab
+  }
 }
 
 /** pushState plus an event, so the App re-reads the location (popstate only fires for the back and forward buttons). */

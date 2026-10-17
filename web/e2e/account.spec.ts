@@ -38,7 +38,8 @@ test("account: sign in, link, agenda, approval, sign out, delete", async ({ page
   })
 
   await test.step("add the server with a pairing code", async () => {
-    await page.getByRole("link", { name: "Servers" }).click()
+    await page.getByRole("link", { name: "Settings" }).click()
+    await page.getByRole("link", { name: /^Servers/ }).click()
     await page.getByRole("link", { name: "Add server" }).click()
     await page.getByRole("button", { name: "Pairing code" }).click()
     await page.locator("input[name=address]").fill(env.server)
