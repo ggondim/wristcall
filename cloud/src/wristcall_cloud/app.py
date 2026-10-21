@@ -44,6 +44,7 @@ from .limits import AccountCreationLimiter, AttemptLimiter, PollLimiter
 from .node_auth import NodeLimiter
 from .node_agents import router as node_agents_router
 from .node_calls import router as node_calls_router
+from .node_history import router as node_history_router
 from .node_me import router as node_me_router
 from .nodes import NodeStore
 from .oidc import OidcVerifier
@@ -552,6 +553,7 @@ def create_app(
     app.include_router(node_me_router)
     app.include_router(node_agents_router)
     app.include_router(node_calls_router)
+    app.include_router(node_history_router)
 
     @app.get("/v1/health")
     async def health() -> dict[str, str]:

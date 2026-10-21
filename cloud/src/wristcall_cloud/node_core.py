@@ -28,6 +28,41 @@ def public_agent(doc: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def public_call(doc: dict[str, Any]) -> dict[str, Any]:
+    """A call as the API shows it (the account, node and grant bookkeeping stay out)."""
+    return {
+        "id": doc["_id"],
+        "agent_id": doc.get("agent"),
+        "agent_slug": doc.get("agent_slug"),
+        "agent_name": doc.get("agent_name"),
+        "device_id": doc.get("device"),
+        "call_type": doc.get("call_type"),
+        "status": doc.get("status"),
+        "error": doc.get("error"),
+        "attempts": doc.get("attempts"),
+        "last_http_status": doc.get("last_http_status"),
+        "created_at": doc.get("created_at"),
+        "updated_at": doc.get("updated_at"),
+        "ended_at": doc.get("ended_at"),
+        "finished_at": doc.get("finished_at"),
+        "expires_at": doc.get("expires_at"),
+        "seconds": doc.get("seconds"),
+        "open": bool(doc.get("open")),
+    }
+
+
+def public_entry(doc: dict[str, Any]) -> dict[str, Any]:
+    """An entry of a call as the API shows it (`text` is sealed when `sealed`: the Cloud never opens it)."""
+    return {
+        "seq": doc["seq"],
+        "role": doc.get("role"),
+        "text": doc.get("text"),
+        "sealed": doc.get("sealed", False),
+        "error": doc.get("error"),
+        "at": doc.get("at"),
+    }
+
+
 async def list_agents(cloud: CloudModeStore, account: str) -> list[dict[str, Any]]:
     """The account's agents (public form) by `position`, then `created_at`."""
     cursor = cloud.agents.find({"account": account}).sort([("position", ASCENDING), ("created_at", ASCENDING)])
