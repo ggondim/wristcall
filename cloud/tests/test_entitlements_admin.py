@@ -3,12 +3,16 @@
 import asyncio
 import re
 import sys
+import time
 
 import pytest
 from pymongo.errors import PyMongoError
 
+from node_fixtures import db
+from test_cloud_store import COLLECTIONS, cloud_mode_counts, seed_cloud_mode
 from wristcall_cloud import admin
 from wristcall_cloud.account_store import AccountStore, purge_idle_accounts_loop
+from wristcall_cloud.cloud_store import usage_month
 from wristcall_cloud.config import ConfigError, admin_settings
 from wristcall_cloud.session_tokens import secret_hash
 
@@ -60,6 +64,18 @@ async def test_purge_idle_accounts_spares_identities_plans_and_current_accounts(
     assert await store.list_devices(planned) == [] and await store.list_devices(linked) == []
     assert await mongo_db["servers"].find_one({"account": planned}) is not None
     assert await store.identities_of(linked)
+
+
+async def test_idle_purge_removes_cloud_mode_data(store, mongo_db):
+    idle = await anonymous(store, "idle", seen=LONG_AGO)
+    current = await anonymous(store, "current", seen=NOW)
+    with db(mongo_db) as d:
+        seed_cloud_mode(d, idle)
+        seed_cloud_mode(d, current)
+    assert await store.purge_idle_accounts(IDLE, now=NOW) == 1
+    with db(mongo_db) as d:
+        assert cloud_mode_counts(d, idle) == dict.fromkeys(COLLECTIONS, 0)
+        assert cloud_mode_counts(d, current) == dict.fromkeys(COLLECTIONS, 1)
 
 
 async def test_purge_idle_accounts_takes_an_expired_plan_account(store):
@@ -165,6 +181,8 @@ async def test_admin_grant_show_revoke(store, capsys):
     assert shown["account"] == account and shown["kind"] == "anonymous"
     assert shown["devices"] == "1" and shown["identities"] == "zitadel" and shown["plan"] == "full"
     assert {"created_at", "last_seen_at"} <= shown.keys()
+    assert (shown["cloud_agents"], shown["cloud_calls"], shown["usage_month_s"]) == ("0", "0", "0")
+    assert list(parsed(out))[-3:] == ["cloud_agents", "cloud_calls", "usage_month_s"]
 
     code, out, _ = await cli(store, capsys, "revoke", account)
     assert code == 0 and parsed(out)["revoked"] == "true"
@@ -203,9 +221,44 @@ async def test_admin_stats(store, capsys):
     code, out, _ = await cli(store, capsys, "stats")
     stats = parsed(out)
     assert code == 0
-    assert list(stats) == ["accounts", "anonymous_24h", "devices", "identities", "entitlements"]
+    assert list(stats) == [
+        "accounts", "anonymous_24h", "devices", "identities", "entitlements",
+        "schema", "nodes", "nodes_enabled", "cloud_calls_open", "usage_month_s",
+    ]  # fmt: skip
     assert stats["accounts"] == "2" and stats["devices"] == "1"
     assert stats["identities"] == "1" and stats["entitlements"] == "1"
+    assert (stats["nodes"], stats["nodes_enabled"], stats["cloud_calls_open"], stats["usage_month_s"]) == (
+        "0", "0", "0", "0"
+    )
+
+
+async def test_admin_stats_and_show_count_cloud_mode(store, mongo_db, capsys):
+    now = time.time()
+    month = usage_month(now)
+    a = await anonymous(store, "a", seen=now)
+    b = await anonymous(store, "b", seen=now)
+    await store.migrate()
+    await mongo_db["nodes"].insert_many([{"_id": "home", "enabled": True}, {"_id": "away", "enabled": False}])
+    await mongo_db["cloud_agents"].insert_many(
+        [{"_id": "ag_1", "account": a}, {"_id": "ag_2", "account": a}, {"_id": "ag_3", "account": b}]
+    )
+    await mongo_db["cloud_calls"].insert_many(
+        [{"_id": "c_1", "account": a, "open": True}, {"_id": "c_2", "account": a}, {"_id": "c_3", "account": b}]
+    )
+    await mongo_db["usage"].insert_many(
+        [
+            {"_id": f"{a}:{month}", "account": a, "month": month, "total_s": 100},
+            {"_id": f"{b}:{month}", "account": b, "month": month, "total_s": 25},
+            {"_id": f"{a}:2001-01", "account": a, "month": "2001-01", "total_s": 999},
+        ]
+    )
+    code, out, _ = await cli(store, capsys, "stats")
+    stats = parsed(out)
+    assert code == 0 and stats["schema"] == "3" and (stats["nodes"], stats["nodes_enabled"]) == ("2", "1")
+    assert stats["cloud_calls_open"] == "1" and stats["usage_month_s"] == "125"
+    code, out, _ = await cli(store, capsys, "show", a)
+    shown = parsed(out)
+    assert code == 0 and (shown["cloud_agents"], shown["cloud_calls"], shown["usage_month_s"]) == ("2", "2", "100")
 
 
 def test_admin_usage_errors_exit_2(capsys):

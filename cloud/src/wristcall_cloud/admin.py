@@ -1,9 +1,9 @@
-"""`wristcall-cloud admin`: beta entitlements, invite codes and numbers, straight on the database.
+"""`wristcall-cloud admin`: beta entitlements, invite codes, numbers and the node registry, straight on the database.
 
 One line per item, `key: value`, on stdout; errors go to stderr. Exit codes: 0 done, 1 no such account,
 2 bad usage or configuration, 3 the database failed
 (only the exception type is printed). The invite codes `invites create` prints are the only time
-they exist in clear: nothing here logs one.
+they exist in clear, and so are the node secrets `nodes add` and `nodes rotate` print: nothing here logs one.
 """
 
 import argparse
@@ -19,7 +19,9 @@ from pymongo.errors import PyMongoError
 
 from . import __version__
 from .account_store import PLANS, AccountStore
+from .cloud_store import CloudModeStore, usage_month
 from .config import ConfigError, admin_settings
+from .nodes import CAPABILITIES, KINDS, NodeExists, NodeStore
 
 PROG = "wristcall-cloud admin"
 MAX_INVITES = 1000
@@ -62,6 +64,22 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--count", type=_count, default=1)
     create.add_argument("--days", type=_positive, default=30, help="how long the codes can be redeemed")
     commands.add_parser("stats", help="counts")
+    nodes = commands.add_parser("nodes", help="wristcall Cloud nodes")
+    nodes_commands = nodes.add_subparsers(dest="nodes_command", required=True, parser_class=_Parser)
+    add = nodes_commands.add_parser("add", help="registers a node; prints its secret (the only time it shows)")
+    add.add_argument("node")
+    add.add_argument("--url", required=True)
+    add.add_argument("--region", required=True, help="three lowercase letters")
+    add.add_argument("--kind", choices=KINDS, required=True)
+    add.add_argument("--capability", choices=CAPABILITIES, action="append", default=[], dest="capabilities")
+    add.add_argument("--priority", type=int, default=100, help="lower first")
+    add.add_argument("--allow-loopback", action="store_true", help="accept a loopback URL (development)")
+    nodes_commands.add_parser("list", help="the registered nodes")
+    rotate = nodes_commands.add_parser("rotate", help="a new secret; the old one works for 15 more minutes")
+    rotate.add_argument("node")
+    rotate.add_argument("--now", action="store_true", help="the old secret stops working at once (a leak)")
+    for name in ("enable", "disable"):
+        nodes_commands.add_parser(name, help=f"{name}s a node").add_argument("node")
     return parser
 
 
@@ -78,8 +96,61 @@ def _no_such_account() -> int:
     return 1
 
 
+def _no_such_node() -> int:
+    print(f"{PROG}: no such node", file=sys.stderr)
+    return 1
+
+
+async def _run_nodes(args: argparse.Namespace, nodes: NodeStore) -> int:
+    if args.nodes_command == "add":
+        try:
+            doc, secret = await nodes.add(
+                args.node,
+                url=args.url,
+                region=args.region,
+                kind=args.kind,
+                capabilities=args.capabilities,
+                priority=args.priority,
+                allow_loopback=args.allow_loopback,
+            )
+        except ValueError as e:  # never carries the URL
+            print(f"{PROG}: {e}", file=sys.stderr)
+            return 2
+        except NodeExists:
+            print(f"{PROG}: node already exists", file=sys.stderr)
+            return 2
+        _line("node", doc["_id"])
+        _line("url", doc["url"])
+        _line("secret", secret)
+        return 0
+    if args.nodes_command == "list":
+        for node in await nodes.list():
+            enabled = "true" if node["enabled"] else "false"
+            _line(
+                "node",
+                f"{node['_id']} url={node['url']} region={node['region']} kind={node['kind']} "
+                f"enabled={enabled} last_seen_at={_iso(node.get('last_seen_at'))}",
+            )
+        return 0
+    if args.nodes_command == "rotate":
+        secret = await nodes.rotate(args.node, immediate=args.now)
+        if secret is None:
+            return _no_such_node()
+        _line("secret", secret)
+        return 0
+    enabled = args.nodes_command == "enable"
+    if not await nodes.set_enabled(args.node, enabled):
+        return _no_such_node()
+    _line("enabled", "true" if enabled else "false")
+    return 0
+
+
 async def run(args: argparse.Namespace, store: AccountStore) -> int:
     now = time.time()
+    cloud = CloudModeStore(store.db)
+    if args.command == "nodes":
+        await cloud.ensure_indexes()  # so a duplicate URL is refused even before the Cloud's first start on this version
+        return await _run_nodes(args, NodeStore(cloud))
     if args.command == "stats":
         entitled = {"$or": [{"expires_at": None}, {"expires_at": {"$gt": now}}]}
         _line("accounts", await store.accounts.count_documents({}))
@@ -87,6 +158,14 @@ async def run(args: argparse.Namespace, store: AccountStore) -> int:
         _line("devices", await store.devices.count_documents({}))
         _line("identities", await store.identities.count_documents({}))
         _line("entitlements", await store.entitlements.count_documents(entitled))
+        schema = await store.meta.find_one({"_id": "schema"})
+        _line("schema", "none" if schema is None else schema.get("version"))
+        _line("nodes", await cloud.nodes.count_documents({}))
+        _line("nodes_enabled", await cloud.nodes.count_documents({"enabled": True}))
+        _line("cloud_calls_open", await cloud.calls.count_documents({"open": True}))
+        month = [{"$match": {"month": usage_month(now)}}, {"$group": {"_id": None, "total": {"$sum": "$total_s"}}}]
+        totals = await (await cloud.usage.aggregate(month)).to_list(None)
+        _line("usage_month_s", totals[0]["total"] if totals else 0)
         return 0
     if args.command == "invites":
         for code in await store.create_invites(args.plan, args.count, days=args.days, now=now):
@@ -107,6 +186,10 @@ async def run(args: argparse.Namespace, store: AccountStore) -> int:
         _line("plan", "none" if entitlement is None else entitlement["plan"])
         if entitlement is not None:
             _line("plan_expires_at", _iso(entitlement.get("expires_at")))
+        usage = await cloud.usage.find_one({"_id": f"{args.account}:{usage_month(now)}"}, {"total_s": 1})
+        _line("cloud_agents", await cloud.agents.count_documents({"account": args.account}))
+        _line("cloud_calls", await cloud.calls.count_documents({"account": args.account}))
+        _line("usage_month_s", usage.get("total_s", 0) if usage else 0)
         return 0
     if args.command == "grant":
         granted = await store.grant(args.account, args.plan, days=args.days, now=now)

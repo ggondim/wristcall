@@ -9,7 +9,7 @@ log = logging.getLogger("wristcall_cloud.push")
 
 @dataclass(frozen=True)
 class Message:
-    event: str  # "call.finished" | "device.approval" | "test"
+    event: str  # "call.finished" | "device.approval" | "quota.warning" | "test"
     title: str  # 1..100
     body: str  # 0..300
     subtitle: str  # the registration's label (forced)

@@ -57,8 +57,18 @@ class SigningKey:
 
 
 def server_token_claims(
-    *, issuer: str, account: str, client_id: str | None, audience: str, now: float, ttl_s: int = 300
+    *,
+    issuer: str,
+    account: str,
+    client_id: str | None,
+    audience: str,
+    now: float,
+    ttl_s: int = 300,
+    device: str | None = None,
+    platform: str | None = None,
 ) -> dict[str, Any]:
+    """The claims of a per-server token. `device` and `platform` (`did`, `plt`) are given only to a node of the
+    Cloud, which needs to know which device is calling; `/v1/server-tokens` leaves them out."""
     issued = int(now)
     claims: dict[str, Any] = {
         "iss": issuer,
@@ -70,4 +80,8 @@ def server_token_claims(
     }
     if client_id is not None:
         claims["client_id"] = client_id
+    if device is not None:
+        claims["did"] = device
+    if platform is not None:
+        claims["plt"] = platform
     return claims

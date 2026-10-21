@@ -27,7 +27,7 @@ from .webpush import endpoint_allowed
 log = logging.getLogger("wristcall_cloud.push")
 
 PUSH_KEY_PREFIX = "wc_push_"
-EVENTS = frozenset({"call.finished", "device.approval"})  # "test" is always accepted and is not in the list
+EVENTS = frozenset({"call.finished", "device.approval", "quota.warning"})  # "test" is always accepted and is not in the list
 PLATFORMS = ("apns", "webpush")
 ENVIRONMENTS = ("sandbox", "production")
 

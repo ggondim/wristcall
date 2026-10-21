@@ -14,11 +14,12 @@ from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRoute
 from pymongo.errors import PyMongoError
+from starlette.datastructures import State
 
 from ..api_common import client_ip
 from ..config import CloudConfig
 from ..store import Store
-from .channels import Channel, ChannelGone, ChannelUnavailable
+from .channels import Channel, ChannelGone, ChannelUnavailable, Message
 from .limits import RegistrationLimiter, SendLimiter
 from .registry import (
     PLATFORMS,
@@ -139,32 +140,63 @@ async def unregister(request: Request, authorization: str | None = Header(defaul
     return Response(status_code=204)
 
 
-@router.post("/v1/push/send", status_code=202)
-async def send(request: Request, authorization: str | None = Header(default=None)) -> dict[str, str]:
-    # Order matters: an unknown key is 410 whatever the body, and spends nobody's budget; an invalid message spends
-    # nothing either; the budget is checked before the channel is called.
-    registration_id, registration = await _gone_unless_known(request, authorization)
-    message = parse_message(await _json(request), registration)
-    limiter: SendLimiter = request.app.state.send_limiter
+async def _deliver(
+    state: State, registration_id: str, registration: dict[str, Any], message: Message
+) -> tuple[str, int | None]:
+    """Sends `message` to the registration's device: the outcome (see `relay_to_registration`) and, when rate limited,
+    the seconds to wait. The budget is checked before the channel is called."""
+    limiter: SendLimiter = state.send_limiter
     wait = limiter.allow(registration_id)
     if wait is not None:
-        raise PushError("rate_limited", "too many notifications; try again later", retry_after=_retry_after(wait))
+        return "rate_limited", _retry_after(wait)
     platform = registration["platform"]
-    channel: Channel | None = request.app.state.channels.get(platform)
+    channel: Channel | None = state.channels.get(platform)
     if channel is None:
         # The registration was made while the channel existed: the key is still good.
         log.warning("push channel not configured (platform %s)", platform)
-        raise _unavailable()
-    store = _store(request)
+        return "unavailable", None
+    store: Store = state.store
     await store.touch_registration(registration_id)
     try:
         await channel.send(registration, message)
     except ChannelGone:
         await store.delete_registration(registration_id)
         log.info("push channel gone, registration deleted (platform %s)", platform)
-        raise PushError("gone", "this push key is not registered") from None
+        return "gone", None
     except ChannelUnavailable:
         log.warning("push channel unavailable (platform %s)", platform)
-        raise _unavailable() from None
+        return "unavailable", None
     log.info("push sent (platform %s, event %s)", platform, message.event)
+    return "sent", None
+
+
+async def relay_to_registration(
+    state: State, registration_id: str, registration: dict[str, Any], body: dict[str, Any]
+) -> str:
+    """Relays `body` (a message as `/v1/push/send` takes it) to one registration. The outcome: `"sent"`, `"gone"` (the
+    channel says the device is gone; the registration is deleted), `"rate_limited"`, `"unavailable"` (channel down or
+    not configured) or `"skipped"` (an event the registration did not ask for). A malformed body raises `PushError`
+    `invalid`; a storage error propagates."""
+    event = body.get("event")
+    if isinstance(event, str) and event != "test" and event not in registration["events"]:
+        # Not for this registration, but a malformed message is still invalid.
+        parse_message(body, {**registration, "events": [*registration["events"], event]})
+        return "skipped"
+    outcome, _ = await _deliver(state, registration_id, registration, parse_message(body, registration))
+    return outcome
+
+
+@router.post("/v1/push/send", status_code=202)
+async def send(request: Request, authorization: str | None = Header(default=None)) -> dict[str, str]:
+    # Order matters: an unknown key is 410 whatever the body, and spends nobody's budget; an invalid message spends
+    # nothing either (an event the registration did not ask for is invalid here, not skipped).
+    registration_id, registration = await _gone_unless_known(request, authorization)
+    message = parse_message(await _json(request), registration)
+    outcome, wait = await _deliver(request.app.state, registration_id, registration, message)
+    if outcome == "rate_limited":
+        raise PushError("rate_limited", "too many notifications; try again later", retry_after=wait)
+    if outcome == "unavailable":
+        raise _unavailable()
+    if outcome == "gone":
+        raise PushError("gone", "this push key is not registered")
     return {"status": "sent"}

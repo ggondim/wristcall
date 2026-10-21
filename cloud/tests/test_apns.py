@@ -86,7 +86,7 @@ async def test_apns_headers_details():
     body = json.loads(second.content)
     assert body["aps"]["category"] == "WC_TEST" and body["wristcall"]["tag"] == ""
     assert CATEGORIES == {"call.finished": "WC_CALL_FINISHED", "device.approval": "WC_DEVICE_APPROVAL",
-                          "test": "WC_TEST"}
+                          "quota.warning": "WC_QUOTA_WARNING", "test": "WC_TEST"}
 
 
 @pytest.fixture
