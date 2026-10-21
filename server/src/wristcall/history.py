@@ -110,6 +110,7 @@ def delivery_of(agent: Agent) -> str | None:
         return None
     return "history" if agent.spec.action is None else "webhook"
 
+
 class History:
     def __init__(
         self, storage: Storage, codec: HistoryCodec, settings: HistoryConfig | None = None, *,

@@ -454,7 +454,7 @@ def create_app(
             # Before the call is recorded: an address that turned private since the agent was saved (or was saved
             # before public_only) fails now, before the user speaks. Every connection is checked again later.
             try:
-                await agents.check_public(agent)
+                await agents.check_public(agent, include_stored_tts=False)
             except AgentError as e:
                 log.warning("agent %s unavailable: %s", agent.id, e.message)
                 raise protocol.ProtocolError(
@@ -513,6 +513,8 @@ def create_app(
                 await session.close()
                 ended = time.time()
                 await call_log.save(status="ended" if call_log.count else "empty", ended_at=ended, finished=True)
+                # Before the close: once the client sees it closed, its next call must find the slot free.
+                slot.release()
                 with suppress(Exception):
                     await ws.close(code=protocol.CLOSE_NORMAL)
                 log.info("call %s ended", record.id)

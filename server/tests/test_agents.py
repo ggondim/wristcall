@@ -635,6 +635,13 @@ def test_user_urls_lists_custom_endpoints_the_call_type_uses():
     assert user_urls(spec(action=hook, tts=tts), "monologue") == [
         ("action", "https://hooks.example.com/n"), ("tts", "https://tts.example.com/v1"),
     ]
+    assert user_urls(spec(action=hook, tts=tts), "monologue", include_stored_tts=False) == [
+        ("action", "https://hooks.example.com/n"),
+    ]
+    both = {"type": "openai_stt", "url": "https://a.example.com/", "base_url": "https://b.example.com/v1", "model": "w"}
+    assert user_urls(spec(stt=both), "conversation") == [
+        ("stt", "https://a.example.com/"), ("stt", "https://b.example.com/v1"),
+    ]
 
 
 async def test_custom_endpoints_use_the_user_client():

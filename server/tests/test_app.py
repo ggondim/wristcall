@@ -736,7 +736,7 @@ from wristcall.agents import AgentService  # noqa: E402
 PUBLIC_IP, PRIVATE_IP = "93.184.216.34", "10.0.0.9"
 
 
-def public_only_client(resolver, *, public_only=True, hook_route=True):
+def public_only_client(resolver, *, public_only=True, hook_route=True, tts=None):
     """A one-shot agent `note` written straight to the storage (no check when saved), webhook at HOOK_URL."""
     cfg = fake_config()
     cfg.limits.custom_endpoint_types.append("fake_stt")
@@ -760,6 +760,7 @@ def public_only_client(resolver, *, public_only=True, hook_route=True):
                 "stt": {"type": "fake_stt", "text": "comprar leite"},
                 "action": {"type": "webhook", "url": HOOK_URL},
                 "vad": {"type": "energy"},
+                **({"tts": tts} if tts else {}),
             }))
             yield c
 
@@ -794,6 +795,15 @@ def test_public_only_lets_a_public_agent_call():
         view = wait_done(c, one_shot(c, token), auth(token))
         assert (view["status"], view["attempts"], view["last_http_status"]) == ("delivered", 1, 204)
         assert c.hook.called
+
+
+def test_public_only_ignores_the_stored_voice_of_a_one_way_agent():
+    # The voice is kept for a switch back to conversation; a one-shot call never uses it, so it must not refuse the call.
+    tts = {"type": "openai_tts", "base_url": "https://speaches:8000/v1", "model": "t", "voice": "v"}
+    for c in public_only_client(fake_resolver({"hooks.example": [PUBLIC_IP]}), tts=tts):
+        token = pair(c)
+        view = wait_done(c, one_shot(c, token), auth(token))
+        assert (view["status"], view["last_http_status"]) == ("delivered", 204)
 
 
 def test_without_public_only_the_resolver_is_never_used():

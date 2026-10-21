@@ -260,11 +260,12 @@ def build_one_way_providers(
     return OneWayProviders(stt=build_endpoint(config, spec.stt, "stt", http, user_http=user_http), webhook=webhook)
 
 
-def user_urls(spec: AgentSpec, call_type: str) -> list[tuple[str, str]]:
+def user_urls(spec: AgentSpec, call_type: str, *, include_stored_tts: bool = True) -> list[tuple[str, str]]:
     """(field, url) of each of the user's own endpoints a call of this type reaches. A one-way agent's stored voice
-    counts too (it must stay valid for a switch back to conversation)."""
+    counts too (it must stay valid for a switch back to conversation) unless include_stored_tts is off: a call
+    never uses it."""
     fields = list(stage_kinds(call_type))
-    if call_type in ONE_WAY and spec.tts is not None:
+    if include_stored_tts and call_type in ONE_WAY and spec.tts is not None:
         fields.append("tts")
     urls: list[tuple[str, str]] = []
     for field in fields:
@@ -485,13 +486,14 @@ class AgentService:
             except ProviderError as e:
                 raise AgentError("invalid", f"{field}: {e}") from None
 
-    async def check_public(self, agent: Agent) -> None:
+    async def check_public(self, agent: Agent, *, include_stored_tts: bool = True) -> None:
         """With limits.public_only, refuses an agent whose own endpoints are not public (syntax, name, then DNS for
-        all hosts at once under one deadline). The message names the field and the rule, never the URL."""
+        all hosts at once under one deadline). The message names the field and the rule, never the URL. A call passes
+        include_stored_tts=False: a one-way agent's stored voice is not used by it, only by saving the agent."""
         if not self._config.limits.public_only:
             return
         targets: list[tuple[str, tuple[str, int]]] = []
-        for field, url in user_urls(agent.spec, agent.call_type):
+        for field, url in user_urls(agent.spec, agent.call_type, include_stored_tts=include_stored_tts):
             try:
                 targets.append((field, check_public_url(url)))
             except NotPublic as e:

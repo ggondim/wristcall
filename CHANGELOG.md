@@ -9,8 +9,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 ### Added
 
 - One-way agents without an action: with `limits.history_only_one_way: true` (off by default) a one-shot or monologue
-  agent may have no webhook; the transcript is only saved to the history. The call ends `delivered` with `delivery:
-  history`, the push says `Saved` ("Saved to {agent}."), and `POST /v1/calls/{id}/redeliver` answers
+  agent may have no webhook; the transcript is only saved to the history. The call ends `delivered` with
+  `delivery: history`, the push says `Saved` ("Saved to {agent}."), and `POST /v1/calls/{id}/redeliver` answers
   `409 no_webhook` ("This call was saved to the history; it has no webhook to deliver to."). If the setting is turned
   off later, an agent stored without an action answers `agent_unavailable` at `session.start` and still shows in the
   management API.
