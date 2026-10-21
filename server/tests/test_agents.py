@@ -539,6 +539,16 @@ async def test_public_only_refuses_internal_urls(call_type, field, endpoint):
     assert await svc.list("u_a") == []
 
 
+async def test_public_only_checks_every_url_option():
+    # A provider reads only one of `url` and `base_url`: a public decoy in the other must not hide the internal one.
+    svc = await make(config(limits=PUBLIC_ONLY), resolver=fake_resolver({"api.example.com": ["93.184.216.34"]}))
+    decoy = {"type": "openai_stt", "url": "https://api.example.com/", "base_url": "http://speaches:8000/v1", "model": "w"}
+    with pytest.raises(AgentError) as e:
+        await svc.create("u_a", {"slug": "own", "stt": decoy})
+    assert e.value.code == "url_not_public" and e.value.message.startswith("stt: ")
+    assert await svc.list("u_a") == []
+
+
 async def test_public_only_checks_resolved_addresses():
     svc = await make(config(limits=PUBLIC_ONLY), resolver=fake_resolver({"api.example.com": ["10.0.0.7"]}))
     with pytest.raises(AgentError) as e:

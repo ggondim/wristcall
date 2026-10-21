@@ -181,6 +181,21 @@ async def test_public_client_refuses_before_connecting():
     assert client._transport._pool._max_connections == 100
 
 
+async def test_public_client_refuses_plain_http_before_resolving():
+    calls: list[str] = []
+    inner = fake_resolver(PUBLIC)
+
+    async def resolver(host: str, port: int) -> list[str]:
+        calls.append(host)
+        return await inner(host, port)
+
+    client = public_http_client(resolver, timeout=httpx.Timeout(0.5))
+    async with client:
+        with pytest.raises(UrlNotPublic, match="^the URL must use https$"):
+            await client.get("http://api.example.com/")
+    assert calls == []
+
+
 async def test_public_client_ignores_proxy_env(monkeypatch):
     monkeypatch.setenv("HTTPS_PROXY", "http://10.0.0.1:3128")
     monkeypatch.setenv("ALL_PROXY", "http://10.0.0.1:3128")

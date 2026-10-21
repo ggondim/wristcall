@@ -170,6 +170,13 @@ class _PublicOnlyTransport(httpx.AsyncHTTPTransport):
             retries=0,
         )
 
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        # Defense in depth: a URL saved as https is the only kind the client opens, so plain http fails here,
+        # before any name is resolved or any connection made.
+        if request.url.scheme != "https":
+            raise UrlNotPublic(NOT_HTTPS)
+        return await super().handle_async_request(request)
+
 
 def public_http_client(resolver: Resolver, *, timeout: httpx.Timeout) -> httpx.AsyncClient:
     """The client for users' own endpoints. An explicit transport keeps proxies from the environment out (httpx mounts

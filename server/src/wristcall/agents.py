@@ -271,9 +271,10 @@ def user_urls(spec: AgentSpec, call_type: str) -> list[tuple[str, str]]:
         endpoint = getattr(spec, field)
         if isinstance(endpoint, CustomEndpoint):
             options = endpoint.options()
-            url = options.get("url") or options.get("base_url")
-            if url:
-                urls.append((field, str(url)))
+            # Extra options pass through, so both may be present and a provider reads only one: check each.
+            for key in ("url", "base_url"):
+                if options.get(key):
+                    urls.append((field, str(options[key])))
     return urls
 
 
