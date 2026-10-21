@@ -206,6 +206,54 @@ def test_open_call_retry_with_request_id_returns_the_same_call(world):
     assert fresh.status_code == 201 and fresh.json()["call_id"] != first["call_id"]
 
 
+def test_open_call_with_delivery(world):
+    with_history = world.opened(delivery="history")
+    assert world.call_doc(with_history["call_id"])["delivery"] == "history"
+    r = world.client.get(f"/v1/node/calls/{with_history['call_id']}", headers=world.watch)
+    assert r.status_code == 200 and r.json()["call"]["delivery"] == "history"
+    assert world.finish(with_history, status="delivered", seconds=5).status_code == 204
+    # Without it, or null, the call has the field and it reads null.
+    plain = world.opened()
+    assert world.call_doc(plain["call_id"])["delivery"] is None
+    assert world.client.get(f"/v1/node/calls/{plain['call_id']}", headers=world.watch).json()["call"]["delivery"] is None
+    assert world.finish(plain, status="delivered", seconds=5).status_code == 204
+    explicit = world.opened(delivery=None)
+    assert world.call_doc(explicit["call_id"])["delivery"] is None
+    assert world.finish(explicit, status="delivered", seconds=5).status_code == 204
+    for bad in ("email", "", 1, True, ["webhook"]):
+        r = world.open(delivery=bad)
+        assert r.status_code == 422 and r.json()["error"] == "invalid", bad
+    # A replay by request_id returns the same call and leaves its delivery alone.
+    first = world.opened(request_id="req-0003-abcd", delivery="webhook")
+    again = world.open(request_id="req-0003-abcd", delivery="history")
+    assert again.status_code == 200 and again.json()["call_id"] == first["call_id"]
+    assert world.call_doc(first["call_id"])["delivery"] == "webhook"
+
+
+def test_patch_sets_delivery(world):
+    opened = world.opened()
+    call_id = opened["call_id"]
+    url = f"/v1/node/calls/{call_id}"
+    headers = world.node_with(opened)
+
+    def delivery() -> str | None:
+        r = world.client.get(url, headers=world.watch)
+        assert r.status_code == 200, r.text
+        return r.json()["call"]["delivery"]
+
+    assert delivery() is None
+    assert world.client.patch(url, headers=headers, json={"delivery": "webhook"}).status_code == 204
+    assert delivery() == "webhook"
+    r = world.client.patch(url, headers=headers, json={"delivery": "history", "attempts": 2})
+    assert r.status_code == 204 and delivery() == "history" and world.call_doc(call_id)["attempts"] == 2
+    assert world.client.patch(url, headers=headers, json={"delivery": None}).status_code == 204
+    assert delivery() is None
+    assert world.client.patch(url, headers=headers, json={"delivery": "webhook"}).status_code == 204
+    for bad in ("x", "", 1, False):
+        assert world.client.patch(url, headers=headers, json={"delivery": bad}).status_code == 422, bad
+    assert delivery() == "webhook"
+
+
 def test_entry_text_must_be_sealed(world):
     opened = world.opened()
     url = f"/v1/node/calls/{opened['call_id']}/entries"
