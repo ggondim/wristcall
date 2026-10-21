@@ -45,6 +45,8 @@ from .node_auth import NodeLimiter
 from .node_agents import router as node_agents_router
 from .node_calls import router as node_calls_router
 from .node_history import router as node_history_router
+from .node_heartbeat import orphan_sweep_loop
+from .node_heartbeat import router as node_heartbeat_router
 from .node_me import router as node_me_router
 from .node_push import router as node_push_router
 from .nodes import NodeStore
@@ -482,10 +484,15 @@ def create_app(
                 )
             )
             stack.push_async_callback(_stop, account_purger)
+            # The sweeper counts a node's silence from the Cloud's own start: no heartbeat could arrive before it.
+            app.state.started_at = time.time()
+            sweeper = asyncio.create_task(orphan_sweep_loop(app.state, every_s=config.orphan_sweep_every_s))
+            stack.push_async_callback(_stop, sweeper)
             yield
 
     app = FastAPI(title="wristcall-cloud", version=__version__, lifespan=lifespan)
     app.state.config = config
+    app.state.started_at = time.time()  # set again by the lifespan, once the Cloud is up
     app.state.verifier = verifier
     app.state.users = users
     app.state.signing_key = signing_key
@@ -552,6 +559,7 @@ def create_app(
     app.include_router(sessions_router)
     app.include_router(push_router)
     app.include_router(node_me_router)
+    app.include_router(node_heartbeat_router)
     app.include_router(node_agents_router)
     app.include_router(node_calls_router)
     app.include_router(node_history_router)

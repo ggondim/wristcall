@@ -31,7 +31,7 @@ async def test_indexes_exist(mongo_db):
     expected = {
         cloud.nodes: {"url", "secret_hash", "prev_secret_hash"},
         cloud.agents: {"account_slug", "account_position"},
-        cloud.calls: {"account_created", "one_open_call", "node_open", "purge_at"},
+        cloud.calls: {"account_created", "one_open_call", "node_open", "node_processing", "purge_at"},
         cloud.entries: {"account_terms", "call_seq", "purge_at"},
         cloud.push_targets: {"account"},
         cloud.usage: {"account"},
@@ -111,8 +111,8 @@ def test_config_from_env_reads_node_settings():
 def test_node_body_limit(client):
     body = b"x" * (100 * 1024)
     headers = {"Content-Type": "application/json"}
-    # The node route does not exist yet: 404 (later 401) is the answer, as long as it is not 413.
-    assert client.post("/v1/node/heartbeat", headers=headers, content=body).status_code == 404
+    # A node route without a credential: 401 is the answer, as long as it is not 413.
+    assert client.post("/v1/node/heartbeat", headers=headers, content=body).status_code == 401
     r = client.post("/v1/servers", headers=headers, content=body)
     assert r.status_code == 413
     assert r.json()["error"] == "too_large"

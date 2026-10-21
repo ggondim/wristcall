@@ -55,6 +55,10 @@ class CloudModeStore:
         await self.calls.create_index(
             [("node", ASCENDING), ("created_at", ASCENDING)], partialFilterExpression={"open": True}, name="node_open"
         )
+        # The sweeper looks for the calls a node left in `processing`.
+        await self.calls.create_index(
+            [("node", ASCENDING)], partialFilterExpression={"status": "processing"}, name="node_processing"
+        )
         await self.calls.create_index([("purge_at", ASCENDING)], expireAfterSeconds=0, name="purge_at")
         await self.entries.create_index([("account", ASCENDING), ("term_hashes", ASCENDING)], name="account_terms")
         await self.entries.create_index([("call", ASCENDING), ("seq", ASCENDING)], name="call_seq")
