@@ -13,7 +13,9 @@ from wristcall.agents import (
     agent_summary,
     build_agent_providers,
     spec_from_profile,
+    user_urls,
 )
+from conftest import fake_resolver
 from wristcall.config import parse_config
 from wristcall.providers import ProviderError
 from wristcall.providers.fake import EchoChat, FakeStt, ToneTts
@@ -510,3 +512,115 @@ def test_agent_color_type_matches_the_list():
 
     # The CLI help and validation read the tuple, the API model the Literal: they must not drift apart.
     assert get_args(AgentColor) == AGENT_COLORS
+
+
+PUBLIC_ONLY = {"public_only": True}
+PUBLIC_STT = {"type": "openai_stt", "base_url": "https://api.example.com/v1", "model": "w"}
+
+
+async def failing_resolver(host, port):
+    raise AssertionError("the resolver must not be called")
+
+
+@pytest.mark.parametrize(
+    "call_type, field, endpoint",
+    [
+        ("conversation", "stt", {"type": "openai_stt", "base_url": "https://speaches:8000/v1", "model": "w"}),
+        ("conversation", "action", {"type": "openai_chat", "base_url": "http://api.example.com/v1", "model": "m"}),
+        ("one-shot", "action", {"type": "webhook", "url": "https://10.0.0.1/hook"}),
+    ],
+)
+async def test_public_only_refuses_internal_urls(call_type, field, endpoint):
+    svc = await make(config(limits=PUBLIC_ONLY), resolver=fake_resolver({}))
+    with pytest.raises(AgentError) as e:
+        await svc.create("u_a", {"slug": "own", "call_type": call_type, field: endpoint})
+    assert e.value.code == "url_not_public" and e.value.message.startswith(f"{field}: ")
+    assert await svc.list("u_a") == []
+
+
+async def test_public_only_checks_resolved_addresses():
+    svc = await make(config(limits=PUBLIC_ONLY), resolver=fake_resolver({"api.example.com": ["10.0.0.7"]}))
+    with pytest.raises(AgentError) as e:
+        await svc.create("u_a", {"slug": "own", "stt": PUBLIC_STT})
+    assert e.value.code == "url_not_public"
+    assert e.value.message == "stt: the host resolves to a private or internal address"
+    assert "10.0.0.7" not in e.value.message and "api.example.com" not in e.value.message
+    svc = await make(config(limits=PUBLIC_ONLY), resolver=fake_resolver({"api.example.com": ["93.184.216.34"]}))
+    assert (await svc.create("u_a", {"slug": "own", "stt": PUBLIC_STT})).slug == "own"
+
+
+async def test_public_only_resolves_every_host_of_the_agent():
+    table = {"api.example.com": ["93.184.216.34"], "tts.example.com": ["192.168.1.9"]}
+    svc = await make(config(limits=PUBLIC_ONLY), resolver=fake_resolver(table))
+    tts = {"type": "openai_tts", "base_url": "https://tts.example.com/v1", "model": "t", "voice": "v"}
+    with pytest.raises(AgentError) as e:
+        await svc.create("u_a", {"slug": "own", "stt": PUBLIC_STT, "tts": tts})
+    assert e.value.message.startswith("tts: ")
+
+
+async def test_public_only_ignores_operator_providers():
+    svc = await make(config(limits=PUBLIC_ONLY), resolver=failing_resolver)
+    a = await svc.create("u_a", {"slug": "own", "stt": {"provider": "stt"}})
+    assert a.spec.stt == ProviderRef(provider="stt")
+
+
+async def test_public_only_off_keeps_internal_urls():
+    svc = await make(config(), resolver=failing_resolver)
+    stt = {"type": "openai_stt", "base_url": "https://speaches:8000/v1", "model": "w"}
+    assert (await svc.create("u_a", {"slug": "own", "stt": stt})).slug == "own"
+
+
+async def test_update_checks_public_only():
+    svc = await make(config(limits=PUBLIC_ONLY), resolver=fake_resolver({"api.example.com": ["93.184.216.34"]}))
+    await svc.create("u_a", {"slug": "own", "stt": PUBLIC_STT})
+    with pytest.raises(AgentError) as e:
+        await svc.update("u_a", "own", {"stt": {**PUBLIC_STT, "base_url": "https://nas.home.arpa/v1"}})
+    assert e.value.code == "url_not_public" and e.value.message.startswith("stt: ")
+    assert (await svc.get("u_a", "own")).spec.stt.options()["base_url"] == "https://api.example.com/v1"
+
+
+async def test_update_checks_urls_of_the_final_call_type():
+    svc = await make(config(limits=PUBLIC_ONLY), resolver=fake_resolver({"api.example.com": ["93.184.216.34"]}))
+    tts = {"type": "openai_tts", "base_url": "https://tts.example.com/v1", "model": "t", "voice": "v"}
+    hook = {"type": "webhook", "url": "https://api.example.com/hook"}
+    # The stored voice still counts after the switch to one-way (it must stay valid while stored).
+    await svc.create("u_a", {"slug": "own", "call_type": "one-shot", "stt": PUBLIC_STT, "action": hook})
+    with pytest.raises(AgentError) as e:
+        await svc.update("u_a", "own", {"tts": tts})
+    assert e.value.message.startswith("tts: ")
+
+
+async def test_check_public_on_a_stored_agent():
+    cfg = config(limits=PUBLIC_ONLY)
+    svc = await make(cfg, resolver=fake_resolver({"api.example.com": ["93.184.216.34"]}))
+    agent = await svc.create("u_a", {"slug": "own", "stt": PUBLIC_STT})
+    await svc.check_public(agent)  # still public
+    moved = await make(cfg, resolver=fake_resolver({"api.example.com": ["10.0.0.7"]}))
+    with pytest.raises(AgentError) as e:
+        await moved.check_public(agent)
+    assert e.value.code == "url_not_public"
+    off = await make(config(), resolver=failing_resolver)
+    await off.check_public(agent)  # nothing to check with public_only off
+
+
+def test_user_urls_lists_custom_endpoints_the_call_type_uses():
+    stt = {"type": "openai_stt", "base_url": "https://stt.example.com/v1", "model": "w"}
+    tts = {"type": "openai_tts", "base_url": "https://tts.example.com/v1", "model": "t", "voice": "v"}
+    hook = {"type": "webhook", "url": "https://hooks.example.com/n"}
+    chat = {"type": "openai_chat", "base_url": "https://chat.example.com/v1", "model": "m"}
+
+    def spec(**kw):
+        return AgentSpec.model_validate({"stt": {"provider": "stt"}, "action": {"provider": "llm"}, **kw})
+
+    assert user_urls(spec(), "conversation") == []
+    assert user_urls(spec(stt=stt, action=chat, tts=tts), "conversation") == [
+        ("stt", "https://stt.example.com/v1"), ("action", "https://chat.example.com/v1"),
+        ("tts", "https://tts.example.com/v1"),
+    ]
+    assert user_urls(spec(stt=stt, action=hook), "one-shot") == [
+        ("stt", "https://stt.example.com/v1"), ("action", "https://hooks.example.com/n"),
+    ]
+    # A one-way agent keeps a stored voice for a switch back, so its URL is checked too.
+    assert user_urls(spec(action=hook, tts=tts), "monologue") == [
+        ("action", "https://hooks.example.com/n"), ("tts", "https://tts.example.com/v1"),
+    ]

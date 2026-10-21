@@ -609,6 +609,16 @@ to an internal address and read the status code back in `GET /v1/calls/{id}`; on
 server shared with people you do not trust, remove `webhook` from that list (or turn
 custom endpoints off).
 
+`limits.public_only: true` (default `false`) keeps custom endpoints and closes the
+internal network: every URL of a user's own endpoint must be `https`, with a public
+name (no `localhost`, single-label or `.local`/`.internal`/`.lan`/`.home.arpa` names,
+no private or reserved IP). The server resolves the name and refuses it when any
+address is not public. This is checked when the agent is saved (`422 url_not_public`),
+when a call starts and on every new connection to the endpoint, which connects only to
+an address it checked; the server ignores proxy settings of its environment and does
+not follow redirects for these endpoints. Providers the operator offers are not
+checked. `GET /v1/providers` reports the setting as `public_only`.
+
 ## Management API
 
 `Authorization: Bearer <API token>` (`wc_pat_...`, created with
@@ -621,11 +631,11 @@ A body that is not valid JSON or not a JSON object answers `422 {"error":"invali
 | Route | Body | Responses |
 |---|---|---|
 | `GET /v1/agents` | | `200 {"agents":[agent]}` in the watch's order |
-| `POST /v1/agents` | agent fields; `slug` required; absent `stt`/`action`/`tts` = the server's only provider of that kind | `201 agent`. `422 invalid\|unsupported`. `409 conflict` (slug taken). `403 limit` |
+| `POST /v1/agents` | agent fields; `slug` required; absent `stt`/`action`/`tts` = the server's only provider of that kind | `201 agent`. `422 invalid\|unsupported\|url_not_public`. `409 conflict` (slug taken). `403 limit` |
 | `GET /v1/agents/{ref}` | | `200 agent`. `404 not_found`. `ref` is a `slug` or an `id` |
-| `PATCH /v1/agents/{ref}` | fields to change; `vad` and `timeouts` merge key by key | `200 agent`. `404`, `409`, `422` |
+| `PATCH /v1/agents/{ref}` | fields to change; `vad` and `timeouts` merge key by key | `200 agent`. `404`, `409`, `422` (`invalid`, `unsupported` or `url_not_public`) |
 | `DELETE /v1/agents/{ref}` | | `204`. `404` |
-| `GET /v1/providers` | | `200 {"providers":[{"name","kind":"stt"\|"action"\|"tts"\|"webhook"}],"custom_endpoints":true}` (`webhook`: the action of one-way agents) |
+| `GET /v1/providers` | | `200 {"providers":[{"name","kind":"stt"\|"action"\|"tts"\|"webhook"}],"custom_endpoints":true,"public_only":false}` (`webhook`: the action of one-way agents) |
 | `GET /v1/devices` | | `200 {"devices":[{"id","name","created_at"}]}` |
 | `DELETE /v1/devices/{id}` | | `204`. `404` |
 | `POST /v1/pairing-codes` | | `201 {"code","expires_at","server_url","via_directory"}` (+ `"warning"` when the directory was unreachable). `403 limit` (device limit). `502 directory` |

@@ -1,5 +1,6 @@
 """Agents: what a user calls from the watch. Spec validation, CRUD rules and providers per call."""
 
+import asyncio
 import re
 import secrets
 import time
@@ -12,6 +13,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, model_validator
 
 from .config import AppConfig, HistoryConfig, ProfileConfig, ProviderConfig, Timeouts, VadConfig
+from .netguard import NO_ADDRESS, NotPublic, Resolver, check_public_url, resolve_public, system_resolver
 from .protocol import TurnEnd
 from .providers import Kind, ProviderError, ProviderSet, SpeechToText, Webhook, build_provider, provider_kind
 from .providers.webhook import check_url
@@ -164,7 +166,7 @@ class Agent:
 
 
 class AgentError(Exception):
-    """code: invalid | not_found | conflict | limit | unsupported."""
+    """code: invalid | not_found | conflict | limit | unsupported | url_not_public."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -239,6 +241,23 @@ def build_one_way_providers(config: AppConfig, spec: AgentSpec, http: httpx.Asyn
         stt=build_endpoint(config, spec.stt, "stt", http),
         webhook=build_endpoint(config, spec.action, "webhook", http),
     )
+
+
+def user_urls(spec: AgentSpec, call_type: str) -> list[tuple[str, str]]:
+    """(field, url) of each of the user's own endpoints a call of this type reaches. A one-way agent's stored voice
+    counts too (it must stay valid for a switch back to conversation)."""
+    fields = list(stage_kinds(call_type))
+    if call_type in ONE_WAY and spec.tts is not None:
+        fields.append("tts")
+    urls: list[tuple[str, str]] = []
+    for field in fields:
+        endpoint = getattr(spec, field)
+        if isinstance(endpoint, CustomEndpoint):
+            options = endpoint.options()
+            url = options.get("url") or options.get("base_url")
+            if url:
+                urls.append((field, str(url)))
+    return urls
 
 
 def _secret(key: Any, value: Any, parent: Any = None) -> bool:
@@ -380,18 +399,29 @@ def retention_seconds(days: int | None) -> float | None:
     return None if days is None else days * 86_400.0
 
 
+# Total time the DNS lookups of one agent may take together (they run at once).
+_DNS_DEADLINE_S = 5.0
+
+
 def new_agent_id() -> str:
     return f"ag_{secrets.token_hex(6)}"
 
 
 class AgentService:
     def __init__(
-        self, storage: Storage, config: AppConfig, http: httpx.AsyncClient, *, now: Callable[[], float] = time.time
+        self,
+        storage: Storage,
+        config: AppConfig,
+        http: httpx.AsyncClient,
+        *,
+        now: Callable[[], float] = time.time,
+        resolver: Resolver = system_resolver,
     ) -> None:
         self._st = storage
         self._config = config
         self._http = http
         self._now = now
+        self._resolver = resolver
 
     async def list(self, user_id: str) -> list[Agent]:
         return [Agent.from_record(r) for r in await self._st.agents.list(user_id)]
@@ -435,6 +465,35 @@ class AgentService:
             except ProviderError as e:
                 raise AgentError("invalid", f"{field}: {e}") from None
 
+    async def check_public(self, agent: Agent) -> None:
+        """With limits.public_only, refuses an agent whose own endpoints are not public (syntax, name, then DNS for
+        all hosts at once under one deadline). The message names the field and the rule, never the URL."""
+        if not self._config.limits.public_only:
+            return
+        targets: list[tuple[str, tuple[str, int]]] = []
+        for field, url in user_urls(agent.spec, agent.call_type):
+            try:
+                targets.append((field, check_public_url(url)))
+            except NotPublic as e:
+                raise AgentError("url_not_public", f"{field}: {e}") from None
+        hosts = list(dict.fromkeys(target for _, target in targets))
+
+        async def resolve(target: tuple[str, int]) -> str | None:
+            try:
+                await resolve_public(*target, self._resolver, timeout_s=_DNS_DEADLINE_S)
+            except NotPublic as e:
+                return str(e)
+            return None
+
+        try:
+            async with asyncio.timeout(_DNS_DEADLINE_S):
+                failures = dict(zip(hosts, await asyncio.gather(*(resolve(h) for h in hosts)), strict=True))
+        except TimeoutError:
+            failures = {h: NO_ADDRESS for h in hosts}
+        for field, target in targets:
+            if failures[target] is not None:
+                raise AgentError("url_not_public", f"{field}: {failures[target]}")
+
     @staticmethod
     def _parse_input(data: dict[str, Any]) -> AgentInput:
         try:
@@ -466,6 +525,7 @@ class AgentService:
             id=new_agent_id(), user_id=user_id, slug=inp.slug, display_name=inp.display_name or inp.slug,
             icon=icon, call_type=call_type, position=0, spec=spec, created_at=now, updated_at=now, color=inp.color,
         )
+        await self.check_public(agent)
         limit = self._config.limits.max_agents_per_user
         try:
             created = Agent.from_record(await self._st.agents.create(agent.to_record(), max_count=limit))
@@ -507,6 +567,7 @@ class AgentService:
             icon=icon, call_type=call_type, position=current.position,
             spec=spec, created_at=current.created_at, updated_at=self._now(), color=inp.color or current.color,
         )
+        await self.check_public(updated)
         try:
             saved = Agent.from_record(await self._st.agents.update(updated.to_record()))
         except Conflict:

@@ -155,7 +155,34 @@ def test_providers(client):
     assert body == {
         "providers": [{"name": "stt", "kind": "stt"}, {"name": "llm", "kind": "action"}, {"name": "tts", "kind": "tts"}],
         "custom_endpoints": True,
+        "public_only": False,
     }
+
+
+def public_only_client():
+    cfg = fake_config()
+    cfg = cfg.model_copy(update={"limits": cfg.limits.model_copy(update={"public_only": True})})
+    return make_client(cfg)
+
+
+def test_create_agent_with_internal_url_is_422():
+    stt = {"type": "openai_stt", "base_url": "https://speaches:8000/v1", "model": "w", "api_key": "sk-secret"}
+    with public_only_client() as c:
+        t = api_token(c)
+        r = c.post("/v1/agents", headers=h(t), json={"slug": "own", "stt": stt})
+        assert r.status_code == 422
+        assert r.json() == {"error": "url_not_public", "message": "stt: the host is a local or internal name"}
+        assert "speaches" not in r.text and "sk-secret" not in r.text
+        assert c.get("/v1/agents/own", headers=h(t)).status_code == 404
+        # PATCH too: the stored agent stays as it was.
+        r = c.patch("/v1/agents/default", headers=h(t), json={"stt": {**stt, "base_url": "http://x.example.com/v1"}})
+        assert r.status_code == 422 and r.json()["error"] == "url_not_public"
+
+
+def test_providers_lists_public_only(client):
+    assert client.get("/v1/providers", headers=h(api_token(client))).json()["public_only"] is False
+    with public_only_client() as c:
+        assert c.get("/v1/providers", headers=h(api_token(c))).json()["public_only"] is True
 
 
 def test_pairing_code_pairs_a_watch_to_the_token_owner(client):

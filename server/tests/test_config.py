@@ -87,6 +87,13 @@ def test_profiles_are_optional_and_limits_have_defaults():
         assert parse_config(data, ENV).profiles == {}
 
 
+def test_public_only_limit():
+    data = base()
+    assert parse_config(data, ENV).limits.public_only is False
+    data["limits"] = {"public_only": True}
+    assert parse_config(data, ENV).limits.public_only is True
+
+
 def test_limits_are_validated():
     data = base()
     data["limits"] = {"max_agents_per_user": 0}

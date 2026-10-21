@@ -30,6 +30,7 @@ from .history import History, check_key
 from .history_api import calls_router
 from .history_codec import HistoryCodec
 from .link import LinkService, canonical_public_url, public_url_in_audience, startup_invite
+from .netguard import Resolver, system_resolver
 from .oneway import Background, OneWayCall
 from .pairing import DeviceLimit, Paired, PairingDenied, PairingGone, PairingService, Pending, clean_device_name
 from .providers import ProviderError, check_providers
@@ -102,6 +103,7 @@ def create_app(
     http: httpx.AsyncClient | None = None,
     start_timeout_s: float = 10.0,
     delivery_policy: DeliveryPolicy = DeliveryPolicy(),
+    resolver: Resolver | None = None,
 ) -> FastAPI:
     own_http = http is None
     http_client = http or httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0))
@@ -110,7 +112,7 @@ def create_app(
     pairing_svc = PairingService(
         store, config.server.pairing_approval, max_devices_per_user=config.limits.max_devices_per_user
     )
-    agents = AgentService(store, config, http_client)
+    agents = AgentService(store, config, http_client, resolver=resolver or system_resolver)
     auth = Authenticator(store)
     limiter = RateLimiter(limit=10, window_s=60)
     account = AccountService(store, config.central_account, http_client) if config.central_account else None

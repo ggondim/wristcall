@@ -168,6 +168,9 @@ class LimitsConfig(BaseModel):
     # Agents may point at the user's own STT/action/TTS URLs. Turn off on a server with untrusted users:
     # the server would make requests to any URL they give, including the internal network.
     custom_endpoints: bool = True
+    # With custom_endpoints on: only https URLs whose host resolves to public addresses only (no localhost, private
+    # ranges or internal names). Checked when an agent is saved, when a call starts and on every connection.
+    public_only: bool = False
     # Provider types a custom endpoint may use. The fake types (tests) can be made to allocate huge buffers.
     custom_endpoint_types: list[str] = Field(
         default_factory=lambda: ["openai_stt", "openai_chat", "openai_tts", "webhook"]

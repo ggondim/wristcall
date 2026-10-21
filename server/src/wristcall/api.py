@@ -24,7 +24,7 @@ from .ratelimit import RateLimiter
 
 log = logging.getLogger("wristcall.api")
 
-_STATUS = {"invalid": 422, "unsupported": 422, "not_found": 404, "conflict": 409, "limit": 403}
+_STATUS = {"invalid": 422, "unsupported": 422, "not_found": 404, "conflict": 409, "limit": 403, "url_not_public": 422}
 _ACCOUNT_STATUS = {
     "invalid_account_token": 401, "account_unavailable": 503, "conflict": 409, "not_found": 404, "invalid_code": 401,
 }
@@ -160,6 +160,7 @@ def management_router(
                 if (kind := provider_kind(p.type)) is not None
             ],
             "custom_endpoints": config.limits.custom_endpoints,
+        "public_only": config.limits.public_only,
         }
 
     @router.get("/devices")
