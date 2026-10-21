@@ -314,6 +314,21 @@ def test_redeliver_after_cloud_interrupt(world):
     assert r.status_code == 200 and r.json()["call"]["attempts"] == 0
 
 
+def test_redeliver_after_cloud_interrupt_then_zero_finish_keeps_usage(world):
+    call_id = failed_one_way(world, error="interrupted", attempts=0)
+    with db(world.mongo_db) as d:
+        d["cloud_calls"].update_one({"_id": call_id}, {"$set": {"closed_by": "cloud"}})
+    seconds, total = world.call_doc(call_id)["seconds"], world.usage()["total_s"]
+    assert seconds == 12 and total == 12
+    r = world.client.post(f"/v1/node/calls/{call_id}/redeliver", headers=ios(world))
+    assert r.status_code == 200, r.text
+    assert world.call_doc(call_id)["closed_by"] == "node"
+    opened = {"call_id": call_id, "grant": r.json()["grant"]}
+    assert world.finish(opened, status="delivered", error=None, seconds=0).status_code == 204
+    doc = world.call_doc(call_id)
+    assert doc["seconds"] == seconds and world.usage()["total_s"] == total
+
+
 def test_redeliver_without_its_agent(world):
     call_id = failed_one_way(world)
     with db(world.mongo_db) as d:

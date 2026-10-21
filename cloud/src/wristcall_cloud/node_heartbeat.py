@@ -5,7 +5,8 @@ sweeper does the same for a node that went silent.
 A restarted Cloud has no heartbeats to show for the time it was down, so the sweeper counts a node's silence from the
 later of its last heartbeat and the Cloud's own start (`state.started_at`). The `processing` calls of a node that came
 back with another `boot_id`, or went silent, are failed (`interrupted`): nothing is processing them any more. Those
-are updated in place, without `closed_by`, so a late `finish` of the node can still correct them. Errors never echo
+are updated in place, without `closed_by`: only a late `PATCH` of the node can still correct them (a `finish` finds
+the call already closed and changes nothing). Errors never echo
 what the node sent.
 """
 
@@ -96,7 +97,7 @@ async def _close_orphan(state: State, call: dict[str, Any], seconds: float, now:
 
 async def _fail_processing(cloud: CloudModeStore, node_id: str, now: float) -> int:
     """The calls of `node_id` closed in `processing` become `failed`/`interrupted` (T17). `closed_by` stays as it is:
-    a `finish` that arrives later still wins."""
+    a `PATCH` that arrives later can still correct the call (a `finish` cannot)."""
     changed = await cloud.calls.update_many(
         {"node": node_id, "status": "processing", "open": {"$exists": False}},
         {"$set": {"status": "failed", "error": "interrupted", "finished_at": now, "updated_at": now}},

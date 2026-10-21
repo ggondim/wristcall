@@ -50,7 +50,7 @@ the access tokens, and without them `sessions.enabled` in `/v1/config` is `false
 | `WRISTCALL_CLOUD_CLIENT_COUNTRY_HEADER` | | header the reverse proxy puts the client's country in (`CF-IPCountry` behind Cloudflare). It is recorded on web sessions, so the iPhone can show it before approving. Without it the country is `null`; nothing breaks |
 
 Cloud nodes (all optional; the node routes need the two per-server token variables above, and answer
-`404 not_configured` without them). A value that is not a positive whole number stops the start, naming the variable:
+`404 not_configured` without them, except `POST /v1/node/heartbeat`). A value that is not a positive whole number stops the start, naming the variable:
 
 | Variable | Default | |
 |---|---|---|
@@ -387,7 +387,8 @@ Since 0.5.0 the Cloud keeps a registry of **nodes**, the servers it vouches for 
 internal API under `/v1/node/` that holds what cloud mode stores for an account: its agents, the history of its calls,
 the push targets of its devices and the month's usage against the quota. The Cloud never opens what a node sends: the
 agents' `spec` and the history text arrive sealed by the node, and a search works on hashes the node computed. Without
-the signing key and `WRISTCALL_CLOUD_PUBLIC_URL` every node route answers `404 not_configured`. The routes of the
+the signing key and `WRISTCALL_CLOUD_PUBLIC_URL` the node routes answer `401` for a missing or bad node credential
+and `404 not_configured` otherwise, except `POST /v1/node/heartbeat`, which works without them. The routes of the
 other sections answer as before, with two additions: `POST /v1/server-tokens` refuses a node's URL, and deleting an
 account also deletes its cloud-mode data. With no node registered the node routes are unreachable.
 

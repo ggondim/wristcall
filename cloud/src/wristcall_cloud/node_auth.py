@@ -181,7 +181,7 @@ def verify_grant(
     request: Request, node: dict[str, Any], call_id: str, token: str | None, *, allow_expired: bool
 ) -> CallGrant:
     """The grant of `call_id` that `node` presents. Only the node it was issued to, for the call it names. One that
-    expired is refused, except with `allow_expired` (`finish`) within `EXPIRED_GRANT_WINDOW_S` (then `expired`)."""
+    expired is refused, except with `allow_expired` (entries, `PATCH` and `finish`) within `EXPIRED_GRANT_WINDOW_S` (then `expired`)."""
     key, issuer = _signer(request)
     claims = _claims(
         token, key, typ=GRANT_TYPE, issuer=issuer, audience=issuer, required=["sub", "did", "plt", "call", "node"]

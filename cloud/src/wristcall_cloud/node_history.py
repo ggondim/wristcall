@@ -263,6 +263,9 @@ async def redeliver_call(call_id: str, request: Request, caller: NodeCaller = De
         {"_id": call_id, "account": caller.account, "status": "failed", "open": {"$ne": True}},
         {"$set": {
             "status": "processing", "error": None, "finished_at": None, "node": caller.node["_id"], "updated_at": now,
+            # A call the Cloud closed as an orphan comes back as the node's: a later `finish` must not pass the
+            # swap filter (`closed_by: "cloud"`) and rewrite what was already counted.
+            "closed_by": "node",
         }},
         return_document=ReturnDocument.AFTER,
     )
