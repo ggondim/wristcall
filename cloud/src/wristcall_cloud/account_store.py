@@ -24,7 +24,7 @@ from .session_tokens import new_account_id, new_code, new_device_id, new_secret,
 
 log = logging.getLogger("wristcall_cloud.accounts")
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 TOUCH_INTERVAL_S = 3600
 _LEGACY_ID = re.compile(r"^(https?://[^#]+)#(.+)$", re.DOTALL)
 _RACE_ATTEMPTS = 3

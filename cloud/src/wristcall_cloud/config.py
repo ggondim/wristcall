@@ -84,6 +84,25 @@ class CloudConfig:
     max_enroll_codes: int = 5  # open ones per account
     account_idle_days: int = 90  # an anonymous account (no identity, no plan) unused this long is deleted
     account_cleanup_every_s: int = 21600
+    # Cloud mode (nodes registered with the Cloud). Quota: wall-clock minutes per UTC calendar month and account.
+    quota_minutes: int = 600
+    max_conversation_s: int = 3600
+    max_one_way_s: int = 1800  # one-shot and monologue calls
+    node_requests_per_minute: int = 1200  # per node, on /v1/node/*
+    max_cloud_agents: int = 20  # per account
+    history_retention_days: int = 90  # default when an agent does not say
+    max_history_retention_days: int = 365  # ceiling, also what "forever" means
+    node_stale_s: int = 120  # a node silent for this long counts as offline
+    orphan_sweep_every_s: int = 30
+    orphan_grace_s: int = 30
+
+    def retention_days(self, agent_days: int | str | None) -> int:
+        """How long an agent's history is kept: absent -> the default, "forever" -> the ceiling, else capped."""
+        if agent_days is None:
+            return self.history_retention_days
+        if agent_days == "forever":
+            return self.max_history_retention_days
+        return min(int(agent_days), self.max_history_retention_days)
 
 
 class ConfigError(Exception):
@@ -364,6 +383,16 @@ def config_from_env(env: Mapping[str, str]) -> CloudConfig:
     )
     if accounts_alert_per_day > accounts_per_day:
         raise ConfigError("WRISTCALL_CLOUD_ACCOUNTS_ALERT_PER_DAY must not exceed WRISTCALL_CLOUD_ACCOUNTS_PER_DAY")
+    history_retention_days = _positive_int(
+        env, "WRISTCALL_CLOUD_HISTORY_RETENTION_DAYS", CloudConfig.history_retention_days
+    )
+    max_history_retention_days = _positive_int(
+        env, "WRISTCALL_CLOUD_MAX_HISTORY_RETENTION_DAYS", CloudConfig.max_history_retention_days
+    )
+    if history_retention_days > max_history_retention_days:
+        raise ConfigError(
+            "WRISTCALL_CLOUD_HISTORY_RETENTION_DAYS must not exceed WRISTCALL_CLOUD_MAX_HISTORY_RETENTION_DAYS"
+        )
     return CloudConfig(
         mongo_url=mongo_url,
         database=_get(env, "WRISTCALL_CLOUD_DATABASE") or CloudConfig.database,
@@ -411,4 +440,13 @@ def config_from_env(env: Mapping[str, str]) -> CloudConfig:
         max_devices=_positive_int(env, "WRISTCALL_CLOUD_MAX_DEVICES", CloudConfig.max_devices),
         max_enroll_codes=_positive_int(env, "WRISTCALL_CLOUD_MAX_ENROLL_CODES", CloudConfig.max_enroll_codes),
         account_idle_days=_positive_int(env, "WRISTCALL_CLOUD_ACCOUNT_IDLE_DAYS", CloudConfig.account_idle_days),
+        quota_minutes=_positive_int(env, "WRISTCALL_CLOUD_QUOTA_MINUTES", CloudConfig.quota_minutes),
+        max_conversation_s=_positive_int(env, "WRISTCALL_CLOUD_MAX_CONVERSATION_S", CloudConfig.max_conversation_s),
+        max_one_way_s=_positive_int(env, "WRISTCALL_CLOUD_MAX_ONE_WAY_S", CloudConfig.max_one_way_s),
+        node_requests_per_minute=_positive_int(
+            env, "WRISTCALL_CLOUD_NODE_REQUESTS_PER_MINUTE", CloudConfig.node_requests_per_minute
+        ),
+        max_cloud_agents=_positive_int(env, "WRISTCALL_CLOUD_MAX_CLOUD_AGENTS", CloudConfig.max_cloud_agents),
+        history_retention_days=history_retention_days,
+        max_history_retention_days=max_history_retention_days,
     )

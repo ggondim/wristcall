@@ -29,6 +29,7 @@ from .agenda import AgendaError, parse_agents, parse_new_server, parse_server_pa
 from .api_common import ApiError, json_object
 from .audience import AudienceError, is_loopback, normalize_audience
 from .auth import Caller, Verifier, current_account, require_platform
+from .cloud_store import CloudModeStore
 from .config import (
     CloudConfig,
     ConfigError,
@@ -57,6 +58,8 @@ from .store import Store, open_store, public_server
 log = logging.getLogger("wristcall_cloud.app")
 
 MAX_BODY = 64 * 1024
+NODE_MAX_BODY = 1024 * 1024  # on /v1/node/* only: envelopes and history entries are bigger than account requests
+NODE_PREFIX = "/v1/node/"
 BASE_SCOPES = ["openid", "profile", "offline_access"]
 
 
@@ -72,12 +75,13 @@ class BodyTooLarge(HTTPException):
     """An HTTPException on purpose: FastAPI re-raises those while reading a model body, but turns anything else
     into 400."""
 
-    def __init__(self) -> None:
-        super().__init__(status_code=413, detail=f"request body is limited to {MAX_BODY} bytes")
+    def __init__(self, limit: int = MAX_BODY) -> None:
+        super().__init__(status_code=413, detail=f"request body is limited to {limit} bytes")
 
 
 class BodyLimit:
-    """Rejects bodies over `limit` bytes: up front by Content-Length, otherwise while the body is read."""
+    """Rejects bodies over `limit` bytes (NODE_MAX_BODY on the node API): up front by Content-Length, otherwise
+    while the body is read."""
 
     def __init__(self, app: ASGIApp, limit: int = MAX_BODY) -> None:
         self.app = app
@@ -87,9 +91,10 @@ class BodyLimit:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        limit = NODE_MAX_BODY if scope["path"].startswith(NODE_PREFIX) else self.limit
         for name, value in scope["headers"]:
-            if name == b"content-length" and (not value.isdigit() or int(value) > self.limit):
-                await self._reject(scope, receive, send)
+            if name == b"content-length" and (not value.isdigit() or int(value) > limit):
+                await self._reject(scope, receive, send, limit)
                 return
         received = 0
         started = False
@@ -99,8 +104,8 @@ class BodyLimit:
             message = await receive()
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
-                if received > self.limit:
-                    raise BodyTooLarge()
+                if received > limit:
+                    raise BodyTooLarge(limit)
             return message
 
         async def tracking_send(message: Message) -> None:
@@ -114,11 +119,11 @@ class BodyLimit:
         except BodyTooLarge:
             if started:
                 raise
-            await self._reject(scope, receive, send)
+            await self._reject(scope, receive, send, limit)
 
     @staticmethod
-    async def _reject(scope: Scope, receive: Receive, send: Send) -> None:
-        await _error("too_large", BodyTooLarge().detail, 413)(scope, receive, send)
+    async def _reject(scope: Scope, receive: Receive, send: Send, limit: int) -> None:
+        await _error("too_large", BodyTooLarge(limit).detail, 413)(scope, receive, send)
 
 
 def get_store(request: Request) -> Store:
@@ -127,6 +132,10 @@ def get_store(request: Request) -> Store:
 
 def get_accounts(request: Request) -> AccountStore:
     return request.app.state.accounts
+
+
+def get_cloud(request: Request) -> CloudModeStore:
+    return request.app.state.cloud
 
 
 def public_config(
@@ -448,6 +457,9 @@ def create_app(
             created = await accounts.migrate()
             log.info("migration: %d identities created", created)
             app.state.accounts = accounts
+            cloud = CloudModeStore(current.db)
+            await cloud.ensure_indexes()
+            app.state.cloud = cloud
             if config.legacy_zitadel_tokens:
                 log.warning("legacy Zitadel tokens accepted on account routes (WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS)")
             purger = asyncio.create_task(
@@ -469,6 +481,7 @@ def create_app(
     app.state.signing_key = signing_key
     # Set again by the lifespan (on the Store it opens); set here too for an app driven without its lifespan.
     app.state.accounts = AccountStore(store.db) if store is not None else None
+    app.state.cloud = CloudModeStore(store.db) if store is not None else None
     app.state.account_tokens = (
         AccountTokens(signing_key, config.public_url, ttl_s=config.access_token_ttl_s)
         if signing_key is not None

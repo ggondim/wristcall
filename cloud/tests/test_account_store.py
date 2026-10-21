@@ -207,9 +207,9 @@ async def test_migrate_creates_zitadel_identities_once(store, mongo_db):
     before = sorted([d async for d in mongo_db["accounts"].find()], key=lambda d: d["_id"])
     assert await store.migrate(now=NOW) == 2
     assert await store.migrate(now=NOW + 1) == 0
-    assert SCHEMA_VERSION == 2
+    assert SCHEMA_VERSION == 3
     meta = await mongo_db["meta"].find_one({"_id": "schema"})
-    assert meta["version"] == 2 and meta["migrated_at"] == NOW + 1
+    assert meta["version"] == 3 and meta["migrated_at"] == NOW + 1
     assert sorted([d async for d in mongo_db["accounts"].find()], key=lambda d: d["_id"]) == before
     assert await store.account_for_identity("zitadel", ISSUER, "a") == "https://auth.test#a"
     assert await store.account_for_identity("zitadel", ISSUER, "b") == "https://auth.test#b"
