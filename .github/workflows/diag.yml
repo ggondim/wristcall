@@ -1,0 +1,29 @@
+name: diag
+on: pull_request
+jobs:
+  mongo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    services:
+      mongo:
+        image: mongo:8
+        ports: ["27017:27017"]
+    defaults:
+      run:
+        working-directory: cloud
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: getent ahosts localhost; cat /etc/hosts; docker ps
+      - run: pip install -q -e '.[dev]'
+      - run: |
+          for h in localhost 127.0.0.1 '[::1]'; do
+            python -c "import pymongo,sys,time; t=time.time(); c=pymongo.MongoClient('mongodb://$h:27017', serverSelectionTimeoutMS=5000)
+          try: print('$h', c.admin.command('ping'), round(time.time()-t,2))
+          except Exception as e: print('$h FAIL', type(e).__name__, str(e)[:300])"
+          done
+      - run: timeout 240 python -m pytest -q -x -rE --maxfail=1 -o faulthandler_timeout=60
+        env:
+          WRISTCALL_CLOUD_TEST_MONGO_URL: mongodb://localhost:27017
