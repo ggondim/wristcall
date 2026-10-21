@@ -79,7 +79,7 @@ async def month_usage(cloud: CloudModeStore, config: CloudConfig, account: str, 
     """The account's call seconds in the month `now` falls in, against the monthly quota (zero without a document).
     The limits are whole seconds: what is left is rounded down."""
     month = usage_month(now)
-    doc = await cloud.usage.find_one({"_id": f"{account}:{month}"})
+    doc = await cloud.usage.find_one({"_id": f"{account}:{month}"}, {"total_s": 1})  # not the `by_call` map
     used = doc.get("total_s", 0) if doc else 0
     quota = config.quota_minutes * 60
     return {"month": month, "used_s": used, "quota_s": quota, "remaining_s": max(0, math.floor(quota - used))}
@@ -185,6 +185,7 @@ async def close_call(
     `closed_by="node"` is the node's `finish`: it also corrects a call the Cloud closed on its own
     (`closed_by="cloud"`, an orphan) when `finish` arrives late, taking the node's status, error and seconds and
     moving the usage by the difference. `closed_by="cloud"` (heartbeat, sweeper) only closes a call nobody closed.
+    Whoever finds the call already closed still settles the usage (a closer may have stopped before counting).
     The usage month is the one the call began in. `seconds` is whole seconds: rounded up, and kept within what the
     call could have lasted (`max_s` plus a minute). After counting, `on_quota_warning(account, usage)` is called
     once per month, the first time the usage reaches 80% of the quota."""
@@ -206,11 +207,12 @@ async def close_call(
     current = await cloud.calls.find_one({"_id": call["_id"]})
     if current is None:
         return False
-    changed, usage = False, None
+    # Whoever closed the call may have stopped before the usage took its seconds (or its correction): settling is
+    # idempotent, it only reads when the usage already holds what the call says.
+    usage, changed = await _settle(cloud, call["_id"])
     if current.get("open") and current.get("closed_by"):
-        # Claimed by a closer that stopped before it freed the account: complete its last two steps.
-        usage, counted = await _settle(cloud, call["_id"])
-        changed = await _free_account(cloud, call["_id"]) or counted
+        # Claimed by a closer that stopped before it freed the account: complete its last step.
+        changed = await _free_account(cloud, call["_id"]) or changed
     if closed_by == "node":
         # Closed by the Cloud before this `finish` arrived (T14): the node knows better.
         del closing["ended_at"]

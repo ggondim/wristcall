@@ -599,3 +599,28 @@ def test_open_call_replay_with_another_agent_or_type_is_409(world):
     assert world.open(request_id="req-0001-abcd").json()["call_id"] == first["call_id"]
     slug = world.open(agent=first["agent"]["slug"], request_id="req-0001-abcd")
     assert slug.status_code == 200 and slug.json()["call_id"] == first["call_id"]
+
+
+def test_a_retried_finish_settles_usage_after_a_crash_following_the_correction(world, monkeypatch):
+    from wristcall_cloud import node_core
+
+    opened = world.opened()
+    assert closing(world, opened, status="failed", error="interrupted", seconds=100, closed_by="cloud") is True
+    original = node_core._settle
+
+    async def crash_after_the_swap(cloud, call_id):
+        if (await cloud.calls.find_one({"_id": call_id}))["closed_by"] == "node":
+            raise RuntimeError("crash")
+        return await original(cloud, call_id)
+
+    monkeypatch.setattr("wristcall_cloud.node_core._settle", crash_after_the_swap)
+    with pytest.raises(RuntimeError):
+        closing(world, opened, status="delivered", error=None, seconds=160, closed_by="node")
+    monkeypatch.undo()
+    # The call says 160 and the usage still holds the Cloud's 100.
+    assert world.call_doc(opened["call_id"])["seconds"] == 160 and world.usage()["total_s"] == 100
+    assert world.finish(opened, status="delivered", seconds=160).status_code == 204
+    usage = world.usage()
+    assert usage["total_s"] == 160 and usage["seconds_by_type"] == {"one-shot": 160}
+    assert world.finish(opened, status="delivered", seconds=160).status_code == 204
+    assert world.usage()["total_s"] == 160

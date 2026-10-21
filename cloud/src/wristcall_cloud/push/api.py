@@ -179,6 +179,8 @@ async def relay_to_registration(
     `invalid`; a storage error propagates."""
     event = body.get("event")
     if isinstance(event, str) and event != "test" and event not in registration["events"]:
+        # Not for this registration, but a malformed message is still invalid.
+        parse_message(body, {**registration, "events": [*registration["events"], event]})
         return "skipped"
     outcome, _ = await _deliver(state, registration_id, registration, parse_message(body, registration))
     return outcome

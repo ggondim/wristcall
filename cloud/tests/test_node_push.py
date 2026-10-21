@@ -20,6 +20,7 @@ from node_fixtures import (
 from test_node_calls import World
 from wristcall_cloud.node_auth import NodeCaller, issue_grant
 from wristcall_cloud.node_core import close_call
+from wristcall_cloud.push.limits import SendLimiter
 from wristcall_cloud.push.registry import key_id, new_push_key
 
 TOPIC = "io.github.ggondim.wristcall"
@@ -196,6 +197,43 @@ def test_push_when_the_channel_is_down_is_not_sent(pw):
     pw.fake.down = True
     assert pw.push(pw.grant_headers(pw.watch_device, "watchos")).json() == {"sent": 0}
     assert len(pw.targets()) == 2
+
+
+def test_a_malformed_message_is_422_even_when_nothing_would_be_sent(pw):
+    grant = pw.grant_headers(pw.watch_device, "watchos")
+    assert pw.push(grant, title="").status_code == 422  # no target at all
+    pw.two_targets()
+    assert pw.push(grant, event="device.approval", title="").status_code == 422  # an event the target did not ask for
+    assert pw.push(grant, event="device.approval", extra=1).status_code == 422
+    assert pw.push(grant, event="device.approval").json() == {"sent": 0}
+    assert pw.fake.sent == []
+
+
+def test_push_send_route_unchanged(pw):
+    key = pw.register(5)
+    auth = {"Authorization": f"Bearer {key}"}
+    body = {"event": "call.finished", "title": "Done"}
+    r = pw.client.post("/v1/push/send", headers=auth, json=body)
+    assert r.status_code == 202 and r.json() == {"status": "sent"}
+    assert [msg.event for _, msg in pw.fake.sent] == ["call.finished"]
+    # An event the registration did not ask for is invalid here, not skipped.
+    assert pw.client.post("/v1/push/send", headers=auth, json={**body, "event": "device.approval"}).status_code == 422
+    # The budget: one a minute here; the answer says when to come back.
+    pw.app.state.send_limiter = SendLimiter(1, 100)
+    assert pw.client.post("/v1/push/send", headers=auth, json=body).status_code == 202
+    limited = pw.client.post("/v1/push/send", headers=auth, json=body)
+    assert limited.status_code == 429 and limited.json()["error"] == "rate_limited"
+    assert int(limited.headers["Retry-After"]) >= 1
+    # The channel is down: 503; an unknown key: 410; a device the channel dropped: 410 and the registration goes.
+    pw.app.state.send_limiter = SendLimiter(100, 100)
+    pw.fake.down = True
+    assert pw.client.post("/v1/push/send", headers=auth, json=body).status_code == 503
+    pw.fake.down = False
+    unknown = pw.client.post("/v1/push/send", headers={"Authorization": f"Bearer {new_push_key()}"}, json=body)
+    assert unknown.status_code == 410 and unknown.json()["error"] == "gone"
+    pw.fake.gone.add("05" * 32)
+    assert pw.client.post("/v1/push/send", headers=auth, json=body).status_code == 410
+    assert pw.client.get("/v1/push/registrations/current", headers=auth).status_code == 410
 
 
 def finish_with(pw: PushWorld, seconds: int, **kwargs):

@@ -17,7 +17,7 @@ from starlette.datastructures import State
 from .api_common import ApiError, json_object
 from .node_auth import NodeCaller, current_node, node_caller, verify_grant
 from .push.api import relay_to_registration
-from .push.registry import PushError, is_push_key, key_id
+from .push.registry import PushError, is_push_key, key_id, parse_message
 
 log = logging.getLogger("wristcall_cloud.node_push")
 
@@ -95,6 +95,10 @@ async def push(
     else:
         caller = await node_caller(request, node, x_wristcall_user_token)
         account, device = caller.account, caller.device
+    try:  # a malformed message is 422 whatever happens next (no target, event not taken, ...)
+        parse_message(body, {"events": [body.get("event")], "label": "-", "tag": ""})
+    except PushError as e:
+        raise _invalid(e.message) from None
     target = await request.app.state.cloud.push_targets.find_one({"_id": f"{account}:{device}"})
     if target is None:
         return {"sent": 0}
