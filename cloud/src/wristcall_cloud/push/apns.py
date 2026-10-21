@@ -22,7 +22,12 @@ from .channels import ChannelGone, ChannelUnavailable, Message
 log = logging.getLogger("wristcall_cloud.push")
 
 APNS_HOSTS = {"production": "https://api.push.apple.com", "sandbox": "https://api.sandbox.push.apple.com"}
-CATEGORIES = {"call.finished": "WC_CALL_FINISHED", "device.approval": "WC_DEVICE_APPROVAL", "test": "WC_TEST"}
+CATEGORIES = {
+    "call.finished": "WC_CALL_FINISHED",
+    "device.approval": "WC_DEVICE_APPROVAL",
+    "quota.warning": "WC_QUOTA_WARNING",
+    "test": "WC_TEST",
+}
 MAX_PAYLOAD = 4096  # bytes, what APNs takes for an alert
 GONE_REASONS = frozenset({"BadDeviceToken", "DeviceTokenNotForTopic", "Unregistered"})
 # Gone for this device, but also what every device answers when the Cloud's configuration is wrong.

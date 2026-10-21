@@ -211,7 +211,7 @@ same way.
 
 The label and the tag of a registration are forced on every message sent with its key (the label is the
 notification's subtitle, the tag goes into `wristcall.tag` of the payload), so a leaked key cannot pass for another
-server. A registration lists the `events` it accepts, a subset of `call.finished` and `device.approval`; `test` is
+server. A registration lists the `events` it accepts, a subset of `call.finished`, `device.approval` and `quota.warning`; `test` is
 always accepted, any other event is `422 invalid`. Up to 20 registrations exist per APNs token or Web Push
 endpoint (the oldest goes). Registrations without a send for `WRISTCALL_CLOUD_PUSH_IDLE_DAYS` are deleted.
 

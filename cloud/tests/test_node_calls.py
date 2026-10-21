@@ -443,8 +443,19 @@ def test_finish_caps_seconds(world):
     assert world.call_doc(again["call_id"])["seconds"] == 0 and world.usage()["total_s"] == 1860
     convo = world.opened(world.convo, "conversation")
     assert world.finish(convo, status="ended", seconds=100.5).status_code == 204
+    # Seconds are whole: a fraction counts as the next second.
     usage = world.usage()
-    assert usage["total_s"] == pytest.approx(1960.5) and usage["seconds_by_type"]["conversation"] == 100.5
+    assert usage["total_s"] == 1961 and usage["seconds_by_type"]["conversation"] == 101
+    assert world.call_doc(convo["call_id"])["seconds"] == 101
+
+
+def test_limits_are_whole_seconds(world):
+    world.set_usage(35900.5)
+    opened = world.opened()
+    assert opened["max_s"] == 99 and opened["quota_s"] == 99
+    assert all(type(opened[k]) is int for k in ("max_s", "quota_s"))
+    me = world.client.get("/v1/node/me", headers=world.watch).json()["usage"]
+    assert me["remaining_s"] == 99 and type(me["remaining_s"]) is int and type(me["quota_s"]) is int
 
 
 def test_me_shows_usage_after_finish(world):
@@ -519,3 +530,72 @@ def test_racing_closers_count_a_call_once(world):
         doc = world.call_doc(opened["call_id"])
         assert doc["closed_by"] == "node" and doc["seconds"] == 60 and "open" not in doc
     assert world.usage()["total_s"] == 5 * 60
+
+
+def test_close_call_counts_usage_before_freeing_the_account(world, monkeypatch):
+    # A crash after the seconds are counted and before the slot is freed: the account stays busy (no second call can
+    # read a usage without them) and the retried finish frees it without counting again.
+    opened = world.opened()
+
+    async def crash(*args, **kwargs):
+        raise RuntimeError("crash")
+
+    monkeypatch.setattr("wristcall_cloud.node_core._free_account", crash)
+    with pytest.raises(RuntimeError):
+        closing(world, opened, status="delivered", error=None, seconds=40, closed_by="node")
+    monkeypatch.undo()
+    assert world.usage()["total_s"] == 40
+    assert world.call_doc(opened["call_id"])["open"] is True
+    assert world.open().json()["error"] == "too_many_calls"
+    assert world.finish(opened, status="delivered", seconds=40).status_code == 204
+    doc = world.call_doc(opened["call_id"])
+    assert "open" not in doc and doc["seconds"] == 40 and world.usage()["total_s"] == 40
+    assert world.open().status_code == 201
+
+
+def test_a_retried_finish_completes_a_close_that_crashed_before_counting(world, monkeypatch):
+    opened = world.opened()
+
+    async def crash(*args, **kwargs):
+        raise RuntimeError("crash")
+
+    monkeypatch.setattr("wristcall_cloud.node_core._count", crash)
+    with pytest.raises(RuntimeError):
+        closing(world, opened, status="delivered", error=None, seconds=40, closed_by="node")
+    monkeypatch.undo()
+    assert world.usage() is None and world.call_doc(opened["call_id"])["open"] is True
+    # The retry carries other numbers: the first closer's are the ones that count.
+    assert world.finish(opened, status="failed", error="delivery_failed", seconds=55).status_code == 204
+    doc = world.call_doc(opened["call_id"])
+    assert "open" not in doc and (doc["status"], doc["seconds"]) == ("delivered", 40)
+    assert world.usage()["total_s"] == 40
+    assert world.finish(opened, status="delivered", seconds=40).status_code == 204
+    assert world.usage()["total_s"] == 40
+
+
+def test_a_crashed_cloud_close_is_completed_then_corrected_by_the_late_finish(world, monkeypatch):
+    opened = world.opened()
+
+    async def crash(*args, **kwargs):
+        raise RuntimeError("crash")
+
+    monkeypatch.setattr("wristcall_cloud.node_core._free_account", crash)
+    with pytest.raises(RuntimeError):
+        closing(world, opened, status="failed", error="interrupted", seconds=100, closed_by="cloud")
+    monkeypatch.undo()
+    assert world.finish(opened, status="delivered", seconds=160).status_code == 204
+    doc = world.call_doc(opened["call_id"])
+    assert "open" not in doc and (doc["status"], doc["closed_by"], doc["seconds"]) == ("delivered", "node", 160)
+    assert world.usage()["total_s"] == 160
+
+
+def test_open_call_replay_with_another_agent_or_type_is_409(world):
+    first = world.opened(request_id="req-0001-abcd")
+    other_agent = world.open(agent=world.convo, call_type="conversation", request_id="req-0001-abcd")
+    assert other_agent.status_code == 409 and other_agent.json()["error"] == "conflict"
+    other_type = world.open(call_type="conversation", request_id="req-0001-abcd")
+    assert other_type.status_code == 409 and other_type.json()["error"] == "conflict"
+    # The same request, by id or by slug of the agent, still gives the call back.
+    assert world.open(request_id="req-0001-abcd").json()["call_id"] == first["call_id"]
+    slug = world.open(agent=first["agent"]["slug"], request_id="req-0001-abcd")
+    assert slug.status_code == 200 and slug.json()["call_id"] == first["call_id"]

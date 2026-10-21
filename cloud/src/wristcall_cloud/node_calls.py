@@ -11,6 +11,7 @@ import math
 import re
 import secrets
 import time
+from functools import partial
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, Request, Response
@@ -22,6 +23,7 @@ from .cloud_store import CALL_STATUSES, CALL_TYPES, ONE_WAY, CloudModeStore, pur
 from .config import CloudConfig
 from .node_auth import NodeCaller, _signer, current_node, issue_grant, node_caller, verify_grant
 from .node_core import close_call, month_usage, public_agent
+from .node_push import send_quota_warning
 from .sessions_api import entitlement_response
 
 router = APIRouter(prefix="/v1/node")
@@ -202,6 +204,8 @@ async def open_call(
         agent = await _agent_of(cloud, caller.account, call["agent"]) if call else None
         if call is None or agent is None:
             return None
+        if call.get("call_type") != call_type or ref not in (agent["_id"], agent.get("slug")):
+            raise ApiError("conflict", "request_id was used to open a different call", 409)
         response.status_code = 200
         return await _open_response(request, caller, call, agent, entitlement, now)
 
@@ -303,5 +307,6 @@ async def finish_call(request: Request, call: dict[str, Any] = Depends(call_of_g
     await close_call(
         request.app.state.cloud, request.app.state.config, call,
         status=status, error=error, seconds=seconds, closed_by="node", now=time.time(),
+        on_quota_warning=partial(send_quota_warning, request.app.state),
     )
     return Response(status_code=204)
