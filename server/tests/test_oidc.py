@@ -41,6 +41,24 @@ async def test_valid_token_gives_identity(issuer):
     assert identity.client_id == AUDIENCE
 
 
+async def test_identity_exposes_device_platform_and_token_id(issuer):
+    identity = await verifier().verify(issuer.token(did="dv_1", plt="watchos", jti="j-1"))
+    assert identity.did == "dv_1"
+    assert identity.plt == "watchos"
+    assert identity.jti == "j-1"
+
+
+async def test_identity_without_device_claims_has_none(issuer):
+    identity = await verifier().verify(issuer.token())
+    assert (identity.did, identity.plt, identity.jti) == (None, None, None)
+
+
+async def test_non_string_device_claims_are_ignored(issuer):
+    identity = await verifier().verify(issuer.token(did=5, plt=["watchos"], jti="x" * 256))
+    assert (identity.did, identity.plt, identity.jti) == (None, None, None)
+    assert identity.subject == "central-user-1"
+
+
 async def test_issuer_with_trailing_slash_is_normalized(issuer):
     assert (await verifier(issuer_url=ISSUER + "/").verify(issuer.token())).subject == "central-user-1"
 

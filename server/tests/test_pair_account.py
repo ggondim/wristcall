@@ -84,6 +84,14 @@ def test_attestation_pairs_linked_account(att_client, issuer):
     assert me.json()["device_name"] == "My Watch" and me.json()["user"]["handle"] == "owner"
 
 
+def test_pair_account_accepts_token_with_device_claims(att_client, issuer):
+    pat = api_token(att_client)
+    link(att_client, issuer.token(), pat)
+    r = pair_account(att_client, issuer.token(did="dv_1", plt="watchos"), "My Watch")
+    assert r.status_code == 200
+    assert set(r.json()) == {"device_id", "token"}
+
+
 def test_approval_waits_for_the_user(appr_client, issuer):
     pat = api_token(appr_client)
     body = pending_request(appr_client, issuer, pat, "Wrist")
