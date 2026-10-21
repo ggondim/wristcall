@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from conftest import CLIENTS, ISSUER, mongo_url, serve
 from wristcall_cloud.app import create_app
 from wristcall_cloud.config import CloudConfig
+from wristcall_cloud.nodes import NodeStore
 from wristcall_cloud.oidc import OidcError
 from wristcall_cloud.signing import SigningKey, server_token_claims
 from wristcall_cloud.store import Store
@@ -71,6 +72,22 @@ def test_server_token_is_bound_to_the_audience(client, signing_key):
     assert jwt.get_unverified_header(body["token"])["typ"] == "wc-server+jwt"
     with pytest.raises(jwt.InvalidAudienceError):
         jwt.decode(body["token"], jwk.key, algorithms=["ES256"], audience="https://other.example.com")
+
+
+def test_server_token_for_a_node_url_is_422(client):
+    cloud = client.app.state.cloud
+    client.portal.call(
+        lambda: NodeStore(cloud).add(
+            "home", url="https://node.test", region="gru", kind="always_on", capabilities=[]
+        )
+    )
+    for url in ("https://node.test", "HTTPS://Node.Test:443/"):
+        r = client.post("/v1/server-tokens", json={"audience": url}, headers=H_A)
+        assert r.status_code == 422 and r.json()["error"] == "invalid"
+        assert "node.test" not in r.json()["message"]
+    client.portal.call(lambda: NodeStore(cloud).set_enabled("home", False))  # a disabled node is still a node
+    assert client.post("/v1/server-tokens", json={"audience": "https://node.test"}, headers=H_A).status_code == 422
+    assert client.post("/v1/server-tokens", json={"audience": "https://other.test"}, headers=H_A).status_code == 200
 
 
 def test_server_token_is_not_a_cloud_credential(client):

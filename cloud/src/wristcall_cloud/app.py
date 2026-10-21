@@ -41,6 +41,7 @@ from .config import (
 )
 from .identity import IdentityUnavailable, ZitadelUsers
 from .limits import AccountCreationLimiter, AttemptLimiter, PollLimiter
+from .nodes import NodeStore
 from .oidc import OidcVerifier
 from .push.api import push_error_response
 from .push.api import router as push_router
@@ -343,6 +344,9 @@ async def issue_server_token(request: Request, authorization: str | None = Heade
     caller = await current_account(request, authorization)
     config: CloudConfig = request.app.state.config
     audience = parse_audience(await json_object(request), config)
+    # A token for a Cloud node would be a per-server credential where the node expects its own grants.
+    if await NodeStore(get_cloud(request)).is_node_url(audience):
+        raise ApiError("invalid", "audience must be a server, not a wristcall Cloud node", 422)
     claims = server_token_claims(
         issuer=config.public_url,
         account=caller.key,
