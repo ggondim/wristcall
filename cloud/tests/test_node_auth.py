@@ -37,7 +37,7 @@ from wristcall_cloud.node_auth import (
     verify_grant,
 )
 from wristcall_cloud.session_tokens import AccountTokens
-from wristcall_cloud.signing import server_token_claims
+from wristcall_cloud.signing import TOKEN_TYPE, server_token_claims
 
 
 CALL = "c_0123456789abcdef"
@@ -292,3 +292,56 @@ def test_grant_of_another_type_or_key_is_refused(node_app, signing_key):
 
 def test_nodes_routes_are_not_shadowed(node_client):
     assert node_client.get("/v1/node/me").status_code == 401
+
+
+def test_user_token_with_plt_but_no_did_is_401(node_client, nodes, signing_key):
+    account, _, _ = new_account(node_client)
+    only_plt = signing_key.sign(
+        server_token_claims(
+            issuer=PUBLIC_URL, account=account, client_id=None, audience=NODE_A, now=time.time(), platform="ios"
+        )
+    )
+    r = node_client.get("/v1/node/me", headers=node_headers(nodes["home"], user=only_plt))
+    assert r.status_code == 401, r.text
+
+
+def test_user_token_signed_with_another_algorithm_is_401(node_client, nodes, signing_key):
+    account, device, _ = new_account(node_client)
+    claims = {
+        **server_token_claims(
+            issuer=PUBLIC_URL, account=account, client_id=None, audience=NODE_A, now=time.time(), device=device,
+            platform="ios",
+        )
+    }
+    # Same claims and `typ`, but a shared-secret signature: `alg` is not ES256.
+    hs256 = jwt.encode(claims, "s" * 64, algorithm="HS256", headers={"typ": TOKEN_TYPE})
+    assert jwt.get_unverified_header(hs256)["alg"] == "HS256"
+    r = node_client.get("/v1/node/me", headers=node_headers(nodes["home"], user=hs256))
+    assert r.status_code == 401, r.text
+
+
+def test_user_token_with_a_list_of_audiences_is_401(node_client, nodes, signing_key):
+    account, device, _ = new_account(node_client)
+    claims = {
+        **server_token_claims(
+            issuer=PUBLIC_URL, account=account, client_id=None, audience=NODE_A, now=time.time(), device=device,
+            platform="ios",
+        )
+    }
+    for audience in ([NODE_A], [NODE_A, NODE_B]):
+        token = signing_key.sign({**claims, "aud": audience})
+        r = node_client.get("/v1/node/me", headers=node_headers(nodes["home"], user=token))
+        assert r.status_code == 401, (audience, r.text)
+
+
+def test_grant_issued_in_the_future_is_401(node_app, signing_key):
+    request = SimpleNamespace(app=node_app)
+    node = {"_id": "home", "url": NODE_A}
+    now = time.time()
+    # Within the 60 s of leeway it is fine; beyond it the clock of whoever signed is not to be trusted.
+    soon = grant_for(signing_key, now=now + 30)
+    assert verify_grant(request, node, CALL, soon, allow_expired=False).call_id == CALL
+    for ahead in (120, 3600):
+        with pytest.raises(ApiError) as e:
+            verify_grant(request, node, CALL, grant_for(signing_key, now=now + ahead), allow_expired=True)
+        assert e.value.status == 401
