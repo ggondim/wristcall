@@ -19,7 +19,7 @@ from pymongo.errors import PyMongoError
 
 from . import __version__
 from .account_store import PLANS, AccountStore
-from .cloud_store import CloudModeStore
+from .cloud_store import CloudModeStore, usage_month
 from .config import ConfigError, admin_settings
 from .nodes import CAPABILITIES, KINDS, NodeExists, NodeStore
 
@@ -147,8 +147,10 @@ async def _run_nodes(args: argparse.Namespace, nodes: NodeStore) -> int:
 
 async def run(args: argparse.Namespace, store: AccountStore) -> int:
     now = time.time()
+    cloud = CloudModeStore(store.db)
     if args.command == "nodes":
-        return await _run_nodes(args, NodeStore(CloudModeStore(store.db)))
+        await cloud.ensure_indexes()  # so a duplicate URL is refused even before the Cloud's first start on this version
+        return await _run_nodes(args, NodeStore(cloud))
     if args.command == "stats":
         entitled = {"$or": [{"expires_at": None}, {"expires_at": {"$gt": now}}]}
         _line("accounts", await store.accounts.count_documents({}))
@@ -156,6 +158,14 @@ async def run(args: argparse.Namespace, store: AccountStore) -> int:
         _line("devices", await store.devices.count_documents({}))
         _line("identities", await store.identities.count_documents({}))
         _line("entitlements", await store.entitlements.count_documents(entitled))
+        schema = await store.meta.find_one({"_id": "schema"})
+        _line("schema", "none" if schema is None else schema.get("version"))
+        _line("nodes", await cloud.nodes.count_documents({}))
+        _line("nodes_enabled", await cloud.nodes.count_documents({"enabled": True}))
+        _line("cloud_calls_open", await cloud.calls.count_documents({"open": True}))
+        month = [{"$match": {"month": usage_month(now)}}, {"$group": {"_id": None, "total": {"$sum": "$total_s"}}}]
+        totals = await (await cloud.usage.aggregate(month)).to_list(None)
+        _line("usage_month_s", totals[0]["total"] if totals else 0)
         return 0
     if args.command == "invites":
         for code in await store.create_invites(args.plan, args.count, days=args.days, now=now):
@@ -176,6 +186,10 @@ async def run(args: argparse.Namespace, store: AccountStore) -> int:
         _line("plan", "none" if entitlement is None else entitlement["plan"])
         if entitlement is not None:
             _line("plan_expires_at", _iso(entitlement.get("expires_at")))
+        usage = await cloud.usage.find_one({"_id": f"{args.account}:{usage_month(now)}"}, {"total_s": 1})
+        _line("cloud_agents", await cloud.agents.count_documents({"account": args.account}))
+        _line("cloud_calls", await cloud.calls.count_documents({"account": args.account}))
+        _line("usage_month_s", usage.get("total_s", 0) if usage else 0)
         return 0
     if args.command == "grant":
         granted = await store.grant(args.account, args.plan, days=args.days, now=now)

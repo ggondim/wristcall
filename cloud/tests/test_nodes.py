@@ -232,3 +232,13 @@ async def test_cli_nodes_errors(mongo_db, nodes, capsys):
     assert code == 2 and "localhost" not in err
     assert (await cli(mongo_db, capsys, *loopback, "--allow-loopback"))[0] == 0
     assert len(await nodes.list()) == 2
+
+
+async def test_cli_nodes_add_creates_the_indexes_first(mongo_db, capsys):
+    """Before the Cloud's first start on this version nothing created the unique URL index: the command does."""
+    add = ("nodes", "add", "home", "--url", "https://node.test", "--region", "gru", "--kind", "on_demand")
+    assert (await cli(mongo_db, capsys, *add))[0] == 0
+    assert "url" in await mongo_db["nodes"].index_information()
+    code, out, err = await cli(mongo_db, capsys, *add[:2], "other", *add[3:])
+    assert code == 2 and out == "" and "node already exists" in err
+    assert await mongo_db["nodes"].count_documents({}) == 1

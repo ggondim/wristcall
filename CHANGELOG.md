@@ -4,6 +4,50 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 
 ## [Unreleased]
 
+## [cloud-0.5.0] - 2026-10-21
+
+Cloud 0.5.0. Registers the nodes of cloud mode and serves them an internal API (`/v1/node/`) for agents, call history,
+push targets, the monthly quota and usage. No node is registered at first: accounts, apps and the PWA see no change. Dump
+the `wristcall_cloud` database before deploying (schema 2 to 3, collections and indexes only).
+
+### Added
+
+- Node registry: `wristcall-cloud admin nodes add|list|rotate|enable|disable`. `add` prints the node's secret
+  (`wc_node_` and 43 characters) once; the database keeps its SHA-256. `rotate` keeps the old secret for 15 minutes
+  (`--now` cuts it at once). Each command creates the indexes first, so a repeated URL is refused even before the
+  Cloud's first start on 0.5.0.
+- `/v1/node/` API for nodes, with three credentials: the node's secret, the user's per-server token
+  (`X-Wristcall-User-Token`) and a call grant (`X-Wristcall-Call-Grant`, `typ` `wc-grant+jwt`, issued when a call opens).
+  Routes: `GET /v1/node/me`; agents (`GET`, `POST`, `PATCH`, `DELETE /v1/node/agents`, `PUT /v1/node/agents/order`);
+  calls (`POST /v1/node/calls` with an optional `request_id` for safe retries, `entries`, `PATCH` and `finish`);
+  history (list and search by term hash, read, export as NDJSON, delete, redeliver); `PUT` and `DELETE
+  /v1/node/push-targets` and `POST /v1/node/push`; `POST /v1/node/heartbeat`. Request shapes, limits and errors are in
+  [cloud/README.md](cloud/README.md#cloud-nodes).
+- Monthly quota: `WRISTCALL_CLOUD_QUOTA_MINUTES` (600) per account per calendar month (UTC), the same for every plan,
+  all call types together, no overage (`402 quota_exceeded`). One open call per account (`409 too_many_calls`). Longest
+  call `WRISTCALL_CLOUD_MAX_CONVERSATION_S` (3600) and `WRISTCALL_CLOUD_MAX_ONE_WAY_S` (1800). The seconds a node
+  reports are counted once, however often `finish` is sent, and a late `finish` corrects a call the Cloud had closed.
+- History kept per agent (`spec.retention_days`, default `WRISTCALL_CLOUD_HISTORY_RETENTION_DAYS`, ceiling
+  `WRISTCALL_CLOUD_MAX_HISTORY_RETENTION_DAYS`), dropped by TTL indexes. Other new variables:
+  `WRISTCALL_CLOUD_NODE_REQUESTS_PER_MINUTE` (1200) and `WRISTCALL_CLOUD_MAX_CLOUD_AGENTS` (20).
+- Orphan calls: a call a node no longer lists in its heartbeat, or that a silent node (120 seconds) left open, is
+  closed by the Cloud (`failed` or `ended`, `error` `interrupted`) and its seconds counted; calls left `processing` by a
+  node that restarted or went silent are failed. A Cloud that was down does not blame the nodes.
+- `admin stats` also prints `schema`, `nodes`, `nodes_enabled`, `cloud_calls_open` and `usage_month_s`; `admin show`
+  also prints `cloud_agents`, `cloud_calls` and `usage_month_s`.
+
+### Changed
+
+- `POST /v1/server-tokens` refuses the URL of a registered node (`422 invalid`), enabled or not: a node takes its own
+  credentials, not a per-server token.
+- New push event `quota.warning`, sent once a month, when an account's usage reaches 80% of the quota, to the push
+  targets of the account; a registration receives it only if it lists the event.
+- Request bodies under `/v1/node/` may be up to 1 MiB (everything else stays at 64 KiB).
+- Database schema 3 (the cloud-mode collections and indexes; no existing document changes). 0.4.1 still opens the
+  database after 0.5.0 has run.
+- Deleting an account (`DELETE /v1/account`, and the cleanup of idle anonymous accounts) also deletes its cloud-mode
+  data: agents, calls, history entries, push targets and usage.
+
 ## [0.9.0] - 2026-10-21
 
 ### Added

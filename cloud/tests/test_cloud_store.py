@@ -2,6 +2,8 @@ import pytest
 from pymongo.errors import DuplicateKeyError
 
 from conftest import mongo_url
+from node_fixtures import db, node_app, node_client, node_config, signing_key
+from test_sessions_api import bearer, create_account
 from wristcall_cloud.account_store import AccountStore
 from wristcall_cloud.cloud_store import CALL_STATUSES, CALL_TYPES, ONE_WAY, CloudModeStore, purge_at, usage_month
 from wristcall_cloud.config import CloudConfig, ConfigError, config_from_env
@@ -123,3 +125,62 @@ def test_node_body_limit(client):
 
 def test_app_exposes_cloud_store(app):
     assert isinstance(app.state.cloud, CloudModeStore)
+
+
+COLLECTIONS = ("cloud_agents", "cloud_calls", "cloud_call_entries", "cloud_push_targets", "usage")
+
+
+def seed_cloud_mode(d, account: str) -> None:
+    """One document of the account in each cloud-mode collection (`d`: a synchronous database handle)."""
+    d["cloud_agents"].insert_one({"_id": f"ag_{account}", "account": account, "slug": "a"})
+    d["cloud_calls"].insert_one({"_id": f"c_{account}", "account": account, "status": "delivered"})
+    d["cloud_call_entries"].insert_one({"_id": f"c_{account}:0", "account": account, "call": f"c_{account}"})
+    d["cloud_push_targets"].insert_one({"_id": f"t_{account}", "account": account})
+    d["usage"].insert_one({"_id": f"{account}:2026-10", "account": account, "month": "2026-10", "total_s": 60})
+
+
+def cloud_mode_counts(d, account: str) -> dict[str, int]:
+    return {name: d[name].count_documents({"account": account}) for name in COLLECTIONS}
+
+
+async def test_delete_account_removes_cloud_mode_data(mongo_db):
+    cloud = CloudModeStore(mongo_db)
+    with db(mongo_db) as d:
+        seed_cloud_mode(d, "acc_one")
+        seed_cloud_mode(d, "acc_two")
+    await cloud.delete_account("acc_one")
+    await cloud.delete_account("acc_one")  # nothing left: no harm
+    with db(mongo_db) as d:
+        assert cloud_mode_counts(d, "acc_one") == dict.fromkeys(COLLECTIONS, 0)
+        assert cloud_mode_counts(d, "acc_two") == dict.fromkeys(COLLECTIONS, 1)
+
+
+def test_delete_account_route_removes_cloud_mode_data(node_client, mongo_db):
+    mine, other = create_account(node_client), create_account(node_client)
+    with db(mongo_db) as d:
+        seed_cloud_mode(d, mine["account"])
+        seed_cloud_mode(d, other["account"])
+    assert node_client.delete("/v1/account", headers=bearer(mine["access_token"])).status_code == 204
+    with db(mongo_db) as d:
+        assert d["accounts"].count_documents({"_id": mine["account"]}) == 0
+        assert cloud_mode_counts(d, mine["account"]) == dict.fromkeys(COLLECTIONS, 0)
+        assert cloud_mode_counts(d, other["account"]) == dict.fromkeys(COLLECTIONS, 1)
+
+
+async def test_account_data_deletion_starts_with_cloud_mode_data(mongo_db, monkeypatch):
+    """A failure in the later steps leaves the account (and its devices) for a retry that finds nothing left."""
+    accounts = AccountStore(mongo_db)
+    await accounts.ensure_indexes()
+    account = (await accounts.create_account("a" * 64, now=1.0))["_id"]
+    with db(mongo_db) as d:
+        seed_cloud_mode(d, account)
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError("database went away")
+
+    monkeypatch.setattr(accounts.devices, "delete_many", fail)
+    with pytest.raises(RuntimeError):
+        await accounts.delete_account_data(account)
+    with db(mongo_db) as d:
+        assert cloud_mode_counts(d, account) == dict.fromkeys(COLLECTIONS, 0)
+    assert await accounts.get_account(account) is not None

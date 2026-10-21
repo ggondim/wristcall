@@ -65,3 +65,9 @@ class CloudModeStore:
         await self.entries.create_index([("purge_at", ASCENDING)], expireAfterSeconds=0, name="purge_at")
         await self.push_targets.create_index([("account", ASCENDING)], name="account")
         await self.usage.create_index([("account", ASCENDING)], name="account")
+
+    async def delete_account(self, account: str) -> None:
+        """Deletes everything cloud mode keeps for `account`: agents, calls, history entries, push targets and usage
+        (nodes are not the account's). An account without any deletes nothing; repeating is harmless."""
+        for collection in (self.agents, self.calls, self.entries, self.push_targets, self.usage):
+            await collection.delete_many({"account": account})

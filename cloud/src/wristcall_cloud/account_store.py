@@ -20,6 +20,7 @@ from pymongo.asynchronous.collection import AsyncCollection
 from pymongo.asynchronous.database import AsyncDatabase
 from pymongo.errors import DuplicateKeyError
 
+from .cloud_store import CloudModeStore
 from .session_tokens import new_account_id, new_code, new_device_id, new_secret, secret_hash
 
 log = logging.getLogger("wristcall_cloud.accounts")
@@ -427,9 +428,10 @@ class AccountStore:
         return True
 
     async def delete_account_data(self, account: str) -> None:
-        """Deletes the account's identities, enroll codes, web sessions and entitlement, then its devices, then the
-        account. The devices go last but one, so a failure midway leaves the caller's device (and its token) alive and
-        the deletion can be retried."""
+        """Deletes the account's cloud-mode data (agents, calls, history, push targets, usage), then its identities,
+        enroll codes, web sessions and entitlement, then its devices, then the account. The devices go last but one,
+        so a failure midway leaves the caller's device (and its token) alive and the deletion can be retried."""
+        await CloudModeStore(self.db).delete_account(account)
         await self.identities.delete_many({"account": account})
         await self.enroll_codes.delete_many({"account": account})
         await self.web_sessions.delete_many({"account": account})

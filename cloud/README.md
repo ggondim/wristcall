@@ -4,7 +4,8 @@ The central account API: lets a user sign in with the central account (OIDC, `au
 list of their wristcall servers in one place. It also issues the per-server tokens that prove the central account to
 a server, and relays push notifications (Web Push and APNs) for servers that have no push credentials of their own.
 Since 0.4.0 the Cloud also owns the account itself: apps create a silent account from a key made on the device, and
-each device gets its own session (see [Accounts and sessions](#accounts-and-sessions)). It is a separate service from
+each device gets its own session (see [Accounts and sessions](#accounts-and-sessions)). Since 0.5.0 it also registers
+the nodes of cloud mode and serves them an internal API (see [Cloud nodes](#cloud-nodes)). It is a separate service from
 `server/`, with its own package (`wristcall-cloud`), its own MongoDB database and its own release cycle.
 
 ## Configuration
@@ -47,6 +48,22 @@ the access tokens, and without them `sessions.enabled` in `/v1/config` is `false
 | `WRISTCALL_CLOUD_MAX_ENROLL_CODES` | `5` | open enroll codes per account |
 | `WRISTCALL_CLOUD_ACCOUNT_IDLE_DAYS` | `90` | an anonymous account (no identity, no plan) unused for this long is deleted (checked every 6 hours); a device unused for this long cannot refresh its session |
 | `WRISTCALL_CLOUD_CLIENT_COUNTRY_HEADER` | | header the reverse proxy puts the client's country in (`CF-IPCountry` behind Cloudflare). It is recorded on web sessions, so the iPhone can show it before approving. Without it the country is `null`; nothing breaks |
+
+Cloud nodes (all optional; the node routes need the two per-server token variables above, and answer
+`404 not_configured` without them). A value that is not a positive whole number stops the start, naming the variable:
+
+| Variable | Default | |
+|---|---|---|
+| `WRISTCALL_CLOUD_QUOTA_MINUTES` | `600` | minutes of calls per account per calendar month (UTC), the same for every plan and for all call types together |
+| `WRISTCALL_CLOUD_MAX_CONVERSATION_S` | `3600` | longest conversation, in seconds |
+| `WRISTCALL_CLOUD_MAX_ONE_WAY_S` | `1800` | longest one-shot or monologue call, in seconds |
+| `WRISTCALL_CLOUD_NODE_REQUESTS_PER_MINUTE` | `1200` | requests per node per minute on `/v1/node/*` (counted in memory, per node id) |
+| `WRISTCALL_CLOUD_MAX_CLOUD_AGENTS` | `20` | cloud-mode agents per account |
+| `WRISTCALL_CLOUD_HISTORY_RETENTION_DAYS` | `90` | how long a call is kept when its agent says nothing |
+| `WRISTCALL_CLOUD_MAX_HISTORY_RETENTION_DAYS` | `365` | the ceiling of an agent's `retention_days`, and what `"forever"` means; the default above must not exceed it |
+
+Three more values are not configurable: a node counts as silent after 120 seconds without a heartbeat, the sweeper
+runs every 30 seconds, and a call younger than 30 seconds is never closed as an orphan.
 
 Push relay (all optional; a channel exists only when its credentials are set):
 
@@ -147,7 +164,7 @@ both in sync.
 
 ## API
 
-Errors are always `{"error": code, "message": ...}`. Request bodies are limited to 64 KiB (`413 too_large`); a body
+Errors are always `{"error": code, "message": ...}`. Request bodies are limited to 64 KiB (`413 too_large`), and to 1 MiB under `/v1/node/`; a body
 that is not a JSON object is `422 invalid`.
 
 - `GET /v1/health`: `{"status": "ok", "version": ...}`.
@@ -161,7 +178,7 @@ and then the account is created on first use). A resource of another account ans
 | Route | Body | Answers |
 |---|---|---|
 | `GET /v1/account` | | `200 {"account", "created_at", "servers", "plan", "identities", "key_set"}`: `plan` is `{"plan", "source", "expires_at"}` or `null`, `identities` the kinds linked (`["zitadel"]`), `key_set` whether the account has an account key |
-| `DELETE /v1/account` | | `204`, deletes the account, its servers, devices, identities and plan, and (when configured) the Zitadel users behind it; `403 forbidden` unless the device is an app or the web app (for a Zitadel token: unless it was issued to the iOS or PWA client); `503 account_unavailable` when the provider fails (the agenda is already gone; the same call again finishes) |
+| `DELETE /v1/account` | | `204`, deletes the account, its servers, its cloud-mode data (agents, calls, history, push targets and usage), devices, identities and plan, and (when configured) the Zitadel users behind it; `403 forbidden` unless the device is an app or the web app (for a Zitadel token: unless it was issued to the iOS or PWA client); `503 account_unavailable` when the provider fails (the agenda is already gone; the same call again finishes) |
 | `GET /v1/servers` | | `200 {"servers": [Server]}` by creation |
 | `POST /v1/servers` | `{name, url, kind?, linked?}` | `201 Server`; `409 conflict` for a repeated URL; `403 limit` over `WRISTCALL_CLOUD_MAX_SERVERS` |
 | `GET /v1/servers/{id}` | | `200 Server`; `404` |
@@ -197,7 +214,7 @@ it is the client the token was issued to. Neither the audience nor the token rea
 |---|---|---|
 | `GET /.well-known/openid-configuration` | none | `200 {"issuer", "jwks_uri", "id_token_signing_alg_values_supported"}`; `404 not_configured` without a signing key |
 | `GET /v1/jwks` | none | `200 {"keys": [JWK]}` with `Cache-Control: public, max-age=3600`; `404 not_configured` |
-| `POST /v1/server-tokens` | account token | body `{"audience": url}`; `200 {"token", "audience", "expires_at"}` with the audience in its canonical form. `422 invalid` for a malformed audience, a loopback one (unless `WRISTCALL_CLOUD_ALLOW_LOOPBACK_AUDIENCE`), or the Cloud's or the issuer's own URL; `404 not_configured` |
+| `POST /v1/server-tokens` | account token | body `{"audience": url}`; `200 {"token", "audience", "expires_at"}` with the audience in its canonical form. `422 invalid` for a malformed audience, a loopback one (unless `WRISTCALL_CLOUD_ALLOW_LOOPBACK_AUDIENCE`), the Cloud's or the issuer's own URL, or the URL of a registered node (a node takes the [user token](#authentication-of-a-node) the node routes ask for, not this one; disabled nodes count); `404 not_configured` |
 
 `GET /v1/config` also tells apps whether the Cloud issues server tokens (`server_tokens`).
 
@@ -361,8 +378,142 @@ in with Zitadel is already a barrier. Set `WRISTCALL_CLOUD_CLIENT_IP_HEADER` beh
 the proxy's address and the limits hit the first users of a mobile network.
 
 An anonymous account (no identity, no plan) unused for `WRISTCALL_CLOUD_ACCOUNT_IDLE_DAYS` is deleted with its
-agenda, and so is a device unused for that long (checked every 6 hours). Accounts from 0.3.x and accounts with a
+agenda and its cloud-mode data, and so is a device unused for that long (checked every 6 hours). Accounts from 0.3.x and accounts with a
 Zitadel identity are never deleted by this.
+
+## Cloud nodes
+
+Since 0.5.0 the Cloud keeps a registry of **nodes**, the servers it vouches for in cloud mode, and serves them an
+internal API under `/v1/node/` that holds what cloud mode stores for an account: its agents, the history of its calls,
+the push targets of its devices and the month's usage against the quota. The Cloud never opens what a node sends: the
+agents' `spec` and the history text arrive sealed by the node, and a search works on hashes the node computed. Without
+the signing key and `WRISTCALL_CLOUD_PUBLIC_URL` every node route answers `404 not_configured`. The routes of the
+other sections answer as before, with two additions: `POST /v1/server-tokens` refuses a node's URL, and deleting an
+account also deletes its cloud-mode data. With no node registered the node routes are unreachable.
+
+A node is registered with `admin nodes add` (see [Admin CLI](#admin-cli)): `id` (1 to 32 lowercase letters, digits or
+hyphens, starting with a letter), `url` (https, in the same canonical form as an audience; unique), `region` (three
+lowercase letters), `kind` (`always_on` or `on_demand`), `capabilities` (`operator_stt`, `operator_tts`) and
+`priority` (lower first). Errors of every node route are `{"error": code, "message": ...}` and never echo the secret,
+a token, a URL or text the caller sent.
+
+### Authentication of a node
+
+A request carries up to three credentials, each checked where it belongs:
+
+- **The node's secret**, on every node route: `Authorization: Bearer wc_node_...`. Missing, malformed, unknown or
+  disabled: `401 unauthorized`. After a rotation the previous secret works for 15 minutes. A node over
+  `WRISTCALL_CLOUD_NODE_REQUESTS_PER_MINUTE` gets `429 rate_limited` with `Retry-After`.
+- **The user token**, in `X-Wristcall-User-Token`, on the routes that act for a user's device: an ES256 token the Cloud
+  signed (`typ` `wc-server+jwt`, `iss` `WRISTCALL_CLOUD_PUBLIC_URL`, `aud` the node's own URL) with `sub` the account,
+  `did` the device and `plt` its platform (`ios`, `ipados`, `macos`, `watchos` or `web`). A token made for another node,
+  one that is expired (a minute of clock difference is tolerated) or one that is not good is `401 unauthorized`; a
+  device the account no longer has is `403 device_revoked`. This version only verifies it: `POST /v1/server-tokens`
+  refuses a node's URL.
+- **The call grant**, in `X-Wristcall-Call-Grant`, on the routes that work on one call: a token (`typ`
+  `wc-grant+jwt`, `iss` and `aud` the Cloud's URL) the Cloud returns when it opens the call, with `sub`, `did`, `plt`,
+  `call`, `node`, `iat`, `exp` and `jti`. Only the node it was issued to can present it, and only for that call (`401`
+  otherwise). `exp` is the call's `max_s` plus one hour after `iat`; entries, status `PATCH` and `finish` are still
+  accepted up to 24 hours after `exp`, because the node's queue may deliver them late.
+
+The three token types share the Cloud's signing key and are told apart by `typ`: a grant is not a user token and an
+account access token is neither. A call that belongs to another account or another node is `404 not_found`.
+
+### Node routes
+
+Reading agents is open to every platform; writing them needs an app or the web (`403 forbidden` for the watch) and a
+valid plan (`402 plan_required`), except deleting an agent, which needs no plan. History listing, search, export,
+delete and redelivery are for apps and the web too. The watch reads only its own calls.
+
+| Route | Credentials | Body | Answers |
+|---|---|---|---|
+| `GET /v1/node/me` | node, user | | `200 {"account", "plan", "device": {"id", "platform"}, "agents": [Agent], "usage": Usage}`; `plan` is `null` without one |
+| `GET /v1/node/agents` | node, user | | `200 {"agents": [Agent], "etag"}` with an `ETag` header; `If-None-Match` with it is `304` |
+| `GET /v1/node/agents/{id or slug}` | node, user | | `200 Agent`; `404 not_found` |
+| `POST /v1/node/agents` | node, user | `{id, slug, display_name, icon, call_type, spec, color?}` | `201 Agent`; `403 limit` over `WRISTCALL_CLOUD_MAX_CLOUD_AGENTS`; `409 conflict` for a repeated id or slug; `422 invalid` |
+| `PATCH /v1/node/agents/{id}` | node, user | any of `slug`, `display_name`, `icon`, `color`, `call_type`, `spec` | `200 Agent`; `404`; `409`; `422` |
+| `DELETE /v1/node/agents/{id}` | node, user | | `204`; `404`. The agent's history stays |
+| `PUT /v1/node/agents/order` | node, user | `{agent, index}` | `200 {"agents", "etag"}` with the agent moved to `index` (counted from 0, clamped); `404` |
+| `POST /v1/node/calls` | node, user | `{agent, call_type, request_id?}` | `201 {"call_id", "grant", "agent", "plan", "quota_s", "max_s", "started_at"}` |
+| `POST /v1/node/calls/{id}/entries` | node, grant | `{"entries": [Entry]}` | `204`; `422` |
+| `PATCH /v1/node/calls/{id}` | node, grant | any of `status`, `error`, `attempts`, `last_http_status`, `ended_at`, `finished_at` | `204`; `422` |
+| `POST /v1/node/calls/{id}/finish` | node, grant | `{status, seconds, error?}` | `204`; `422` |
+| `GET /v1/node/calls` | node, user | query: `agent`, `since`, `until`, `before_at` and `before_id` (together), `limit`, `terms` | `200 {"calls": [Call]}` newest first |
+| `GET /v1/node/calls/export` | node, user | query: `agent`, `since`, `until` | `200` NDJSON |
+| `GET /v1/node/calls/{id}` | node, user | | `200 {"call": Call, "entries": [Entry]}`; `404` |
+| `DELETE /v1/node/calls/{id}` | node, user | | `204`; `404`; `409 call_open` |
+| `DELETE /v1/node/calls?agent=<id>` or `?all=true` | node, user | | `200 {"deleted": n}`; the open calls stay; `422` with neither |
+| `POST /v1/node/calls/{id}/redeliver` | node, user | | `200 {"call", "entries", "agent", "grant"}`; `409 not_one_way`, `call_open`, `busy`, `not_failed` |
+| `PUT /v1/node/push-targets` | node, user | `{push_key}` | `204`; `422` when the key is not a registration of this Cloud |
+| `DELETE /v1/node/push-targets` | node, user | | `204` |
+| `POST /v1/node/push` | node, grant or user | a push message and, with a grant, `call` | `202 {"sent": 0 or 1}` |
+| `POST /v1/node/heartbeat` | node | see below | `204` |
+
+**Shapes.** `Agent`: `id`, `slug`, `display_name`, `icon`, `color`, `call_type`, `position`, `spec`, `created_at`,
+`updated_at`. `Call`: `id`, `agent_id`, `agent_slug`, `agent_name`, `device_id`, `call_type`, `status`, `error`,
+`attempts`, `last_http_status`, `created_at`, `updated_at`, `ended_at`, `finished_at`, `expires_at`, `seconds`, `open`.
+`Entry`: `seq`, `role`, `text`, `sealed`, `error`, `at`. `Usage`: `month` (`YYYY-MM`), `used_s`, `quota_s`,
+`remaining_s`. Times are seconds since the epoch.
+
+**Agents.** The node generates the id (`ag_` and 12 hex characters), because it seals the agent's secrets with the id
+in the authenticated data. `slug` is 1 to 32 characters of `[a-z0-9-]`, starting with a letter or digit, unique per
+account; `display_name` 1 to 64 characters, no control characters; `icon` up to 64 characters of dotted lowercase
+words; `color` as in the agenda or `null`; `call_type` `conversation`, `one-shot` or `monologue`. `spec` is an object
+of at most 256 KiB and 32 levels, stored as sent; the Cloud reads only `spec.retention_days` (1 to 36500, `"forever"`
+or `null`). Changing it moves the expiry of the agent's calls and entries.
+
+**Opening a call.** `agent` is an id or a slug, and `call_type` must be the agent's (`422`). The account needs a plan
+(`402 plan_required`) and minutes left in the month (`402 quota_exceeded`), and may have one open call
+(`409 too_many_calls`, enforced by a unique index). `max_s` is the type's limit (`WRISTCALL_CLOUD_MAX_CONVERSATION_S`,
+`WRISTCALL_CLOUD_MAX_ONE_WAY_S`) or what is left of the quota, whichever is less; `quota_s` is what was left when the
+call opened. `request_id` (8 to 64 characters of letters, digits, `-` and `_`) makes a retry safe: the same id from the
+same node and device while that call is open answers `200` with the same call and a new grant; for another agent or
+call type it is `409 conflict`. The call is kept for the agent's `retention_days` (default
+`WRISTCALL_CLOUD_HISTORY_RETENTION_DAYS`, ceiling `WRISTCALL_CLOUD_MAX_HISTORY_RETENTION_DAYS`); then the TTL indexes
+drop it with its entries.
+
+**Entries.** Up to 100 per request, `seq` from 0 to 100000 and not repeated in the request; `role` is `user` or
+`agent`; `at` a number; `text` a string of up to 256 KiB or `null`, and when it is a string `sealed` must be `true`
+(`422` otherwise: the Cloud stores no text in clear); `error` a lowercase code or `null`; `term_hashes` up to 2000
+hashes of the form `x` and 16 hex digits. Sending an entry again is harmless: the first one stays.
+
+**Status and finish.** Statuses are `recording`, `processing`, `delivered`, `failed`, `empty` and `ended`; `finish`
+takes all but `recording`, a `seconds` number and an optional `error` code. A `PATCH` takes `attempts` from 0 to 10000
+and `last_http_status` `null` or 100 to 599. `finish` closes the call, frees the account's open slot and adds its
+seconds to the month's usage (the month the call began in), once: repeating it counts once, and one that arrives after
+the Cloud closed the call as an orphan corrects its status, error and seconds, moving the usage by the difference.
+`seconds` is rounded up to whole seconds and kept within `max_s` plus a minute.
+
+**Quota.** `WRISTCALL_CLOUD_QUOTA_MINUTES` per account per calendar month (UTC), the same for `full` and `custom`, all
+call types together, measured in the wall-clock seconds nodes report; there is no overage. The first time a month's
+usage reaches 80%, every push target of the account gets a `quota.warning` event (`data`: `month`, `used_s`,
+`quota_s`), once per month. A registration receives it only if it asked for that event (the push relay's `events`).
+
+**History.** `terms` can be repeated; each is a group of up to 16 comma separated hashes and a call must have an entry
+matching one hash of every group (up to 16 groups). `limit` is 1 to 200 (default 50); `before_at` and `before_id` page
+from the last call of the previous page. `since` is inclusive and `until` exclusive, on `created_at`. An open call is
+never deleted (deleting one answers `409 call_open`, deleting many skips it), so a call cannot be erased to dodge
+the quota. The export
+writes one line `{"call", "entries"}` per call, oldest first, and ends with `{"end": true, "count": n}`; a stream
+without that line was cut. Redelivery follows the server's rules: only one-shot and monologue calls, not while
+`processing`, and only a `failed` call whose `error` is `delivery_failed` or `interrupted`; the call becomes the
+requesting node's, `processing` again, and the answer carries a new grant for it.
+
+**Push.** A node sends a notification only to the device it acts for, by the call's grant (the grant must not be
+expired) or by the user token. The body is a message as in [Push relay](#push-relay) (`event`, `title`, `body`,
+`data`...), plus `call` with a grant; `sent` is `0` when the device has no push target or its registration did not ask
+for the event. A target is the push registration a device made, kept by id: the Cloud never keeps the key.
+
+**Heartbeat.** Every 15 seconds or so a node sends `{boot_id, version, active_call_ids, active_by_type, capacity,
+providers_ok}`: `boot_id` and `version` strings (up to 64 and 32 characters); `active_call_ids` up to 500 ids;
+`active_by_type` and `capacity` objects with `conversation` and `one_way` (whole numbers from 0; `capacity` also takes
+`null` for no limit); `providers_ok` a boolean. The Cloud keeps the last one on the node's document. Calls the Cloud
+holds open for the node that it does not list, and that are older than 30 seconds, are orphans: a one-shot or monologue
+call becomes `failed`, a conversation `ended`, with `error` `interrupted`, counting the seconds up to the heartbeat
+before. A node that stays silent for 120 seconds (counted from its last heartbeat or the Cloud's own start, whichever is
+later, so a Cloud that was down does not blame the nodes) has all its open calls closed the same way by a sweeper
+that runs every 30 seconds. When the `boot_id` changes, or the node goes silent, its calls left `processing` become
+`failed` with `error` `interrupted`, because nothing is processing them any more.
 
 ## Transition flag
 
@@ -387,11 +538,18 @@ service configuration. Output is one `key: value` line per item on stdout; error
 
 | Command | What it does |
 |---|---|
-| `admin show <account>` | account, kind, created_at, last_seen_at, devices, identities, plan (and plan_expires_at) |
+| `admin show <account>` | account, kind, created_at, last_seen_at, devices, identities, plan (and plan_expires_at), then cloud_agents, cloud_calls and usage_month_s (call seconds this month, UTC) |
 | `admin grant <account> --plan full\|custom [--days N]` | gives the account a beta plan, replacing any; without `--days` it has no end |
 | `admin revoke <account>` | takes the plan away (`revoked: true` or `false`) |
 | `admin invites create --plan full\|custom [--count N] [--days N]` | prints `N` new single-use codes (1 to 1000, default 1) that can be redeemed for `--days` days (default 30). This is the only time the codes exist in clear |
-| `admin stats` | counts: accounts, anonymous_24h, devices, identities, entitlements |
+| `admin stats` | counts: accounts, anonymous_24h, devices, identities, entitlements, then schema (the database's `meta` version, `none` before the first start), nodes, nodes_enabled, cloud_calls_open (calls open right now) and usage_month_s (call seconds this month, all accounts) |
+| `admin nodes add <id> --url URL --region xxx --kind always_on\|on_demand [--capability operator_stt] [--capability operator_tts] [--priority N] [--allow-loopback]` | registers a node and prints `node`, `url` and `secret`. The secret (`wc_node_` and 43 characters) is the only time it exists in clear: the database keeps its SHA-256. Exit `2` for a bad id, URL, region or kind, a loopback URL without `--allow-loopback`, or an id or URL already registered |
+| `admin nodes list` | one `node: <id> url=... region=... kind=... enabled=... last_seen_at=...` line per node, by priority (lower first), then id |
+| `admin nodes rotate <id> [--now]` | prints a new `secret`; the old one keeps working for 15 minutes (a node deploy is not atomic). `--now` cuts the old one at once (a leak). Exit `1` for an unknown node |
+| `admin nodes enable <id>` / `disable <id>` | prints `enabled: true` or `false`; a disabled node's secret is refused (`401`). Exit `1` for an unknown node |
+
+Every `admin nodes` command creates the indexes first, so a repeated URL is refused even before the Cloud has started
+on 0.5.0.
 
 Exit codes: `0` done, `1` no such account, `2` bad usage or configuration, `3` the database failed (only the exception
 type is printed).
@@ -403,6 +561,7 @@ In a container, with the connection string in a secret (the service then sets `W
 docker exec <container> wristcall-cloud admin stats
 docker exec <container> wristcall-cloud admin grant acc_xxxxxxxxxxxxxxxxxxxxxxxxxx --plan full --days 30
 docker exec <container> wristcall-cloud admin invites create --plan full --count 5
+docker exec <container> wristcall-cloud admin nodes add home --url https://node.example.com --region gru --kind always_on
 ```
 
 ## Data and migration
@@ -417,19 +576,32 @@ Collections of the `wristcall_cloud` database (`WRISTCALL_CLOUD_DATABASE`):
 | `devices` | one per session: account, name, platform, refresh token digests, `last_seen_at` |
 | `enroll_codes`, `web_sessions`, `invites` | digests of the secrets. Expired enroll codes and web sessions are dropped by TTL indexes (an hour after they expire); invites are kept, an expired one just cannot be redeemed |
 | `entitlements` | the plan, one per account (`_id` is the account) |
-| `meta` | `_id: "schema"`, `version: 2`, `migrated_at` |
+| `meta` | `_id: "schema"`, `version: 3`, `migrated_at` |
+| `nodes` | the registered nodes: `_id`, `url` (unique), `region`, `kind`, `capabilities`, `priority`, `enabled`, `secret_hash` (unique; SHA-256 of the secret), the previous secret's hash and its end while a rotation is in grace, and what the last heartbeat said |
+| `cloud_agents` | the cloud-mode agents: `_id` (the id the node generated), `account`, `slug` (unique per account), `position`, `spec` |
+| `cloud_calls` | one per call: account, device, node, agent, status, seconds, `open` (only while the call is open: a unique partial index allows one per account), `purge_at` (TTL index) |
+| `cloud_call_entries` | the history of a call, one per `(call, seq)`: sealed text and term hashes; `purge_at` (TTL index) |
+| `cloud_push_targets` | where an account's devices get notifications (`(account, device)` to a push registration's id, never its key) |
+| `usage` | one document per `(account, month)`: `total_s`, `seconds_by_type`, a `by_call` ledger, `warned_80` |
 
-The push registrations keep their collection, unchanged.
+The push registrations keep their collection, unchanged. The Cloud never opens what the nodes send: the history text
+and the agents' `spec` are sealed by the node, and searching works on hashes the node computed.
 
 **Migration.** At every start, before serving, the Cloud creates the indexes and then looks for accounts whose id is
 `<issuer>#<subject>` and creates the Zitadel identity of each one that has none. That is all: no account is changed.
 It is idempotent (a second start creates nothing), and the log says how many identities were created. Then it writes
-`meta.schema` `version` 2.
+`meta.schema` `version` 3 (it was 2 until 0.4.1).
 
 **Going back to 0.3.1.** 0.3.1 ignores the new collections and fields, so going back needs no restore of the database.
 The accounts, servers and agents are intact. Going forward again later creates only the identities that are missing.
 Account sessions do not work while 0.3.1 runs (it does not know them), so apps that only have a session cannot use
 the Cloud until 0.4.0 is back.
+
+**Schema 3 (0.5.0).** The only change is the collections and indexes of cloud mode (`nodes`, `cloud_agents`,
+`cloud_calls`, `cloud_call_entries`, `cloud_push_targets`, and an index on `usage`, a collection that is new too):
+no existing document changes. Dump the `wristcall_cloud` database before deploying all the same. **Going back to
+0.4.1** needs no restore: it ignores the new collections, and the accounts, devices, plans and agenda are as they were.
+Going forward again finds the cloud-mode data where it was.
 
 ## Browsers (CORS)
 
@@ -461,6 +633,12 @@ shares the proxy's address.
 
 ## Before deploying
 
+- **Cloud 0.5.0.** Dump the `wristcall_cloud` database first (schema 2 to 3, collections and indexes only; see
+  [Data and migration](#data-and-migration)). No node is registered at first, so nothing changes for accounts, apps or the
+  PWA; the node routes start to answer once `admin nodes add` registers one. Register a node on `https://` (a loopback
+  URL needs `--allow-loopback`, for development), keep its secret in a secret store, and note that a URL registered as
+  a node can no longer be asked for as the audience of `POST /v1/server-tokens`. Until a node is registered the heartbeat
+  sweeper has nothing to do.
 - **Replay between servers.** The block that kept the Cloud API from being deployed (a Zitadel token given to a server
   could be replayed here) is lifted only once every server linked to a Cloud account runs 0.6.0 with
   `central_account.audience` set: those servers take only per-server tokens. A server still on 0.5.0 with a
