@@ -52,6 +52,8 @@ class Redelivery:
     async def _prepare(self, record: CallRecord) -> tuple[Agent, Webhook, str]:
         if record.call_type not in ONE_WAY:
             raise RedeliveryError("not_one_way", "only one-shot and monologue calls are delivered")
+        if record.delivery == "history":
+            raise RedeliveryError("no_webhook", "This call was saved to the history; it has no webhook to deliver to.")
         if record.status == "processing" or record.id in self._busy:
             raise RedeliveryError("busy", "this call is being delivered right now")
         if record.status != "failed" or record.error not in REDELIVERABLE:
@@ -70,6 +72,8 @@ class Redelivery:
             webhook = providers.webhook
         except ProviderError:
             raise RedeliveryError("agent_unavailable", "the agent's webhook is not available; check its action") from None
+        if webhook is None:
+            raise RedeliveryError("no_webhook", "This agent has no webhook now; add one to deliver again.")
         return agent, webhook, text
 
     async def _begin(self, record: CallRecord) -> tuple[CallLog, Agent, Webhook, str]:

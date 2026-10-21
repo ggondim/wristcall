@@ -73,7 +73,7 @@ def agent(call_type="one-shot", **vad) -> Agent:
     )
 
 
-async def make(call_type="one-shot", stt=None, hook=None, max_call_ms=60_000, **vad):
+async def make(call_type="one-shot", stt=None, hook=None, max_call_ms=60_000, *, history_only=False, **vad):
     st = MemoryStorage()
     await st.users.create("u_a", "alice", "Alice", 1.0)
     record = await st.calls.create(CallRecord(
@@ -82,7 +82,7 @@ async def make(call_type="one-shot", stt=None, hook=None, max_call_ms=60_000, **
     ))
     clock = iter(range(200, 10_000))
     call = OneWayCall(
-        agent(call_type, **vad), OneWayProviders(stt=stt or Stt("olá"), webhook=hook or Hook()), ByteVad(),
+        agent(call_type, **vad), OneWayProviders(stt=stt or Stt("olá"), webhook=None if history_only else hook or Hook()), ByteVad(),
         CallLog(st, HistoryCodec(), record),
         max_call_ms=max_call_ms, policy=DeliveryPolicy(1.0, (0.0, 0.0)), now=lambda: float(next(clock)), sleep=no_sleep,
     )
@@ -258,3 +258,26 @@ async def test_user_deleted_while_processing_ends_quietly():
     done = await call.finish()
     assert done.status == "delivered"
     assert await st.calls.get("u_a", call.record.id) is None
+
+
+async def test_without_webhook_the_text_goes_to_the_history(caplog):
+    call, st = await make(stt=Stt("comprar leite"), history_only=True)
+    call.on_audio(frames((SPEECH, 5)))
+    with caplog.at_level("INFO", logger="wristcall.oneway"):
+        done = await call.finish()
+    assert (done.status, done.attempts, done.last_http_status, done.error, call.text) == (
+        "delivered", 0, None, None, "comprar leite"
+    )
+    assert done.finished_at is not None
+    [entry] = await st.calls.entries("u_a", call.record.id)
+    assert (entry.role, entry.text, entry.error) == ("user", "comprar leite", None)
+    assert f"call {call.record.id} saved to the history" in caplog.text
+
+
+async def test_without_webhook_silence_and_stt_failure_stay_as_they_are():
+    call, _ = await make(history_only=True)
+    assert (await call.finish()).status == "empty"
+    call, _ = await make(stt=Stt(ProviderError("down"), ProviderError("down")), history_only=True)
+    call.on_audio(frames((SPEECH, 5)))
+    done = await call.finish()
+    assert (done.status, done.error) == ("failed", "stt_failed")

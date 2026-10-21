@@ -104,8 +104,11 @@ class CallLog:
 
 
 def delivery_of(agent: Agent) -> str | None:
-    """Where the agent's calls go: None for a conversation, "webhook" for a one-way call."""
-    return None if agent.call_type == "conversation" else "webhook"
+    """Where the agent's calls go: None for a conversation; for a one-way call, "webhook", or "history" when the
+    agent has no action (limits.history_only_one_way)."""
+    if agent.call_type == "conversation":
+        return None
+    return "history" if agent.spec.action is None else "webhook"
 
 class History:
     def __init__(

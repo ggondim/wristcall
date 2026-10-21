@@ -160,7 +160,8 @@ def management_router(
                 if (kind := provider_kind(p.type)) is not None
             ],
             "custom_endpoints": config.limits.custom_endpoints,
-        "public_only": config.limits.public_only,
+            "public_only": config.limits.public_only,
+            "history_only_one_way": config.limits.history_only_one_way,
         }
 
     @router.get("/devices")

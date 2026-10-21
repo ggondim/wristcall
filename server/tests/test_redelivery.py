@@ -11,6 +11,8 @@ from conftest import fake_config
 from wristcall.app import create_app
 from wristcall.delivery import DeliveryPolicy
 from wristcall.history import CallLog
+from wristcall.history_api import RedeliveryError
+from wristcall.redelivery import Redelivery
 from wristcall.storage import CallRecord, open_sqlite_storage
 from wristcall.users import UserService
 
@@ -25,9 +27,10 @@ def h(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-@pytest.fixture
-def app():
+def make_app(limits: dict | None = None):
     cfg = fake_config()
+    for name, value in (limits or {}).items():
+        setattr(cfg.limits, name, value)
     application = create_app(
         cfg, storage=open_sqlite_storage(":memory:"), delivery_policy=DeliveryPolicy(1.0, (0.0, 0.0))
     )
@@ -36,6 +39,7 @@ def app():
         hook = mock.post(HOOK_URL).mock(return_value=httpx.Response(204))
         with TestClient(application) as c:
             c.hook = hook
+            c.config = cfg
             st = c.app.state.storage
             c.owner = run(st.users.by_handle("owner"))
             c.token = run(UserService(st).issue_token(c.owner.id, "test"))[1]
@@ -46,13 +50,18 @@ def app():
             yield c
 
 
+@pytest.fixture
+def app():
+    yield from make_app()
+
+
 def failed_call(c, call_id="c_1", *, error="delivery_failed", text="comprar leite", agent_id=None, call_type="one-shot",
-                status="failed", attempts=3):
+                status="failed", attempts=3, delivery="webhook"):
     history = c.app.state.history
     record = run(history.storage.calls.create(CallRecord(
         id=call_id, user_id=c.owner.id, agent_id=agent_id or c.note.id, device_id=None, call_type=call_type,
         status=status, error=error, attempts=attempts, last_http_status=500, created_at=100.0, updated_at=100.0,
-        ended_at=110.0, finished_at=160.0, agent_slug="note", agent_name="note",
+        ended_at=110.0, finished_at=160.0, agent_slug="note", agent_name="note", delivery=delivery,
     )))
     if text:
         run(CallLog(history.storage, history.codec, record).add("user", text))
@@ -131,3 +140,32 @@ def test_the_agent_webhook_as_it_is_now_is_used(app):
 
 def test_unknown_or_foreign_call_is_404(app):
     assert app.post("/v1/calls/c_nope/redeliver", headers=h(app.token)).status_code == 404
+
+
+def test_history_call_has_no_webhook(app):
+    record = failed_call(app, error="interrupted", attempts=0, delivery="history")
+    st = app.app.state
+    with pytest.raises(RedeliveryError) as e:
+        run(Redelivery(st.history, st.agents, app.config, httpx.AsyncClient()).start(record))
+    assert (e.value.code, str(e.value)) == (
+        "no_webhook", "This call was saved to the history; it has no webhook to deliver to."
+    )
+    r = app.post("/v1/calls/c_1/redeliver", headers=h(app.token))
+    assert r.status_code == 409 and r.json() == {
+        "error": "no_webhook", "message": "This call was saved to the history; it has no webhook to deliver to.",
+    }
+    assert app.get("/v1/calls/c_1", headers=h(app.token)).json()["status"] == "failed"
+    assert app.hook.calls.call_count == 0
+
+
+def test_an_agent_without_a_webhook_now_is_not_redelivered():
+    for c in make_app({"history_only_one_way": True}):
+        failed_call(c)
+        assert run(c.app.state.agents.update(c.owner.id, "note", {"action": None})).spec.action is None
+        r = c.post("/v1/calls/c_1/redeliver", headers=h(c.token))
+        assert r.status_code == 409 and r.json() == {
+            "error": "no_webhook", "message": "This agent has no webhook now; add one to deliver again.",
+        }
+        view = c.get("/v1/calls/c_1", headers=h(c.token)).json()
+        assert (view["status"], view["error"], view["delivery"]) == ("failed", "delivery_failed", "webhook")
+        assert c.hook.calls.call_count == 0

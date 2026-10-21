@@ -330,8 +330,10 @@ HOOK_URL = "https://hooks.example/in"
 RELAY = "https://relay.test"
 
 
-def oneway_client(push=None):
+def oneway_client(push=None, limits: dict | None = None):
     cfg = fake_config()
+    if limits:
+        cfg.limits = type(cfg.limits).model_validate({**cfg.limits.model_dump(), **limits})
     cfg.limits.custom_endpoint_types.append("fake_stt")
     cfg.limits.max_one_way_call_s = 60  # the lowest allowed
     cfg.push = push
@@ -627,6 +629,55 @@ def test_one_way_call_end_without_push_config_sends_nothing(oneway):
     assert wait_done(oneway, call_id, auth(token))["status"] == "delivered"
     time.sleep(0.05)
     assert not oneway.relay.called
+
+
+HISTORY_AGENT = {"slug": "inbox", "display_name": "Inbox", "call_type": "one-shot",
+                 "stt": {"type": "fake_stt", "text": "comprar leite"}, "vad": {"type": "energy"}}
+
+
+def test_history_only_one_shot_call():
+    from wristcall.config import PushConfig
+
+    key = "wc_push_" + "k" * 43
+    for c in oneway_client(PushConfig(relay_url=RELAY, timeout_s=0.5), limits={"history_only_one_way": True}):
+        created = c.post("/v1/agents", headers=auth(api_token(c)), json=HISTORY_AGENT)
+        assert created.status_code == 201 and created.json()["action"] is None
+        token = pair(c)
+        assert c.put("/v1/push", headers=auth(token), json={"push_key": key}).status_code == 204
+        with c.websocket_connect("/v1/call", headers=auth(token)) as ws:
+            ws.send_json({**START, "agent": "inbox"})
+            ready = ws.receive_json()
+            assert ready["type"] == "session.ready"
+            ws.send_bytes(tone(500))
+            ws.send_json({"type": "session.end"})
+        view = wait_done(c, ready["call_id"], auth(token))
+        assert {k: view[k] for k in ("status", "delivery", "attempts", "last_http_status", "error", "text")} == {
+            "status": "delivered", "delivery": "history", "attempts": 0, "last_http_status": None, "error": None,
+            "text": "comprar leite",
+        }
+        deadline = time.monotonic() + 2
+        while not c.relay.called and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert c.relay.call_count == 1
+        message = json.loads(c.relay.calls.last.request.content)
+        assert (message["title"], message["body"], message["data"]["status"]) == ("Saved", "Saved to Inbox.", "delivered")
+        assert not c.hook.called
+
+
+def test_history_agent_after_the_limit_is_turned_off():
+    storage = open_sqlite_storage(":memory:")
+    on, off = fake_config(), fake_config()
+    on.limits.history_only_one_way = True
+    for cfg in (on, off):
+        cfg.limits.custom_endpoint_types.append("fake_stt")
+    with TestClient(create_app(on, storage=storage)) as c:
+        assert c.post("/v1/agents", headers=auth(api_token(c)), json=HISTORY_AGENT).status_code == 201
+    with TestClient(create_app(off, storage=storage)) as c:
+        expect_fatal(c, pair(c), {**START, "agent": "inbox"}, "agent_unavailable")
+        token = api_token(c)
+        assert "inbox" in [a["slug"] for a in c.get("/v1/agents", headers=auth(token)).json()["agents"]]
+        assert c.get("/v1/agents/inbox", headers=auth(token)).json()["action"] is None
+        assert c.get("/v1/calls", headers=auth(token)).json()["calls"] == []
 
 
 def test_startup_logs_the_link_qr_on_a_new_server(caplog):

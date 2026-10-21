@@ -27,7 +27,8 @@ AGENT_COLORS: tuple[str, ...] = ("red", "orange", "yellow", "green", "mint", "te
 AgentColor = Literal["red", "orange", "yellow", "green", "mint", "teal", "blue", "indigo", "purple", "pink"]
 # Days the agent's calls stay in the history; "forever"; None = the operator's default. The ceiling applies to all.
 RetentionDays = Annotated[StrictInt, Field(ge=1, le=36_500)] | Literal["forever"] | None
-# One-way calls: the transcript goes to a webhook (the action); no answer, no voice.
+# One-way calls: the transcript goes to a webhook (the action); no answer, no voice. With
+# limits.history_only_one_way, a one-way agent may have no action: the transcript is only kept in the history.
 ONE_WAY = frozenset({"one-shot", "monologue"})
 REDACTED = "***"
 _OPTION_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -102,7 +103,8 @@ class AgentSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     language: str = Field(default="en", min_length=2, max_length=16)
     stt: Endpoint
-    action: Endpoint
+    # Absent only on one-way agents of a server with limits.history_only_one_way (their calls go to the history).
+    action: Endpoint | None = None
     # Absent only on one-way agents (they never speak).
     tts: Endpoint | None = None
     system_prompt: str = Field(default="", max_length=20_000)
@@ -229,6 +231,8 @@ def build_endpoint(
 def build_agent_providers(
     config: AppConfig, spec: AgentSpec, http: httpx.AsyncClient, *, user_http: httpx.AsyncClient | None = None
 ) -> ProviderSet:
+    if spec.action is None:
+        raise ProviderError("a conversation needs an action")
     if spec.tts is None:
         raise ProviderError("a conversation needs a tts")
     built: dict[str, Any] = {}
@@ -240,16 +244,20 @@ def build_agent_providers(
 @dataclass
 class OneWayProviders:
     stt: SpeechToText
-    webhook: Webhook
+    webhook: Webhook | None  # None: the transcript is only kept in the history (limits.history_only_one_way)
 
 
 def build_one_way_providers(
     config: AppConfig, spec: AgentSpec, http: httpx.AsyncClient, *, user_http: httpx.AsyncClient | None = None
 ) -> OneWayProviders:
-    return OneWayProviders(
-        stt=build_endpoint(config, spec.stt, "stt", http, user_http=user_http),
-        webhook=build_endpoint(config, spec.action, "webhook", http, user_http=user_http),
-    )
+    if spec.action is None:
+        # Saved while the operator allowed it; refused once the operator turns it off.
+        if not config.limits.history_only_one_way:
+            raise ProviderError("a one-way agent needs a webhook")
+        webhook = None
+    else:
+        webhook = build_endpoint(config, spec.action, "webhook", http, user_http=user_http)
+    return OneWayProviders(stt=build_endpoint(config, spec.stt, "stt", http, user_http=user_http), webhook=webhook)
 
 
 def user_urls(spec: AgentSpec, call_type: str) -> list[tuple[str, str]]:
@@ -463,6 +471,8 @@ class AgentService:
         if call_type in ONE_WAY and spec.tts is not None:
             # Kept for a switch back to conversation; must stay valid while stored.
             kinds["tts"] = "tts"
+        if call_type in ONE_WAY and spec.action is None and self._config.limits.history_only_one_way:
+            del kinds["action"]  # no webhook: the calls go to the history
         for field, kind in kinds.items():
             endpoint = getattr(spec, field)
             if endpoint is None:
@@ -524,6 +534,8 @@ class AgentService:
         given = inp.model_dump(exclude_none=True, exclude={"slug", "display_name", "icon", "color", "call_type", "position"})
         call_type = inp.call_type or "conversation"
         for field in stage_kinds(call_type):
+            if field == "action" and call_type in ONE_WAY and self._config.limits.history_only_one_way:
+                continue  # no action given: the calls go to the history
             if field not in given:
                 given[field] = self.default_endpoint(field, call_type)
         spec = self._spec(given)
@@ -560,6 +572,9 @@ class AgentService:
                 merged[field] = _keep_redacted(value, getattr(current.spec, field))
             elif field == "tts" and "tts" in inp.model_fields_set:
                 merged["tts"] = None  # an explicit null drops the voice (one-way agents only; _check enforces it)
+            elif field == "action" and "action" in inp.model_fields_set and self._config.limits.history_only_one_way:
+                # Drops the webhook (one-way agents only; _check enforces it). Without the limit, ignored as in 0.8.2.
+                merged["action"] = None
         if "retention_days" in inp.model_fields_set:
             merged["retention_days"] = inp.retention_days
         for field in ("vad", "timeouts"):

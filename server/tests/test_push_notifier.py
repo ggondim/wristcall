@@ -51,11 +51,12 @@ async def notifier(storage):
         yield PushNotifier(storage, PushConfig(relay_url=RELAY, timeout_s=0.5), http)
 
 
-def call_record(storage, *, status="delivered", error=None, call_type="one-shot", device_id="d1", agent_name="Ana"):
+def call_record(storage, *, status="delivered", error=None, call_type="one-shot", device_id="d1", agent_name="Ana",
+                delivery="webhook"):
     now = time.time()
     return CallRecord(
         id="c_0123456789abcdef", user_id=storage.user.id, agent_id="a_1", device_id=device_id, call_type=call_type,
-        status=status, created_at=now, updated_at=now, error=error, agent_name=agent_name,
+        status=status, created_at=now, updated_at=now, error=error, agent_name=agent_name, delivery=delivery,
     )
 
 
@@ -96,6 +97,24 @@ async def test_call_texts(storage, notifier, relay, status, error, agent_name, t
     (message,) = sent(relay)
     assert (message["title"], message["body"]) == (title, body)
     assert (message["data"]["status"], message["data"]["error"]) == (status, error)
+
+
+@pytest.mark.parametrize(
+    "delivery, title, body",
+    [("history", "Saved", "Saved to Note."), ("webhook", "Delivered", "Note got your message.")],
+)
+async def test_where_a_delivered_call_went(storage, notifier, relay, delivery, title, body):
+    await storage.push.set(storage.user.id, KEY_D1, time.time(), device_id="d1")
+    await notifier.call_finished(call_record(storage, agent_name="Note", delivery=delivery))
+    (message,) = sent(relay)
+    assert (message["title"], message["body"], message["data"]["status"]) == (title, body, "delivered")
+
+
+async def test_call_text_of_a_history_call(storage):
+    from wristcall.push import _call_text
+
+    assert _call_text(call_record(storage, agent_name="Note", delivery="history")) == ("Saved", "Saved to Note.")
+    assert _call_text(call_record(storage, agent_name="Note")) == ("Delivered", "Note got your message.")
 
 
 async def test_long_names_fit_the_relay_limits(storage, notifier, relay):

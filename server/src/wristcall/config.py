@@ -171,6 +171,8 @@ class LimitsConfig(BaseModel):
     # With custom_endpoints on: only https URLs whose host resolves to public addresses only (no localhost, private
     # ranges or internal names). Checked when an agent is saved, when a call starts and on every connection.
     public_only: bool = False
+    # One-way agents (one-shot, monologue) may have no action: the transcript is only kept in the history.
+    history_only_one_way: bool = False
     # Provider types a custom endpoint may use. The fake types (tests) can be made to allocate huge buffers.
     custom_endpoint_types: list[str] = Field(
         default_factory=lambda: ["openai_stt", "openai_chat", "openai_tts", "webhook"]

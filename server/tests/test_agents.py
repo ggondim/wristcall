@@ -638,3 +638,81 @@ async def test_custom_endpoints_use_the_user_client():
         assert build_one_way_providers(cfg, own, http, user_http=other).webhook._http is other
         assert build_one_way_providers(cfg, operator, http, user_http=other).webhook._http is http
         assert build_one_way_providers(cfg, own, http).webhook._http is http
+
+
+def history_only(on: bool = True, **over):
+    return config(limits={"history_only_one_way": on}, **over)
+
+
+@pytest.mark.parametrize("call_type", ["one-shot", "monologue"])
+async def test_history_only_one_way_agents(call_type):
+    svc = await make(history_only())
+    a = await svc.create("u_a", {"slug": "note", "call_type": call_type})
+    assert (a.call_type, a.spec.action, a.spec.tts) == (call_type, None, None)
+    assert agent_detail(a)["action"] is None
+    assert (await svc.get("u_a", "note")).spec.action is None
+
+
+async def test_history_only_create_does_not_pick_the_servers_webhook():
+    svc = await make(history_only(providers={
+        "stt": {"type": "fake_stt"}, "llm": {"type": "echo_chat"}, "tts": {"type": "tone_tts"},
+        "inbox": {"type": "webhook", "url": "https://n8n.example/webhook/abc"},
+    }))
+    assert (await svc.create("u_a", {"slug": "note", "call_type": "one-shot"})).spec.action is None
+    chosen = await svc.create("u_a", {"slug": "inbox", "call_type": "one-shot", "action": {"provider": "inbox"}})
+    assert chosen.spec.action == ProviderRef(provider="inbox")
+
+
+async def test_one_way_without_action_needs_the_limit():
+    st = open_sqlite_storage(":memory:")
+    await st.users.create("u_a", "alice", "Alice", 1.0)
+    async with httpx.AsyncClient() as http:
+        on, off = AgentService(st, history_only(), http), AgentService(st, history_only(False), http)
+        with pytest.raises(AgentError) as e:
+            await off.create("u_a", {"slug": "note", "call_type": "one-shot"})
+        assert e.value.code == "invalid"
+        await on.create("u_a", {"slug": "note", "call_type": "one-shot"})
+        # With the limit off, the stored agent only takes an update that gives it an action.
+        with pytest.raises(AgentError) as e:
+            await off.update("u_a", "note", {"display_name": "Note"})
+        assert (e.value.code, e.value.message) == ("invalid", "action: required for one-shot agents")
+        assert (await off.update("u_a", "note", {"action": HOOK})).spec.action.type == "webhook"
+        assert len(await off.list("u_a")) == 1
+    await st.close()
+
+
+async def test_conversation_always_needs_an_action():
+    svc = await make(history_only())
+    await svc.create("u_a", {"slug": "helper"})
+    with pytest.raises(AgentError) as e:
+        await svc.update("u_a", "helper", {"action": None})
+    assert (e.value.code, e.value.message) == ("invalid", "action: required for conversation agents")
+    await svc.create("u_a", {"slug": "note", "call_type": "one-shot"})
+    with pytest.raises(AgentError) as e:
+        await svc.update("u_a", "note", {"call_type": "conversation", "tts": {"provider": "tts"}})
+    assert (e.value.code, e.value.message) == ("invalid", "action: required for conversation agents")
+
+
+async def test_update_drops_the_action():
+    svc = await make(history_only())
+    await svc.create("u_a", {"slug": "note", "call_type": "one-shot", "action": HOOK})
+    assert (await svc.update("u_a", "note", {"action": None})).spec.action is None
+    assert (await svc.get("u_a", "note")).spec.action is None
+
+
+async def test_action_null_is_ignored_without_the_limit(svc):
+    await svc.create("u_a", {"slug": "note", "call_type": "one-shot", "action": HOOK})
+    kept = await svc.update("u_a", "note", {"action": None})
+    assert kept.spec.action.options()["url"] == HOOK["url"]
+    helper = await svc.create("u_a", {"slug": "helper"})
+    assert (await svc.update("u_a", "helper", {"action": None})).spec.action == helper.spec.action
+
+
+async def test_providers_of_an_agent_without_an_action():
+    spec = AgentSpec(stt=ProviderRef(provider="stt"))
+    async with httpx.AsyncClient() as http:
+        assert build_one_way_providers(history_only(), spec, http).webhook is None
+        with pytest.raises(ProviderError, match="a one-way agent needs a webhook"):
+            build_one_way_providers(history_only(False), spec, http)
+        with pytest.raises(ProviderError, match="a conversation needs an action"):
+            build_agent_providers(history_only(), spec.model_copy(update={"tts": ProviderRef(provider="tts")}), http)
