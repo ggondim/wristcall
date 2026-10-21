@@ -185,10 +185,32 @@ def test_new_boot_fails_processing_calls(world):
     assert beat(world, boot_id="boot-2").status_code == 204
     doc = world.call_doc(mine["call_id"])
     assert doc["status"] == "failed" and doc["error"] == "interrupted" and doc["finished_at"] >= before
-    # A late `finish` of the node must still be able to correct it: the Cloud did not claim it.
+    # Still the node's call (`closed_by` stays): a late `finish` cannot correct it (the call is closed), but a late
+    # `PATCH` of the status can.
     assert doc["closed_by"] == "node" and doc["updated_at"] >= before
+    patched = world.client.patch(
+        f"/v1/node/calls/{mine['call_id']}", headers=world.node_with(mine), json={"status": "delivered"}
+    )
+    assert patched.status_code == 204
+    assert world.call_doc(mine["call_id"])["status"] == "delivered"
     assert other.call_doc(away["call_id"])["status"] == "processing"
     assert node_doc(world)["boot_id"] == "boot-2"
+
+
+def test_new_boot_frees_and_fails_a_call_a_crashed_finish_left_open(world):
+    opened = world.opened()
+    call_id = opened["call_id"]
+    assert beat(world, boot_id="boot-1").status_code == 204
+    age_call(world, call_id, time.time() - 100)
+    with db(world.mongo_db) as d:  # `finish` claimed the call as processing and the Cloud crashed before freeing it
+        d["cloud_calls"].update_one(
+            {"_id": call_id}, {"$set": {"closed_by": "node", "status": "processing", "seconds": 9}}
+        )
+    assert beat(world, boot_id="boot-2").status_code == 204
+    doc = world.call_doc(call_id)
+    assert "open" not in doc and doc["status"] == "failed" and doc["error"] == "interrupted"
+    assert doc["closed_by"] == "node" and world.usage()["total_s"] == 9
+    assert world.open().status_code == 201
 
 
 def test_finish_after_cloud_close_corrects_usage(world):

@@ -123,8 +123,6 @@ async def heartbeat(request: Request, node: dict[str, Any] = Depends(current_nod
     if previous is None:  # the node was deleted since its credential was read
         raise ApiError("unauthorized", "missing or invalid node credential", 401)
     old_boot = previous.get("boot_id")
-    if old_boot is not None and old_boot != beat["boot_id"]:
-        await _fail_processing(cloud, node["_id"], now)
     held = beat["active_call_ids"]
     orphans = cloud.calls.find(
         {
@@ -137,6 +135,10 @@ async def heartbeat(request: Request, node: dict[str, Any] = Depends(current_nod
     async for call in orphans:
         # Until the heartbeat before this one: the last time the node was known to hold the call.
         await _close_orphan(state, call, (previous.get("last_seen_at") or now) - call["created_at"], now)
+    if old_boot is not None and old_boot != beat["boot_id"]:
+        # After the orphans, as the sweeper does: a call a crashed `finish` left open as `processing` is freed above
+        # and failed here.
+        await _fail_processing(cloud, node["_id"], now)
     return Response(status_code=204)
 
 
@@ -178,4 +180,4 @@ async def orphan_sweep_loop(
             log.warning("sweeping orphan calls failed (%s)", type(e).__name__)
             continue
         if closed:
-            log.info("closed %d orphan calls", closed)
+            log.info("changed %d orphan calls", closed)
