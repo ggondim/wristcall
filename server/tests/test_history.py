@@ -36,6 +36,19 @@ async def test_a_call_starts_open_with_the_agent_as_it_was(st):
     assert r.id.startswith("c_")
 
 
+async def test_start_records_the_delivery(st):
+    history = History(st, HistoryCodec(), now=lambda: 50.0)
+    one_shot = await history.start(agent("one-shot"), None)
+    talk = await history.start(agent("conversation"), None)
+    assert one_shot.record.delivery == "webhook" and talk.record.delivery is None
+    assert (await st.calls.get("u_a", one_shot.record.id)).delivery == "webhook"
+    saved = await one_shot.save(status="delivered", finished=True)
+    assert saved.delivery == "webhook" and one_shot.record.delivery == "webhook"
+    assert (await st.calls.get("u_a", one_shot.record.id)).delivery == "webhook"
+    assert (await history.detail(saved))["delivery"] == "webhook"
+    assert (await history.detail(await talk.save(status="ended", finished=True)))["delivery"] is None
+
+
 async def test_entries_are_sealed_at_rest_and_opened_for_the_owner(st):
     history = History(st, HistoryCodec(KEY))
     call_log = await history.start(agent(), None)

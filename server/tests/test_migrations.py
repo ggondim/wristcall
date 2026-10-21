@@ -253,7 +253,7 @@ def test_step_5_database_gains_push_targets(tmp_path):
     conn.execute("INSERT INTO users (id, handle, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1.0)")
     conn.close()
     db = Database(path)
-    assert db.version == LATEST == 9
+    assert db.version == LATEST == 10
     assert "push_targets" in tables(db)
     assert columns(db, "push_targets") == {"id", "user_id", "device_id", "token_id", "push_key", "created_at"}
     assert [r["handle"] for r in db.query("SELECT handle FROM users")] == ["owner"]
@@ -282,7 +282,7 @@ def test_step_7_database_gains_link_codes(tmp_path):
     conn.execute("INSERT INTO users (id, handle, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1.0)")
     conn.close()
     db = Database(path)
-    assert db.version == LATEST == 9
+    assert db.version == LATEST == 10
     assert columns(db, "link_codes") == {"code_hash", "user_id", "expires_at", "used_at"}
     assert [r["handle"] for r in db.query("SELECT handle FROM users")] == ["owner"]
     db.execute("INSERT INTO link_codes (code_hash, user_id, expires_at) VALUES ('h', 'u1', 9.0)")
@@ -356,7 +356,7 @@ def test_migration_8_adds_agent_color(tmp_path):
     )
     conn.close()
     db = Database(path)
-    assert db.version == LATEST == 9
+    assert db.version == LATEST == 10
     assert "color" in columns(db, "agents")
     assert [r["color"] for r in db.query("SELECT color FROM agents")] == [None]
     db.close()
@@ -379,8 +379,33 @@ def test_migration_9_marks_devices_and_requests_with_the_account(tmp_path):
     )
     conn.close()
     db = Database(path)
-    assert db.version == LATEST == 9
+    assert db.version == LATEST == 10
     assert "central_subject" in columns(db, "devices") and "central_subject" in columns(db, "pairing_requests")
     assert [r["central_subject"] for r in db.query("SELECT central_subject FROM devices")] == [None]
     assert [r["central_subject"] for r in db.query("SELECT central_subject FROM pairing_requests")] == [None]
+    db.close()
+
+
+def test_step_10_marks_old_one_way_calls_as_webhook(tmp_path):
+    # A 0.8.2 database (version 9) upgrades in place; its one-way calls went to the webhook, its conversations nowhere.
+    path = database_path(tmp_path)
+    conn = sqlite3.connect(path, isolation_level=None)
+    conn.create_function("wristcall_terms", 1, database_module._terms)  # step 5 calls it
+    for step in MIGRATIONS[:9]:
+        for statement in step:
+            conn.execute(statement)
+    conn.execute("PRAGMA user_version = 9")
+    conn.execute("INSERT INTO users (id, handle, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1.0)")
+    for call_id, call_type in (("c1", "one-shot"), ("c2", "monologue"), ("c3", "conversation")):
+        conn.execute(
+            "INSERT INTO calls (id, user_id, agent_id, call_type, status, created_at, updated_at) "
+            "VALUES (?, 'u1', 'ag1', ?, 'delivered', 1.0, 1.0)", (call_id, call_type),
+        )
+    conn.close()
+    db = Database(path)
+    assert db.version == LATEST == 10
+    assert "delivery" in columns(db, "calls")
+    assert {r["id"]: r["delivery"] for r in db.query("SELECT id, delivery FROM calls")} == {
+        "c1": "webhook", "c2": "webhook", "c3": None,
+    }
     db.close()

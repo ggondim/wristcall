@@ -105,6 +105,8 @@ class CallRecord:
     agent_name: str = ""
     # The retention deletes the call after this moment; None keeps it until the user deletes it.
     expires_at: float | None = None
+    # Where a one-way call goes: "webhook" or "history"; None for a conversation. Set when the call starts.
+    delivery: str | None = None
 
 
 @dataclass(frozen=True)

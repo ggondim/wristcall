@@ -387,6 +387,7 @@ def test_one_shot_call_records_until_hang_up_and_delivers(oneway):
         "call_type": "one-shot",
     }
     assert view["agent"] == {"id": view["agent_id"], "slug": "note", "display_name": "note"}
+    assert view["delivery"] == "webhook"
     assert [(e["role"], e["text"], e["error"]) for e in view["entries"]] == [("user", "comprar leite", None)]
     assert view["expires_at"] is None
     sent = oneway.hook.calls.last.request
@@ -508,6 +509,7 @@ def test_conversation_is_recorded_in_the_history(client):
         ws.send_json({"type": "session.end"})
     view = client.get(f"/v1/calls/{call_id}", headers=auth(token)).json()
     assert (view["call_type"], view["status"], view["error"]) == ("conversation", "ended", None)
+    assert view["delivery"] is None
     assert view["agent"]["slug"] == "default" and view["ended_at"] >= view["created_at"]
     [user, agent] = view["entries"]
     assert (user["role"], agent["role"], agent["error"]) == ("user", "agent", None)

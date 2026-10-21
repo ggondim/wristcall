@@ -168,6 +168,11 @@ MIGRATIONS: list[list[str]] = [
         "ALTER TABLE devices ADD COLUMN central_subject TEXT",
         "ALTER TABLE pairing_requests ADD COLUMN central_subject TEXT",
     ],
+    # 10: where a one-way call goes (webhook or history); NULL for conversations. Rolling back to 0.8.2 needs a backup.
+    [
+        "ALTER TABLE calls ADD COLUMN delivery TEXT",
+        "UPDATE calls SET delivery = 'webhook' WHERE call_type IN ('one-shot', 'monologue')",
+    ],
 ]
 
 LATEST = len(MIGRATIONS)

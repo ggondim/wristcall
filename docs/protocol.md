@@ -419,8 +419,10 @@ The call goes like this:
 `GET /v1/calls/{call_id}` answers (the fields after `finished_at` since server 0.5.0, see [History](#history)):
 
 ```json
-{"id":"c_5d1f...","agent_id":"ag_3f9c0a1b2c3d","call_type":"one-shot","status":"delivered","error":null,"text":"buy milk","attempts":1,"last_http_status":204,"created_at":1760000000.0,"ended_at":1760000004.2,"finished_at":1760000005.1,"agent":{"id":"ag_3f9c0a1b2c3d","slug":"note","display_name":"Note"},"expires_at":null,"entries":[{"role":"user","text":"buy milk","error":null,"at":1760000004.9}]}
+{"id":"c_5d1f...","agent_id":"ag_3f9c0a1b2c3d","call_type":"one-shot","status":"delivered","error":null,"text":"buy milk","attempts":1,"delivery":"webhook","last_http_status":204,"created_at":1760000000.0,"ended_at":1760000004.2,"finished_at":1760000005.1,"agent":{"id":"ag_3f9c0a1b2c3d","slug":"note","display_name":"Note"},"expires_at":null,"entries":[{"role":"user","text":"buy milk","error":null,"at":1760000004.9}]}
 ```
+
+`delivery` (since 0.9.0): `webhook` or `history` for one-way calls, `null` for conversations.
 
 | `status` | Final | Meaning |
 |---|---|---|
