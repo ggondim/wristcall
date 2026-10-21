@@ -161,6 +161,19 @@ class ServerConfig(BaseModel):
         return origins
 
 
+class ConcurrentCallsConfig(BaseModel):
+    """Most calls open at once, per kind; null: no limit. A call that finds its kind full gets `busy`."""
+
+    model_config = ConfigDict(extra="forbid")
+    conversation: int | None = Field(default=None, ge=1)
+    # One-shot and monologue: a call counts until it is transcribed and delivered, after the hang-up.
+    one_way: int | None = Field(default=None, ge=1)
+
+
+# Starting limits for a cloud-mode node until the GPU is measured; self-hosted servers have none.
+CLOUD_NODE_CONCURRENT_CALLS: dict[str, int] = {"conversation": 3, "one_way": 10}
+
+
 class LimitsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     max_agents_per_user: int = Field(default=20, ge=1)
@@ -179,6 +192,8 @@ class LimitsConfig(BaseModel):
     )
     # Longest one-way call (one-shot or monologue): the server stops recording and delivers what it got.
     max_one_way_call_s: int = Field(default=1800, ge=60, le=14_400)
+    # Protects the GPU: calls beyond these get `busy` at session.start.
+    max_concurrent_calls: ConcurrentCallsConfig = Field(default_factory=ConcurrentCallsConfig)
 
 
 class HistoryConfig(BaseModel):

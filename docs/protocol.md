@@ -372,6 +372,7 @@ An `error` may carry `reason`, a stable word that says more about the code.
 | `unsupported_audio` | yes | `audio_in` other than pcm16 16 kHz mono |
 | `unknown_profile` | yes | the agent (`agent` or `profile`) does not exist for this device's user, or the user has no agents |
 | `agent_unavailable` | yes | the agent exists but cannot be used now (for example, it names a provider the server no longer offers); `reason: url_not_public` when the server only calls public addresses and one of the agent's URLs is not one |
+| `busy` | yes | the server is at its limit of simultaneous calls of this type (`limits.max_concurrent_calls`); try again later |
 | `stt_failed` | no | transcription failed or timed out |
 | `responder_failed` | no | the agent did not answer or stopped midway; if nothing was spoken, the server speaks an apology sentence; if it stopped midway, it keeps what was already said |
 | `tts_failed` | no | the voice failed; the response `transcript` still arrives |

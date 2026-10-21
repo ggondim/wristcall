@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__, protocol
 from .account import AccountError, AccountService
+from .admission import CallSlots, Slot, call_kind
 from .agents import (
     ONE_WAY, Agent, AgentError, AgentService, OneWayProviders, agent_summary, build_agent_providers,
     build_one_way_providers,
@@ -129,6 +130,7 @@ def create_app(
     targets = warmup_targets(config, http_client)
     call_targets = [t for t in targets if t.config.on_call]
     after_calls = Background()
+    slots = CallSlots(config.limits.max_concurrent_calls)
     # Pushes run with the work after the calls: the shutdown gives them the same few seconds, then cancels them.
     notifier = PushNotifier(store, config.push, http_client) if config.push else None
 
@@ -168,6 +170,7 @@ def create_app(
     app.state.auth = auth
     app.state.account = account
     app.state.history = history
+    app.state.call_slots = slots
 
     def client_ip(request: Request) -> str:
         header = config.server.client_ip_header
@@ -344,8 +347,12 @@ def create_app(
             else:
                 await transport.send_json(protocol.error(protocol.ErrorCode.BAD_MESSAGE, "session already started", False))
 
-    async def finish_and_notify(call: OneWayCall) -> None:
-        record = await call.finish()
+    async def finish_and_notify(call: OneWayCall, slot: Slot) -> None:
+        try:
+            record = await call.finish()
+        finally:
+            # Transcribed and delivered: the call stops counting against the limit (the push needs no GPU).
+            slot.release()
         if notifier is None:
             return
         try:
@@ -353,45 +360,54 @@ def create_app(
         except Exception as e:  # noqa: BLE001 - the call is already in the history; a push failure only logs
             log.warning("call %s: push failed: %s", record.id, type(e).__name__)
 
-    async def one_way_call(ws: WebSocket, device_id: str, agent: Agent, providers: OneWayProviders) -> None:
+    async def one_way_call(
+        ws: WebSocket, device_id: str, agent: Agent, providers: OneWayProviders, slot: Slot,
+    ) -> None:
         """Records until hang-up (or the limit); transcription and delivery go on after the WebSocket closes."""
-        # Before the record exists: a VAD that fails to load must not leave a call stuck in "recording".
-        vad = build_vad(agent.spec.vad)
-        call_log = await history.start(agent, device_id)
-        record = call_log.record
-        call = OneWayCall(
-            agent, providers, vad, call_log,
-            max_call_ms=config.limits.max_one_way_call_s * 1000, policy=delivery_policy,
-        )
-        transport = _WsTransport(ws)
-        warming: asyncio.Task[None] | None = None
-
-        async def on_audio(data: bytes) -> bool:
-            call.on_audio(data)
-            if call.captured:
-                await transport.send_json(protocol.call_captured(record.id, "limit"))
-            return call.captured
-
-        async def on_mute(muted: bool) -> None:
-            call.on_mute(muted)
-
-        # From here on the record exists: whatever happens (even the client gone before session.ready), it gets finished.
+        # The slot goes with the transcription once it is spawned; any way out before that gives it back here.
+        handed_over = False
         try:
-            # No voice comes back: audio_out is nominal (watch 0.1.0 requires it). Silence never ends the call.
-            await transport.send_json(protocol.session_ready(
-                secrets.token_hex(8), agent_summary(agent), "manual",
-                protocol.AudioFormat(sample_rate=protocol.INPUT_SAMPLE_RATE), call_id=record.id,
-            ))
-            log.info("call %s started: device=%s agent=%s (%s) type=%s", record.id, device_id, agent.id, agent.slug, agent.call_type)
-            warming = asyncio.create_task(warm_all(call_targets)) if call_targets else None
-            await pump(ws, transport, on_audio, on_mute)
+            # Before the record exists: a VAD that fails to load must not leave a call stuck in "recording".
+            vad = build_vad(agent.spec.vad)
+            call_log = await history.start(agent, device_id)
+            record = call_log.record
+            call = OneWayCall(
+                agent, providers, vad, call_log,
+                max_call_ms=config.limits.max_one_way_call_s * 1000, policy=delivery_policy,
+            )
+            transport = _WsTransport(ws)
+            warming: asyncio.Task[None] | None = None
+
+            async def on_audio(data: bytes) -> bool:
+                call.on_audio(data)
+                if call.captured:
+                    await transport.send_json(protocol.call_captured(record.id, "limit"))
+                return call.captured
+
+            async def on_mute(muted: bool) -> None:
+                call.on_mute(muted)
+
+            # From here on the record exists: whatever happens (even the client gone before session.ready), it gets finished.
+            try:
+                # No voice comes back: audio_out is nominal (watch 0.1.0 requires it). Silence never ends the call.
+                await transport.send_json(protocol.session_ready(
+                    secrets.token_hex(8), agent_summary(agent), "manual",
+                    protocol.AudioFormat(sample_rate=protocol.INPUT_SAMPLE_RATE), call_id=record.id,
+                ))
+                log.info("call %s started: device=%s agent=%s (%s) type=%s", record.id, device_id, agent.id, agent.slug, agent.call_type)
+                warming = asyncio.create_task(warm_all(call_targets)) if call_targets else None
+                await pump(ws, transport, on_audio, on_mute)
+            finally:
+                if warming is not None and not warming.done():
+                    warming.cancel()
+                after_calls.spawn(finish_and_notify(call, slot))
+                handed_over = True
+                with suppress(Exception):
+                    await ws.close(code=protocol.CLOSE_NORMAL)
+                log.info("call %s recorded", record.id)
         finally:
-            if warming is not None and not warming.done():
-                warming.cancel()
-            after_calls.spawn(finish_and_notify(call))
-            with suppress(Exception):
-                await ws.close(code=protocol.CLOSE_NORMAL)
-            log.info("call %s recorded", record.id)
+            if not handed_over:
+                slot.release()
 
     @app.websocket("/v1/call")
     async def call(ws: WebSocket) -> None:
@@ -445,53 +461,64 @@ def create_app(
                     protocol.ErrorCode.AGENT_UNAVAILABLE, "This agent uses an address this server cannot call.",
                     reason="url_not_public",
                 ) from None
+            # Last check before the call is recorded: a refused call leaves no trace in the history.
+            kind = call_kind(agent.call_type)
+            slot = slots.try_acquire(kind)
+            if slot is None:
+                log.warning("call refused: %s calls at the limit", kind)
+                raise protocol.ProtocolError(protocol.ErrorCode.BUSY, "This server is busy; try again in a minute.")
         except protocol.ProtocolError as e:
             await fatal(ws, e)
             return
 
         if agent.call_type in ONE_WAY:
-            await one_way_call(ws, principal.device.id, agent, one_way)
+            await one_way_call(ws, principal.device.id, agent, one_way, slot)
             return
 
         # Clients that name the agent get its mode; 0.2.x clients (profile or nothing) keep 0.2.0's default,
         # because watch 0.1.0 omits turn_end when the user picks auto.
         turn_end = start.turn_end or (agent.spec.turn_end if start.agent else "auto")
         transport = _WsTransport(ws)
-        vad = build_vad(agent.spec.vad)
-        call_log = await history.start(agent, principal.device.id)
-        record = call_log.record
-        session = CallSession(
-            agent.spec, provider_set, vad, transport, turn_end=turn_end, record=call_log.add,
-        )
-        warming: asyncio.Task[None] | None = None
-
-        async def on_audio(data: bytes) -> bool:
-            await session.on_audio(data)
-            return False
-
-        # From here on the record exists: whatever happens, it gets closed.
+        # Holds a slot from here until the WebSocket is closed, whatever happens.
         try:
-            await transport.send_json(
-                protocol.session_ready(
-                    secrets.token_hex(8), agent_summary(agent), turn_end,
-                    protocol.AudioFormat(sample_rate=provider_set.tts.sample_rate), call_id=record.id,
+            vad = build_vad(agent.spec.vad)
+            call_log = await history.start(agent, principal.device.id)
+            record = call_log.record
+            session = CallSession(
+                agent.spec, provider_set, vad, transport, turn_end=turn_end, record=call_log.add,
+            )
+            warming: asyncio.Task[None] | None = None
+
+            async def on_audio(data: bytes) -> bool:
+                await session.on_audio(data)
+                return False
+
+            # From here on the record exists: whatever happens, it gets closed.
+            try:
+                await transport.send_json(
+                    protocol.session_ready(
+                        secrets.token_hex(8), agent_summary(agent), turn_end,
+                        protocol.AudioFormat(sample_rate=provider_set.tts.sample_rate), call_id=record.id,
+                    )
                 )
-            )
-            log.info(
-                "call %s started: device=%s agent=%s (%s) turn_end=%s",
-                record.id, principal.device.id, agent.id, agent.slug, turn_end,
-            )
-            warming = asyncio.create_task(warm_all(call_targets)) if call_targets else None
-            await pump(ws, transport, on_audio, session.on_mute)
+                log.info(
+                    "call %s started: device=%s agent=%s (%s) turn_end=%s",
+                    record.id, principal.device.id, agent.id, agent.slug, turn_end,
+                )
+                warming = asyncio.create_task(warm_all(call_targets)) if call_targets else None
+                await pump(ws, transport, on_audio, session.on_mute)
+            finally:
+                if warming is not None and not warming.done():
+                    warming.cancel()
+                await session.close()
+                ended = time.time()
+                await call_log.save(status="ended" if call_log.count else "empty", ended_at=ended, finished=True)
+                with suppress(Exception):
+                    await ws.close(code=protocol.CLOSE_NORMAL)
+                log.info("call %s ended", record.id)
         finally:
-            if warming is not None and not warming.done():
-                warming.cancel()
-            await session.close()
-            ended = time.time()
-            await call_log.save(status="ended" if call_log.count else "empty", ended_at=ended, finished=True)
-            with suppress(Exception):
-                await ws.close(code=protocol.CLOSE_NORMAL)
-            log.info("call %s ended", record.id)
+            # First, with no await before it: under cancellation the first await would skip the rest.
+            slot.release()
 
     if config.server.cors_origins:
         # Bearer tokens in a header, no cookies: no credentials. The outermost layer, so errors answered by the

@@ -22,6 +22,7 @@ class ErrorCode:
     UNKNOWN_PROFILE = "unknown_profile"
     AGENT_UNAVAILABLE = "agent_unavailable"
     NOT_STARTED = "not_started"
+    BUSY = "busy"
     STT_FAILED = "stt_failed"
     RESPONDER_FAILED = "responder_failed"
     TTS_FAILED = "tts_failed"

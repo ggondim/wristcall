@@ -831,3 +831,129 @@ def test_public_only_rebinding_after_start_fails_delivery(monkeypatch):
         assert asked == ["hooks.example", "hooks.example"] and connected == []
         # respx records a pass-through request as it goes by; none of them got an answer.
         assert c.hook.called and not any(call.has_response for call in c.hook.calls)
+
+
+# ---------- limits.max_concurrent_calls ----------
+
+import threading  # noqa: E402
+
+END = {"type": "session.end"}
+BUSY = "This server is busy; try again in a minute."
+
+
+def wait_until(check, timeout_s: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout_s
+    while not check():
+        if time.monotonic() > deadline:
+            raise AssertionError("timed out")
+        time.sleep(0.01)
+
+
+def limited(**limits):
+    return oneway_client(limits={"max_concurrent_calls": limits})
+
+
+def test_no_limit_by_default(client):
+    token = pair(client)
+    with client.websocket_connect("/v1/call", headers=auth(token)) as a, \
+            client.websocket_connect("/v1/call", headers=auth(token)) as b:
+        for ws in (a, b):
+            ws.send_json(START)
+            assert ws.receive_json()["type"] == "session.ready"
+        assert client.app.state.call_slots.active() == {"conversation": 2, "one_way": 0}
+        a.send_json(END)
+        b.send_json(END)
+
+
+def test_busy_when_conversations_are_at_the_limit():
+    for c in limited(conversation=1):
+        token = pair(c)
+        with c.websocket_connect("/v1/call", headers=auth(token)) as first:
+            first.send_json(START)
+            assert first.receive_json()["type"] == "session.ready"
+            err = expect_fatal(c, token, START, "busy")
+            assert err["message"] == BUSY and "reason" not in err
+            first.send_json(END)
+            expect_close(first, 1000)
+        wait_until(lambda: c.app.state.call_slots.active()["conversation"] == 0)
+        with c.websocket_connect("/v1/call", headers=auth(token)) as third:
+            third.send_json(START)
+            assert third.receive_json()["type"] == "session.ready"
+            third.send_json(END)
+        # The refused call left no record.
+        assert len(c.app.state.storage.db.query("SELECT id FROM calls")) == 2
+
+
+def test_one_way_limit_is_separate():
+    for c in limited(one_way=1):
+        token = pair(c)
+        with c.websocket_connect("/v1/call", headers=auth(token)) as note:
+            note.send_json({**START, "agent": "note"})
+            assert note.receive_json()["type"] == "session.ready"
+            with c.websocket_connect("/v1/call", headers=auth(token)) as talk:
+                talk.send_json(START)
+                assert talk.receive_json()["type"] == "session.ready"
+                talk.send_json(END)
+            err = expect_fatal(c, token, {**START, "agent": "ideas"}, "busy")
+            assert err["message"] == BUSY
+            note.send_json(END)
+
+
+def test_slot_is_released_when_the_client_drops():
+    for c in limited(conversation=1):
+        token = pair(c)
+        with c.websocket_connect("/v1/call", headers=auth(token)) as ws:
+            ws.send_json(START)
+            assert ws.receive_json()["type"] == "session.ready"
+        # No session.end: the client just went away.
+        wait_until(lambda: c.app.state.call_slots.active()["conversation"] == 0)
+        with c.websocket_connect("/v1/call", headers=auth(token)) as ws:
+            ws.send_json(START)
+            assert ws.receive_json()["type"] == "session.ready"
+            ws.send_json(END)
+
+
+@pytest.mark.parametrize("agent", ["default", "note"])
+def test_slot_is_released_when_the_call_fails_to_start(monkeypatch, agent):
+    for c in limited(conversation=1, one_way=1):
+        token = pair(c)
+
+        async def broken(*args, **kwargs):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(c.app.state.storage.calls, "create", broken)
+        with pytest.raises(RuntimeError):
+            with c.websocket_connect("/v1/call", headers=auth(token)) as ws:
+                ws.send_json({**START, "agent": agent})
+                ws.receive_json()
+        wait_until(lambda: c.app.state.call_slots.active() == {"conversation": 0, "one_way": 0})
+        monkeypatch.undo()
+        assert c.app.state.storage.db.query("SELECT id FROM calls") == []
+
+
+def test_one_shot_holds_the_slot_until_transcribed(monkeypatch):
+    from wristcall.providers.fake import FakeStt
+
+    started, gate = threading.Event(), threading.Event()
+
+    async def gated(self, wav: bytes, language: str) -> str:
+        started.set()
+        while not gate.is_set():
+            await asyncio.sleep(0.01)
+        return self.text
+
+    monkeypatch.setattr(FakeStt, "transcribe", gated)
+    for c in limited(one_way=1):
+        token = pair(c)
+        with c.websocket_connect("/v1/call", headers=auth(token)) as ws:
+            ws.send_json({**START, "agent": "note"})
+            call_id = ws.receive_json()["call_id"]
+            ws.send_bytes(tone(500))
+            ws.send_json(END)
+        # One-shot transcribes after hang-up: the WebSocket is gone but the call still holds its slot.
+        assert started.wait(5)
+        assert c.app.state.call_slots.active()["one_way"] == 1
+        expect_fatal(c, token, {**START, "agent": "note"}, "busy")
+        gate.set()
+        assert wait_done(c, call_id, auth(token))["status"] == "delivered"
+        wait_until(lambda: c.app.state.call_slots.active()["one_way"] == 0)

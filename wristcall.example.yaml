@@ -62,6 +62,7 @@ limits:
   # history_only_one_way: false  # true = one-shot and monologue agents may have no action: the text is only saved to the history
   # custom_endpoint_types: [openai_stt, openai_chat, openai_tts, webhook]   # provider types a custom endpoint may use
   # max_one_way_call_s: 1800     # longest one-shot or monologue call
+  # max_concurrent_calls: {conversation: null, one_way: null}   # most calls open at once per type; null: no limit
 
 # Imported once as agents of the user `owner` on the first start (default first), then ignored.
 # Manage agents afterwards with `wristcall agents ...`.
