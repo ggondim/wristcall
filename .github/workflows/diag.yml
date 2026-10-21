@@ -16,7 +16,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - run: getent ahosts localhost; cat /etc/hosts; docker ps
+      - run: docker ps -a; for c in $(docker ps -aq); do docker inspect -f '{{.State.Status}} {{.State.ExitCode}} {{.State.OOMKilled}} {{.State.Error}}' $c; docker logs --tail 40 $c 2>&1 | cut -c1-300; done; uname -r; free -m; cat /proc/cpuinfo | grep -m1 flags | tr ' ' '\n' | grep -E '^avx' | head
       - run: pip install -q -e '.[dev]'
       - run: |
           for h in localhost 127.0.0.1 '[::1]'; do
