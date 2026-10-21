@@ -41,6 +41,8 @@ from .config import (
 )
 from .identity import IdentityUnavailable, ZitadelUsers
 from .limits import AccountCreationLimiter, AttemptLimiter, PollLimiter
+from .node_auth import NodeLimiter
+from .node_me import router as node_me_router
 from .nodes import NodeStore
 from .oidc import OidcVerifier
 from .push.api import push_error_response
@@ -497,6 +499,7 @@ def create_app(
     app.state.account_limiter = AccountCreationLimiter(config.accounts_per_ip_hour, config.accounts_per_ip_day)
     app.state.attempt_limiter = AttemptLimiter(config.session_attempts_per_minute)
     app.state.poll_limiter = PollLimiter()
+    app.state.node_limiter = NodeLimiter(config.node_requests_per_minute)
     if config.push_fake:
         log.warning("push: fake channel, nothing is delivered (WRISTCALL_CLOUD_PUSH_FAKE)")
     app.add_middleware(BodyLimit, limit=MAX_BODY)
@@ -544,6 +547,7 @@ def create_app(
     app.include_router(router)
     app.include_router(sessions_router)
     app.include_router(push_router)
+    app.include_router(node_me_router)
 
     @app.get("/v1/health")
     async def health() -> dict[str, str]:
