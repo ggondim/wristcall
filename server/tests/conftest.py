@@ -22,6 +22,7 @@ def silence(ms: int, sample_rate: int = 16000) -> bytes:
 
 
 from wristcall.config import AppConfig, parse_config
+from wristcall.netguard import Resolver
 
 
 def fake_config(**default_profile_overrides) -> AppConfig:
@@ -46,3 +47,14 @@ def fake_config(**default_profile_overrides) -> AppConfig:
         },
         {},
     )
+
+
+def fake_resolver(table: dict[str, list[str]]) -> Resolver:
+    """A netguard Resolver backed by a fixed table; a host outside it does not resolve."""
+
+    async def resolve(host: str, port: int) -> list[str]:
+        if host not in table:
+            raise OSError(f"no such host: {host}")
+        return list(table[host])
+
+    return resolve
