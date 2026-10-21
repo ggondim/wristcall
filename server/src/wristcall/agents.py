@@ -205,13 +205,18 @@ def resolve_endpoint(config: AppConfig, endpoint: Endpoint, kind: Kind) -> tuple
     return name, pcfg
 
 
-def build_endpoint(config: AppConfig, endpoint: Endpoint, kind: Kind, http: httpx.AsyncClient) -> Any:
-    """Provider instance of an endpoint. Raises ProviderError; for custom endpoints, never with option values."""
+def build_endpoint(
+    config: AppConfig, endpoint: Endpoint, kind: Kind, http: httpx.AsyncClient, *,
+    user_http: httpx.AsyncClient | None = None,
+) -> Any:
+    """Provider instance of an endpoint. Raises ProviderError; for custom endpoints, never with option values.
+
+    The operator's providers use `http`; the user's own endpoints use `user_http` when given (limits.public_only)."""
     name, pcfg = resolve_endpoint(config, endpoint, kind)
     if isinstance(endpoint, ProviderRef):
         return build_provider(name, pcfg, kind, http)
     try:
-        return build_provider(name, pcfg, kind, http)
+        return build_provider(name, pcfg, kind, user_http or http)
     except Exception as e:
         cause = e.__cause__ if isinstance(e, ProviderError) else e
         missing = cause.args[0] if isinstance(cause, KeyError) and cause.args else None
@@ -221,12 +226,14 @@ def build_endpoint(config: AppConfig, endpoint: Endpoint, kind: Kind, http: http
         raise ProviderError(f"invalid options for type '{endpoint.type}'") from None
 
 
-def build_agent_providers(config: AppConfig, spec: AgentSpec, http: httpx.AsyncClient) -> ProviderSet:
+def build_agent_providers(
+    config: AppConfig, spec: AgentSpec, http: httpx.AsyncClient, *, user_http: httpx.AsyncClient | None = None
+) -> ProviderSet:
     if spec.tts is None:
         raise ProviderError("a conversation needs a tts")
     built: dict[str, Any] = {}
     for field, kind in STAGES.items():
-        built[field] = build_endpoint(config, getattr(spec, field), kind, http)
+        built[field] = build_endpoint(config, getattr(spec, field), kind, http, user_http=user_http)
     return ProviderSet(stt=built["stt"], responder=built["action"], tts=built["tts"])
 
 
@@ -236,10 +243,12 @@ class OneWayProviders:
     webhook: Webhook
 
 
-def build_one_way_providers(config: AppConfig, spec: AgentSpec, http: httpx.AsyncClient) -> OneWayProviders:
+def build_one_way_providers(
+    config: AppConfig, spec: AgentSpec, http: httpx.AsyncClient, *, user_http: httpx.AsyncClient | None = None
+) -> OneWayProviders:
     return OneWayProviders(
-        stt=build_endpoint(config, spec.stt, "stt", http),
-        webhook=build_endpoint(config, spec.action, "webhook", http),
+        stt=build_endpoint(config, spec.stt, "stt", http, user_http=user_http),
+        webhook=build_endpoint(config, spec.action, "webhook", http, user_http=user_http),
     )
 
 

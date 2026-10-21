@@ -30,7 +30,7 @@ from .history import History, check_key
 from .history_api import calls_router
 from .history_codec import HistoryCodec
 from .link import LinkService, canonical_public_url, public_url_in_audience, startup_invite
-from .netguard import Resolver, system_resolver
+from .netguard import Resolver, public_http_client, system_resolver
 from .oneway import Background, OneWayCall
 from .pairing import DeviceLimit, Paired, PairingDenied, PairingGone, PairingService, Pending, clean_device_name
 from .providers import ProviderError, check_providers
@@ -108,11 +108,17 @@ def create_app(
     own_http = http is None
     http_client = http or httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0))
     check_providers(config, http_client)
+    # The users' own endpoints: with limits.public_only, a client that checks every address it connects to.
+    resolver = resolver or system_resolver
+    own_user_http = config.limits.public_only
+    user_http = (
+        public_http_client(resolver, timeout=httpx.Timeout(30.0, connect=5.0)) if own_user_http else http_client
+    )
     store = storage or open_sqlite_storage(config.server.data_dir)
     pairing_svc = PairingService(
         store, config.server.pairing_approval, max_devices_per_user=config.limits.max_devices_per_user
     )
-    agents = AgentService(store, config, http_client, resolver=resolver or system_resolver)
+    agents = AgentService(store, config, http_client, resolver=resolver)
     auth = Authenticator(store)
     limiter = RateLimiter(limit=10, window_s=60)
     account = AccountService(store, config.central_account, http_client) if config.central_account else None
@@ -150,6 +156,8 @@ def create_app(
             background.cancel()
             with suppress(asyncio.CancelledError):
                 await background
+        if own_user_http:
+            await user_http.aclose()
         if own_http:
             await http_client.aclose()
 
@@ -177,7 +185,9 @@ def create_app(
 
     app.include_router(push_router(store, auth, config, on_discarded=discard_at_relay if notifier else None))
 
-    redelivery = Redelivery(history, agents, config, http_client, policy=delivery_policy, background=after_calls)
+    redelivery = Redelivery(
+        history, agents, config, http_client, user_http=user_http, policy=delivery_policy, background=after_calls
+    )
     app.include_router(calls_router(auth, agents, history, redelivery.start))
 
     async def device_from(authorization: str | None) -> Principal | None:
@@ -300,7 +310,7 @@ def create_app(
 
     async def fatal(ws: WebSocket, err: protocol.ProtocolError) -> None:
         with suppress(Exception):
-            await ws.send_text(json.dumps(protocol.error(err.code, err.message, True), ensure_ascii=False))
+            await ws.send_text(json.dumps(protocol.error(err.code, err.message, True, err.reason), ensure_ascii=False))
             await ws.close(code=protocol.CLOSE_PROTOCOL_ERROR)
 
     async def pump(
@@ -417,13 +427,23 @@ def create_app(
                     raise protocol.ProtocolError(protocol.ErrorCode.UNKNOWN_PROFILE, f"unknown agent: {ref}") from None
             try:
                 if agent.call_type in ONE_WAY:
-                    one_way = build_one_way_providers(config, agent.spec, http_client)
+                    one_way = build_one_way_providers(config, agent.spec, http_client, user_http=user_http)
                 else:
-                    provider_set = build_agent_providers(config, agent.spec, http_client)
+                    provider_set = build_agent_providers(config, agent.spec, http_client, user_http=user_http)
             except ProviderError as e:
                 log.warning("agent %s unavailable: %s", agent.id, e)
                 raise protocol.ProtocolError(
                     protocol.ErrorCode.AGENT_UNAVAILABLE, "this agent is not available; check its providers"
+                ) from None
+            # Before the call is recorded: an address that turned private since the agent was saved (or was saved
+            # before public_only) fails now, before the user speaks. Every connection is checked again later.
+            try:
+                await agents.check_public(agent)
+            except AgentError as e:
+                log.warning("agent %s unavailable: %s", agent.id, e.message)
+                raise protocol.ProtocolError(
+                    protocol.ErrorCode.AGENT_UNAVAILABLE, "This agent uses an address this server cannot call.",
+                    reason="url_not_public",
                 ) from None
         except protocol.ProtocolError as e:
             await fatal(ws, e)

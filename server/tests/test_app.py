@@ -673,3 +673,108 @@ def test_agent_without_color_reports_null(client):
     run(client.app.state.agents.create(owner(client).id, {"slug": "tinted", "color": "pink"}))
     colors = {a["slug"]: a["color"] for a in client.get("/v1/me", headers=auth(token)).json()["agents"]}
     assert colors == {"default": None, "tinted": "pink"}
+
+
+import httpcore  # noqa: E402
+
+from conftest import fake_resolver  # noqa: E402
+from wristcall.agents import AgentService  # noqa: E402
+
+PUBLIC_IP, PRIVATE_IP = "93.184.216.34", "10.0.0.9"
+
+
+def public_only_client(resolver, *, public_only=True, hook_route=True):
+    """A one-shot agent `note` written straight to the storage (no check when saved), webhook at HOOK_URL."""
+    cfg = fake_config()
+    cfg.limits.custom_endpoint_types.append("fake_stt")
+    cfg.limits.public_only = public_only
+    app = create_app(
+        cfg, storage=open_sqlite_storage(":memory:"), delivery_policy=DeliveryPolicy(1.0, (0.0, 0.0)), resolver=resolver
+    )
+    with respx.mock(assert_all_called=False) as mock:
+        mock.route(host="testserver").pass_through()
+        if hook_route:
+            hook = mock.post(HOOK_URL).mock(return_value=httpx.Response(204))
+        else:
+            # The request goes on to the real transport, so the checking backend runs.
+            hook = mock.route(host="hooks.example").pass_through()
+        with TestClient(app) as c:
+            c.hook = hook
+            plain = fake_config()
+            plain.limits.custom_endpoint_types.append("fake_stt")
+            run(AgentService(c.app.state.storage, plain, httpx.AsyncClient()).create(owner(c).id, {
+                "slug": "note", "call_type": "one-shot",
+                "stt": {"type": "fake_stt", "text": "comprar leite"},
+                "action": {"type": "webhook", "url": HOOK_URL},
+                "vad": {"type": "energy"},
+            }))
+            yield c
+
+
+def api_token(client) -> str:
+    return run(UserService(client.app.state.storage).issue_token(owner(client).id, "cli"))[1]
+
+
+def one_shot(client, token: str) -> str:
+    with client.websocket_connect("/v1/call", headers=auth(token)) as ws:
+        ws.send_json({**START, "agent": "note"})
+        ready = ws.receive_json()
+        assert ready["type"] == "session.ready"
+        ws.send_bytes(tone(500))
+        ws.send_json({"type": "session.end"})
+    return ready["call_id"]
+
+
+def test_public_only_refuses_a_call_to_an_internal_address():
+    for c in public_only_client(fake_resolver({"hooks.example": [PRIVATE_IP]})):
+        token = pair(c)
+        err = expect_fatal(c, token, {**START, "agent": "note"}, "agent_unavailable")
+        assert err["reason"] == "url_not_public"
+        assert err["message"] == "This agent uses an address this server cannot call."
+        assert c.get("/v1/calls", headers=auth(api_token(c))).json()["calls"] == []
+        assert not c.hook.called
+
+
+def test_public_only_lets_a_public_agent_call():
+    for c in public_only_client(fake_resolver({"hooks.example": [PUBLIC_IP]})):
+        token = pair(c)
+        view = wait_done(c, one_shot(c, token), auth(token))
+        assert (view["status"], view["attempts"], view["last_http_status"]) == ("delivered", 1, 204)
+        assert c.hook.called
+
+
+def test_without_public_only_the_resolver_is_never_used():
+    async def resolver(host: str, port: int) -> list[str]:
+        raise AssertionError(f"resolver used for {host}")
+
+    for c in public_only_client(resolver, public_only=False):
+        token = pair(c)
+        view = wait_done(c, one_shot(c, token), auth(token))
+        assert (view["status"], view["last_http_status"]) == ("delivered", 204)
+
+
+def test_public_only_rebinding_after_start_fails_delivery(monkeypatch):
+    asked: list[str] = []
+
+    async def rebinding(host: str, port: int) -> list[str]:
+        # Public for the check at session.start, private when the delivery opens its connection.
+        asked.append(host)
+        return [PUBLIC_IP] if len(asked) == 1 else [PRIVATE_IP]
+
+    connected: list[str] = []
+
+    async def no_network(self, host, port, **kwargs):
+        connected.append(host)
+        raise httpcore.ConnectError("no network in tests")
+
+    monkeypatch.setattr(httpcore.AnyIOBackend, "connect_tcp", no_network)
+    for c in public_only_client(rebinding, hook_route=False):
+        token = pair(c)
+        view = wait_done(c, one_shot(c, token), auth(token))
+        assert (view["status"], view["error"], view["attempts"], view["last_http_status"]) == (
+            "failed", "delivery_failed", 1, None
+        )
+        # The second lookup is the checking backend's, at connect time; nothing reached the network.
+        assert asked == ["hooks.example", "hooks.example"] and connected == []
+        # respx records a pass-through request as it goes by; none of them got an answer.
+        assert c.hook.called and not any(call.has_response for call in c.hook.calls)

@@ -6,6 +6,7 @@ import logging
 import sys
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +25,7 @@ from .history_api import RedeliveryError, resolve_agent_id
 from .history_codec import HistoryCodec, HistoryKeyError, new_key
 from .history_export import TimeError, export_json, export_markdown, parse_time
 from .link import CLI_AGAIN, LinkService, canonical_public_url, public_url_in_audience, render_invite, target_user
+from .netguard import public_http_client, system_resolver
 from .pairing import DeviceLimit, NotFound, PairingService, format_code, issue_code
 from .providers import ProviderError
 from .redelivery import Redelivery
@@ -69,6 +71,8 @@ class Ctx:
     agents: AgentService
     history: History
     http: httpx.AsyncClient
+    # The users' own endpoints (limits.public_only: a client that checks every address); otherwise `http`.
+    user_http: httpx.AsyncClient
 
 
 def _run(config: Path, body: Callable[[Ctx], Awaitable[T]]) -> T:
@@ -79,12 +83,17 @@ def _run(config: Path, body: Callable[[Ctx], Awaitable[T]]) -> T:
         storage = open_sqlite_storage(cfg.server.data_dir)
         try:
             await bootstrap(storage, cfg)
-            async with httpx.AsyncClient() as http:
+            async with httpx.AsyncClient() as http, AsyncExitStack() as stack:
+                user_http = http
+                if cfg.limits.public_only:
+                    user_http = await stack.enter_async_context(
+                        public_http_client(system_resolver, timeout=httpx.Timeout(30.0, connect=5.0))
+                    )
                 ctx = Ctx(
                     cfg, storage, UserService(storage),
                     PairingService(storage, cfg.server.pairing_approval, max_devices_per_user=cfg.limits.max_devices_per_user),
-                    AgentService(storage, cfg, http),
-                    History(storage, HistoryCodec(cfg.history.key()), cfg.history), http,
+                    AgentService(storage, cfg, http, resolver=system_resolver),
+                    History(storage, HistoryCodec(cfg.history.key()), cfg.history), http, user_http,
                 )
                 return await body(ctx)
         finally:
@@ -746,7 +755,7 @@ def history_redeliver(call_id: str, config: ConfigOpt = DEFAULT_CONFIG, user: Us
         record = await ctx.storage.calls.get(owner_id, call_id)
         if record is None:
             raise NotFound(f"call not found: {call_id}")
-        return await Redelivery(ctx.history, ctx.agents, ctx.cfg, ctx.http).run(record)
+        return await Redelivery(ctx.history, ctx.agents, ctx.cfg, ctx.http, user_http=ctx.user_http).run(record)
 
     done = _run(config, body)
     if done.status == "delivered":

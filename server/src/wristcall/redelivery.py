@@ -31,6 +31,7 @@ class Redelivery:
         config: AppConfig,
         http: httpx.AsyncClient,
         *,
+        user_http: httpx.AsyncClient | None = None,
         policy: DeliveryPolicy = DeliveryPolicy(),
         background: Background | None = None,
         now: Callable[[], float] = time.time,
@@ -40,6 +41,8 @@ class Redelivery:
         self._agents = agents
         self._config = config
         self._http = http
+        # The user's own webhook goes through this one (limits.public_only); an operator's provider through `http`.
+        self._user_http = user_http
         self._policy = policy
         self._background = background
         self._now = now
@@ -63,7 +66,8 @@ class Redelivery:
         if agent.call_type not in ONE_WAY:
             raise RedeliveryError("not_one_way", "the agent of this call is no longer one-shot or monologue")
         try:
-            webhook = build_one_way_providers(self._config, agent.spec, self._http).webhook
+            providers = build_one_way_providers(self._config, agent.spec, self._http, user_http=self._user_http)
+            webhook = providers.webhook
         except ProviderError:
             raise RedeliveryError("agent_unavailable", "the agent's webhook is not available; check its action") from None
         return agent, webhook, text

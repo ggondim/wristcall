@@ -362,6 +362,8 @@ starts listening again after the estimated playback time of the audio sent plus 
 
 ### Error codes
 
+An `error` may carry `reason`, a stable word that says more about the code.
+
 | Code | Fatal | Cause |
 |---|---|---|
 | `bad_message` | at opening, yes; afterwards, no | invalid JSON, unknown type or invalid field (for example an unknown `turn_end`) |
@@ -369,7 +371,7 @@ starts listening again after the estimated playback time of the audio sent plus 
 | `unsupported_protocol` | yes | `protocol` other than 1 |
 | `unsupported_audio` | yes | `audio_in` other than pcm16 16 kHz mono |
 | `unknown_profile` | yes | the agent (`agent` or `profile`) does not exist for this device's user, or the user has no agents |
-| `agent_unavailable` | yes | the agent exists but cannot be used now (for example, it names a provider the server no longer offers) |
+| `agent_unavailable` | yes | the agent exists but cannot be used now (for example, it names a provider the server no longer offers); `reason: url_not_public` when the server only calls public addresses and one of the agent's URLs is not one |
 | `stt_failed` | no | transcription failed or timed out |
 | `responder_failed` | no | the agent did not answer or stopped midway; if nothing was spoken, the server speaks an apology sentence; if it stopped midway, it keeps what was already said |
 | `tts_failed` | no | the voice failed; the response `transcript` still arrives |
@@ -432,7 +434,7 @@ The call goes like this:
 | `error` | Meaning |
 |---|---|
 | `stt_failed` | a piece of the recording could not be transcribed (two tries); `text` keeps what was; nothing is delivered |
-| `delivery_failed` | three attempts without a `2xx`; `text`, `attempts` and `last_http_status` (null after a timeout or connection error) tell what happened |
+| `delivery_failed` | three attempts without a `2xx` (one when the address is not public, see [Delivery to the webhook](#delivery-to-the-webhook)); `text`, `attempts` and `last_http_status` (null after a timeout or connection error) tell what happened |
 | `interrupted` | the server stopped while processing; `text` is kept if it was ready |
 | `internal` | unexpected server error |
 
@@ -452,6 +454,8 @@ After transcribing, the server sends `POST <url>` with the agent's `headers` and
 - Any `2xx` means delivered; the response body is ignored. Redirects are not followed.
 - Up to three attempts (one, then retries after 3 s and 6 s), 15 s each: about a
   minute at most. Fields may be added within `version` 1; receivers ignore unknown ones.
+- With `limits.public_only`, an attempt to an address that is not public fails like a connection error.
+  It is not retried: the next attempts would be refused too.
 - Transcription comes first and is not part of that minute: each piece of the recording
   gets up to two tries of the agent's `timeouts.stt_s` (10 s by default). With the
   defaults, a one-shot reaches its final status within about 75 s of hanging up.

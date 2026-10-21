@@ -12,6 +12,7 @@ from wristcall.agents import (
     agent_detail,
     agent_summary,
     build_agent_providers,
+    build_one_way_providers,
     spec_from_profile,
     user_urls,
 )
@@ -624,3 +625,16 @@ def test_user_urls_lists_custom_endpoints_the_call_type_uses():
     assert user_urls(spec(action=hook, tts=tts), "monologue") == [
         ("action", "https://hooks.example.com/n"), ("tts", "https://tts.example.com/v1"),
     ]
+
+
+async def test_custom_endpoints_use_the_user_client():
+    cfg = config(providers={
+        "stt": {"type": "fake_stt", "text": "hi"},
+        "hook": {"type": "webhook", "url": "https://hooks.example.com/op"},
+    })
+    own = AgentSpec(stt=ProviderRef(provider="stt"), action=CustomEndpoint(type="webhook", url="https://hooks.example.com/n"))
+    operator = AgentSpec(stt=ProviderRef(provider="stt"), action=ProviderRef(provider="hook"))
+    async with httpx.AsyncClient() as http, httpx.AsyncClient() as other:
+        assert build_one_way_providers(cfg, own, http, user_http=other).webhook._http is other
+        assert build_one_way_providers(cfg, operator, http, user_http=other).webhook._http is http
+        assert build_one_way_providers(cfg, own, http).webhook._http is http

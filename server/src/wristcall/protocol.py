@@ -29,10 +29,12 @@ class ErrorCode:
 
 
 class ProtocolError(Exception):
-    def __init__(self, code: str, message: str) -> None:
+    # `reason`: an optional stable word that says more about the code (e.g. "url_not_public").
+    def __init__(self, code: str, message: str, reason: str | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.reason = reason
 
 
 class AudioFormat(BaseModel):
@@ -130,5 +132,8 @@ def agent_end() -> dict[str, Any]:
     return {"type": "turn.agent_end"}
 
 
-def error(code: str, message: str, fatal: bool) -> dict[str, Any]:
-    return {"type": "error", "code": code, "message": message, "fatal": fatal}
+def error(code: str, message: str, fatal: bool, reason: str | None = None) -> dict[str, Any]:
+    msg: dict[str, Any] = {"type": "error", "code": code, "message": message, "fatal": fatal}
+    if reason is not None:
+        msg["reason"] = reason
+    return msg

@@ -4,6 +4,7 @@ import respx
 
 from wristcall import __version__
 from wristcall.config import ProviderConfig
+from wristcall.netguard import UrlNotPublic
 from wristcall.providers import ProviderError, build_provider
 from wristcall.providers.webhook import Webhook, WebhookError
 
@@ -68,3 +69,13 @@ async def test_bad_options_fail_at_build(options):
     async with httpx.AsyncClient() as http:
         with pytest.raises(ProviderError):
             build_provider("hook", ProviderConfig(type="webhook", **options), "webhook", http)
+
+
+async def test_refused_address_is_not_public():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise UrlNotPublic("x")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(WebhookError) as e:
+            await hook(http).send({}, idempotency_key="c", timeout_s=5)
+    assert e.value.reason == "not_public"
