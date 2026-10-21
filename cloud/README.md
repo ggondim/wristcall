@@ -435,9 +435,9 @@ delete and redelivery are for apps and the web too. The watch reads only its own
 | `PATCH /v1/node/agents/{id}` | node, user | any of `slug`, `display_name`, `icon`, `color`, `call_type`, `spec` | `200 Agent`; `404`; `409`; `422` |
 | `DELETE /v1/node/agents/{id}` | node, user | | `204`; `404`. The agent's history stays |
 | `PUT /v1/node/agents/order` | node, user | `{agent, index}` | `200 {"agents", "etag"}` with the agent moved to `index` (counted from 0, clamped); `404` |
-| `POST /v1/node/calls` | node, user | `{agent, call_type, request_id?}` | `201 {"call_id", "grant", "agent", "plan", "quota_s", "max_s", "started_at"}` |
+| `POST /v1/node/calls` | node, user | `{agent, call_type, request_id?, delivery?}` | `201 {"call_id", "grant", "agent", "plan", "quota_s", "max_s", "started_at"}` |
 | `POST /v1/node/calls/{id}/entries` | node, grant | `{"entries": [Entry]}` | `204`; `422` |
-| `PATCH /v1/node/calls/{id}` | node, grant | any of `status`, `error`, `attempts`, `last_http_status`, `ended_at`, `finished_at` | `204`; `422` |
+| `PATCH /v1/node/calls/{id}` | node, grant | any of `status`, `error`, `attempts`, `last_http_status`, `ended_at`, `finished_at`, `delivery` | `204`; `422` |
 | `POST /v1/node/calls/{id}/finish` | node, grant | `{status, seconds, error?}` | `204`; `422` |
 | `GET /v1/node/calls` | node, user | query: `agent`, `since`, `until`, `before_at` and `before_id` (together), `limit`, `terms` | `200 {"calls": [Call]}` newest first |
 | `GET /v1/node/calls/export` | node, user | query: `agent`, `since`, `until` | `200` NDJSON |
@@ -452,7 +452,8 @@ delete and redelivery are for apps and the web too. The watch reads only its own
 
 **Shapes.** `Agent`: `id`, `slug`, `display_name`, `icon`, `color`, `call_type`, `position`, `spec`, `created_at`,
 `updated_at`. `Call`: `id`, `agent_id`, `agent_slug`, `agent_name`, `device_id`, `call_type`, `status`, `error`,
-`attempts`, `last_http_status`, `created_at`, `updated_at`, `ended_at`, `finished_at`, `expires_at`, `seconds`, `open`.
+`attempts`, `last_http_status`, `delivery` (`webhook`, `history` or `null`), `created_at`, `updated_at`, `ended_at`,
+`finished_at`, `expires_at`, `seconds`, `open`.
 `Entry`: `seq`, `role`, `text`, `sealed`, `error`, `at`. `Usage`: `month` (`YYYY-MM`), `used_s`, `quota_s`,
 `remaining_s`. Times are seconds since the epoch.
 
@@ -480,7 +481,9 @@ hashes of the form `x` and 16 hex digits. Sending an entry again is harmless: th
 
 **Status and finish.** Statuses are `recording`, `processing`, `delivered`, `failed`, `empty` and `ended`; `finish`
 takes all but `recording`, a `seconds` number and an optional `error` code. A `PATCH` takes `attempts` from 0 to 10000
-and `last_http_status` `null` or 100 to 599. `finish` closes the call, frees the account's open slot and adds its
+and `last_http_status` `null` or 100 to 599. `delivery` (on `POST /v1/node/calls` and `PATCH`) is `webhook`,
+`history` or `null` (the default; a call written before 0.5.1 reads `null`); a `request_id` replay ignores it, and
+redelivery leaves it as it was. `finish` closes the call, frees the account's open slot and adds its
 seconds to the month's usage (the month the call began in), once: repeating it counts once, and one that arrives after
 the Cloud closed the call as an orphan corrects its status, error and seconds, moving the usage by the difference.
 `seconds` is rounded up to whole seconds and kept within `max_s` plus a minute.

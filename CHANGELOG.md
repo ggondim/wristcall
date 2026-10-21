@@ -4,6 +4,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 
 ## [Unreleased]
 
+## [cloud-0.5.1] - 2026-10-21
+
+### Added
+
+- `delivery` (`webhook`, `history` or `null`) on cloud-mode calls: `POST /v1/node/calls` and `PATCH /v1/node/calls/{id}` accept it, and the call view, the history list and the export return it (`null` for calls written by 0.5.0). Redelivery leaves it unchanged. No schema change. See [cloud/README.md](cloud/README.md#cloud-nodes).
+
 ## [cloud-0.5.0] - 2026-10-21
 
 Cloud 0.5.0. Registers the nodes of cloud mode and serves them an internal API (`/v1/node/`) for agents, call history,

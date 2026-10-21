@@ -37,8 +37,9 @@ MAX_ENTRY_TEXT = 256 * 1024
 MAX_SEQ = 100000
 MAX_ATTEMPTS = 10000
 ENTRY_ROLES = ("user", "agent")
+DELIVERIES = ("webhook", "history")  # how the node delivered a call (the server's `CallRecord.delivery`)
 FINISH_STATUSES = tuple(s for s in CALL_STATUSES if s != "recording")
-_PATCH_FIELDS = {"status", "error", "attempts", "last_http_status", "ended_at", "finished_at"}
+_PATCH_FIELDS = {"status", "error", "attempts", "last_http_status", "ended_at", "finished_at", "delivery"}
 
 
 def _invalid(message: str) -> ApiError:
@@ -109,6 +110,12 @@ def parse_entries(body: dict[str, Any]) -> list[dict[str, Any]]:
     return parsed
 
 
+def _delivery(value: Any) -> str | None:
+    if value is not None and (not isinstance(value, str) or value not in DELIVERIES):
+        raise _invalid(f"delivery must be null or one of {', '.join(DELIVERIES)}")
+    return value
+
+
 def parse_patch(body: dict[str, Any]) -> dict[str, Any]:
     if not body or not set(body) <= _PATCH_FIELDS:
         raise _invalid("patch must change at least one of " + ", ".join(sorted(_PATCH_FIELDS)))
@@ -127,6 +134,8 @@ def parse_patch(body: dict[str, Any]) -> dict[str, Any]:
         if body["last_http_status"] is not None and not _integer(body["last_http_status"], 100, 599):
             raise _invalid("last_http_status must be null or an HTTP status")
         out["last_http_status"] = body["last_http_status"]
+    if "delivery" in body:
+        out["delivery"] = _delivery(body["delivery"])
     for field in ("ended_at", "finished_at"):
         if field in body:
             if body[field] is not None and not _number(body[field]):
@@ -192,6 +201,7 @@ async def open_call(
         raise _invalid(f"call_type must be one of {', '.join(CALL_TYPES)}")
     if request_id is not None and not (isinstance(request_id, str) and REQUEST_ID.fullmatch(request_id)):
         raise _invalid("request_id must be 8 to 64 letters, digits, dashes or underscores")
+    delivery = _delivery(body.get("delivery"))
     cloud: CloudModeStore = request.app.state.cloud
     config: CloudConfig = request.app.state.config
     now = time.time()
@@ -234,6 +244,7 @@ async def open_call(
         "status": "recording",
         "open": True,
         "request_id": request_id,
+        "delivery": delivery,
         "created_at": now,
         "updated_at": now,
         "max_s": max_s,

@@ -87,7 +87,8 @@ def test_list_pages_newest_first(world):
     shape = history(world, limit=1).json()["calls"][0]
     assert set(shape) == {
         "id", "agent_id", "agent_slug", "agent_name", "device_id", "call_type", "status", "error", "attempts",
-        "last_http_status", "created_at", "updated_at", "ended_at", "finished_at", "expires_at", "seconds", "open",
+        "last_http_status", "delivery", "created_at", "updated_at", "ended_at", "finished_at", "expires_at", "seconds",
+            "open",
     }
     assert shape["open"] is False and shape["agent_id"] == world.oneshot and shape["device_id"] == world.watch_device
 
@@ -186,6 +187,21 @@ def test_export_streams_ndjson(world):
     assert world.client.get("/v1/node/calls/export", headers=ios(world), params={"since": "x"}).status_code == 422
 
 
+def test_old_call_without_delivery_reads_null(world):
+    """A call document written before the field existed (cloud 0.5.0) reads `delivery: null` everywhere."""
+    call_id = make_call(world, entries=1)
+    with db(world.mongo_db) as d:
+        d["cloud_calls"].update_one({"_id": call_id}, {"$unset": {"delivery": ""}})
+        assert "delivery" not in d["cloud_calls"].find_one({"_id": call_id})
+    listed = world.client.get("/v1/node/calls", headers=ios(world)).json()["calls"]
+    assert [c["delivery"] for c in listed if c["id"] == call_id] == [None]
+    r = world.client.get(f"/v1/node/calls/{call_id}", headers=ios(world))
+    assert r.status_code == 200 and r.json()["call"]["delivery"] is None
+    r = world.client.get("/v1/node/calls/export", headers=ios(world))
+    lines = [json.loads(line) for line in r.text.split("\n") if line]
+    assert lines[0]["call"]["id"] == call_id and lines[0]["call"]["delivery"] is None
+
+
 def test_export_is_declared_before_the_call_route(world):
     """`/calls/export` would be read as the id `export` if `/calls/{call_id}` came first; the export answers over
     HTTP too (not a 404 of the call route), and the routes the lifecycle owns are still reachable."""
@@ -272,6 +288,17 @@ def failed_one_way(world: World, error: str = "delivery_failed", attempts: int =
     patch = {"status": "failed", "error": error, "attempts": attempts, "last_http_status": 502, "finished_at": BASE}
     assert world.client.patch(f"/v1/node/calls/{call_id}", headers=headers, json=patch).status_code == 204
     return call_id
+
+
+def test_redeliver_leaves_delivery_unchanged(world):
+    call_id = failed_one_way(world)
+    with db(world.mongo_db) as d:
+        d["cloud_calls"].update_one({"_id": call_id}, {"$set": {"delivery": "webhook"}})
+    r = world.client.post(
+        f"/v1/node/calls/{call_id}/redeliver", headers=world.user(world.ios_device, "ios", "away", NODE_B)
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["call"]["delivery"] == "webhook" and world.call_doc(call_id)["delivery"] == "webhook"
 
 
 def test_redeliver_failed_one_way(world):

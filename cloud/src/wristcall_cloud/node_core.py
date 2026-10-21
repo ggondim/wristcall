@@ -47,6 +47,7 @@ def public_call(doc: dict[str, Any]) -> dict[str, Any]:
         "error": doc.get("error"),
         "attempts": doc.get("attempts"),
         "last_http_status": doc.get("last_http_status"),
+        "delivery": doc.get("delivery"),
         "created_at": doc.get("created_at"),
         "updated_at": doc.get("updated_at"),
         "ended_at": doc.get("ended_at"),
