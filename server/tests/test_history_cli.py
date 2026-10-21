@@ -1,11 +1,13 @@
 import asyncio
 import json
 
+import httpcore
 import httpx
 import respx
 import yaml
 from typer.testing import CliRunner
 
+from conftest import fake_resolver
 from wristcall import cli
 from wristcall.history import KEY_ID, CallLog
 from wristcall.history_codec import HistoryCodec, new_key, parse_key
@@ -190,3 +192,49 @@ def test_decrypt_names_the_entry_that_does_not_open(tmp_path):
     r = invoke(locked, "history", "decrypt", "--yes")
     assert r.exit_code == 1 and "Traceback" not in r.output, r.output
     assert "call c_1, utterance 1" in r.output and "wristcall history rm c_1" in r.output, r.output
+
+
+def test_redeliver_with_public_only_refuses_a_private_address(tmp_path, monkeypatch):
+    cfg = write_config(tmp_path)
+    ok(cfg, "users", "list")
+    ok(cfg, "agents", "add", "note", "--call-type", "one-shot", "--action", json.dumps({"type": "webhook", "url": HOOK_URL}))
+
+    async def failed():
+        st = open_sqlite_storage(tmp_path / "data")
+        owner = await st.users.by_handle("owner")
+        note = [a for a in await st.agents.list(owner.id) if a.slug == "note"][0]
+        record = await st.calls.create(CallRecord(
+            id="c_f", user_id=owner.id, agent_id=note.id, device_id=None, call_type="one-shot", status="failed",
+            error="delivery_failed", attempts=3, created_at=1.0, updated_at=1.0, ended_at=2.0,
+        ))
+        await CallLog(st, HistoryCodec(), record).add("user", "comprar leite")
+        await st.close()
+
+    asyncio.run(failed())
+    # The host now resolves to a private address: the CLI's client refuses it before connecting.
+    data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    data["limits"] = {"public_only": True}
+    cfg.write_text(yaml.safe_dump(data), encoding="utf-8")
+    monkeypatch.setattr(cli, "system_resolver", fake_resolver({"hooks.example": ["10.0.0.9"]}))
+    connected: list[str] = []
+
+    async def no_network(self, host, port, **kwargs):
+        connected.append(host)
+        raise httpcore.ConnectError("no network in tests")
+
+    monkeypatch.setattr(httpcore.AnyIOBackend, "connect_tcp", no_network)
+    with respx.mock(assert_all_called=False) as mock:
+        mock.route(host="hooks.example").pass_through()
+        r = invoke(cfg, "history", "redeliver", "c_f")
+    assert r.exit_code == 1 and "Failed again: delivery_failed." in r.output
+    assert connected == []
+
+    async def stored():
+        st = open_sqlite_storage(tmp_path / "data")
+        owner = await st.users.by_handle("owner")
+        record = await st.calls.get(owner.id, "c_f")
+        await st.close()
+        return record
+
+    record = asyncio.run(stored())
+    assert (record.status, record.error, record.attempts, record.last_http_status) == ("failed", "delivery_failed", 4, None)

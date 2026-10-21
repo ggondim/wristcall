@@ -93,3 +93,9 @@ def test_payload_shape():
         "started_at": "1970-01-01T00:00:00Z", "ended_at": "1970-01-01T00:01:01Z",
     }
     assert iso(1_760_000_000) == "2025-10-09T08:53:20Z"
+
+
+async def test_a_refused_address_is_not_retried():
+    hook, sleeps = Script(WebhookError("not_public"), 204, 204), Sleeps()
+    assert await deliver(hook, {}, idempotency_key="c", sleep=sleeps) == DeliveryResult(False, 1, None, "not_public")
+    assert len(hook.sent) == 1 and sleeps.calls == []

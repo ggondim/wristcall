@@ -362,6 +362,8 @@ starts listening again after the estimated playback time of the audio sent plus 
 
 ### Error codes
 
+An `error` may carry `reason`, a stable word that says more about the code.
+
 | Code | Fatal | Cause |
 |---|---|---|
 | `bad_message` | at opening, yes; afterwards, no | invalid JSON, unknown type or invalid field (for example an unknown `turn_end`) |
@@ -369,7 +371,8 @@ starts listening again after the estimated playback time of the audio sent plus 
 | `unsupported_protocol` | yes | `protocol` other than 1 |
 | `unsupported_audio` | yes | `audio_in` other than pcm16 16 kHz mono |
 | `unknown_profile` | yes | the agent (`agent` or `profile`) does not exist for this device's user, or the user has no agents |
-| `agent_unavailable` | yes | the agent exists but cannot be used now (for example, it names a provider the server no longer offers) |
+| `agent_unavailable` | yes | the agent exists but cannot be used now (for example, it names a provider the server no longer offers); `reason: url_not_public` when the server only calls public addresses and one of the agent's URLs is not one |
+| `busy` | yes | the server is at its limit of simultaneous calls of this type (`limits.max_concurrent_calls`); try again later |
 | `stt_failed` | no | transcription failed or timed out |
 | `responder_failed` | no | the agent did not answer or stopped midway; if nothing was spoken, the server speaks an apology sentence; if it stopped midway, it keeps what was already said |
 | `tts_failed` | no | the voice failed; the response `transcript` still arrives |
@@ -417,14 +420,16 @@ The call goes like this:
 `GET /v1/calls/{call_id}` answers (the fields after `finished_at` since server 0.5.0, see [History](#history)):
 
 ```json
-{"id":"c_5d1f...","agent_id":"ag_3f9c0a1b2c3d","call_type":"one-shot","status":"delivered","error":null,"text":"buy milk","attempts":1,"last_http_status":204,"created_at":1760000000.0,"ended_at":1760000004.2,"finished_at":1760000005.1,"agent":{"id":"ag_3f9c0a1b2c3d","slug":"note","display_name":"Note"},"expires_at":null,"entries":[{"role":"user","text":"buy milk","error":null,"at":1760000004.9}]}
+{"id":"c_5d1f...","agent_id":"ag_3f9c0a1b2c3d","call_type":"one-shot","status":"delivered","error":null,"text":"buy milk","attempts":1,"delivery":"webhook","last_http_status":204,"created_at":1760000000.0,"ended_at":1760000004.2,"finished_at":1760000005.1,"agent":{"id":"ag_3f9c0a1b2c3d","slug":"note","display_name":"Note"},"expires_at":null,"entries":[{"role":"user","text":"buy milk","error":null,"at":1760000004.9}]}
 ```
+
+`delivery` (since 0.9.0): `webhook` or `history` for one-way calls, `null` for conversations.
 
 | `status` | Final | Meaning |
 |---|---|---|
 | `recording` | no | the call is open |
 | `processing` | no | hung up; transcribing, then delivering |
-| `delivered` | yes | the webhook answered `2xx` |
+| `delivered` | yes | the webhook answered `2xx` (or, for a history-only agent, the text was saved; see below) |
 | `failed` | yes | see `error` |
 | `empty` | yes | nothing was said (no speech, or a blank transcript); nothing is delivered |
 | `ended` | yes | a conversation call closed (see [History](#history)) |
@@ -432,12 +437,19 @@ The call goes like this:
 | `error` | Meaning |
 |---|---|
 | `stt_failed` | a piece of the recording could not be transcribed (two tries); `text` keeps what was; nothing is delivered |
-| `delivery_failed` | three attempts without a `2xx`; `text`, `attempts` and `last_http_status` (null after a timeout or connection error) tell what happened |
+| `delivery_failed` | three attempts without a `2xx` (one when the address is not public, see [Delivery to the webhook](#delivery-to-the-webhook)); `text`, `attempts` and `last_http_status` (null after a timeout or connection error) tell what happened |
 | `interrupted` | the server stopped while processing; `text` is kept if it was ready |
 | `internal` | unexpected server error |
 
 Text is kept after delivery too: every call is part of its agent's [history](#history). A call that ended
 `delivery_failed`, or `interrupted` with its text, can be delivered again (`POST /v1/calls/{id}/redeliver`).
+
+**History-only agents (since 0.9.0).** On a server with `limits.history_only_one_way: true` (default `false`;
+`GET /v1/providers` reports it), a one-way agent may have no `action` (`null`): its transcript is only saved to the
+history, and nothing is posted. Such a call ends `delivered` with `delivery` `history` and `attempts` 0, and its push
+says "Saved". There is nothing to deliver again: `POST /v1/calls/{id}/redeliver` answers `409 no_webhook`. Silence
+and transcription failures end as for any one-way call (`empty`, `stt_failed`). If the operator turns the setting off
+later, these agents stay listed but their calls fail at `session.start` with `agent_unavailable`.
 
 ### Delivery to the webhook
 
@@ -452,6 +464,8 @@ After transcribing, the server sends `POST <url>` with the agent's `headers` and
 - Any `2xx` means delivered; the response body is ignored. Redirects are not followed.
 - Up to three attempts (one, then retries after 3 s and 6 s), 15 s each: about a
   minute at most. Fields may be added within `version` 1; receivers ignore unknown ones.
+- With `limits.public_only`, an attempt to an address that is not public fails like a connection error.
+  It is not retried: the next attempts would be refused too.
 - Transcription comes first and is not part of that minute: each piece of the recording
   gets up to two tries of the agent's `timeouts.stt_s` (10 s by default). With the
   defaults, a one-shot reaches its final status within about 75 s of hanging up.
@@ -492,7 +506,7 @@ With the user's API token (a device token answers `403 forbidden`, except for `G
 | `DELETE /v1/calls/{id}` | `204`. `404` |
 | `DELETE /v1/calls?agent=<ref>` or `?all=true` | `200 {"deleted":n}`. `422` with neither or both |
 | `GET /v1/calls/export?format=md\|json` | `200`, a file (`Content-Disposition: attachment`): Markdown to read, or JSON `{"version":1,"exported_at","calls":[call]}`. Same `agent`, `since`, `until`; every matching call, newest first, times in UTC |
-| `POST /v1/calls/{id}/redeliver` | `202 call` (now `processing`; poll `GET /v1/calls/{id}`). `409` with `error`: `not_failed` (only `delivery_failed`, or `interrupted` with text), `busy`, `no_text`, `not_one_way`, `agent_gone` (agent deleted), `agent_unavailable` |
+| `POST /v1/calls/{id}/redeliver` | `202 call` (now `processing`; poll `GET /v1/calls/{id}`). `409` with `error`: `not_failed` (only `delivery_failed`, or `interrupted` with text), `busy`, `no_text`, `not_one_way`, `agent_gone` (agent deleted), `agent_unavailable`, `no_webhook` (since 0.9.0: the call was saved to the history, or its agent has no webhook now) |
 
 Search (`q`) matches whole words, all of them in the same call (in what the user said or in the agent's answers),
 ignoring case and accents: `reuniao` finds "Reunião". No prefixes, phrases or operators: anything that is not a
@@ -534,7 +548,7 @@ What the server sends (the relay adds the label as the notification's subtitle a
 
 | Event | To | Title, body | `data` |
 |---|---|---|---|
-| `call.finished` | the device that made a one-shot or monologue call, when it reaches its final status (`delivered`, `failed`, `empty`) | the outcome ("Delivered", "Not delivered", "Not transcribed", "Nothing heard", "Call failed") and a sentence with the agent's name | `{"call_id","status","error","agent_id"}`, as in `GET /v1/calls/{call_id}`; the call id is also the collapse id |
+| `call.finished` | the device that made a one-shot or monologue call, when it reaches its final status (`delivered`, `failed`, `empty`) | the outcome ("Delivered", "Saved" for a [history-only agent](#one-way-calls-one-shot-monologue), "Not delivered", "Not transcribed", "Nothing heard", "Call failed") and a sentence with the agent's name | `{"call_id","status","error","agent_id"}`, as in `GET /v1/calls/{call_id}`; the call id is also the collapse id |
 | `device.approval` | the management apps (keys set with an API token) of the user a `POST /v1/pair/account` request in `approval` mode is aimed at | "New device" and the device's name | `{"request_id","device_name","expires_at"}` |
 
 On APNs the message arrives as:
@@ -586,7 +600,8 @@ days (1 to 36500), `"forever"`, or `null` for the operator's default; the owner'
 `effective_retention_days`, the one in force within the operator's ceiling (`null`: kept until deleted). Changing it
 also moves the expiry of the agent's past calls.
 
-A one-way agent's `action` is a webhook: a provider of kind `webhook` or
+A one-way agent's `action` is a webhook, or `null` on servers with `history_only_one_way` (see
+[history-only agents](#one-way-calls-one-shot-monologue)): a provider of kind `webhook` or
 `{"type":"webhook","url":"https://...","headers":{"Authorization":"Bearer ..."}}`
 (`url` without credentials, query or fragment; up to 16 `headers`). Every value of
 `headers` comes back as `"***"`, whatever the header name, and sending `"***"` back
@@ -598,6 +613,11 @@ and an update with `"tts": null` drops it. Changing `call_type` needs an `action
 of the matching kind in the same update; switching to `conversation` also needs a
 `tts`, unless one is still stored.
 
+With `limits.history_only_one_way: true`, a one-way agent created without an `action` keeps none (the server's only
+webhook is not picked for it), and an update with `"action": null` drops the webhook; a conversation agent always
+needs an `action`. With the setting off, `"action": null` is ignored (as before 0.9.0), and an agent stored without
+an `action` only accepts an update that gives it one.
+
 Custom endpoints make the server send requests to URLs that users choose, including
 addresses inside the server's own network (SSRF). They are on by default for a
 self-hosted server whose users are trusted; on a server with users you do not
@@ -608,6 +628,16 @@ the operator offers. A custom endpoint may only use the provider types listed in
 to an internal address and read the status code back in `GET /v1/calls/{id}`; on a
 server shared with people you do not trust, remove `webhook` from that list (or turn
 custom endpoints off).
+
+`limits.public_only: true` (default `false`) keeps custom endpoints and closes the
+internal network: every URL of a user's own endpoint must be `https`, with a public
+name (no `localhost`, single-label or `.local`/`.internal`/`.lan`/`.home.arpa` names,
+no private or reserved IP). The server resolves the name and refuses it when any
+address is not public. This is checked when the agent is saved (`422 url_not_public`),
+when a call starts and on every new connection to the endpoint, which connects only to
+an address it checked; the server ignores proxy settings of its environment and does
+not follow redirects for these endpoints. Providers the operator offers are not
+checked. `GET /v1/providers` reports the setting as `public_only`.
 
 ## Management API
 
@@ -621,11 +651,11 @@ A body that is not valid JSON or not a JSON object answers `422 {"error":"invali
 | Route | Body | Responses |
 |---|---|---|
 | `GET /v1/agents` | | `200 {"agents":[agent]}` in the watch's order |
-| `POST /v1/agents` | agent fields; `slug` required; absent `stt`/`action`/`tts` = the server's only provider of that kind | `201 agent`. `422 invalid\|unsupported`. `409 conflict` (slug taken). `403 limit` |
+| `POST /v1/agents` | agent fields; `slug` required; absent `stt`/`action`/`tts` = the server's only provider of that kind (a one-way agent's `action` stays `null` with `history_only_one_way`) | `201 agent`. `422 invalid\|unsupported\|url_not_public`. `409 conflict` (slug taken). `403 limit` |
 | `GET /v1/agents/{ref}` | | `200 agent`. `404 not_found`. `ref` is a `slug` or an `id` |
-| `PATCH /v1/agents/{ref}` | fields to change; `vad` and `timeouts` merge key by key | `200 agent`. `404`, `409`, `422` |
+| `PATCH /v1/agents/{ref}` | fields to change; `vad` and `timeouts` merge key by key | `200 agent`. `404`, `409`, `422` (`invalid`, `unsupported` or `url_not_public`) |
 | `DELETE /v1/agents/{ref}` | | `204`. `404` |
-| `GET /v1/providers` | | `200 {"providers":[{"name","kind":"stt"\|"action"\|"tts"\|"webhook"}],"custom_endpoints":true}` (`webhook`: the action of one-way agents) |
+| `GET /v1/providers` | | `200 {"providers":[{"name","kind":"stt"\|"action"\|"tts"\|"webhook"}],"custom_endpoints":true,"public_only":false,"history_only_one_way":false}` (`webhook`: the action of one-way agents) |
 | `GET /v1/devices` | | `200 {"devices":[{"id","name","created_at"}]}` |
 | `DELETE /v1/devices/{id}` | | `204`. `404` |
 | `POST /v1/pairing-codes` | | `201 {"code","expires_at","server_url","via_directory"}` (+ `"warning"` when the directory was unreachable). `403 limit` (device limit). `502 directory` |

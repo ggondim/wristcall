@@ -199,6 +199,21 @@ def test_export_markdown(filled):
     assert "ideia de app" not in text and "leite" in text.lower()
 
 
+def test_export_markdown_says_a_history_only_call_was_saved(client):
+    add_call(
+        client, "c_h", T0, [("user", "ideia de app")], call_type="one-shot", status="delivered", attempts=1,
+        delivery="history",
+    )
+    add_call(
+        client, "c_w", T0 + DAY, [("user", "comprar pão")], call_type="one-shot", status="delivered", attempts=1,
+        last_http_status=204, delivery="webhook",
+    )
+    text = client.get("/v1/calls/export", headers=h(api_token(client)), params={"format": "md"}).text
+    hooked, saved = text.split("comprar pão")  # newest first: the webhook call, then the history-only one
+    assert "Saved to the history." in saved and "Delivery:" not in saved
+    assert "Delivery: 1 attempt(s), last HTTP 204." in hooked and "Saved to the history." not in hooked
+
+
 def test_export_json_round_trips_the_detail_view(filled):
     t = api_token(filled)
     r = filled.get("/v1/calls/export", headers=h(t), params={"format": "json", "agent": "default"})

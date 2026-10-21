@@ -26,7 +26,8 @@ jobs:
           docker run --rm --entrypoint python wristcall-ci -c "from wristcall.storage import open_sqlite_storage; print('schema', open_sqlite_storage(':memory:').db.version)"
 
   cloud:
-    runs-on: ubuntu-latest
+    # MongoDB 8 refuses to start on Linux 6.19+ (SERVER-121912), and ubuntu-latest moved to a 7.0 kernel.
+    runs-on: ubuntu-22.04
     services:
       mongo:
         image: mongo:8

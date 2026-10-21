@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from .. import __version__
+from ..netguard import UrlNotPublic
 from . import ProviderError, register
 
 _HEADER_NAME = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$")
@@ -19,9 +20,10 @@ MAX_HEADERS = 16
 
 
 class WebhookError(ProviderError):
-    """An attempt that got no HTTP answer: "timeout" or "connection" (refused, DNS, TLS...)."""
+    """An attempt that got no HTTP answer: "timeout", "connection" (refused, DNS, TLS...) or "not_public" (with
+    limits.public_only, the host resolved to an address the server does not call)."""
 
-    def __init__(self, reason: Literal["timeout", "connection"]) -> None:
+    def __init__(self, reason: Literal["timeout", "connection", "not_public"]) -> None:
         super().__init__(f"webhook {reason}")
         self.reason = reason
 
@@ -72,5 +74,7 @@ class Webhook:
                     return r.status_code
         except (TimeoutError, httpx.TimeoutException):
             raise WebhookError("timeout") from None
+        except UrlNotPublic:  # an httpx.ConnectError too: must come first
+            raise WebhookError("not_public") from None
         except httpx.HTTPError:
             raise WebhookError("connection") from None

@@ -48,7 +48,9 @@ def markdown_call(view: dict[str, Any]) -> str:
     agent = view["agent"]["display_name"] or view["agent"]["slug"] or view["agent"]["id"]
     status = view["status"] + (f" ({view['error']})" if view["error"] else "")
     lines = [f"\n## {_minute(view['created_at'])} | {agent} | {view['call_type']} | {status}\n"]
-    if view["call_type"] != "conversation" and view["attempts"]:
+    if view["delivery"] == "history":
+        lines.append("Saved to the history.\n")
+    elif view["call_type"] != "conversation" and view["attempts"]:
         http = f", last HTTP {view['last_http_status']}" if view["last_http_status"] is not None else ""
         lines.append(f"Delivery: {view['attempts']} attempt(s){http}.\n")
     for entry in view["entries"]:

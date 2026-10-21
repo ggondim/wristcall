@@ -142,6 +142,10 @@ class OneWayCall:
             # Recorded before delivering: a server stopped mid-delivery keeps the text.
             self.text = text
             await self._log.add("user", text)
+            if self._providers.webhook is None:
+                saved = await self._log.save(status="delivered", attempts=0, finished=True)
+                log.info("call %s saved to the history", self.record.id)
+                return saved
             body = payload(
                 call_id=self.record.id,
                 call_type=self.agent.call_type,

@@ -58,8 +58,11 @@ limits:
   max_agents_per_user: 20
   max_devices_per_user: 10
   custom_endpoints: true        # agents may use their own STT/chat/TTS URLs; false = only the providers above
+  # public_only: false           # true = only public https URLs for users' own endpoints; turn on when users are not trusted
+  # history_only_one_way: false  # true = one-shot and monologue agents may have no action: the text is only saved to the history
   # custom_endpoint_types: [openai_stt, openai_chat, openai_tts, webhook]   # provider types a custom endpoint may use
   # max_one_way_call_s: 1800     # longest one-shot or monologue call
+  # max_concurrent_calls: {conversation: null, one_way: null}   # most calls open at once per type; null: no limit
 
 # Imported once as agents of the user `owner` on the first start (default first), then ignored.
 # Manage agents afterwards with `wristcall agents ...`.

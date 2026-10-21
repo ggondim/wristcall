@@ -111,3 +111,10 @@ def test_turn_end_unknown_value_is_bad_message(mode):
     with pytest.raises(p.ProtocolError) as e:
         p.parse_client_message(start(turn_end=mode))
     assert e.value.code == p.ErrorCode.BAD_MESSAGE
+
+
+def test_error_carries_reason_only_when_given():
+    assert "reason" not in p.error("x", "m", True)
+    assert p.error("x", "m", True, reason="url_not_public")["reason"] == "url_not_public"
+    assert p.ProtocolError("x", "m").reason is None
+    assert p.ProtocolError("x", "m", reason="url_not_public").reason == "url_not_public"

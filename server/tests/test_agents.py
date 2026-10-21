@@ -12,8 +12,11 @@ from wristcall.agents import (
     agent_detail,
     agent_summary,
     build_agent_providers,
+    build_one_way_providers,
     spec_from_profile,
+    user_urls,
 )
+from conftest import fake_resolver
 from wristcall.config import parse_config
 from wristcall.providers import ProviderError
 from wristcall.providers.fake import EchoChat, FakeStt, ToneTts
@@ -510,3 +513,223 @@ def test_agent_color_type_matches_the_list():
 
     # The CLI help and validation read the tuple, the API model the Literal: they must not drift apart.
     assert get_args(AgentColor) == AGENT_COLORS
+
+
+PUBLIC_ONLY = {"public_only": True}
+PUBLIC_STT = {"type": "openai_stt", "base_url": "https://api.example.com/v1", "model": "w"}
+
+
+async def failing_resolver(host, port):
+    raise AssertionError("the resolver must not be called")
+
+
+@pytest.mark.parametrize(
+    "call_type, field, endpoint",
+    [
+        ("conversation", "stt", {"type": "openai_stt", "base_url": "https://speaches:8000/v1", "model": "w"}),
+        ("conversation", "action", {"type": "openai_chat", "base_url": "http://api.example.com/v1", "model": "m"}),
+        ("one-shot", "action", {"type": "webhook", "url": "https://10.0.0.1/hook"}),
+    ],
+)
+async def test_public_only_refuses_internal_urls(call_type, field, endpoint):
+    svc = await make(config(limits=PUBLIC_ONLY), resolver=fake_resolver({}))
+    with pytest.raises(AgentError) as e:
+        await svc.create("u_a", {"slug": "own", "call_type": call_type, field: endpoint})
+    assert e.value.code == "url_not_public" and e.value.message.startswith(f"{field}: ")
+    assert await svc.list("u_a") == []
+
+
+async def test_public_only_checks_every_url_option():
+    # A provider reads only one of `url` and `base_url`: a public decoy in the other must not hide the internal one.
+    svc = await make(config(limits=PUBLIC_ONLY), resolver=fake_resolver({"api.example.com": ["93.184.216.34"]}))
+    decoy = {"type": "openai_stt", "url": "https://api.example.com/", "base_url": "http://speaches:8000/v1", "model": "w"}
+    with pytest.raises(AgentError) as e:
+        await svc.create("u_a", {"slug": "own", "stt": decoy})
+    assert e.value.code == "url_not_public" and e.value.message.startswith("stt: ")
+    assert await svc.list("u_a") == []
+
+
+async def test_public_only_checks_resolved_addresses():
+    svc = await make(config(limits=PUBLIC_ONLY), resolver=fake_resolver({"api.example.com": ["10.0.0.7"]}))
+    with pytest.raises(AgentError) as e:
+        await svc.create("u_a", {"slug": "own", "stt": PUBLIC_STT})
+    assert e.value.code == "url_not_public"
+    assert e.value.message == "stt: the host resolves to a private or internal address"
+    assert "10.0.0.7" not in e.value.message and "api.example.com" not in e.value.message
+    svc = await make(config(limits=PUBLIC_ONLY), resolver=fake_resolver({"api.example.com": ["93.184.216.34"]}))
+    assert (await svc.create("u_a", {"slug": "own", "stt": PUBLIC_STT})).slug == "own"
+
+
+async def test_public_only_resolves_every_host_of_the_agent():
+    table = {"api.example.com": ["93.184.216.34"], "tts.example.com": ["192.168.1.9"]}
+    svc = await make(config(limits=PUBLIC_ONLY), resolver=fake_resolver(table))
+    tts = {"type": "openai_tts", "base_url": "https://tts.example.com/v1", "model": "t", "voice": "v"}
+    with pytest.raises(AgentError) as e:
+        await svc.create("u_a", {"slug": "own", "stt": PUBLIC_STT, "tts": tts})
+    assert e.value.message.startswith("tts: ")
+
+
+async def test_public_only_ignores_operator_providers():
+    svc = await make(config(limits=PUBLIC_ONLY), resolver=failing_resolver)
+    a = await svc.create("u_a", {"slug": "own", "stt": {"provider": "stt"}})
+    assert a.spec.stt == ProviderRef(provider="stt")
+
+
+async def test_public_only_off_keeps_internal_urls():
+    svc = await make(config(), resolver=failing_resolver)
+    stt = {"type": "openai_stt", "base_url": "https://speaches:8000/v1", "model": "w"}
+    assert (await svc.create("u_a", {"slug": "own", "stt": stt})).slug == "own"
+
+
+async def test_update_checks_public_only():
+    svc = await make(config(limits=PUBLIC_ONLY), resolver=fake_resolver({"api.example.com": ["93.184.216.34"]}))
+    await svc.create("u_a", {"slug": "own", "stt": PUBLIC_STT})
+    with pytest.raises(AgentError) as e:
+        await svc.update("u_a", "own", {"stt": {**PUBLIC_STT, "base_url": "https://nas.home.arpa/v1"}})
+    assert e.value.code == "url_not_public" and e.value.message.startswith("stt: ")
+    assert (await svc.get("u_a", "own")).spec.stt.options()["base_url"] == "https://api.example.com/v1"
+
+
+async def test_update_checks_urls_of_the_final_call_type():
+    svc = await make(config(limits=PUBLIC_ONLY), resolver=fake_resolver({"api.example.com": ["93.184.216.34"]}))
+    tts = {"type": "openai_tts", "base_url": "https://tts.example.com/v1", "model": "t", "voice": "v"}
+    hook = {"type": "webhook", "url": "https://api.example.com/hook"}
+    # The stored voice still counts after the switch to one-way (it must stay valid while stored).
+    await svc.create("u_a", {"slug": "own", "call_type": "one-shot", "stt": PUBLIC_STT, "action": hook})
+    with pytest.raises(AgentError) as e:
+        await svc.update("u_a", "own", {"tts": tts})
+    assert e.value.message.startswith("tts: ")
+
+
+async def test_check_public_on_a_stored_agent():
+    cfg = config(limits=PUBLIC_ONLY)
+    svc = await make(cfg, resolver=fake_resolver({"api.example.com": ["93.184.216.34"]}))
+    agent = await svc.create("u_a", {"slug": "own", "stt": PUBLIC_STT})
+    await svc.check_public(agent)  # still public
+    moved = await make(cfg, resolver=fake_resolver({"api.example.com": ["10.0.0.7"]}))
+    with pytest.raises(AgentError) as e:
+        await moved.check_public(agent)
+    assert e.value.code == "url_not_public"
+    off = await make(config(), resolver=failing_resolver)
+    await off.check_public(agent)  # nothing to check with public_only off
+
+
+def test_user_urls_lists_custom_endpoints_the_call_type_uses():
+    stt = {"type": "openai_stt", "base_url": "https://stt.example.com/v1", "model": "w"}
+    tts = {"type": "openai_tts", "base_url": "https://tts.example.com/v1", "model": "t", "voice": "v"}
+    hook = {"type": "webhook", "url": "https://hooks.example.com/n"}
+    chat = {"type": "openai_chat", "base_url": "https://chat.example.com/v1", "model": "m"}
+
+    def spec(**kw):
+        return AgentSpec.model_validate({"stt": {"provider": "stt"}, "action": {"provider": "llm"}, **kw})
+
+    assert user_urls(spec(), "conversation") == []
+    assert user_urls(spec(stt=stt, action=chat, tts=tts), "conversation") == [
+        ("stt", "https://stt.example.com/v1"), ("action", "https://chat.example.com/v1"),
+        ("tts", "https://tts.example.com/v1"),
+    ]
+    assert user_urls(spec(stt=stt, action=hook), "one-shot") == [
+        ("stt", "https://stt.example.com/v1"), ("action", "https://hooks.example.com/n"),
+    ]
+    # A one-way agent keeps a stored voice for a switch back, so its URL is checked too.
+    assert user_urls(spec(action=hook, tts=tts), "monologue") == [
+        ("action", "https://hooks.example.com/n"), ("tts", "https://tts.example.com/v1"),
+    ]
+    assert user_urls(spec(action=hook, tts=tts), "monologue", include_stored_tts=False) == [
+        ("action", "https://hooks.example.com/n"),
+    ]
+    both = {"type": "openai_stt", "url": "https://a.example.com/", "base_url": "https://b.example.com/v1", "model": "w"}
+    assert user_urls(spec(stt=both), "conversation") == [
+        ("stt", "https://a.example.com/"), ("stt", "https://b.example.com/v1"),
+    ]
+
+
+async def test_custom_endpoints_use_the_user_client():
+    cfg = config(providers={
+        "stt": {"type": "fake_stt", "text": "hi"},
+        "hook": {"type": "webhook", "url": "https://hooks.example.com/op"},
+    })
+    own = AgentSpec(stt=ProviderRef(provider="stt"), action=CustomEndpoint(type="webhook", url="https://hooks.example.com/n"))
+    operator = AgentSpec(stt=ProviderRef(provider="stt"), action=ProviderRef(provider="hook"))
+    async with httpx.AsyncClient() as http, httpx.AsyncClient() as other:
+        assert build_one_way_providers(cfg, own, http, user_http=other).webhook._http is other
+        assert build_one_way_providers(cfg, operator, http, user_http=other).webhook._http is http
+        assert build_one_way_providers(cfg, own, http).webhook._http is http
+
+
+def history_only(on: bool = True, **over):
+    return config(limits={"history_only_one_way": on}, **over)
+
+
+@pytest.mark.parametrize("call_type", ["one-shot", "monologue"])
+async def test_history_only_one_way_agents(call_type):
+    svc = await make(history_only())
+    a = await svc.create("u_a", {"slug": "note", "call_type": call_type})
+    assert (a.call_type, a.spec.action, a.spec.tts) == (call_type, None, None)
+    assert agent_detail(a)["action"] is None
+    assert (await svc.get("u_a", "note")).spec.action is None
+
+
+async def test_history_only_create_does_not_pick_the_servers_webhook():
+    svc = await make(history_only(providers={
+        "stt": {"type": "fake_stt"}, "llm": {"type": "echo_chat"}, "tts": {"type": "tone_tts"},
+        "inbox": {"type": "webhook", "url": "https://n8n.example/webhook/abc"},
+    }))
+    assert (await svc.create("u_a", {"slug": "note", "call_type": "one-shot"})).spec.action is None
+    chosen = await svc.create("u_a", {"slug": "inbox", "call_type": "one-shot", "action": {"provider": "inbox"}})
+    assert chosen.spec.action == ProviderRef(provider="inbox")
+
+
+async def test_one_way_without_action_needs_the_limit():
+    st = open_sqlite_storage(":memory:")
+    await st.users.create("u_a", "alice", "Alice", 1.0)
+    async with httpx.AsyncClient() as http:
+        on, off = AgentService(st, history_only(), http), AgentService(st, history_only(False), http)
+        with pytest.raises(AgentError) as e:
+            await off.create("u_a", {"slug": "note", "call_type": "one-shot"})
+        assert e.value.code == "invalid"
+        await on.create("u_a", {"slug": "note", "call_type": "one-shot"})
+        # With the limit off, the stored agent only takes an update that gives it an action.
+        with pytest.raises(AgentError) as e:
+            await off.update("u_a", "note", {"display_name": "Note"})
+        assert (e.value.code, e.value.message) == ("invalid", "action: required for one-shot agents")
+        assert (await off.update("u_a", "note", {"action": HOOK})).spec.action.type == "webhook"
+        assert len(await off.list("u_a")) == 1
+    await st.close()
+
+
+async def test_conversation_always_needs_an_action():
+    svc = await make(history_only())
+    await svc.create("u_a", {"slug": "helper"})
+    with pytest.raises(AgentError) as e:
+        await svc.update("u_a", "helper", {"action": None})
+    assert (e.value.code, e.value.message) == ("invalid", "action: required for conversation agents")
+    await svc.create("u_a", {"slug": "note", "call_type": "one-shot"})
+    with pytest.raises(AgentError) as e:
+        await svc.update("u_a", "note", {"call_type": "conversation", "tts": {"provider": "tts"}})
+    assert (e.value.code, e.value.message) == ("invalid", "action: required for conversation agents")
+
+
+async def test_update_drops_the_action():
+    svc = await make(history_only())
+    await svc.create("u_a", {"slug": "note", "call_type": "one-shot", "action": HOOK})
+    assert (await svc.update("u_a", "note", {"action": None})).spec.action is None
+    assert (await svc.get("u_a", "note")).spec.action is None
+
+
+async def test_action_null_is_ignored_without_the_limit(svc):
+    await svc.create("u_a", {"slug": "note", "call_type": "one-shot", "action": HOOK})
+    kept = await svc.update("u_a", "note", {"action": None})
+    assert kept.spec.action.options()["url"] == HOOK["url"]
+    helper = await svc.create("u_a", {"slug": "helper"})
+    assert (await svc.update("u_a", "helper", {"action": None})).spec.action == helper.spec.action
+
+
+async def test_providers_of_an_agent_without_an_action():
+    spec = AgentSpec(stt=ProviderRef(provider="stt"))
+    async with httpx.AsyncClient() as http:
+        assert build_one_way_providers(history_only(), spec, http).webhook is None
+        with pytest.raises(ProviderError, match="a one-way agent needs a webhook"):
+            build_one_way_providers(history_only(False), spec, http)
+        with pytest.raises(ProviderError, match="a conversation needs an action"):
+            build_agent_providers(history_only(), spec.model_copy(update={"tts": ProviderRef(provider="tts")}), http)

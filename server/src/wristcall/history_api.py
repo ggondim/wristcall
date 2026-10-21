@@ -29,7 +29,7 @@ Redeliver = Callable[[CallRecord], Awaitable[CallRecord]]
 
 
 class RedeliveryError(Exception):
-    """code: not_failed | no_text | busy | agent_gone | not_one_way | agent_unavailable."""
+    """code: not_failed | no_text | busy | agent_gone | not_one_way | agent_unavailable | no_webhook."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)

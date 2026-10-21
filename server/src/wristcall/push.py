@@ -120,6 +120,8 @@ def _name(value: str, fallback: str) -> str:
 def _call_text(record: CallRecord) -> tuple[str, str] | None:
     agent = _name(record.agent_name, "your agent")
     if record.status == "delivered":
+        if record.delivery == "history":
+            return "Saved", f"Saved to {agent}."
         return "Delivered", f"{agent} got your message."
     if record.status == "empty":
         return "Nothing heard", f"Nothing was sent to {agent}."

@@ -37,6 +37,15 @@ class Identity:
     client_id: str | None
     expires_at: float
     issued_at: float = 0.0
+    # Device claims (spec 5.2): Cloud-signed tokens carry them, the self-hosted server ignores them.
+    did: str | None = None
+    plt: str | None = None
+    jti: str | None = None
+
+
+def _short_str(value: object) -> str | None:
+    """A claim worth keeping: a string of 1 to 255 characters, anything else is ignored."""
+    return value if isinstance(value, str) and 0 < len(value) <= 255 else None
 
 
 def normalize_issuer(issuer: str) -> str:
@@ -130,6 +139,9 @@ class OidcVerifier:
             client_id=client_id if isinstance(client_id, str) else None,
             expires_at=float(claims["exp"]),
             issued_at=float(claims["iat"]),
+            did=_short_str(claims.get("did")),
+            plt=_short_str(claims.get("plt")),
+            jti=_short_str(claims.get("jti")),
         )
 
     def _fresh(self) -> bool:

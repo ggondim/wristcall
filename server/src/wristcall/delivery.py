@@ -31,7 +31,8 @@ class DeliveryResult:
     delivered: bool
     attempts: int
     last_http_status: int | None
-    # None when delivered; else why the last attempt failed: "http_status" (not 2xx), "timeout" or "connection".
+    # None when delivered; else why the last attempt failed: "http_status" (not 2xx), "timeout", "connection" or
+    # "not_public" (refused by limits.public_only; no retry).
     error: str | None
 
 
@@ -84,4 +85,6 @@ async def deliver(
             error = "http_status"
         # Never the URL or the text: both belong to the user.
         log.warning("call %s: delivery attempt %d failed (%s)", idempotency_key, attempts, status or error)
+        if error == "not_public":
+            break  # refused by rule, not by chance: a retry seconds later would be refused too
     return DeliveryResult(False, attempts, status, error)

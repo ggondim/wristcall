@@ -4,6 +4,36 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-21
+
+### Added
+
+- One-way agents without an action: with `limits.history_only_one_way: true` (off by default) a one-shot or monologue
+  agent may have no webhook; the transcript is only saved to the history. The call ends `delivered` with
+  `delivery: history`, the push says `Saved` ("Saved to {agent}."), and `POST /v1/calls/{id}/redeliver` answers
+  `409 no_webhook` ("This call was saved to the history; it has no webhook to deliver to."). If the setting is turned
+  off later, an agent stored without an action answers `agent_unavailable` at `session.start` and still shows in the
+  management API.
+- `limits.public_only` (off by default): users' own endpoints (STT, chat, TTS, webhook) accept only public `https`
+  URLs, with public host names (no single label, `localhost`, `.local`, `.internal`, `.lan`, `.home.arpa`). Every
+  address a name resolves to is checked, when an agent is saved (`422 url_not_public`), at `session.start` (fatal
+  `agent_unavailable` with `reason: url_not_public`: "This agent uses an address this server cannot call.") and on
+  each connection the server opens, which closes DNS rebinding. Those requests ignore the proxy variables of the
+  environment and do not follow redirects. Providers set in the YAML are not affected.
+- `limits.max_concurrent_calls` (`conversation`, `one_way`; no limit by default): a call that finds its type full gets
+  the fatal `busy` error ("This server is busy; try again in a minute.") at `session.start`. A call counts from the
+  accepted `session.start` until the WebSocket closes (conversations) or until the transcription and delivery end
+  (one-way).
+- `delivery` (`webhook`, `history`, `null` for conversations) on call views, and `reason` on errors.
+- `GET /v1/providers` also lists `public_only` and `history_only_one_way`, next to `custom_endpoints`.
+- Server tokens may carry `did`, `plt` and `jti` claims; they are accepted and not used yet.
+
+### Upgrade note
+
+- Database schema 10 (adds `calls.delivery`, filled with `webhook` for past one-way calls). The server upgrades it on
+  start; 0.8.2 does not open the database after 0.9.0 has run, so rolling back needs the backup taken before
+  upgrading. No configuration change needed: the defaults keep 0.8.2's behaviour.
+
 ## [0.8.2] - 2026-10-17
 
 ### Changed

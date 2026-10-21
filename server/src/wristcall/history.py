@@ -103,6 +103,14 @@ class CallLog:
             return self.record
 
 
+def delivery_of(agent: Agent) -> str | None:
+    """Where the agent's calls go: None for a conversation; for a one-way call, "webhook", or "history" when the
+    agent has no action (limits.history_only_one_way)."""
+    if agent.call_type == "conversation":
+        return None
+    return "history" if agent.spec.action is None else "webhook"
+
+
 class History:
     def __init__(
         self, storage: Storage, codec: HistoryCodec, settings: HistoryConfig | None = None, *,
@@ -124,7 +132,7 @@ class History:
             id=new_call_id(), user_id=agent.user_id, agent_id=agent.id, device_id=device_id,
             call_type=agent.call_type, status="recording", created_at=now, updated_at=now,
             agent_slug=agent.slug, agent_name=agent.display_name,
-            expires_at=None if retention is None else now + retention,
+            expires_at=None if retention is None else now + retention, delivery=delivery_of(agent),
         ))
         return CallLog(self.storage, self.codec, record, now=self._now)
 
@@ -246,6 +254,7 @@ def call_detail(r: CallRecord, entries: list[Entry]) -> dict[str, Any]:
         "error": r.error,
         "text": user_text(entries),
         "attempts": r.attempts,
+        "delivery": r.delivery,
         "last_http_status": r.last_http_status,
         "created_at": r.created_at,
         "ended_at": r.ended_at,

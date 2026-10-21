@@ -313,6 +313,21 @@ async def test_calls_create_get_and_save(storage):
         await storage.calls.save(call(id="c_gone"))
 
 
+async def test_calls_keep_the_delivery_they_were_created_with(storage):
+    await storage.users.create("u_a", "alice", "Alice", 1.0)
+    await storage.calls.create(call(id="c_hook", delivery="webhook"))
+    await storage.calls.create(call(id="c_hist", delivery="history"))
+    await storage.calls.create(call(id="c_talk", call_type="conversation"))
+    assert [(await storage.calls.get("u_a", i)).delivery for i in ("c_hook", "c_hist", "c_talk")] == [
+        "webhook", "history", None
+    ]
+    # save never changes it
+    created = await storage.calls.get("u_a", "c_hook")
+    saved = await storage.calls.save(replace(created, status="delivered", delivery="history"))
+    assert saved.delivery == "webhook"
+    assert (await storage.calls.get("u_a", "c_hook")).delivery == "webhook"
+
+
 async def test_calls_interrupted_at_startup(storage):
     await storage.users.create("u_a", "alice", "Alice", 1.0)
     await storage.calls.create(call(id="c_rec"))

@@ -76,7 +76,12 @@ watches and agents live in the server's database (`data_dir/wristcall.db`).
   `custom_endpoint_types` (the provider types a custom endpoint may use; default `openai_stt`,
   `openai_chat`, `openai_tts`, `webhook`) and `max_one_way_call_s` (1800: the longest
   one-shot or monologue call). With users you do not trust, also drop `webhook` from the
-  list: it lets them make the server POST to internal addresses and see the status code.
+  list: it lets them make the server POST to internal addresses and see the status code. `public_only`
+  (`false`; `true` accepts only public `https` URLs for users' own endpoints, checked when an agent is
+  saved, when a call starts and on every connection: turn it on when users are not trusted).
+  `history_only_one_way` (`false`; `true` lets a one-shot or monologue agent have no webhook: its text is only
+  saved to the history). `max_concurrent_calls` (`conversation`, `one_way`; no limit by default: the most calls open
+  at once per type, above that a call gets `busy`).
 - `profiles` (optional, the 0.2.x format): on the first start they become agents of a user
   called `owner`, `default` first. After that the section is ignored; manage agents with
   `wristcall agents`.
@@ -286,7 +291,7 @@ the browser's push service. The transcript of a call never does: the app reads i
 5. On a server with several users, give old watches to a user with
    `wristcall devices assign <id> --user <handle>`.
 6. Custom endpoints allow only the `openai_*` types by default and make the server call URLs
-   your users choose (SSRF): keep `limits.custom_endpoints` on only with trusted users.
+   your users choose (SSRF): keep `limits.custom_endpoints` on only with trusted users, or add `limits.public_only: true`.
 
 ## Users and agents
 
@@ -321,7 +326,7 @@ example `--action '{"type": "openai_chat", "base_url": "https://llm.example/v1",
 Keys come back as `***`; sending `***` back keeps the stored key.
 The same `coach.json` also works with `agents add <new-slug> --from-json coach.json`, which copies the agent.
 Custom endpoints make the server request URLs your users choose, including your internal network:
-keep `limits.custom_endpoints: true` only when you trust every user of the server.
+keep `limits.custom_endpoints: true` only when you trust every user of the server, or add `limits.public_only: true` to refuse internal URLs.
 
 With more than one user, add `--user <handle>` to `pair`, `devices list|approve|assign`, `agents` and `users tokens add|list`.
 

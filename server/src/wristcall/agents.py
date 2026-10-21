@@ -1,5 +1,6 @@
 """Agents: what a user calls from the watch. Spec validation, CRUD rules and providers per call."""
 
+import asyncio
 import re
 import secrets
 import time
@@ -12,6 +13,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, model_validator
 
 from .config import AppConfig, HistoryConfig, ProfileConfig, ProviderConfig, Timeouts, VadConfig
+from .netguard import NO_ADDRESS, NotPublic, Resolver, check_public_url, resolve_public, system_resolver
 from .protocol import TurnEnd
 from .providers import Kind, ProviderError, ProviderSet, SpeechToText, Webhook, build_provider, provider_kind
 from .providers.webhook import check_url
@@ -25,7 +27,8 @@ AGENT_COLORS: tuple[str, ...] = ("red", "orange", "yellow", "green", "mint", "te
 AgentColor = Literal["red", "orange", "yellow", "green", "mint", "teal", "blue", "indigo", "purple", "pink"]
 # Days the agent's calls stay in the history; "forever"; None = the operator's default. The ceiling applies to all.
 RetentionDays = Annotated[StrictInt, Field(ge=1, le=36_500)] | Literal["forever"] | None
-# One-way calls: the transcript goes to a webhook (the action); no answer, no voice.
+# One-way calls: the transcript goes to a webhook (the action); no answer, no voice. With
+# limits.history_only_one_way, a one-way agent may have no action: the transcript is only kept in the history.
 ONE_WAY = frozenset({"one-shot", "monologue"})
 REDACTED = "***"
 _OPTION_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -100,7 +103,8 @@ class AgentSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     language: str = Field(default="en", min_length=2, max_length=16)
     stt: Endpoint
-    action: Endpoint
+    # Absent only on one-way agents of a server with limits.history_only_one_way (their calls go to the history).
+    action: Endpoint | None = None
     # Absent only on one-way agents (they never speak).
     tts: Endpoint | None = None
     system_prompt: str = Field(default="", max_length=20_000)
@@ -164,7 +168,7 @@ class Agent:
 
 
 class AgentError(Exception):
-    """code: invalid | not_found | conflict | limit | unsupported."""
+    """code: invalid | not_found | conflict | limit | unsupported | url_not_public."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -203,13 +207,18 @@ def resolve_endpoint(config: AppConfig, endpoint: Endpoint, kind: Kind) -> tuple
     return name, pcfg
 
 
-def build_endpoint(config: AppConfig, endpoint: Endpoint, kind: Kind, http: httpx.AsyncClient) -> Any:
-    """Provider instance of an endpoint. Raises ProviderError; for custom endpoints, never with option values."""
+def build_endpoint(
+    config: AppConfig, endpoint: Endpoint, kind: Kind, http: httpx.AsyncClient, *,
+    user_http: httpx.AsyncClient | None = None,
+) -> Any:
+    """Provider instance of an endpoint. Raises ProviderError; for custom endpoints, never with option values.
+
+    The operator's providers use `http`; the user's own endpoints use `user_http` when given (limits.public_only)."""
     name, pcfg = resolve_endpoint(config, endpoint, kind)
     if isinstance(endpoint, ProviderRef):
         return build_provider(name, pcfg, kind, http)
     try:
-        return build_provider(name, pcfg, kind, http)
+        return build_provider(name, pcfg, kind, user_http or http)
     except Exception as e:
         cause = e.__cause__ if isinstance(e, ProviderError) else e
         missing = cause.args[0] if isinstance(cause, KeyError) and cause.args else None
@@ -219,26 +228,55 @@ def build_endpoint(config: AppConfig, endpoint: Endpoint, kind: Kind, http: http
         raise ProviderError(f"invalid options for type '{endpoint.type}'") from None
 
 
-def build_agent_providers(config: AppConfig, spec: AgentSpec, http: httpx.AsyncClient) -> ProviderSet:
+def build_agent_providers(
+    config: AppConfig, spec: AgentSpec, http: httpx.AsyncClient, *, user_http: httpx.AsyncClient | None = None
+) -> ProviderSet:
+    if spec.action is None:
+        raise ProviderError("a conversation needs an action")
     if spec.tts is None:
         raise ProviderError("a conversation needs a tts")
     built: dict[str, Any] = {}
     for field, kind in STAGES.items():
-        built[field] = build_endpoint(config, getattr(spec, field), kind, http)
+        built[field] = build_endpoint(config, getattr(spec, field), kind, http, user_http=user_http)
     return ProviderSet(stt=built["stt"], responder=built["action"], tts=built["tts"])
 
 
 @dataclass
 class OneWayProviders:
     stt: SpeechToText
-    webhook: Webhook
+    webhook: Webhook | None  # None: the transcript is only kept in the history (limits.history_only_one_way)
 
 
-def build_one_way_providers(config: AppConfig, spec: AgentSpec, http: httpx.AsyncClient) -> OneWayProviders:
-    return OneWayProviders(
-        stt=build_endpoint(config, spec.stt, "stt", http),
-        webhook=build_endpoint(config, spec.action, "webhook", http),
-    )
+def build_one_way_providers(
+    config: AppConfig, spec: AgentSpec, http: httpx.AsyncClient, *, user_http: httpx.AsyncClient | None = None
+) -> OneWayProviders:
+    if spec.action is None:
+        # Saved while the operator allowed it; refused once the operator turns it off.
+        if not config.limits.history_only_one_way:
+            raise ProviderError("a one-way agent needs a webhook")
+        webhook = None
+    else:
+        webhook = build_endpoint(config, spec.action, "webhook", http, user_http=user_http)
+    return OneWayProviders(stt=build_endpoint(config, spec.stt, "stt", http, user_http=user_http), webhook=webhook)
+
+
+def user_urls(spec: AgentSpec, call_type: str, *, include_stored_tts: bool = True) -> list[tuple[str, str]]:
+    """(field, url) of each of the user's own endpoints a call of this type reaches. A one-way agent's stored voice
+    counts too (it must stay valid for a switch back to conversation) unless include_stored_tts is off: a call
+    never uses it."""
+    fields = list(stage_kinds(call_type))
+    if include_stored_tts and call_type in ONE_WAY and spec.tts is not None:
+        fields.append("tts")
+    urls: list[tuple[str, str]] = []
+    for field in fields:
+        endpoint = getattr(spec, field)
+        if isinstance(endpoint, CustomEndpoint):
+            options = endpoint.options()
+            # Extra options pass through, so both may be present and a provider reads only one: check each.
+            for key in ("url", "base_url"):
+                if options.get(key):
+                    urls.append((field, str(options[key])))
+    return urls
 
 
 def _secret(key: Any, value: Any, parent: Any = None) -> bool:
@@ -380,18 +418,29 @@ def retention_seconds(days: int | None) -> float | None:
     return None if days is None else days * 86_400.0
 
 
+# Total time the DNS lookups of one agent may take together (they run at once).
+_DNS_DEADLINE_S = 5.0
+
+
 def new_agent_id() -> str:
     return f"ag_{secrets.token_hex(6)}"
 
 
 class AgentService:
     def __init__(
-        self, storage: Storage, config: AppConfig, http: httpx.AsyncClient, *, now: Callable[[], float] = time.time
+        self,
+        storage: Storage,
+        config: AppConfig,
+        http: httpx.AsyncClient,
+        *,
+        now: Callable[[], float] = time.time,
+        resolver: Resolver = system_resolver,
     ) -> None:
         self._st = storage
         self._config = config
         self._http = http
         self._now = now
+        self._resolver = resolver
 
     async def list(self, user_id: str) -> list[Agent]:
         return [Agent.from_record(r) for r in await self._st.agents.list(user_id)]
@@ -424,6 +473,8 @@ class AgentService:
         if call_type in ONE_WAY and spec.tts is not None:
             # Kept for a switch back to conversation; must stay valid while stored.
             kinds["tts"] = "tts"
+        if call_type in ONE_WAY and spec.action is None and self._config.limits.history_only_one_way:
+            del kinds["action"]  # no webhook: the calls go to the history
         for field, kind in kinds.items():
             endpoint = getattr(spec, field)
             if endpoint is None:
@@ -434,6 +485,36 @@ class AgentService:
                 build_endpoint(self._config, endpoint, kind, self._http)
             except ProviderError as e:
                 raise AgentError("invalid", f"{field}: {e}") from None
+
+    async def check_public(self, agent: Agent, *, include_stored_tts: bool = True) -> None:
+        """With limits.public_only, refuses an agent whose own endpoints are not public (syntax, name, then DNS for
+        all hosts at once under one deadline). The message names the field and the rule, never the URL. A call passes
+        include_stored_tts=False: a one-way agent's stored voice is not used by it, only by saving the agent."""
+        if not self._config.limits.public_only:
+            return
+        targets: list[tuple[str, tuple[str, int]]] = []
+        for field, url in user_urls(agent.spec, agent.call_type, include_stored_tts=include_stored_tts):
+            try:
+                targets.append((field, check_public_url(url)))
+            except NotPublic as e:
+                raise AgentError("url_not_public", f"{field}: {e}") from None
+        hosts = list(dict.fromkeys(target for _, target in targets))
+
+        async def resolve(target: tuple[str, int]) -> str | None:
+            try:
+                await resolve_public(*target, self._resolver, timeout_s=_DNS_DEADLINE_S)
+            except NotPublic as e:
+                return str(e)
+            return None
+
+        try:
+            async with asyncio.timeout(_DNS_DEADLINE_S):
+                failures = dict(zip(hosts, await asyncio.gather(*(resolve(h) for h in hosts)), strict=True))
+        except TimeoutError:
+            failures = {h: NO_ADDRESS for h in hosts}
+        for field, target in targets:
+            if failures[target] is not None:
+                raise AgentError("url_not_public", f"{field}: {failures[target]}")
 
     @staticmethod
     def _parse_input(data: dict[str, Any]) -> AgentInput:
@@ -456,6 +537,8 @@ class AgentService:
         given = inp.model_dump(exclude_none=True, exclude={"slug", "display_name", "icon", "color", "call_type", "position"})
         call_type = inp.call_type or "conversation"
         for field in stage_kinds(call_type):
+            if field == "action" and call_type in ONE_WAY and self._config.limits.history_only_one_way:
+                continue  # no action given: the calls go to the history
             if field not in given:
                 given[field] = self.default_endpoint(field, call_type)
         spec = self._spec(given)
@@ -466,6 +549,7 @@ class AgentService:
             id=new_agent_id(), user_id=user_id, slug=inp.slug, display_name=inp.display_name or inp.slug,
             icon=icon, call_type=call_type, position=0, spec=spec, created_at=now, updated_at=now, color=inp.color,
         )
+        await self.check_public(agent)
         limit = self._config.limits.max_agents_per_user
         try:
             created = Agent.from_record(await self._st.agents.create(agent.to_record(), max_count=limit))
@@ -491,6 +575,9 @@ class AgentService:
                 merged[field] = _keep_redacted(value, getattr(current.spec, field))
             elif field == "tts" and "tts" in inp.model_fields_set:
                 merged["tts"] = None  # an explicit null drops the voice (one-way agents only; _check enforces it)
+            elif field == "action" and "action" in inp.model_fields_set and self._config.limits.history_only_one_way:
+                # Drops the webhook (one-way agents only; _check enforces it). Without the limit, ignored as in 0.8.2.
+                merged["action"] = None
         if "retention_days" in inp.model_fields_set:
             merged["retention_days"] = inp.retention_days
         for field in ("vad", "timeouts"):
@@ -507,6 +594,7 @@ class AgentService:
             icon=icon, call_type=call_type, position=current.position,
             spec=spec, created_at=current.created_at, updated_at=self._now(), color=inp.color or current.color,
         )
+        await self.check_public(updated)
         try:
             saved = Agent.from_record(await self._st.agents.update(updated.to_record()))
         except Conflict:

@@ -155,7 +155,68 @@ def test_providers(client):
     assert body == {
         "providers": [{"name": "stt", "kind": "stt"}, {"name": "llm", "kind": "action"}, {"name": "tts", "kind": "tts"}],
         "custom_endpoints": True,
+        "public_only": False,
+        "history_only_one_way": False,
     }
+
+
+def history_only_client():
+    cfg = fake_config()
+    cfg.limits.history_only_one_way = True
+    return make_client(cfg)
+
+
+def test_providers_lists_history_only_one_way(client):
+    assert client.get("/v1/providers", headers=h(api_token(client))).json()["history_only_one_way"] is False
+    with history_only_client() as c:
+        assert c.get("/v1/providers", headers=h(api_token(c))).json()["history_only_one_way"] is True
+
+
+HOOK = {"type": "webhook", "url": "https://hooks.example/in"}
+
+
+def test_action_null_is_ignored_without_the_limit(client):
+    token = api_token(client)
+    assert client.post("/v1/agents", headers=h(token), json={"slug": "note", "call_type": "one-shot", "action": HOOK}).status_code == 201
+    r = client.patch("/v1/agents/note", headers=h(token), json={"action": None})
+    assert r.status_code == 200 and r.json()["action"] == HOOK
+
+
+def test_history_only_agents_through_the_api():
+    with history_only_client() as c:
+        token = api_token(c)
+        r = c.post("/v1/agents", headers=h(token), json={"slug": "note", "call_type": "one-shot"})
+        assert r.status_code == 201 and r.json()["action"] is None
+        assert c.patch("/v1/agents/note", headers=h(token), json={"action": HOOK}).json()["action"] == HOOK
+        assert c.patch("/v1/agents/note", headers=h(token), json={"action": None}).json()["action"] is None
+        r = c.patch("/v1/agents/default", headers=h(token), json={"action": None})
+        assert r.status_code == 422 and r.json()["message"] == "action: required for conversation agents"
+
+
+def public_only_client():
+    cfg = fake_config()
+    cfg = cfg.model_copy(update={"limits": cfg.limits.model_copy(update={"public_only": True})})
+    return make_client(cfg)
+
+
+def test_create_agent_with_internal_url_is_422():
+    stt = {"type": "openai_stt", "base_url": "https://speaches:8000/v1", "model": "w", "api_key": "sk-secret"}
+    with public_only_client() as c:
+        t = api_token(c)
+        r = c.post("/v1/agents", headers=h(t), json={"slug": "own", "stt": stt})
+        assert r.status_code == 422
+        assert r.json() == {"error": "url_not_public", "message": "stt: the host is a local or internal name"}
+        assert "speaches" not in r.text and "sk-secret" not in r.text
+        assert c.get("/v1/agents/own", headers=h(t)).status_code == 404
+        # PATCH too: the stored agent stays as it was.
+        r = c.patch("/v1/agents/default", headers=h(t), json={"stt": {**stt, "base_url": "http://x.example.com/v1"}})
+        assert r.status_code == 422 and r.json()["error"] == "url_not_public"
+
+
+def test_providers_lists_public_only(client):
+    assert client.get("/v1/providers", headers=h(api_token(client))).json()["public_only"] is False
+    with public_only_client() as c:
+        assert c.get("/v1/providers", headers=h(api_token(c))).json()["public_only"] is True
 
 
 def test_pairing_code_pairs_a_watch_to_the_token_owner(client):

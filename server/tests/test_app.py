@@ -330,8 +330,10 @@ HOOK_URL = "https://hooks.example/in"
 RELAY = "https://relay.test"
 
 
-def oneway_client(push=None):
+def oneway_client(push=None, limits: dict | None = None):
     cfg = fake_config()
+    if limits:
+        cfg.limits = type(cfg.limits).model_validate({**cfg.limits.model_dump(), **limits})
     cfg.limits.custom_endpoint_types.append("fake_stt")
     cfg.limits.max_one_way_call_s = 60  # the lowest allowed
     cfg.push = push
@@ -387,6 +389,7 @@ def test_one_shot_call_records_until_hang_up_and_delivers(oneway):
         "call_type": "one-shot",
     }
     assert view["agent"] == {"id": view["agent_id"], "slug": "note", "display_name": "note"}
+    assert view["delivery"] == "webhook"
     assert [(e["role"], e["text"], e["error"]) for e in view["entries"]] == [("user", "comprar leite", None)]
     assert view["expires_at"] is None
     sent = oneway.hook.calls.last.request
@@ -508,6 +511,7 @@ def test_conversation_is_recorded_in_the_history(client):
         ws.send_json({"type": "session.end"})
     view = client.get(f"/v1/calls/{call_id}", headers=auth(token)).json()
     assert (view["call_type"], view["status"], view["error"]) == ("conversation", "ended", None)
+    assert view["delivery"] is None
     assert view["agent"]["slug"] == "default" and view["ended_at"] >= view["created_at"]
     [user, agent] = view["entries"]
     assert (user["role"], agent["role"], agent["error"]) == ("user", "agent", None)
@@ -627,6 +631,55 @@ def test_one_way_call_end_without_push_config_sends_nothing(oneway):
     assert not oneway.relay.called
 
 
+HISTORY_AGENT = {"slug": "inbox", "display_name": "Inbox", "call_type": "one-shot",
+                 "stt": {"type": "fake_stt", "text": "comprar leite"}, "vad": {"type": "energy"}}
+
+
+def test_history_only_one_shot_call():
+    from wristcall.config import PushConfig
+
+    key = "wc_push_" + "k" * 43
+    for c in oneway_client(PushConfig(relay_url=RELAY, timeout_s=0.5), limits={"history_only_one_way": True}):
+        created = c.post("/v1/agents", headers=auth(api_token(c)), json=HISTORY_AGENT)
+        assert created.status_code == 201 and created.json()["action"] is None
+        token = pair(c)
+        assert c.put("/v1/push", headers=auth(token), json={"push_key": key}).status_code == 204
+        with c.websocket_connect("/v1/call", headers=auth(token)) as ws:
+            ws.send_json({**START, "agent": "inbox"})
+            ready = ws.receive_json()
+            assert ready["type"] == "session.ready"
+            ws.send_bytes(tone(500))
+            ws.send_json({"type": "session.end"})
+        view = wait_done(c, ready["call_id"], auth(token))
+        assert {k: view[k] for k in ("status", "delivery", "attempts", "last_http_status", "error", "text")} == {
+            "status": "delivered", "delivery": "history", "attempts": 0, "last_http_status": None, "error": None,
+            "text": "comprar leite",
+        }
+        deadline = time.monotonic() + 2
+        while not c.relay.called and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert c.relay.call_count == 1
+        message = json.loads(c.relay.calls.last.request.content)
+        assert (message["title"], message["body"], message["data"]["status"]) == ("Saved", "Saved to Inbox.", "delivered")
+        assert not c.hook.called
+
+
+def test_history_agent_after_the_limit_is_turned_off():
+    storage = open_sqlite_storage(":memory:")
+    on, off = fake_config(), fake_config()
+    on.limits.history_only_one_way = True
+    for cfg in (on, off):
+        cfg.limits.custom_endpoint_types.append("fake_stt")
+    with TestClient(create_app(on, storage=storage)) as c:
+        assert c.post("/v1/agents", headers=auth(api_token(c)), json=HISTORY_AGENT).status_code == 201
+    with TestClient(create_app(off, storage=storage)) as c:
+        expect_fatal(c, pair(c), {**START, "agent": "inbox"}, "agent_unavailable")
+        token = api_token(c)
+        assert "inbox" in [a["slug"] for a in c.get("/v1/agents", headers=auth(token)).json()["agents"]]
+        assert c.get("/v1/agents/inbox", headers=auth(token)).json()["action"] is None
+        assert c.get("/v1/calls", headers=auth(token)).json()["calls"] == []
+
+
 def test_startup_logs_the_link_qr_on_a_new_server(caplog):
     from test_pair_account import account_config
 
@@ -673,3 +726,244 @@ def test_agent_without_color_reports_null(client):
     run(client.app.state.agents.create(owner(client).id, {"slug": "tinted", "color": "pink"}))
     colors = {a["slug"]: a["color"] for a in client.get("/v1/me", headers=auth(token)).json()["agents"]}
     assert colors == {"default": None, "tinted": "pink"}
+
+
+import httpcore  # noqa: E402
+
+from conftest import fake_resolver  # noqa: E402
+from wristcall.agents import AgentService  # noqa: E402
+
+PUBLIC_IP, PRIVATE_IP = "93.184.216.34", "10.0.0.9"
+
+
+def public_only_client(resolver, *, public_only=True, hook_route=True, tts=None):
+    """A one-shot agent `note` written straight to the storage (no check when saved), webhook at HOOK_URL."""
+    cfg = fake_config()
+    cfg.limits.custom_endpoint_types.append("fake_stt")
+    cfg.limits.public_only = public_only
+    app = create_app(
+        cfg, storage=open_sqlite_storage(":memory:"), delivery_policy=DeliveryPolicy(1.0, (0.0, 0.0)), resolver=resolver
+    )
+    with respx.mock(assert_all_called=False) as mock:
+        mock.route(host="testserver").pass_through()
+        if hook_route:
+            hook = mock.post(HOOK_URL).mock(return_value=httpx.Response(204))
+        else:
+            # The request goes on to the real transport, so the checking backend runs.
+            hook = mock.route(host="hooks.example").pass_through()
+        with TestClient(app) as c:
+            c.hook = hook
+            plain = fake_config()
+            plain.limits.custom_endpoint_types.append("fake_stt")
+            run(AgentService(c.app.state.storage, plain, httpx.AsyncClient()).create(owner(c).id, {
+                "slug": "note", "call_type": "one-shot",
+                "stt": {"type": "fake_stt", "text": "comprar leite"},
+                "action": {"type": "webhook", "url": HOOK_URL},
+                "vad": {"type": "energy"},
+                **({"tts": tts} if tts else {}),
+            }))
+            yield c
+
+
+def api_token(client) -> str:
+    return run(UserService(client.app.state.storage).issue_token(owner(client).id, "cli"))[1]
+
+
+def one_shot(client, token: str) -> str:
+    with client.websocket_connect("/v1/call", headers=auth(token)) as ws:
+        ws.send_json({**START, "agent": "note"})
+        ready = ws.receive_json()
+        assert ready["type"] == "session.ready"
+        ws.send_bytes(tone(500))
+        ws.send_json({"type": "session.end"})
+    return ready["call_id"]
+
+
+def test_public_only_refuses_a_call_to_an_internal_address():
+    for c in public_only_client(fake_resolver({"hooks.example": [PRIVATE_IP]})):
+        token = pair(c)
+        err = expect_fatal(c, token, {**START, "agent": "note"}, "agent_unavailable")
+        assert err["reason"] == "url_not_public"
+        assert err["message"] == "This agent uses an address this server cannot call."
+        assert c.get("/v1/calls", headers=auth(api_token(c))).json()["calls"] == []
+        assert not c.hook.called
+
+
+def test_public_only_lets_a_public_agent_call():
+    for c in public_only_client(fake_resolver({"hooks.example": [PUBLIC_IP]})):
+        token = pair(c)
+        view = wait_done(c, one_shot(c, token), auth(token))
+        assert (view["status"], view["attempts"], view["last_http_status"]) == ("delivered", 1, 204)
+        assert c.hook.called
+
+
+def test_public_only_ignores_the_stored_voice_of_a_one_way_agent():
+    # The voice is kept for a switch back to conversation; a one-shot call never uses it, so it must not refuse the call.
+    tts = {"type": "openai_tts", "base_url": "https://speaches:8000/v1", "model": "t", "voice": "v"}
+    for c in public_only_client(fake_resolver({"hooks.example": [PUBLIC_IP]}), tts=tts):
+        token = pair(c)
+        view = wait_done(c, one_shot(c, token), auth(token))
+        assert (view["status"], view["last_http_status"]) == ("delivered", 204)
+
+
+def test_without_public_only_the_resolver_is_never_used():
+    async def resolver(host: str, port: int) -> list[str]:
+        raise AssertionError(f"resolver used for {host}")
+
+    for c in public_only_client(resolver, public_only=False):
+        token = pair(c)
+        view = wait_done(c, one_shot(c, token), auth(token))
+        assert (view["status"], view["last_http_status"]) == ("delivered", 204)
+
+
+def test_public_only_rebinding_after_start_fails_delivery(monkeypatch):
+    asked: list[str] = []
+
+    async def rebinding(host: str, port: int) -> list[str]:
+        # Public for the check at session.start, private when the delivery opens its connection.
+        asked.append(host)
+        return [PUBLIC_IP] if len(asked) == 1 else [PRIVATE_IP]
+
+    connected: list[str] = []
+
+    async def no_network(self, host, port, **kwargs):
+        connected.append(host)
+        raise httpcore.ConnectError("no network in tests")
+
+    monkeypatch.setattr(httpcore.AnyIOBackend, "connect_tcp", no_network)
+    for c in public_only_client(rebinding, hook_route=False):
+        token = pair(c)
+        view = wait_done(c, one_shot(c, token), auth(token))
+        assert (view["status"], view["error"], view["attempts"], view["last_http_status"]) == (
+            "failed", "delivery_failed", 1, None
+        )
+        # The second lookup is the checking backend's, at connect time; nothing reached the network.
+        assert asked == ["hooks.example", "hooks.example"] and connected == []
+        # respx records a pass-through request as it goes by; none of them got an answer.
+        assert c.hook.called and not any(call.has_response for call in c.hook.calls)
+
+
+# ---------- limits.max_concurrent_calls ----------
+
+import threading  # noqa: E402
+
+END = {"type": "session.end"}
+BUSY = "This server is busy; try again in a minute."
+
+
+def wait_until(check, timeout_s: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout_s
+    while not check():
+        if time.monotonic() > deadline:
+            raise AssertionError("timed out")
+        time.sleep(0.01)
+
+
+def limited(**limits):
+    return oneway_client(limits={"max_concurrent_calls": limits})
+
+
+def test_no_limit_by_default(client):
+    token = pair(client)
+    with client.websocket_connect("/v1/call", headers=auth(token)) as a, \
+            client.websocket_connect("/v1/call", headers=auth(token)) as b:
+        for ws in (a, b):
+            ws.send_json(START)
+            assert ws.receive_json()["type"] == "session.ready"
+        assert client.app.state.call_slots.active() == {"conversation": 2, "one_way": 0}
+        a.send_json(END)
+        b.send_json(END)
+
+
+def test_busy_when_conversations_are_at_the_limit():
+    for c in limited(conversation=1):
+        token = pair(c)
+        with c.websocket_connect("/v1/call", headers=auth(token)) as first:
+            first.send_json(START)
+            assert first.receive_json()["type"] == "session.ready"
+            err = expect_fatal(c, token, START, "busy")
+            assert err["message"] == BUSY and "reason" not in err
+            first.send_json(END)
+            expect_close(first, 1000)
+        wait_until(lambda: c.app.state.call_slots.active()["conversation"] == 0)
+        with c.websocket_connect("/v1/call", headers=auth(token)) as third:
+            third.send_json(START)
+            assert third.receive_json()["type"] == "session.ready"
+            third.send_json(END)
+        # The refused call left no record.
+        assert len(c.app.state.storage.db.query("SELECT id FROM calls")) == 2
+
+
+def test_one_way_limit_is_separate():
+    for c in limited(one_way=1):
+        token = pair(c)
+        with c.websocket_connect("/v1/call", headers=auth(token)) as note:
+            note.send_json({**START, "agent": "note"})
+            assert note.receive_json()["type"] == "session.ready"
+            with c.websocket_connect("/v1/call", headers=auth(token)) as talk:
+                talk.send_json(START)
+                assert talk.receive_json()["type"] == "session.ready"
+                talk.send_json(END)
+            err = expect_fatal(c, token, {**START, "agent": "ideas"}, "busy")
+            assert err["message"] == BUSY
+            note.send_json(END)
+
+
+def test_slot_is_released_when_the_client_drops():
+    for c in limited(conversation=1):
+        token = pair(c)
+        with c.websocket_connect("/v1/call", headers=auth(token)) as ws:
+            ws.send_json(START)
+            assert ws.receive_json()["type"] == "session.ready"
+        # No session.end: the client just went away.
+        wait_until(lambda: c.app.state.call_slots.active()["conversation"] == 0)
+        with c.websocket_connect("/v1/call", headers=auth(token)) as ws:
+            ws.send_json(START)
+            assert ws.receive_json()["type"] == "session.ready"
+            ws.send_json(END)
+
+
+@pytest.mark.parametrize("agent", ["default", "note"])
+def test_slot_is_released_when_the_call_fails_to_start(monkeypatch, agent):
+    for c in limited(conversation=1, one_way=1):
+        token = pair(c)
+
+        async def broken(*args, **kwargs):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(c.app.state.storage.calls, "create", broken)
+        with pytest.raises(RuntimeError):
+            with c.websocket_connect("/v1/call", headers=auth(token)) as ws:
+                ws.send_json({**START, "agent": agent})
+                ws.receive_json()
+        wait_until(lambda: c.app.state.call_slots.active() == {"conversation": 0, "one_way": 0})
+        monkeypatch.undo()
+        assert c.app.state.storage.db.query("SELECT id FROM calls") == []
+
+
+def test_one_shot_holds_the_slot_until_transcribed(monkeypatch):
+    from wristcall.providers.fake import FakeStt
+
+    started, gate = threading.Event(), threading.Event()
+
+    async def gated(self, wav: bytes, language: str) -> str:
+        started.set()
+        while not gate.is_set():
+            await asyncio.sleep(0.01)
+        return self.text
+
+    monkeypatch.setattr(FakeStt, "transcribe", gated)
+    for c in limited(one_way=1):
+        token = pair(c)
+        with c.websocket_connect("/v1/call", headers=auth(token)) as ws:
+            ws.send_json({**START, "agent": "note"})
+            call_id = ws.receive_json()["call_id"]
+            ws.send_bytes(tone(500))
+            ws.send_json(END)
+        # One-shot transcribes after hang-up: the WebSocket is gone but the call still holds its slot.
+        assert started.wait(5)
+        assert c.app.state.call_slots.active()["one_way"] == 1
+        expect_fatal(c, token, {**START, "agent": "note"}, "busy")
+        gate.set()
+        assert wait_done(c, call_id, auth(token))["status"] == "delivered"
+        wait_until(lambda: c.app.state.call_slots.active()["one_way"] == 0)

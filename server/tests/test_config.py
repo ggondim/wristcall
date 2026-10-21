@@ -87,6 +87,13 @@ def test_profiles_are_optional_and_limits_have_defaults():
         assert parse_config(data, ENV).profiles == {}
 
 
+def test_public_only_limit():
+    data = base()
+    assert parse_config(data, ENV).limits.public_only is False
+    data["limits"] = {"public_only": True}
+    assert parse_config(data, ENV).limits.public_only is True
+
+
 def test_limits_are_validated():
     data = base()
     data["limits"] = {"max_agents_per_user": 0}
@@ -94,6 +101,21 @@ def test_limits_are_validated():
         parse_config(data, ENV)
     data["limits"] = {"max_agent_per_user": 5}
     with pytest.raises(ConfigError, match="max_agent_per_user"):
+        parse_config(data, ENV)
+
+
+def test_max_concurrent_calls():
+    data = base()
+    limits = parse_config(data, ENV).limits.max_concurrent_calls
+    assert (limits.conversation, limits.one_way) == (None, None)
+    data["limits"] = {"max_concurrent_calls": {"conversation": 3, "one_way": 10}}
+    limits = parse_config(data, ENV).limits.max_concurrent_calls
+    assert (limits.conversation, limits.one_way) == (3, 10)
+    data["limits"] = {"max_concurrent_calls": {"conversation": 0}}
+    with pytest.raises(ConfigError, match="conversation"):
+        parse_config(data, ENV)
+    data["limits"] = {"max_concurrent_calls": {"other": 1}}
+    with pytest.raises(ConfigError, match="other"):
         parse_config(data, ENV)
 
 

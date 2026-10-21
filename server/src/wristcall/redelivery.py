@@ -31,6 +31,7 @@ class Redelivery:
         config: AppConfig,
         http: httpx.AsyncClient,
         *,
+        user_http: httpx.AsyncClient | None = None,
         policy: DeliveryPolicy = DeliveryPolicy(),
         background: Background | None = None,
         now: Callable[[], float] = time.time,
@@ -40,6 +41,8 @@ class Redelivery:
         self._agents = agents
         self._config = config
         self._http = http
+        # The user's own webhook goes through this one (limits.public_only); an operator's provider through `http`.
+        self._user_http = user_http
         self._policy = policy
         self._background = background
         self._now = now
@@ -49,6 +52,8 @@ class Redelivery:
     async def _prepare(self, record: CallRecord) -> tuple[Agent, Webhook, str]:
         if record.call_type not in ONE_WAY:
             raise RedeliveryError("not_one_way", "only one-shot and monologue calls are delivered")
+        if record.delivery == "history":
+            raise RedeliveryError("no_webhook", "This call was saved to the history; it has no webhook to deliver to.")
         if record.status == "processing" or record.id in self._busy:
             raise RedeliveryError("busy", "this call is being delivered right now")
         if record.status != "failed" or record.error not in REDELIVERABLE:
@@ -63,9 +68,12 @@ class Redelivery:
         if agent.call_type not in ONE_WAY:
             raise RedeliveryError("not_one_way", "the agent of this call is no longer one-shot or monologue")
         try:
-            webhook = build_one_way_providers(self._config, agent.spec, self._http).webhook
+            providers = build_one_way_providers(self._config, agent.spec, self._http, user_http=self._user_http)
+            webhook = providers.webhook
         except ProviderError:
             raise RedeliveryError("agent_unavailable", "the agent's webhook is not available; check its action") from None
+        if webhook is None:
+            raise RedeliveryError("no_webhook", "This agent has no webhook now; add one to deliver again.")
         return agent, webhook, text
 
     async def _begin(self, record: CallRecord) -> tuple[CallLog, Agent, Webhook, str]:
