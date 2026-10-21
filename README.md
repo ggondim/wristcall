@@ -79,6 +79,9 @@ watches and agents live in the server's database (`data_dir/wristcall.db`).
   list: it lets them make the server POST to internal addresses and see the status code. `public_only`
   (`false`; `true` accepts only public `https` URLs for users' own endpoints, checked when an agent is
   saved, when a call starts and on every connection: turn it on when users are not trusted).
+  `history_only_one_way` (`false`; `true` lets a one-shot or monologue agent have no webhook: its text is only
+  saved to the history). `max_concurrent_calls` (`conversation`, `one_way`; no limit by default: the most calls open
+  at once per type, above that a call gets `busy`).
 - `profiles` (optional, the 0.2.x format): on the first start they become agents of a user
   called `owner`, `default` first. After that the section is ignored; manage agents with
   `wristcall agents`.
