@@ -23,7 +23,10 @@ class CloudAuthenticator:
         self._verifier = verifier
 
     async def identify(self, authorization: str | None) -> tuple[Principal, UserProof] | None:
-        """The principal and the account proof for this request's token, or None when it is not acceptable."""
+        """The principal and the account proof for this request's token, or None when it is not acceptable.
+
+        Pure: it does not touch `current_proof`. Use `authenticate` to bind the proof to the request.
+        """
         token = bearer(authorization)
         if token is None:
             return None
@@ -38,6 +41,8 @@ class CloudAuthenticator:
         return _principal(identity, token)
 
     async def authenticate(self, authorization: str | None) -> Principal | None:
+        # A refusal must never leave an earlier account's proof in this context.
+        current_proof.set(None)
         found = await self.identify(authorization)
         if found is None:
             return None

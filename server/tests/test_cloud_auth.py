@@ -130,3 +130,10 @@ async def test_never_logs_the_token(fake: FakeCloud, auth: CloudAuthenticator, c
     await auth.authenticate(bearer(good))
     await auth.authenticate(bearer(bad))
     assert good not in caplog.text and bad not in caplog.text
+
+
+@pytest.mark.parametrize("header", [None, "Bearer not.a.jwt", "Bearer " + "wc_pat_" + "a" * 43])
+async def test_refusal_clears_a_stale_proof(auth: CloudAuthenticator, header: str | None) -> None:
+    current_proof.set(UserProof("other-account", "dev-x", "ios", "earlier-token"))
+    assert await auth.authenticate(header) is None
+    assert current_proof.get() is None
