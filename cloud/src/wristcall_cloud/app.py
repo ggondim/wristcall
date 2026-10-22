@@ -29,6 +29,7 @@ from .agenda import AgendaError, parse_agents, parse_new_server, parse_server_pa
 from .api_common import ApiError, json_object
 from .audience import AudienceError, is_loopback, normalize_audience
 from .auth import Caller, Verifier, current_account, require_platform
+from .clients import CLIENT_HEADER, sees_cloud_entry
 from .cloud_store import CloudModeStore
 from .config import (
     CloudConfig,
@@ -51,11 +52,14 @@ from .node_me import router as node_me_router
 from .node_push import router as node_push_router
 from .nodes import NodeStore
 from .oidc import OidcVerifier
+from .provision import cloud_entry_view, is_managed
 from .push.api import push_error_response
 from .push.api import router as push_router
 from .push.apns import ApnsChannel
 from .push.channels import Channel, FakeChannel
 from .push.limits import RegistrationLimiter, SendLimiter
+from .route_api import router as route_router
+from .routing import NodeReports
 from .push.registry import PushError, purge_idle_loop
 from .push.webpush import WebPushChannel
 from .session_tokens import MANAGER_PLATFORMS, AccountTokens
@@ -214,6 +218,37 @@ def _not_found() -> ApiError:
     return ApiError("not_found", "server not found", 404)
 
 
+# The managed Cloud entry (provision.py) is shown only to apps that send a recent enough X-Wristcall-Client
+# (older ones never knew it); to the others it does not exist. Older `kind: cloud` entries are like any other.
+def _sees_cloud(request: Request, caller: Caller) -> bool:
+    config: CloudConfig = request.app.state.config
+    return sees_cloud_entry(request.headers.get(CLIENT_HEADER), caller.platform, config.cloud_entry_clients)
+
+
+async def _shown(request: Request, caller: Caller, doc: dict[str, Any]) -> dict[str, Any] | None:
+    """A server as `caller` sees it: the Cloud entry with the account's cloud-mode agents, or None if hidden."""
+    if not is_managed(doc):
+        return public_server(doc)
+    if not _sees_cloud(request, caller):
+        return None
+    return await cloud_entry_view(get_cloud(request), doc)
+
+
+async def _agenda(request: Request, caller: Caller) -> list[dict[str, Any]]:
+    shown = [await _shown(request, caller, doc) for doc in await get_store(request).list_servers(caller.key)]
+    return [server for server in shown if server is not None]
+
+
+async def _check_editable(request: Request, caller: Caller, server_id: str) -> None:
+    """The Cloud entry is the Cloud's to change: 409 for who sees it, 404 for who does not."""
+    doc = await get_store(request).get_server(caller.key, server_id)
+    if doc is None or not is_managed(doc):
+        return
+    if not _sees_cloud(request, caller):
+        raise _not_found()
+    raise ApiError("managed_by_cloud", "this server is managed by the wristcall Cloud", 409)
+
+
 @router.get("/v1/account")
 async def get_account(request: Request, caller: Caller = Depends(current_account)) -> dict[str, Any]:
     store = get_store(request)
@@ -222,7 +257,7 @@ async def get_account(request: Request, caller: Caller = Depends(current_account
     return {
         "account": caller.key,
         "created_at": account["created_at"],
-        "servers": await store.count_servers(caller.key),
+        "servers": await store.count_servers(caller.key, exclude_managed=not _sees_cloud(request, caller)),
         "plan": await _plan(get_accounts(request), caller.key),
         "identities": [identity["kind"] for identity in identities],
         "key_set": "key_hash" in account,
@@ -269,7 +304,7 @@ async def delete_account(request: Request, caller: Caller = Depends(current_acco
 
 @router.get("/v1/servers")
 async def list_servers(request: Request, caller: Caller = Depends(current_account)) -> dict[str, Any]:
-    return {"servers": [public_server(s) for s in await get_store(request).list_servers(caller.key)]}
+    return {"servers": await _agenda(request, caller)}
 
 
 @router.post("/v1/servers", status_code=201)
@@ -279,7 +314,8 @@ async def create_server(request: Request, caller: Caller = Depends(current_accou
     await store.touch_account(caller.key)
     # Check then insert: two simultaneous requests may overshoot the limit by one server. Accepted, the limit
     # protects the database from runaway clients, not a quota. The unique index is what decides duplicates.
-    if await store.count_servers(caller.key) >= request.app.state.config.max_servers:
+    # The managed Cloud entry takes no slot: an older app does not see it.
+    if await store.count_servers(caller.key, exclude_managed=True) >= request.app.state.config.max_servers:
         raise ApiError("limit", "the account reached its limit of servers", 403)
     try:
         doc = await store.add_server(caller.key, fields)
@@ -291,9 +327,10 @@ async def create_server(request: Request, caller: Caller = Depends(current_accou
 @router.get("/v1/servers/{server_id}")
 async def get_server(server_id: str, request: Request, caller: Caller = Depends(current_account)) -> dict[str, Any]:
     doc = await get_store(request).get_server(caller.key, server_id)
-    if doc is None:
+    shown = None if doc is None else await _shown(request, caller, doc)
+    if shown is None:
         raise _not_found()
-    return public_server(doc)
+    return shown
 
 
 @router.patch("/v1/servers/{server_id}")
@@ -301,6 +338,7 @@ async def patch_server(server_id: str, request: Request, caller: Caller = Depend
     changes = parse_server_patch(await json_object(request))
     store = get_store(request)
     await store.touch_account(caller.key)
+    await _check_editable(request, caller, server_id)
     doc = await store.update_server(caller.key, server_id, changes)
     if doc is None:
         raise _not_found()
@@ -311,6 +349,7 @@ async def patch_server(server_id: str, request: Request, caller: Caller = Depend
 async def delete_server(server_id: str, request: Request, caller: Caller = Depends(current_account)) -> Response:
     store = get_store(request)
     await store.touch_account(caller.key)
+    await _check_editable(request, caller, server_id)
     if not await store.delete_server(caller.key, server_id):
         raise _not_found()
     return Response(status_code=204)
@@ -321,6 +360,7 @@ async def put_agents(server_id: str, request: Request, caller: Caller = Depends(
     agents = parse_agents(await json_object(request), request.app.state.config.max_agents_per_server)
     store = get_store(request)
     await store.touch_account(caller.key)
+    await _check_editable(request, caller, server_id)
     doc = await store.update_server(caller.key, server_id, {"agents": agents})
     if doc is None:
         raise _not_found()
@@ -373,8 +413,8 @@ async def issue_server_token(request: Request, authorization: str | None = Heade
 async def list_agents(request: Request, caller: Caller = Depends(current_account)) -> dict[str, Any]:
     return {
         "agents": [
-            {**agent, "server_id": s["_id"], "server_name": s["name"], "server_url": s["url"]}
-            for s in await get_store(request).list_servers(caller.key)
+            {**agent, "server_id": s["id"], "server_name": s["name"], "server_url": s["url"]}
+            for s in await _agenda(request, caller)
             for agent in s["agents"]
         ]
     }
@@ -511,6 +551,7 @@ def create_app(
     app.state.attempt_limiter = AttemptLimiter(config.session_attempts_per_minute)
     app.state.poll_limiter = PollLimiter()
     app.state.node_limiter = NodeLimiter(config.node_requests_per_minute)
+    app.state.node_reports = NodeReports(config.node_reports_window_s, config.node_reports_accounts)
     if config.push_fake:
         log.warning("push: fake channel, nothing is delivered (WRISTCALL_CLOUD_PUSH_FAKE)")
     app.add_middleware(BodyLimit, limit=MAX_BODY)
@@ -522,7 +563,7 @@ def create_app(
             CORSMiddleware,
             allow_origins=list(config.cors_origins),
             allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-            allow_headers=["Authorization", "Content-Type"],
+            allow_headers=["Authorization", "Content-Type", "X-Wristcall-Client"],
             allow_credentials=False,
             expose_headers=["Retry-After"],
             max_age=600,
@@ -557,6 +598,7 @@ def create_app(
 
     app.include_router(router)
     app.include_router(sessions_router)
+    app.include_router(route_router)
     app.include_router(push_router)
     app.include_router(node_me_router)
     app.include_router(node_heartbeat_router)

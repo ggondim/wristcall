@@ -49,8 +49,12 @@ class Store:
         )
         return doc
 
-    async def count_servers(self, account: str) -> int:
-        return await self.servers.count_documents({"account": account})
+    async def count_servers(self, account: str, *, exclude_managed: bool = False) -> int:
+        """`exclude_managed`: leaves out the account's managed Cloud entry (`kind: cloud` and `managed: true`)."""
+        query: dict[str, Any] = {"account": account}
+        if exclude_managed:
+            query["$nor"] = [{"kind": "cloud", "managed": True}]
+        return await self.servers.count_documents(query)
 
     async def delete_account(self, key: str) -> None:
         await self.servers.delete_many({"account": key})

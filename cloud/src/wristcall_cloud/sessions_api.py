@@ -29,8 +29,9 @@ from .account_store import (
 )
 from .api_common import ApiError, json_object, parse_device
 from .auth import Caller, _bearer, client_platform, current_device, require_platform, zitadel_identity
-from .config import CloudConfig
+from .config import CloudConfig, provision_settings
 from .limits import check_ip_limit
+from .provision import provision, voice_notes_language
 from .session_tokens import APP_PLATFORMS, MANAGER_PLATFORMS, AccountTokens, parse_account_key
 
 log = logging.getLogger("wristcall_cloud.sessions")
@@ -365,11 +366,15 @@ def _user_agent(request: Request) -> str:
     return "".join(ch for ch in value if unicodedata.category(ch)[0] != "C")[:MAX_USER_AGENT]
 
 
-def _country(request: Request, header: str | None) -> str | None:
+def client_country(request: Request, header: str | None) -> str | None:
+    """The caller's country (two capitals) from the proxy's `header`; None without the setting or a known country."""
     if not header:
         return None
     value = request.headers.get(header, "").strip()
     return value if _COUNTRY.fullmatch(value) and value not in _NO_COUNTRY else None
+
+
+_country = client_country
 
 
 @router.post("/v1/web-sessions", status_code=201)
@@ -383,7 +388,7 @@ async def create_web_session(request: Request) -> dict[str, Any]:
     device = parse_device(raw)
     if device["platform"] != "web":
         raise ApiError("invalid", "device.platform must be web", 422)
-    country = _country(request, _config(request).client_country_header)
+    country = client_country(request, _config(request).client_country_header)
     session = await _accounts(request).add_web_session(device, _user_agent(request), country)
     log.info("web session created")
     return session
@@ -478,4 +483,19 @@ async def redeem_invite(request: Request, caller: Caller = Depends(current_devic
         log.info("redeem with an unknown invite")
         raise _invalid_code()
     log.info("invite redeemed (plan %s)", doc["plan"])
+    await _provision_after_redeem(request, caller.key, doc["plan"])
     return entitlement_response(doc)
+
+
+async def _provision_after_redeem(request: Request, account: str, plan: str) -> None:
+    """The Cloud entry and "Voice notes" for the new plan. A failure is logged, never raised: the invite is spent
+    already, and the account's first route provisions what is missing."""
+    config = _config(request)
+    settings = provision_settings(config)
+    if settings is None:
+        return
+    try:
+        language = voice_notes_language(client_country(request, config.client_country_header), settings.language)
+        await provision(request.app.state.store, request.app.state.cloud, account, plan, settings, language=language)
+    except Exception as e:  # whatever went wrong, the redeem already happened
+        log.warning("provisioning after redeem failed (%s)", type(e).__name__)

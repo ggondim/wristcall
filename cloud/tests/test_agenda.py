@@ -151,9 +151,11 @@ def test_body_must_be_an_object_and_auth_comes_first(client):
     assert client.post("/v1/servers", json={"name": "a"}).status_code == 401
 
 
-def test_server_accepts_cloud_kind_linked_and_name_is_stripped(client):
-    s = add_server(client, name="  nuvem  ", url="http://192.168.0.5:8765", kind="cloud", linked=True)
-    assert (s["name"], s["kind"], s["linked"]) == ("nuvem", "cloud", True)
+def test_server_refuses_cloud_kind_linked_and_name_is_stripped(client):
+    r = client.post("/v1/servers", json={"name": "n", "url": "http://192.168.0.5:8765", "kind": "cloud"}, headers=H_A)
+    assert r.status_code == 422 and r.json()["error"] == "invalid"
+    s = add_server(client, name="  nuvem  ", url="http://192.168.0.5:8765", linked=True)
+    assert (s["name"], s["kind"], s["linked"]) == ("nuvem", "self-hosted", True)
 
 
 def test_server_limit(mongo_db, fake_verifier):

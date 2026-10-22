@@ -4,6 +4,45 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 
 ## [Unreleased]
 
+## [cloud-0.6.0] - 2026-10-21
+
+Cloud 0.6.0. Adds `POST /v1/route`, which tells an app which node serves a call or manages its cloud-mode data, and the
+Cloud entry of the agenda with the "Voice notes" agent. No schema change. Nobody sees the Cloud entry until
+`WRISTCALL_CLOUD_CLOUD_ENTRY_CLIENTS` names an app version, so current apps (watch 0.5.1, iPhone 0.2.2, PWA 0.3.0) see
+no change. No node registered yet: the route answers `503 no_node_available`. Run `wristcall-cloud admin provision --all`
+once after deploying.
+
+### Added
+
+- `POST /v1/route` (account session): body `{"purpose": "call" | "manage", "agent"?, "avoid"?}`, answer `{node, token,
+  expires_at, fallback}` with a per-server token (`wc-server+jwt`, audience the node's URL, 300 seconds) for the chosen
+  node and for a fallback. Errors `402 plan_required`, `403 device_revoked`, `404 not_found`, `404 not_configured`,
+  `422 invalid` and `503 no_node_available` (`Retry-After: 30`). Nodes are chosen by health (heartbeat age, capacity by
+  call type, operator speech providers for the `full` plan, failure reports from 3 accounts for on-demand nodes), then by
+  region for the caller's country, `priority`, load and id.
+- `WRISTCALL_CLOUD_ROUTE_REGIONS` (country to regions, default `BR=sao,gru;US=iad;CA=iad;MX=iad;*=iad`).
+- `X-Wristcall-Client: <platform>/<x.y.z>` header and `WRISTCALL_CLOUD_CLOUD_ENTRY_CLIENTS` (minimum version per
+  platform that sees the Cloud entry; empty by default).
+- Cloud entry: a `kind: "cloud"` server with `managed: true` that the Cloud creates for an account with a plan, with the
+  account's cloud-mode agents as its agents. "Voice notes" (one-shot, `full` plan) is created once per account, in `pt`
+  for Portuguese-speaking countries, otherwise `WRISTCALL_CLOUD_VOICE_NOTES_LANGUAGE` (`en`); its speech to text provider
+  is `WRISTCALL_CLOUD_VOICE_NOTES_STT` (`stt-default`). Created when an invite is redeemed, by `admin grant`, by
+  `admin provision` and by the first route of an account that has none.
+- `wristcall-cloud admin provision <account> | --all` and `--language` on `grant` and `provision`; `admin show` prints
+  `cloud_entry`.
+
+### Changed
+
+- `POST /v1/servers` with `kind: "cloud"` answers `422 invalid` (apps never sent it). `PATCH`, `DELETE` and
+  `PUT /v1/servers/{id}/agents` on the Cloud entry answer `409 managed_by_cloud` (`404` to apps that do not see it). The
+  entry does not count against `WRISTCALL_CLOUD_MAX_SERVERS`. `kind: "cloud"` servers made by older apps are unchanged.
+- CORS also allows the `X-Wristcall-Client` request header.
+
+### Deploying
+
+Run `wristcall-cloud admin provision --all` once after deploying, so accounts that already have a plan get the entry.
+No schema change. See [cloud/README.md](cloud/README.md#routes-and-the-cloud-entry).
+
 ## [cloud-0.5.1] - 2026-10-21
 
 ### Added
