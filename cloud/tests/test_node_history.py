@@ -525,3 +525,19 @@ def test_search_with_many_matches_is_paged_in_the_database(world, monkeypatch):
 
     monkeypatch.setattr(AsyncCollection, "distinct", forbidden)
     assert len(ids(history(world, terms=HASH_A, limit=2))) == 2
+
+
+def test_search_page_is_not_short_when_an_entry_outlives_its_call(world):
+    real = [call_with(world, [[HASH_A]], created_at=BASE + n) for n in range(4)]
+    # An orphan entry (its call is gone) is the newest match: it must not take a slot of the page.
+    with db(world.mongo_db) as d:
+        d["cloud_call_entries"].insert_one({
+            "_id": "c_0000000000000dead:0", "account": world.account, "call": "c_0000000000000dead",
+            "agent": world.oneshot, "call_created_at": BASE + 100, "term_hashes": [HASH_A], "seq": 0,
+        })
+    expected = list(reversed(real))
+    first = history(world, terms=HASH_A, limit=3)
+    assert ids(first) == expected[:3]
+    last = first.json()["calls"][-1]
+    second = history(world, terms=HASH_A, limit=3, before_at=last["created_at"], before_id=last["id"])
+    assert ids(second) == expected[3:]

@@ -11,7 +11,7 @@ schema change.
 
 ### Fixed
 
-- Four kinds of input that answered `500` now answer `422 invalid`: a `limit` of thousands of digits on `GET /v1/node/calls`; a whole number too large for a double (or past 2^53) as an entry's `at`, as `ended_at` or `finished_at` in a `PATCH` of a call, or as `seconds` in `finish`; an integer outside int64 anywhere in an agent's `spec`; a lone surrogate (JSON `\ud800`) in an agent's `display_name`, in a key or string of its `spec`, in `agent` when opening a call, or in `boot_id`, `version` and `active_call_ids` of a heartbeat.
+- Four kinds of input that answered `500` now answer `422 invalid`: a `limit` of thousands of digits on `GET /v1/node/calls` (`limit` now accepts at most 3 digits, so `0010` is refused); a whole number too large for a double (or past 2^53) as an entry's `at`, as `ended_at` or `finished_at` in a `PATCH` of a call, or as `seconds` in `finish`; an integer outside int64 anywhere in an agent's `spec`; a lone surrogate (JSON `\ud800`) in an agent's `display_name`, in a key or string of its `spec`, in `agent` when opening a call, or in `boot_id`, `version` and `active_call_ids` of a heartbeat.
 - The agent limit holds under concurrency: the Cloud inserts and then counts, and a request that finds the account over the cap removes its own agent and answers `403 limit`. Requests racing at the cap may be refused that would have fitted; the account never ends above it.
 - Searching the history by term hash (`GET /v1/node/calls?terms=`) no longer collects every matching call id in memory: one aggregation over the entries, filtered by account, agent, date window and cursor first, returns the page. Same semantics (any hash of a group, every group, groups may match different entries).
 

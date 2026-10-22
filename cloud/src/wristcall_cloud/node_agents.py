@@ -268,6 +268,8 @@ async def create_agent(request: Request, caller: NodeCaller = Depends(node_calle
         raise _conflict() from None
     # Insert, then count: of requests racing past the check above, each sees at least the agents inserted before its
     # own, so no more than the cap survive (a request may be refused that would have fitted, never the reverse).
+    # Known limits: this may over-refuse in a race, and a fault between `insert_one` and `delete_one` can leave the
+    # account above the cap until an agent is deleted.
     if await cloud.agents.count_documents({"account": caller.account}) > config.max_cloud_agents:
         await cloud.agents.delete_one({"_id": doc["_id"], "account": caller.account})
         raise limit_reached

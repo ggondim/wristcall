@@ -126,7 +126,7 @@ def _search_pipeline(
     groups may match different entries of the call), newest first, one page. It all happens in the database: the
     entries already hold the account, the agent and the date of their call, so the first `$match` narrows by all of
     them (and by the hashes, through the `account_terms` index), and what is left is grouped by call, one flag per
-    group. Only the page's calls are looked up. No list of ids passes through here."""
+    group; the matching calls are then looked up, sorted and cut to the page. No list of ids passes through Python."""
     match: dict[str, Any] = {
         "account": account, "term_hashes": {"$in": list(dict.fromkeys(h for group in groups for h in group))}
     }
@@ -143,13 +143,15 @@ def _search_pipeline(
         {"$match": {"$and": [c for c in clauses if c]}},
         {"$group": {"_id": "$call", "at": {"$first": "$call_created_at"}, **flags}},
         {"$match": {name: 1 for name in flags}},
-        {"$sort": {"at": DESCENDING, "_id": DESCENDING}},
-        {"$limit": limit},
+        # The calls are looked up before the page is cut: an entry can outlive its call (a delete cut short, the
+        # two TTL indexes expiring at different times), and such an orphan must not take a slot of the page, or a short
+        # page would read as the last one.
         {"$lookup": {"from": calls_collection, "localField": "_id", "foreignField": "_id", "as": "call"}},
         {"$unwind": "$call"},
         {"$replaceRoot": {"newRoot": "$call"}},
         {"$match": {"account": account}},
         {"$sort": {"created_at": DESCENDING, "_id": DESCENDING}},
+        {"$limit": limit},
     ]
 
 
