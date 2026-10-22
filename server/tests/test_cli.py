@@ -9,6 +9,7 @@ import respx
 import yaml
 from typer.testing import CliRunner
 
+from test_config import cloud_yaml
 from wristcall import cli
 from wristcall.pairing import Paired, PairingGone, PairingService
 from wristcall.storage import open_sqlite_storage
@@ -515,3 +516,74 @@ def test_cli_agents_add_and_edit_take_a_color(tmp_path):
     assert invoke(cfg, "agents", "add", "bad", "--color", "magenta").exit_code == 1
     assert invoke(cfg, "agents", "edit", "tinted", "--color", "magenta").exit_code == 1
     assert json.loads(ok(cfg, "agents", "show", "tinted"))["color"] == "teal"
+
+
+def _leaf_commands(group, prefix=()):
+    for name, command in group.commands.items():
+        if hasattr(command, "commands"):
+            yield from _leaf_commands(command, (*prefix, name))
+        else:
+            yield (*prefix, name)
+
+
+# Every command but `serve`, with the arguments it needs.
+OPERATOR_COMMANDS = {
+    ("pair",): [],
+    ("link",): [],
+    ("devices", "list"): [],
+    ("devices", "approve"): ["req1"],
+    ("devices", "deny"): ["req1"],
+    ("devices", "revoke"): ["dev1"],
+    ("devices", "assign"): ["dev1"],
+    ("users", "list"): [],
+    ("users", "add"): ["bob"],
+    ("users", "edit"): ["bob"],
+    ("users", "unlink"): ["bob"],
+    ("users", "rm"): ["bob", "--yes"],
+    ("users", "tokens", "add"): [],
+    ("users", "tokens", "list"): [],
+    ("users", "tokens", "revoke"): ["tok1"],
+    ("agents", "list"): [],
+    ("agents", "show"): ["a"],
+    ("agents", "add"): ["a"],
+    ("agents", "edit"): ["a"],
+    ("agents", "rm"): ["a", "--yes"],
+    ("history", "list"): [],
+    ("history", "show"): ["x1"],
+    ("history", "rm"): ["x1", "--yes"],
+    ("history", "clear"): ["--all", "--yes"],
+    ("history", "export"): [],
+    ("history", "redeliver"): ["x1"],
+    ("history", "new-key"): [],
+    ("history", "encrypt"): ["--yes"],
+    ("history", "decrypt"): ["--yes"],
+}
+
+
+def test_operator_table_covers_every_command():
+    from typer.main import get_command
+
+    assert set(_leaf_commands(get_command(cli.app))) == {("serve",), *OPERATOR_COMMANDS}
+
+
+def test_operator_commands_refuse_cloud_mode(tmp_path):
+    path = tmp_path / "node.yaml"
+    path.write_text(yaml.safe_dump(cloud_yaml()), encoding="utf-8")
+    for command, args in OPERATOR_COMMANDS.items():
+        r = invoke(path, *command, *args)
+        assert r.exit_code == 2, (command, r.output)
+        assert "not available in cloud mode" in r.output, command
+    assert not (tmp_path / "data").exists()  # nothing was opened on disk
+
+
+def test_agents_list_refuses_cloud_mode(tmp_path):
+    path = tmp_path / "node.yaml"
+    path.write_text(yaml.safe_dump(cloud_yaml()), encoding="utf-8")
+    r = invoke(path, "agents", "list")
+    assert r.exit_code == 2 and "not available in cloud mode" in r.output
+
+
+def test_new_key_needs_no_config_when_self_hosted(tmp_path):
+    r = runner.invoke(cli.app, ["history", "new-key", "-c", str(tmp_path / "missing.yaml")])
+    assert r.exit_code == 0 and len(r.output.strip()) == 43
+    assert ok(write_config(tmp_path), "history", "new-key").strip()

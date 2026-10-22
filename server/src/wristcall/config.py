@@ -10,7 +10,16 @@ from typing import Annotated, Any, Literal, Mapping
 from urllib.parse import urlsplit
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    StringConstraints,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from .audience import AudienceError, is_loopback, normalize_audience
 from .history_codec import HistoryKeyError, parse_key
@@ -142,6 +151,9 @@ def _cors_origin(raw: str) -> str:
 
 class ServerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    # self-hosted: users, devices, agents and history live in this server's SQLite. cloud: the same binary runs as a
+    # node of the Wristcall Cloud, which keeps all of that (see CloudNodeConfig); nothing is written to disk.
+    mode: Literal["self-hosted", "cloud"] = "self-hosted"
     public_url: str
     directory_url: str | None = None
     pairing_approval: Literal["code", "manual"] = "code"
@@ -192,6 +204,8 @@ class LimitsConfig(BaseModel):
     )
     # Longest one-way call (one-shot or monologue): the server stops recording and delivers what it got.
     max_one_way_call_s: int = Field(default=1800, ge=60, le=14_400)
+    # Longest conversation, from session.start; null: no limit. A cloud-mode node defaults it to 3600.
+    max_conversation_s: int | None = Field(default=None, ge=60, le=14_400)
     # Protects the GPU: calls beyond these get `busy` at session.start.
     max_concurrent_calls: ConcurrentCallsConfig = Field(default_factory=ConcurrentCallsConfig)
 
@@ -307,6 +321,75 @@ class PushConfig(BaseModel):
         return _check_base_url(value, "relay_url")
 
 
+_NODE_SECRET = re.compile(r"wc_node_[A-Za-z0-9_-]{43}")
+_NODE_ID = re.compile(r"[a-z][a-z0-9-]{0,31}")
+# Cloud-mode node: longest conversation when the operator does not say (a call is billed by wall time).
+CLOUD_NODE_MAX_CONVERSATION_S = 3600
+
+
+class CloudNodeConfig(BaseModel):
+    """How a cloud-mode node (server.mode: cloud) reaches the Wristcall Cloud, which holds its data."""
+
+    model_config = ConfigDict(extra="forbid")
+    # The Cloud's base URL for /v1/node/*: https, or plain http on a private overlay network (Swarm); no trailing slash.
+    cloud_url: str
+    # The name this node was registered under in the Cloud.
+    node_id: str
+    # `wc_node_` + 43 characters: sent only in the Authorization header of requests to the Cloud.
+    node_secret: SecretStr
+    # 32 random bytes in base64: seals the agents' secrets (API keys) before they reach the Cloud. Not the history key.
+    seal_key: SecretStr
+    heartbeat_s: float = Field(default=15.0, gt=0, le=60)
+
+    @field_validator("cloud_url")
+    @classmethod
+    def _check_cloud_url(cls, value: str) -> str:
+        # Errors never repeat the value: it may carry credentials.
+        msg = "cloud_url must be an http(s) URL with a host and no credentials, query or fragment"
+        value = value.strip()
+        try:
+            url = urlsplit(value)
+            url.port  # noqa: B018  (raises on an invalid port)
+        except ValueError:
+            raise ValueError(msg) from None
+        if (
+            url.scheme not in ("http", "https")
+            or not url.hostname
+            or url.username is not None
+            or url.password is not None
+            or any(c in value for c in "?#@\\ ")
+        ):
+            raise ValueError(msg)
+        return value.rstrip("/")
+
+    @field_validator("node_id")
+    @classmethod
+    def _check_node_id(cls, value: str) -> str:
+        if not _NODE_ID.fullmatch(value):
+            raise ValueError("node_id must be 1 to 32 characters: lowercase letters, digits and hyphens, a letter first")
+        return value
+
+    @field_validator("node_secret")
+    @classmethod
+    def _check_node_secret(cls, value: SecretStr) -> SecretStr:
+        if not _NODE_SECRET.fullmatch(value.get_secret_value()):
+            raise ValueError("node_secret must be wc_node_ followed by 43 characters (the secret the Cloud gave this node)")
+        return value
+
+    @field_validator("seal_key")
+    @classmethod
+    def _check_seal_key(cls, value: SecretStr) -> SecretStr:
+        try:
+            parse_key(value.get_secret_value())
+        except HistoryKeyError:
+            raise ValueError("seal_key must be 32 random bytes in base64") from None
+        return value
+
+    def seal(self) -> bytes:
+        """The 32-byte key that seals the agents' secrets."""
+        return parse_key(self.seal_key.get_secret_value())
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     server: ServerConfig
@@ -316,6 +399,61 @@ class AppConfig(BaseModel):
     central_account: CentralAccountConfig | None = None
     history: HistoryConfig = Field(default_factory=HistoryConfig)
     push: PushConfig | None = None
+    cloud_node: CloudNodeConfig | None = None
+
+    @property
+    def is_cloud(self) -> bool:
+        return self.server.mode == "cloud"
+
+    @model_validator(mode="after")
+    def _check_cloud_mode(self) -> "AppConfig":
+        if not self.is_cloud:
+            if self.cloud_node is not None:
+                raise ValueError("cloud_node is only for server.mode: cloud")
+            return self
+        # Imported here: providers imports this module.
+        from .providers import provider_kind
+
+        if self.cloud_node is None:
+            raise ValueError("server.mode: cloud needs the cloud_node block")
+        if self.central_account is None:
+            raise ValueError("server.mode: cloud needs central_account")
+        try:
+            public_url = normalize_audience(self.server.public_url)
+        except AudienceError:
+            raise ValueError("server.mode: cloud needs a server.public_url that is a valid audience") from None
+        if self.central_account.audience != [public_url]:
+            raise ValueError("server.mode: cloud needs central_account.audience to be exactly [server.public_url]")
+        history_key = self.history.key()
+        if history_key is None:
+            raise ValueError("server.mode: cloud needs history.encryption_key")
+        if self.cloud_node.seal() == history_key:
+            raise ValueError("cloud_node.seal_key must differ from history.encryption_key")
+        if self.push is not None:
+            raise ValueError("server.mode: cloud does not take a push block (the Cloud sends the push)")
+        for name, provider in self.providers.items():
+            if provider_kind(provider.type) not in ("stt", "tts"):
+                raise ValueError(f"server.mode: cloud takes only stt and tts providers (provider '{name}')")
+        # Forced: untrusted users, so own endpoints are public only and one-way agents need no action. The call limits
+        # and the conversation cap are the operator's when set; otherwise the node's starting values.
+        limits = self.limits
+        calls = limits.max_concurrent_calls.model_copy(
+            update={
+                kind: CLOUD_NODE_CONCURRENT_CALLS[kind]
+                for kind in CLOUD_NODE_CONCURRENT_CALLS
+                if getattr(limits.max_concurrent_calls, kind) is None
+            }
+        )
+        # In place: a copy returned from an "after" validator is ignored when the model is built by __init__.
+        self.limits = limits.model_copy(
+            update={
+                "public_only": True,
+                "history_only_one_way": True,
+                "max_concurrent_calls": calls,
+                "max_conversation_s": limits.max_conversation_s or CLOUD_NODE_MAX_CONVERSATION_S,
+            }
+        )
+        return self
 
     @model_validator(mode="after")
     def _check_references(self) -> "AppConfig":

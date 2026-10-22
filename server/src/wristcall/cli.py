@@ -15,6 +15,7 @@ from typing import Annotated, Any, TypeVar
 import httpx
 import typer
 import uvicorn
+import yaml
 
 from .agents import AGENT_COLORS, Agent, AgentError, AgentService, agent_detail
 from .bootstrap import bootstrap
@@ -62,6 +63,13 @@ def _load(path: Path) -> AppConfig:
         raise typer.Exit(2) from e
 
 
+def _refuse_cloud(cloud: bool) -> None:
+    """A cloud-mode node keeps no local data: users, devices, agents and history are managed on the Cloud."""
+    if cloud:
+        typer.echo("error: this command is not available in cloud mode (server.mode: cloud); manage it on the Cloud", err=True)
+        raise typer.Exit(2)
+
+
 @dataclass
 class Ctx:
     cfg: AppConfig
@@ -78,6 +86,7 @@ class Ctx:
 def _run(config: Path, body: Callable[[Ctx], Awaitable[T]]) -> T:
     """Opens the database (migrating and importing profiles if needed), runs body, closes. Domain errors exit 1."""
     cfg = _load(config)
+    _refuse_cloud(cfg.is_cloud)
 
     async def main() -> T:
         storage = open_sqlite_storage(cfg.server.data_dir)
@@ -181,6 +190,7 @@ def pair(config: ConfigOpt = DEFAULT_CONFIG, user: UserOpt = None) -> None:
 def link(config: ConfigOpt = DEFAULT_CONFIG, user: UserOpt = None) -> None:
     """Shows a QR code and a link for the wristcall app to link its account to a user (15 minutes, single use)."""
     cfg = _load(config)
+    _refuse_cloud(cfg.is_cloud)
     if cfg.central_account is None:
         typer.echo("error: linking with a QR code needs central_account in wristcall.yaml (see the README)", err=True)
         raise typer.Exit(1)
@@ -767,8 +777,17 @@ def history_redeliver(call_id: str, config: ConfigOpt = DEFAULT_CONFIG, user: Us
 
 
 @history_app.command("new-key")
-def history_new_key() -> None:
+def history_new_key(config: ConfigOpt = DEFAULT_CONFIG) -> None:
     """Prints a new random key for history.encryption_key. Keep it safe: losing it loses the encrypted history."""
+    # Works without a config file; but with one that says cloud mode it refuses like every other command.
+    # The raw YAML is read, not validated: a node config with a mistake in it is still a node config.
+    try:
+        raw = yaml.safe_load(config.read_text(encoding="utf-8"))
+        server = raw.get("server") if isinstance(raw, dict) else None
+        cloud = isinstance(server, dict) and server.get("mode") == "cloud"
+    except (OSError, yaml.YAMLError):
+        cloud = False
+    _refuse_cloud(cloud)
     typer.echo(new_key())
 
 
