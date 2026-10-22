@@ -80,8 +80,11 @@ def parse_new_server(body: dict[str, Any]) -> dict[str, Any]:
     if "name" not in body or "url" not in body:
         raise AgendaError("name and url are required")
     kind = body.get("kind", "self-hosted")
+    if kind == "cloud":
+        # The Cloud entry is made by the Cloud alone (provision.py); apps add self-hosted servers.
+        raise AgendaError("kind cloud is managed by the wristcall Cloud")
     if kind not in SERVER_KINDS:
-        raise AgendaError("kind must be self-hosted or cloud")
+        raise AgendaError("kind must be self-hosted")
     return {
         "name": _text(body["name"], "name"),
         "url": normalize_url(body["url"]),
