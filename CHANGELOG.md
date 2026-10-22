@@ -4,6 +4,55 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 
 ## [Unreleased]
 
+## [server-0.10.0] - 2026-10-22
+
+Server 0.10.0. Adds cloud mode (`server.mode: cloud`): the same server runs as a node of the Wristcall Cloud 0.6.x,
+serving calls and the management API to the Cloud's accounts with nothing on disk. Self-hosted servers are unchanged:
+everything new is off unless `server.mode` is `cloud`. See [README](README.md#cloud-mode) and
+[docs/protocol.md](docs/protocol.md#cloud-mode).
+
+### Added
+
+- `server.mode: cloud` and the `cloud_node` block (`cloud_url`, `node_id`, `node_secret`, `seal_key`, `heartbeat_s`).
+  Cloud mode needs `central_account` (issuer: the Cloud; audience exactly `[server.public_url]`) and
+  `history.encryption_key` (different from `seal_key`); it refuses `push` and any provider but `stt` and `tts` types.
+  It forces `limits.public_only` and `limits.history_only_one_way`, and defaults `limits.max_concurrent_calls` to 2
+  conversations and 2 one-way calls (measured on the GPU of a single node) and `limits.max_conversation_s` to 3600 s.
+- Authentication by the Cloud's per-server token (`wc-server+jwt`, from `POST /v1/route`) on `/v1/call` and every
+  REST route; `sub`, `did`, `plt` and `jti` are required. Any platform may call; management stays with the apps.
+- Storage through the Cloud's node API (`/v1/node/*`): agents, history, push targets and usage. The agents' secrets
+  (API keys, URLs) are sealed with `seal_key` and the history text with the history key before they reach the Cloud;
+  search works on keyed hashes.
+- Calls opened on the Cloud with its plan and quota rules: new fatal errors `plan_required`, `quota_exceeded`,
+  `busy` with `reason: too_many_calls`, `agent_unavailable` with `reason` `cloud_unreachable` or `needs_voice_url`.
+  Each call has a wall-clock deadline (the month's minutes left or the Cloud's `max_s`): at the quota, a non-fatal
+  `quota_exceeded`; at the longest call, `call.captured {reason: "limit"}`, conversations included. Then close 1000.
+- Writes to the Cloud go through an in-memory queue that retries while the Cloud is down; calls in progress go on.
+- A heartbeat every `heartbeat_s` with the calls held, the calls by type and the capacity; `GET /v1/health` answers
+  `503 starting` until the Cloud accepts the first one, and adds `"mode": "cloud"`.
+- Ordered shutdown: the first signal reports a capacity of 0 (the Cloud routes no new calls), `/v1/health` answers
+  `503 draining`, open calls get 30 s, then uvicorn 5 s, background work 8 s and the queue flush 20 s (about 63 s:
+  set `stop_grace_period` to at least 75 s). A second signal exits at once and skips the flush.
+- REST errors in cloud mode: `503 cloud_unavailable`, `402 plan_required`, `403 device_revoked`, `409 call_open`, and
+  `404 not_in_cloud_mode` for pairing, pairing codes and requests, account link, device routes and `DELETE /v1/me`.
+  `GET /v1/me` carries the account's `plan` and `usage`. Push goes through the Cloud.
+- Every CLI command but `serve` refuses a cloud-mode configuration.
+
+### Changed
+
+- `limits.max_conversation_s` (60 to 14400, none by default) applies in both modes: a conversation that reaches it
+  ends with `call.captured {reason: "limit"}` and close 1000. Without it self-hosted conversations have no limit, as
+  before.
+- `GET /v1/calls/{id}` with an app's token reads the calls of every device of the account in cloud mode (a watch still
+  reads only its own). Self-hosted: no change (a personal token already read every call of its user, a device token
+  only its own).
+
+### Notes
+
+- In cloud mode, redelivering a call the Cloud no longer has answers `409 not_failed`, not `404`.
+- Losing the history key loses the cloud-mode history; every node of a Cloud needs the same history and seal keys.
+- No database schema change; a self-hosted 0.9.0 configuration starts as before.
+
 ## [cloud-0.6.1] - 2026-10-22
 
 Cloud 0.6.1. Minor fixes for the cloud-mode node API (`/v1/node/*`) deferred from 0.5.0. Same HTTP contract, no
