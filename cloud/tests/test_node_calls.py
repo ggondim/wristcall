@@ -672,3 +672,50 @@ def test_a_retried_finish_settles_usage_after_a_crash_following_the_correction(w
     assert usage["total_s"] == 160 and usage["seconds_by_type"] == {"one-shot": 160}
     assert world.finish(opened, status="delivered", seconds=160).status_code == 204
     assert world.usage()["total_s"] == 160
+
+
+def post_json(world, url: str, headers: dict, body, method: str = "post"):
+    """A body sent as bytes, so that huge integers and lone surrogates (escaped by `json.dumps`) reach the server."""
+    return getattr(world.client, method)(
+        url, headers={**headers, "Content-Type": "application/json"}, content=raw(body)
+    )
+
+
+@pytest.mark.parametrize(
+    "number", [10**400, 2**70, -2**70, 2**53, -(2**53)], ids=["1e400", "2^70", "-2^70", "2^53", "-2^53"]
+)
+def test_huge_numbers_are_422(world, number):
+    opened = world.opened()
+    call_id, headers = opened["call_id"], world.node_with(opened)
+    r = post_json(world, f"/v1/node/calls/{call_id}/entries", headers, {"entries": [entry(0, at=number)]})
+    assert r.status_code == 422 and r.json()["error"] == "invalid", r.text
+    for field in ("ended_at", "finished_at"):
+        r = post_json(world, f"/v1/node/calls/{call_id}", headers, {field: number}, method="patch")
+        assert r.status_code == 422 and r.json()["error"] == "invalid", field
+    r = world.finish(opened, status="delivered", seconds=number)
+    assert r.status_code == 422 and r.json()["error"] == "invalid", r.text
+    # Nothing was written, and the call is still open and can be finished.
+    doc = world.call_doc(call_id)
+    assert doc["open"] is True and doc["ended_at"] is None and doc["seconds"] is None
+    with db(world.mongo_db) as d:
+        assert d["cloud_call_entries"].count_documents({"call": call_id}) == 0
+    assert world.finish(opened, status="delivered", seconds=3).status_code == 204
+
+
+def test_numbers_below_two_to_the_53_still_pass(world):
+    opened = world.opened()
+    call_id, headers = opened["call_id"], world.node_with(opened)
+    big = 2**53 - 1
+    r = post_json(world, f"/v1/node/calls/{call_id}/entries", headers, {"entries": [entry(0, at=big)]})
+    assert r.status_code == 204, r.text
+    assert post_json(world, f"/v1/node/calls/{call_id}", headers, {"ended_at": big}, method="patch").status_code == 204
+    assert world.call_doc(call_id)["ended_at"] == big
+
+
+def test_lone_surrogate_agent_is_422(world):
+    for bad in ("a\ud800b", "\udfff", "agent-1\ud800"):
+        r = post_json(world, "/v1/node/calls", world.watch, {"agent": bad, "call_type": "one-shot"})
+        assert r.status_code == 422 and r.json()["error"] == "invalid", bad
+    # Real text with an accent or an emoji is a plain unknown agent, not an invalid one.
+    r = post_json(world, "/v1/node/calls", world.watch, {"agent": "café \U0001f600", "call_type": "one-shot"})
+    assert r.status_code == 404

@@ -2,6 +2,7 @@
 the Cloud-restart tolerance, and `processing` calls failed when a node restarts or goes silent."""
 
 import asyncio
+import json
 import time
 
 import pytest
@@ -331,3 +332,24 @@ def test_orphan_sweep_loop_survives_a_failed_round(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(orphan_sweep_loop(object(), every_s=30, sleep=sleep, now=lambda: 123.0))
     assert slept == [30, 30, 30] and rounds == [123.0, 123.0]
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"boot_id": "a\ud800b"},
+        {"version": "0.9\udfff"},
+        {"active_call_ids": ["c_1", "c_\ud800"]},
+    ],
+    ids=["boot_id", "version", "active_call_ids"],
+)
+def test_lone_surrogate_is_422(world, over):
+    headers = {**node_headers(world.nodes["home"]), "Content-Type": "application/json"}
+    # Bytes: `json.dumps` escapes the surrogate and the server's parser turns it back into one.
+    r = world.client.post("/v1/node/heartbeat", headers=headers, content=json.dumps(body(**over)).encode())
+    assert r.status_code == 422 and r.json()["error"] == "invalid", r.text
+    assert "last_seen_at" not in node_doc(world)
+    # Accents and emoji are text like any other.
+    fine = body(boot_id="b\u00f3ot-\U0001f600", active_call_ids=["c_caf\u00e9"])
+    r = world.client.post("/v1/node/heartbeat", headers=headers, content=json.dumps(fine).encode())
+    assert r.status_code == 204, r.text
