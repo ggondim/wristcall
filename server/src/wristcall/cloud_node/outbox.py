@@ -9,8 +9,10 @@ offline: they leave in the order they came in, and when the drawer is full the o
   4... seconds up to `max_delay_s` (a 429 waits its `Retry-After`).
 - A 401 is tried again for up to 15 minutes (the window for rotating the node secret), then dropped; a push answered
   401 (its grant expired) is dropped at once: a push is best effort, and it must not hold the calls behind it.
-- An unexpected error while sending is tried again like an unavailable Cloud (logged with its type only).
-- Any other 4xx drops the item (logged with the status and the Cloud's error code); any 2xx accepts it.
+- An unexpected error while sending is tried again like an unavailable Cloud (logged with its type only), but after
+  `MAX_UNEXPECTED_TRIES` in a row the item is dropped: one that always fails must not block the finishes behind it.
+- Any other 4xx drops the item (logged with the status and the Cloud's error code); any 2xx accepts it, whatever its
+  body.
 - Over `max_items` or `max_bytes`, the oldest history entries are dropped first, then the oldest item of any kind,
   never the item being sent. `dropped` counts them all.
 
@@ -36,6 +38,7 @@ Kind = Literal["entries", "patch", "finish", "push"]
 METHODS: dict[str, str] = {"entries": "POST", "patch": "PATCH", "finish": "POST", "push": "POST"}
 UNAUTHORIZED_WINDOW_S = 15 * 60
 MAX_RETRY_AFTER_S = 600.0
+MAX_UNEXPECTED_TRIES = 5  # consecutive unexpected errors on one item before it is dropped
 
 
 @dataclass(frozen=True, eq=False)
@@ -202,17 +205,26 @@ class Outbox:
 
     async def _send(self, item: OutboxItem) -> bool:
         """Tries the item until the Cloud accepts it (True) or refuses it for good (False)."""
-        delay, tries = 1.0, 0
+        delay, tries, unexpected = 1.0, 0, 0
         while True:
             tries += 1
             wait = min(delay, self._max_delay)
             try:
-                resp = await self._client.request(METHODS[item.kind], item.path, grant=item.grant, json=item.body)
+                resp = await self._client.request(
+                    METHODS[item.kind], item.path, grant=item.grant, json=item.body, lenient_body=True
+                )
             except CloudUnavailable:
+                unexpected = 0
                 why = "Wristcall Cloud unavailable"
             except Exception as e:  # noqa: BLE001 - the worker must outlive any surprise; its text may hold a body
+                unexpected += 1
+                if unexpected >= MAX_UNEXPECTED_TRIES:
+                    log.error("outbox: %s of call %s: %d unexpected errors in a row (%s); dropping it",
+                              item.kind, item.call_id, unexpected, type(e).__name__)
+                    return False
                 why = f"unexpected {type(e).__name__}"
             else:
+                unexpected = 0
                 if resp.status == 401 and item.kind == "push":  # an expired grant, most likely: best effort
                     log.warning("outbox: push of call %s: Cloud answered 401; dropping it", item.call_id)
                     return False

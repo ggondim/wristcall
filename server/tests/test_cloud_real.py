@@ -100,9 +100,16 @@ def serve_in_thread(app: Any, port: int) -> tuple[uvicorn.Server, threading.Thre
     deadline = time.monotonic() + 20
     while not server.started:
         if not thread.is_alive() or time.monotonic() > deadline:
-            raise AssertionError("the Cloud did not start")
+            # Whatever ran of the lifespan (indexes, a Mongo client) is stopped before the test gives up.
+            server.should_exit = True
+            thread.join(15)
+            raise CloudDidNotStart("the Cloud did not start")
         time.sleep(0.02)
     return server, thread
+
+
+class CloudDidNotStart(AssertionError):
+    pass
 
 
 async def register_node(database: str) -> str:
@@ -117,24 +124,40 @@ async def register_node(database: str) -> str:
     return secret
 
 
+def start_cloud(database: str) -> tuple[str, uvicorn.Server, threading.Thread]:
+    """Starts the Cloud on a free port; a port taken between `free_port()` and the bind is tried once more."""
+    for attempt in (1, 2):
+        port = free_port()
+        url = f"http://127.0.0.1:{port}"
+        config = CloudConfig(
+            mongo_url=MONGO_URL, database=database, issuer="https://auth.test", clients={"ios": "client-ios"},
+            public_url=url, signing_key_pem=new_signing_pem(), push_fake=True,
+        )
+        try:
+            server, thread = serve_in_thread(create_cloud_app(config), port)
+        except CloudDidNotStart:
+            if attempt == 2:
+                raise
+            continue
+        return url, server, thread
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 @pytest.fixture(scope="module")
 def real_cloud() -> Iterator[RealCloud]:
-    port = free_port()
-    url = f"http://127.0.0.1:{port}"
     database = f"test_node_{uuid.uuid4().hex}"
-    config = CloudConfig(
-        mongo_url=MONGO_URL, database=database, issuer="https://auth.test", clients={"ios": "client-ios"},
-        public_url=url, signing_key_pem=new_signing_pem(), push_fake=True,
-    )
-    server, thread = serve_in_thread(create_cloud_app(config), port)
     sync: MongoClient = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000, tz_aware=True)
-    try:
+    server: uvicorn.Server | None = None
+    thread: threading.Thread | None = None
+    try:  # the database is dropped whatever fails, even a Cloud that did not finish starting
+        url, server, thread = start_cloud(database)
         secret = asyncio.run(register_node(database))
         with httpx.Client(base_url=url, timeout=10) as http:
             yield RealCloud(url, secret, http, sync[database])
     finally:
-        server.should_exit = True
-        thread.join(15)
+        if server is not None and thread is not None:
+            server.should_exit = True
+            thread.join(15)
         sync.drop_database(database)
         sync.close()
 
@@ -171,7 +194,9 @@ def node(real_cloud: RealCloud) -> Iterator[Node]:
         if request.url.path == "/v1/node/heartbeat":
             beats.append(json.loads(request.content))
 
-    cloud_http = httpx.AsyncClient(event_hooks={"request": [record]})
+    # No kept-alive connections: they would belong to the TestClient's loop, closed with it, and could not be closed
+    # after it.
+    cloud_http = httpx.AsyncClient(event_hooks={"request": [record]}, limits=httpx.Limits(max_keepalive_connections=0))
     sse = f'data: {{"choices": [{{"delta": {{"content": "{REPLY}"}}}}]}}\n\ndata: [DONE]\n\n'
     with respx.mock(assert_all_called=False) as mock:
         mock.route(host="testserver").pass_through()
@@ -183,8 +208,11 @@ def node(real_cloud: RealCloud) -> Iterator[Node]:
             config, cloud_http=cloud_http, resolver=fake_resolver(PUBLIC_HOSTS),
             cloud_stop_s=5.0, background_grace_s=2.0, outbox_max_delay_s=0.2,
         )
-        with TestClient(app) as client:
-            yield Node(client, history_key, beats)
+        try:
+            with TestClient(app) as client:
+                yield Node(client, history_key, beats)
+        finally:
+            asyncio.run(cloud_http.aclose())  # the TestClient is gone: nothing else holds its connections
 
 
 # --- helpers --------------------------------------------------------------------------------------------------------
@@ -384,7 +412,6 @@ def test_real_cloud_end_to_end(real_cloud: RealCloud, node: Node, fixtures_dir):
     assert md.status_code == 200 and "buy oat milk" in md.text
 
     # Without a plan: the node answers 402 plan_required (REST) and refuses the call.
-    cloud.db["entitlements"].delete_one({"_id": account})
     other, _ = create_account(cloud, "ios")
     grant_plan(cloud, other["account"])
     lapsed = node_token(cloud, other, purpose="manage")  # routed with a plan, which then lapses

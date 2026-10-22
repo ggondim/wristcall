@@ -16,6 +16,7 @@ from ..history import aad_scoped
 from ..history_codec import HistoryCodec
 from ..push import MAX_BODY, MAX_TITLE, call_text
 from ..storage import AgentRecord, CallRecord, CloudUnavailable
+from ..storage.cloud import PATH_REF
 from .outbox import CallRegistry, Outbox, OutboxItem
 from .proof import UserProof
 
@@ -136,7 +137,8 @@ def _opened(body: Any, agent: AgentRecord) -> OpenedCall:
         call_id, grant, quota_s, max_s, started_at = (
             body["call_id"], body["grant"], body["quota_s"], body["max_s"], body["started_at"]
         )
-        if not (isinstance(call_id, str) and call_id and isinstance(grant, str) and grant):
+        # The id goes into request paths and the registry: only what the Cloud's own paths accept.
+        if not (isinstance(call_id, str) and PATH_REF.fullmatch(call_id) and isinstance(grant, str) and grant):
             raise TypeError("call_id or grant")
         if not (_whole(quota_s) and _whole(max_s)):
             raise TypeError("quota_s or max_s")

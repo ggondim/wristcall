@@ -273,7 +273,7 @@ central_account:
 history:
   encryption_key: ${HISTORY_ENCRYPTION_KEY}     # seals the history text; the same on every node
 cloud_node:
-  cloud_url: https://cloud.wristcall.example    # https; plain http only on a private overlay network
+  cloud_url: https://cloud.wristcall.example    # https; plain http should only be used on a private overlay network
   node_id: home                                 # the id it was registered under
   node_secret: ${WRISTCALL_NODE_SECRET}         # wc_node_... from admin nodes add
   seal_key: ${WRISTCALL_NODE_SEAL_KEY}          # seals the agents' secrets; the same on every node

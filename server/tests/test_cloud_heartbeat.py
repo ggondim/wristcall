@@ -97,3 +97,34 @@ async def test_heartbeat_body_and_ready(fake, client, caplog):
     mine = [r for r in caplog.records if r.name == "wristcall.cloud_node.heartbeat"]
     failures = [r for r in mine if r.levelno >= logging.WARNING]
     assert len(failures) == 1  # logged once per stretch of failures
+
+
+async def test_heartbeat_survives_an_unexpected_error(fake, client, caplog):
+    """A beat that raises something unforeseen is logged by type and the loop goes on: a dead heartbeat would leave
+    the node taking calls the Cloud believes lost."""
+    sleeps = Sleeps()
+    hb = heartbeat(client, every_s=15.0, sleep=sleeps)
+    real_beat = hb.beat
+    calls = 0
+
+    async def flaky() -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("secret-token-text")
+        return await real_beat()
+
+    hb.beat = flaky  # type: ignore[method-assign]
+    ready = asyncio.Event()
+    caplog.set_level(logging.INFO, logger="wristcall.cloud_node.heartbeat")
+    task = asyncio.create_task(hb.run(ready))
+    try:
+        async with asyncio.timeout(5):
+            await ready.wait()
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    assert calls >= 2 and len(fake.heartbeats) >= 1  # the next beat was sent
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "RuntimeError" in text and "secret-token-text" not in text

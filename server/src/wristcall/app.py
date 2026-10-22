@@ -568,6 +568,16 @@ def create_app(
             return
         await fatal(ws, protocol.ProtocolError(e.code, e.message, e.reason))
 
+    async def abandon(call_log: CallLog | CloudCallLog) -> None:
+        """An exception after the call opened on the Cloud and before its own try: finish it as failed, or the
+        heartbeat would keep reporting it open (`too_many_calls` for the account). Self-hosted: nothing changes."""
+        if not isinstance(call_log, CloudCallLog):
+            return
+        with suppress(Exception):
+            await call_log.save(status="failed", error="internal", finished=True)
+        if node is not None:
+            node.registry.forget(call_log.record.id)
+
     async def one_way_call(
         ws: WebSocket, device_id: str, agent: Agent, providers: OneWayProviders, slot: Slot, open_log: _OpenLog,
     ) -> None:
@@ -583,13 +593,17 @@ def create_app(
                 await refuse(ws, e)
                 return
             record = call_log.record
-            # Cloud mode: the audio limit a second past the wall-clock cut, so the cut (and its quota_exceeded) wins.
-            max_call_s = config.limits.max_one_way_call_s if cut is None else cut.seconds + 1
-            call = OneWayCall(
-                agent, providers, vad, call_log,  # type: ignore[arg-type] - CloudCallLog has CallLog's surface
-                max_call_ms=max_call_s * 1000, policy=delivery_policy,
-            )
-            transport = _WsTransport(ws)
+            try:
+                # Cloud mode: the audio limit a second past the wall-clock cut, so the cut (and its quota_exceeded) wins.
+                max_call_s = config.limits.max_one_way_call_s if cut is None else cut.seconds + 1
+                call = OneWayCall(
+                    agent, providers, vad, call_log,  # type: ignore[arg-type] - CloudCallLog has CallLog's surface
+                    max_call_ms=max_call_s * 1000, policy=delivery_policy,
+                )
+                transport = _WsTransport(ws)
+            except BaseException:
+                await abandon(call_log)
+                raise
             warming: asyncio.Task[None] | None = None
 
             async def on_audio(data: bytes) -> bool:
@@ -639,9 +653,13 @@ def create_app(
                 await refuse(ws, e)
                 return
             record = call_log.record
-            session = CallSession(
-                agent.spec, provider_set, vad, transport, turn_end=turn_end, record=call_log.add,
-            )
+            try:
+                session = CallSession(
+                    agent.spec, provider_set, vad, transport, turn_end=turn_end, record=call_log.add,
+                )
+            except BaseException:
+                await abandon(call_log)
+                raise
             warming: asyncio.Task[None] | None = None
 
             async def on_audio(data: bytes) -> bool:
@@ -818,8 +836,8 @@ def create_app(
                 ),
                 opened.grant, history.codec, cloud.outbox, cloud.registry,
             )
-            cloud.registry.open(opened.call_id, opened.grant)  # in the heartbeat until its finish is taken
             seconds, quota = call_deadline(opened, local_s)
+            cloud.registry.open(opened.call_id, opened.grant)  # in the heartbeat until its finish is taken
             return call_log, _Cut(seconds, quota)
 
         await run_call(ws, start, principal.device.id, agent, providers, slot, open_log)  # type: ignore[union-attr]

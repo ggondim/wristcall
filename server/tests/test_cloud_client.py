@@ -90,6 +90,31 @@ async def test_transport_errors_are_cloud_unavailable(outcome, caplog) -> None:
         assert secret not in caplog.text
 
 
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        httpx.Response(200, text="<html>ok</html>", headers={"content-type": "text/html"}),
+        httpx.Response(204),
+        httpx.Response(200, content=b"{not json", headers={"content-type": "application/json"}),
+    ],
+    ids=["200-html", "204", "200-bad-json"],
+)
+@respx.mock
+async def test_lenient_body_accepts_a_2xx_on_its_status(outcome) -> None:
+    respx.post(f"{CLOUD_URL}/v1/node/calls/c_1/finish").mock(return_value=outcome)
+    client = CloudClient(CLOUD_URL, SECRET, httpx.AsyncClient())
+    resp = await client.request("POST", "/v1/node/calls/c_1/finish", grant="g", json={}, lenient_body=True)
+    assert resp.status == outcome.status_code and resp.body is None
+
+
+@respx.mock
+async def test_lenient_body_still_raises_on_5xx() -> None:
+    respx.post(f"{CLOUD_URL}/v1/node/calls/c_1/finish").mock(return_value=httpx.Response(502, text="<html>"))
+    client = CloudClient(CLOUD_URL, SECRET, httpx.AsyncClient())
+    with pytest.raises(CloudUnavailable):
+        await client.request("POST", "/v1/node/calls/c_1/finish", grant="g", json={}, lenient_body=True)
+
+
 @respx.mock
 async def test_4xx_is_returned_with_code() -> None:
     respx.post(f"{CLOUD_URL}/v1/node/agents").mock(

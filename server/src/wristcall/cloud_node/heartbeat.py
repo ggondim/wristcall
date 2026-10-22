@@ -84,6 +84,9 @@ class Heartbeat:
     async def run(self, ready: asyncio.Event) -> None:
         """Beats until cancelled; sets `ready` at the first accepted beat (and leaves it set)."""
         while True:
-            if await self.beat():
-                ready.set()
+            try:
+                if await self.beat():
+                    ready.set()
+            except Exception as e:  # noqa: BLE001 - a dead heartbeat would leave the node taking calls the Cloud thinks are lost
+                log.error("heartbeat: a beat failed unexpectedly (%s); going on", type(e).__name__)
             await self._sleep(self._every_s)

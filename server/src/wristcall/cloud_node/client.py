@@ -48,7 +48,7 @@ class CloudClient:
     def __init__(self, base_url: str, node_secret: str, http: httpx.AsyncClient) -> None:
         self._base = base_url.rstrip("/")
         self._secret = node_secret
-        self._http = http  # its timeouts are the client's (`create_app` gives it `httpx.Timeout(10.0, connect=3.0)`)
+        self._http = http  # its timeouts are the client's (`create_app` gives it `httpx.Timeout(10.0, connect=5.0)`)
 
     def __repr__(self) -> str:
         return f"CloudClient({self._base!r})"
@@ -71,8 +71,11 @@ class CloudClient:
         json: Any = None,
         params: list[tuple[str, str]] | None = None,
         headers: dict[str, str] | None = None,
+        lenient_body: bool = False,
     ) -> CloudResponse:
-        """One request to the Cloud. 2xx, 3xx and 4xx answers come back; anything else raises `CloudUnavailable`."""
+        """One request to the Cloud. 2xx, 3xx and 4xx answers come back; anything else raises `CloudUnavailable`.
+        `lenient_body`: the status is what matters (the outbox), so a body that is not JSON comes back as `None`
+        instead of raising."""
         try:
             resp = await self._http.request(
                 method, self._base + path, json=json, params=params, headers=self._headers(user, grant, headers)
@@ -86,11 +89,15 @@ class CloudClient:
         body: Any = None
         if resp.content:
             if not _is_json(resp.headers.get("content-type", "")):
+                if lenient_body:
+                    return CloudResponse(status=resp.status_code, body=None, headers=resp.headers)
                 log.warning("Wristcall Cloud answered %d without JSON on %s %s", resp.status_code, method, path)
                 raise CloudUnavailable("Wristcall Cloud answered without JSON")
             try:
                 body = resp.json()
             except ValueError:
+                if lenient_body:
+                    return CloudResponse(status=resp.status_code, body=None, headers=resp.headers)
                 log.warning("Wristcall Cloud answered %d with invalid JSON on %s %s", resp.status_code, method, path)
                 raise CloudUnavailable("Wristcall Cloud answered invalid JSON") from None
         return CloudResponse(status=resp.status_code, body=body, headers=resp.headers)

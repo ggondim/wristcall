@@ -454,6 +454,34 @@ def test_client_gone_before_ready_finishes_empty(fake: FakeCloud, llm, monkeypat
         assert c.app.state.call_slots.active() == {"conversation": 0, "one_way": 0}
 
 
+@pytest.mark.parametrize("kind", ["conversation", "one_way"])
+def test_failure_building_the_call_finishes_it_failed(fake: FakeCloud, llm, monkeypatch, kind):
+    # The call opened on the Cloud, then its objects could not be built: it must not stay in the heartbeat.
+    import wristcall.app as app_module
+
+    seed_voice_notes(fake)
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("cannot build")
+
+    monkeypatch.setattr(app_module, "CallSession" if kind == "conversation" else "OneWayCall", boom)
+    with TestClient(call_app(fake)) as c:
+        wait_ready(c)
+        if kind == "conversation":
+            create_talk(c, fake)
+        with pytest.raises(RuntimeError, match="cannot build"):  # the TestClient raises the server's error
+            with c.websocket_connect("/v1/call", headers=watch(fake)) as ws:
+                ws.send_json({**START, "agent": "talk"} if kind == "conversation" else START)
+                ws.receive_text()
+        (call,) = opened_calls(fake)
+        wait_for(lambda: not call["open"])
+        assert (call["status"], call["error"]) == ("failed", "internal")
+        node = c.app.state.cloud_node
+        wait_for(lambda: node.registry.ids() == [])
+        assert node.registry.grant(next(k for k, v in fake.calls.items() if v is call)) is None
+        assert c.app.state.call_slots.active() == {"conversation": 0, "one_way": 0}
+
+
 def test_logs_hold_no_token_or_grant(fake: FakeCloud, llm, caplog):
     caplog.set_level("DEBUG")
     with TestClient(call_app(fake)) as c:
@@ -632,7 +660,13 @@ async def test_open_call_refusals(fake: FakeCloud, setup, expected):
     assert (e.value.code, e.value.reason) == expected
 
 
-async def test_open_call_odd_answer_is_cloud_unreachable(fake: FakeCloud):
+@pytest.mark.parametrize("odd_field", [
+    {"max_s": "soon"},
+    {"call_id": "../../v1/node/me"},  # goes into request paths: only the Cloud's own id shape
+    {"call_id": "c_" + "a" * 70},
+    {"call_id": "c 1"},
+])
+async def test_open_call_odd_answer_is_cloud_unreachable(fake: FakeCloud, odd_field):
     seed_voice_notes(fake)
     node = build_node(fake)
     real = node.client.request
@@ -642,7 +676,7 @@ async def test_open_call_odd_answer_is_cloud_unreachable(fake: FakeCloud):
         nonlocal calls
         calls += 1
         resp = await real(method, path, **kwargs)
-        return type(resp)(status=resp.status, body={**resp.body, "max_s": "soon"}, headers=resp.headers)
+        return type(resp)(status=resp.status, body={**resp.body, **odd_field}, headers=resp.headers)
 
     node.client.request = odd
     with pytest.raises(CallRefused) as e:

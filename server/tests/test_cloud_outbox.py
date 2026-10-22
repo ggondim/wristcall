@@ -4,7 +4,9 @@ import asyncio
 import contextlib
 import logging
 
+import httpx
 import pytest
+import respx
 from cloud_node_helpers import ACCOUNT, Sleeps, client_of, new_fake, open_call, until
 
 from wristcall.cloud_node.outbox import CallRegistry, Outbox, OutboxItem
@@ -386,3 +388,50 @@ async def test_drain_stops_an_outside_worker(fake, client):
     assert await outbox.drain(5.0) == 0
     assert task.done() and not outbox.running
     assert fake.calls[call_id]["attempts"] == 9
+
+
+@respx.mock
+async def test_a_2xx_with_a_body_that_is_not_json_is_accepted():
+    """Any 2xx accepts the item, whatever the body (a proxy's HTML page, say): the status is what counts."""
+    from wristcall.cloud_node.client import CloudClient
+
+    base = "https://cloud.test"
+    route = respx.post(f"{base}/v1/node/calls/c_1/finish").mock(
+        return_value=httpx.Response(200, text="<html>ok</html>", headers={"content-type": "text/html"})
+    )
+    registry = CallRegistry()
+    registry.open("c_1", "g1")
+    sleeps = Sleeps()
+    outbox = Outbox(CloudClient(base, "secret", httpx.AsyncClient()), registry, sleep=sleeps)
+    outbox.put(finish("c_1", "g1"))
+    async with running(outbox):
+        await until(lambda: outbox.idle)
+    assert route.call_count == 1 and sleeps.waits == []
+    assert outbox.dropped == 0 and registry.ids() == []
+
+
+async def test_an_item_that_always_fails_unexpectedly_is_dropped_after_five_tries(fake, client, caplog):
+    call_id, grant = open_call(fake)
+
+    class Broken:
+        calls = 0
+
+        async def request(self, method, path, **kwargs):
+            if path.endswith("/entries"):
+                Broken.calls += 1
+                raise RuntimeError("body with secret words")
+            return await client.request(method, path, **kwargs)
+
+    registry = CallRegistry()
+    registry.open(call_id, grant)
+    sleeps = Sleeps()
+    outbox = Outbox(Broken(), registry, sleep=sleeps)
+    outbox.put(entries(call_id, grant, 1))
+    outbox.put(finish(call_id, grant))
+    async with running(outbox):
+        await until(lambda: outbox.idle)
+    assert Broken.calls == 5 and sleeps.waits == [1, 2, 4, 8]
+    assert outbox.dropped == 1
+    assert registry.ids() == []  # the finish behind it went through
+    assert fake.calls[call_id]["status"] == "ended"
+    assert "RuntimeError" in caplog.text and "secret words" not in caplog.text
