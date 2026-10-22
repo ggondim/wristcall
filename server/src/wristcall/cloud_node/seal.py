@@ -34,7 +34,7 @@ class SealError(ValueError):
 def seal_aad(account: str, agent_id: str, stage: str) -> str:
     """What a sealed endpoint is bound to. Account ids never hold `|`, which keeps the fields apart."""
     if "|" in account:
-        raise ValueError("account id must not contain '|'")
+        raise SealError("account id must not contain '|'")
     return f"{account}|{agent_id}|{stage}"
 
 
@@ -50,7 +50,7 @@ class SealCodec:
 
     def seal_spec(self, spec: dict[str, Any], account: str, agent_id: str) -> dict[str, Any]:
         """A copy of the spec with each user endpoint sealed. Raises SealError for a stage that is neither an
-        endpoint (has `type`), nor `{"provider": ...}`, nor null."""
+        endpoint (has `type`), nor `{"provider": ...}`, nor null, and for an account id holding `|`."""
         sealed = dict(spec)
         for stage in STAGES:
             value = spec.get(stage)

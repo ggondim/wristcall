@@ -52,6 +52,8 @@ def aad(call_id: str, seq: int) -> str:
 
 def aad_scoped(account: str, call_id: str, seq: int) -> str:
     """Cloud mode: also bound to the account, so a sealed text cannot be moved to another account's call."""
+    if "|" in account:  # account ids never hold it (the Cloud's rule); it would blur the fields
+        raise ValueError("account id must not contain '|'")
     return f"{account}|{call_id}|{seq}"
 
 

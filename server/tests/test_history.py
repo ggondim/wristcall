@@ -157,6 +157,8 @@ async def test_scoped_history_aad(st):
         call_id=cid, seq=0, role="user", text=stored, sealed=sealed, error=None, at=1.0,
     ), scoped.index_terms("comprar leite"))
     assert aad_scoped("acc", "c_1", 0) == "acc|c_1|0"
+    with pytest.raises(ValueError):  # an account id with "|" would blur the fields of the AAD
+        aad_scoped("a|b", "c_1", 0)
     view = await history.detail(await call_log.save(status="ended", finished=True))
     assert view["text"] == "comprar leite"
     terms = history.query_terms("u_a", "LEITE")

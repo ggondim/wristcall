@@ -1,12 +1,22 @@
-"""Contract of the storage interface. Parametrized by adapter: the Cloud API adapter (E9) joins `params`."""
+"""Contract of the storage interface. Parametrized by adapter: the AgentStore tests also run on the Cloud API
+adapter (`agent_store`, over the in-process FakeCloud); its other stores have their own tests
+(test_cloud_storage.py)."""
 
+import hashlib
 import sqlite3
-from dataclasses import replace
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
+from dataclasses import dataclass, replace
 
 import pytest
+from fake_cloud import CLOUD_URL, FULL_PLAN, FakeCloud
 
 from memory_storage import MemoryStorage
+from wristcall.cloud_node.client import CloudClient
+from wristcall.cloud_node.proof import UserProof, current_proof
+from wristcall.cloud_node.seal import SealCodec
 from wristcall.storage import AgentRecord, CallRecord, Conflict, EntryRecord, LimitReached, Storage, open_sqlite_storage
+from wristcall.storage.cloud import CloudStorage
 
 
 @pytest.fixture(params=["sqlite", "memory"])
@@ -14,6 +24,52 @@ async def storage(request) -> Storage:
     st = open_sqlite_storage(":memory:") if request.param == "sqlite" else MemoryStorage()
     yield st
     await st.close()
+
+
+@dataclass
+class AgentBackend:
+    """A storage for the AgentStore contract. `add_user` makes a user able to own agents (a local user; in the Cloud,
+    an account with a plan); `as_user` is the request of that user (in the Cloud, its account proof)."""
+
+    st: Storage
+    cloud: bool
+    add_user: Callable
+    as_user: Callable[[str], AbstractContextManager]
+
+
+@pytest.fixture(params=["sqlite", "memory", "cloud"])
+async def agent_store(request) -> AgentBackend:
+    if request.param == "cloud":
+        fake = FakeCloud("https://node.test", "wc_node_" + "s" * 43)
+        st = CloudStorage(CloudClient(CLOUD_URL, fake.node_secret, fake.http()), SealCodec(bytes(range(32))))
+
+        async def add_user(user_id: str) -> None:
+            fake.plans[user_id] = FULL_PLAN
+
+        @contextmanager
+        def as_user(user_id: str) -> Iterator[None]:
+            device = f"dev-{user_id}"
+            token = current_proof.set(UserProof(user_id, device, "ios", fake.user_token(user_id, device, "ios")))
+            try:
+                yield
+            finally:
+                current_proof.reset(token)
+
+        backend = AgentBackend(st, True, add_user, as_user)
+    else:
+        st = open_sqlite_storage(":memory:") if request.param == "sqlite" else MemoryStorage()
+
+        async def add_user(user_id: str) -> None:
+            await st.users.create(user_id, user_id.removeprefix("u_"), user_id.title(), 1.0)
+
+        backend = AgentBackend(st, False, add_user, lambda _user_id: nullcontext())
+    yield backend
+    await st.close()
+
+
+def aid(name: str) -> str:
+    """An agent id the Cloud accepts too (`ag_` and 12 hex characters), stable per name."""
+    return "ag_" + hashlib.sha256(name.encode()).hexdigest()[:12]
 
 
 def add_orphan(st, device_id: str, token_hash: str) -> None:
@@ -24,10 +80,13 @@ def add_orphan(st, device_id: str, token_hash: str) -> None:
         st.db.execute("INSERT INTO devices (id, name, token_hash, created_at) VALUES (?, 'Old', ?, 1.0)", (device_id, token_hash))
 
 
+SPEC = {"language": "en", "stt": {"provider": "stt"}}  # a spec the server accepts (the Cloud adapter checks it)
+
+
 def agent(user_id: str, slug: str, agent_id: str | None = None, **over) -> AgentRecord:
     fields = dict(
-        id=agent_id or f"ag_{slug}", user_id=user_id, slug=slug, display_name=slug.title(), icon="waveform",
-        call_type="conversation", position=99, spec={"language": "en"}, created_at=1.0, updated_at=1.0,
+        id=agent_id or aid(slug), user_id=user_id, slug=slug, display_name=slug.title(), icon="waveform",
+        call_type="conversation", position=99, spec=SPEC, created_at=1.0, updated_at=1.0,
     )
     return AgentRecord(**{**fields, **over})
 
@@ -181,78 +240,96 @@ async def test_pairing_requests(storage):
     assert await storage.pairing.list_pending(2.0) == []
 
 
-async def test_agents(storage):
-    await storage.users.create("u_a", "alice", "Alice", 1.0)
-    await storage.users.create("u_b", "bob", "Bob", 1.0)
-    first = await storage.agents.create(agent("u_a", "default"))
-    second = await storage.agents.create(agent("u_a", "coach", spec={"language": "pt", "vad": {"silence_ms": 900}}))
-    await storage.agents.create(agent("u_b", "default", agent_id="ag_b_default"))
-    assert (first.position, second.position) == (0, 1)  # appended, the given position is ignored
-    assert second.spec == {"language": "pt", "vad": {"silence_ms": 900}}
-    assert (await storage.agents.get("u_a", "coach")).id == "ag_coach"
-    assert (await storage.agents.get("u_a", "ag_coach")).slug == "coach"
-    assert await storage.agents.get("u_b", "coach") is None  # other user's agent
-    assert [a.slug for a in await storage.agents.list("u_a")] == ["default", "coach"]
-    with pytest.raises(Conflict):
-        await storage.agents.create(agent("u_a", "coach", agent_id="ag_other"))
-    renamed = await storage.agents.update(agent("u_a", "coach2", agent_id="ag_coach", position=0, updated_at=5.0))
-    assert (renamed.slug, renamed.position, renamed.created_at, renamed.updated_at) == ("coach2", 1, 1.0, 5.0)
-    assert [a.slug for a in await storage.agents.list("u_a")] == ["default", "coach2"]  # position is owned by move
-    with pytest.raises(Conflict):
-        await storage.agents.update(agent("u_a", "default", agent_id="ag_coach"))
-    assert await storage.agents.count("u_a") == 2
-    assert await storage.agents.delete("u_b", "ag_coach") is False
-    assert await storage.agents.delete("u_a", "ag_coach") is True
-    assert await storage.agents.count("u_a") == 1
+async def test_agents(agent_store):
+    st, as_user = agent_store.st, agent_store.as_user
+    await agent_store.add_user("u_a")
+    await agent_store.add_user("u_b")
+    coach_spec = {"language": "pt", "stt": {"provider": "stt"}, "vad": {"silence_ms": 900}}
+    with as_user("u_a"):
+        first = await st.agents.create(agent("u_a", "default"))
+        second = await st.agents.create(agent("u_a", "coach", spec=coach_spec))
+    with as_user("u_b"):
+        await st.agents.create(agent("u_b", "default", agent_id=aid("b_default")))
+        assert await st.agents.get("u_b", "coach") is None  # other user's agent
+    with as_user("u_a"):
+        assert (first.position, second.position) == (0, 1)  # appended, the given position is ignored
+        assert second.spec == coach_spec
+        assert (await st.agents.get("u_a", "coach")).id == aid("coach")
+        assert (await st.agents.get("u_a", aid("coach"))).slug == "coach"
+        assert [a.slug for a in await st.agents.list("u_a")] == ["default", "coach"]
+        with pytest.raises(Conflict):
+            await st.agents.create(agent("u_a", "coach", agent_id=aid("other")))
+        renamed = await st.agents.update(agent("u_a", "coach2", agent_id=aid("coach"), position=0, updated_at=5.0))
+        assert (renamed.slug, renamed.position) == ("coach2", 1)
+        if not agent_store.cloud:  # the Cloud keeps its own times
+            assert (renamed.created_at, renamed.updated_at) == (1.0, 5.0)
+        assert [a.slug for a in await st.agents.list("u_a")] == ["default", "coach2"]  # position is owned by move
+        with pytest.raises(Conflict):
+            await st.agents.update(agent("u_a", "default", agent_id=aid("coach")))
+        assert await st.agents.count("u_a") == 2
+    with as_user("u_b"):
+        assert await st.agents.delete("u_b", aid("coach")) is False
+    with as_user("u_a"):
+        assert await st.agents.delete("u_a", aid("coach")) is True
+        assert await st.agents.count("u_a") == 1
 
 
-async def test_call_type_is_checked_by_the_storage(storage):
-    await storage.users.create("u_a", "alice", "Alice", 1.0)
-    with pytest.raises((sqlite3.IntegrityError, ValueError)):
-        await storage.agents.create(agent("u_a", "x", call_type="podcast"))
+async def test_call_type_is_checked_by_the_storage(agent_store):
+    await agent_store.add_user("u_a")
+    with agent_store.as_user("u_a"), pytest.raises((sqlite3.IntegrityError, ValueError)):
+        await agent_store.st.agents.create(agent("u_a", "x", call_type="podcast"))
 
 
-async def test_agent_limit_is_checked_on_create(storage):
-    await storage.users.create("u_a", "alice", "Alice", 1.0)
-    await storage.agents.create(agent("u_a", "one"), max_count=2)
-    await storage.agents.create(agent("u_a", "two"), max_count=2)
-    with pytest.raises(LimitReached):
-        await storage.agents.create(agent("u_a", "three"), max_count=2)
-    assert await storage.agents.count("u_a") == 2
-    await storage.agents.create(agent("u_a", "three"))  # no limit given
+async def test_agent_limit_is_checked_on_create(agent_store):
+    st = agent_store.st
+    await agent_store.add_user("u_a")
+    with agent_store.as_user("u_a"):
+        await st.agents.create(agent("u_a", "one"), max_count=2)
+        await st.agents.create(agent("u_a", "two"), max_count=2)
+        with pytest.raises(LimitReached):
+            await st.agents.create(agent("u_a", "three"), max_count=2)
+        assert await st.agents.count("u_a") == 2
+        await st.agents.create(agent("u_a", "three"))  # no limit given
 
 
-async def test_limit_is_checked_before_the_slug(storage):
-    await storage.users.create("u_a", "alice", "Alice", 1.0)
-    await storage.agents.create(agent("u_a", "one"), max_count=2)
-    await storage.agents.create(agent("u_a", "two"), max_count=2)
-    with pytest.raises(LimitReached):
-        await storage.agents.create(agent("u_a", "one", agent_id="ag_dup"), max_count=2)
+async def test_limit_is_checked_before_the_slug(agent_store):
+    st = agent_store.st
+    await agent_store.add_user("u_a")
+    with agent_store.as_user("u_a"):
+        await st.agents.create(agent("u_a", "one"), max_count=2)
+        await st.agents.create(agent("u_a", "two"), max_count=2)
+        with pytest.raises(LimitReached):
+            await st.agents.create(agent("u_a", "one", agent_id=aid("dup")), max_count=2)
 
 
-async def test_update_never_writes_the_position(storage):
-    await storage.users.create("u_a", "alice", "Alice", 1.0)
-    await storage.agents.create(agent("u_a", "a"))
-    await storage.agents.create(agent("u_a", "b"))
-    stale = await storage.agents.get("u_a", "a")  # position 0, read before a concurrent move
-    await storage.agents.move("u_a", "ag_b", 0)
-    await storage.agents.update(replace(stale, display_name="A", updated_at=5.0))
-    assert [(a.slug, a.position) for a in await storage.agents.list("u_a")] == [("b", 0), ("a", 1)]
+async def test_update_never_writes_the_position(agent_store):
+    st = agent_store.st
+    await agent_store.add_user("u_a")
+    with agent_store.as_user("u_a"):
+        await st.agents.create(agent("u_a", "a"))
+        await st.agents.create(agent("u_a", "b"))
+        stale = await st.agents.get("u_a", "a")  # position 0, read before a concurrent move
+        await st.agents.move("u_a", aid("b"), 0)
+        await st.agents.update(replace(stale, display_name="A", updated_at=5.0))
+        assert [(a.slug, a.position) for a in await st.agents.list("u_a")] == [("b", 0), ("a", 1)]
 
 
-async def test_move_renumbers(storage):
-    await storage.users.create("u_a", "alice", "Alice", 1.0)
-    for slug in ("a", "b", "c", "d"):
-        await storage.agents.create(agent("u_a", slug))
-    moved = await storage.agents.move("u_a", "ag_d", 1)
-    assert moved.slug == "d" and moved.position == 1
-    assert [(a.slug, a.position) for a in await storage.agents.list("u_a")] == [("a", 0), ("d", 1), ("b", 2), ("c", 3)]
-    assert (await storage.agents.move("u_a", "ag_a", 99)).position == 3
-    assert (await storage.agents.move("u_a", "ag_b", -5)).position == 0
-    assert [a.slug for a in await storage.agents.list("u_a")] == ["b", "d", "c", "a"]
-    assert await storage.agents.move("u_a", "ag_missing", 0) is None
-    await storage.users.create("u_b", "bob", "Bob", 1.0)
-    assert await storage.agents.move("u_b", "ag_a", 0) is None  # not hers
+async def test_move_renumbers(agent_store):
+    st = agent_store.st
+    await agent_store.add_user("u_a")
+    await agent_store.add_user("u_b")
+    with agent_store.as_user("u_a"):
+        for slug in ("a", "b", "c", "d"):
+            await st.agents.create(agent("u_a", slug))
+        moved = await st.agents.move("u_a", aid("d"), 1)
+        assert moved.slug == "d" and moved.position == 1
+        assert [(a.slug, a.position) for a in await st.agents.list("u_a")] == [("a", 0), ("d", 1), ("b", 2), ("c", 3)]
+        assert (await st.agents.move("u_a", aid("a"), 99)).position == 3
+        assert (await st.agents.move("u_a", aid("b"), -5)).position == 0
+        assert [a.slug for a in await st.agents.list("u_a")] == ["b", "d", "c", "a"]
+        assert await st.agents.move("u_a", aid("missing"), 0) is None
+    with agent_store.as_user("u_b"):
+        assert await st.agents.move("u_b", aid("a"), 0) is None  # not hers
 
 
 async def test_token_last_used_is_written_at_most_once_a_minute(storage):

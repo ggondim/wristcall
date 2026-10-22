@@ -24,7 +24,7 @@ def custom_spec() -> dict:
 def test_stages_and_aad():
     assert STAGES == ("stt", "action", "tts")
     assert seal_aad("acc", "ag", "stt") == "acc|ag|stt"
-    with pytest.raises(ValueError):
+    with pytest.raises(SealError):
         seal_aad("a|b", "ag", "stt")
 
 
@@ -114,8 +114,10 @@ def test_seal_refuses_what_is_not_an_endpoint():
         codec.seal_spec({"stt": {"base_url": "x"}}, ACCOUNT, AGENT)
     with pytest.raises(SealError):
         codec.seal_spec({"stt": {"sealed": "v1.abc"}}, ACCOUNT, AGENT)
-    with pytest.raises(ValueError):
+    with pytest.raises(SealError):  # an account id with "|" would blur the fields of the AAD
         codec.seal_spec(custom_spec(), "a|b", AGENT)
+    with pytest.raises(SealError):
+        codec.open_spec(codec.seal_spec(custom_spec(), ACCOUNT, AGENT), "a|b", AGENT)
 
 
 def test_key_must_be_32_bytes():

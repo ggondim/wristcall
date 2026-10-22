@@ -182,8 +182,9 @@ class FakeCloud:
     call (public fields plus `account`, `platform`, `request_id`, `max_s`); `entries` call id -> seq -> entry (plus
     `term_hashes`); `grants` grant -> `{call, account, device, platform, exp}`; `push_targets` "account:device" ->
     push key; `pushes` what `POST /v1/node/push` sent (`{account, device, call, message}`); `heartbeats` bodies
-    received; `down` (every route 503); `retry_after` (every node route 429 with that Retry-After); `max_agents`,
-    `max_conversation_s`, `max_one_way_s`, `retention_days`."""
+    received; `requests` every request received (`seed_call` adds a call to the history); `down` (every route 503);
+    `retry_after` (every node route 429 with that Retry-After); `max_agents`, `max_conversation_s`, `max_one_way_s`,
+    `retention_days`."""
 
     def __init__(self, node_url: str, node_secret: str) -> None:
         self.node_url, self.node_secret = node_url, node_secret
@@ -199,6 +200,7 @@ class FakeCloud:
         self.push_targets: dict[str, str] = {}
         self.pushes: list[dict] = []
         self.heartbeats: list[dict] = []
+        self.requests: list[dict] = []  # every request received: method, path, params (pairs), headers (lowercase)
         self.down = False
         self.retry_after: int | None = None
         self.max_agents = 20
@@ -227,6 +229,29 @@ class FakeCloud:
         used = self.used_s.get(account, 0)
         month = datetime.now(UTC).strftime("%Y-%m")
         return {"month": month, "used_s": used, "quota_s": self.quota_s, "remaining_s": max(0, self.quota_s - used)}
+
+    def seed_call(
+        self, account: str, *, agent_id: str = "ag_000000000000", call_type: str = "one-shot",
+        status: str = "delivered", created_at: float | None = None, open: bool = False, device_id: str = "dev-1",
+        entries: list[dict[str, Any]] | None = None, **fields: Any,
+    ) -> str:
+        """A call already in the history (as nodes would have written it), with its entries (`seq`, `role`, `text`,
+        `sealed`, `error`, `at`, `term_hashes`; missing ones default). Returns its id."""
+        now = time.time() if created_at is None else created_at
+        call = {
+            "id": "c_" + secrets.token_hex(8), "agent_id": agent_id, "agent_slug": "agent", "agent_name": "Agent",
+            "device_id": device_id, "call_type": call_type, "status": "recording" if open else status, "error": None,
+            "attempts": 0, "last_http_status": None, "delivery": "history" if call_type in ONE_WAY else None,
+            "created_at": now, "updated_at": now, "ended_at": None if open else now,
+            "finished_at": None if open else now, "expires_at": now + self.retention_days * 86400,
+            "seconds": None if open else 1, "open": open, "account": account, "platform": "ios", "request_id": None,
+            "max_s": self.max_one_way_s, **fields,
+        }
+        self.calls[call["id"]] = call
+        for e in entries or []:
+            entry = {"role": "user", "text": None, "sealed": False, "error": None, "at": now, "term_hashes": [], **e}
+            self.entries.setdefault(call["id"], {})[entry["seq"]] = entry
+        return call["id"]
 
     def _days(self, spec: dict[str, Any] | None) -> int:
         days = (spec or {}).get("retention_days")
@@ -326,6 +351,8 @@ class FakeCloud:
 
         @app.middleware("http")
         async def gate(request: Request, call_next):
+            self.requests.append({"method": request.method, "path": request.url.path,
+                                  "params": request.query_params.multi_items(), "headers": dict(request.headers)})
             if self.down:
                 return JSONResponse({"error": "unavailable", "message": "the Cloud is down"}, status_code=503)
             length = request.headers.get("content-length")
