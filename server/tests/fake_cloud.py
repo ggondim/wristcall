@@ -70,6 +70,19 @@ def _not_found(what: str = "call") -> CloudError:
     return CloudError(404, "not_found", f"{what} not found")
 
 
+def _finite(raw: str | None, name: str) -> float | None:
+    """A query parameter that must be a finite number, as the Cloud reads it (422 otherwise)."""
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        raise _invalid(f"{name} must be a number") from None
+    if not math.isfinite(value):
+        raise _invalid(f"{name} must be a number")
+    return value
+
+
 def _number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
@@ -300,12 +313,19 @@ class FakeCloud:
             raise CloudError(403, "device_revoked", "this device was removed from the account")
         return account, device, platform
 
+    def _plan(self, account: str) -> dict | None:
+        """The account's plan while it is in force: the Cloud ignores an entitlement whose `expires_at` passed."""
+        plan = self.plans.get(account)
+        if plan is None or (plan.get("expires_at") is not None and plan["expires_at"] <= time.time()):
+            return None
+        return plan
+
     def _manager(self, request: Request, *, plan: bool = True) -> tuple[str, str, str]:
         """The user token of an app or the web (a watch gets 403 `forbidden`), with a plan unless `plan=False`."""
         account, device, platform = self._user(request)
         if platform not in MANAGERS:
             raise CloudError(403, "forbidden", "this device cannot do this")
-        if plan and self.plans.get(account) is None:
+        if plan and self._plan(account) is None:
             raise CloudError(402, "plan_required", "this needs an active plan")
         return account, device, platform
 
@@ -338,10 +358,7 @@ class FakeCloud:
     def _query_calls(self, request: Request, account: str) -> list[dict[str, Any]]:
         """The account's calls in the `agent`/`since`/`until` window, oldest first."""
         q = request.query_params
-        try:
-            since, until = (float(q[k]) if k in q else None for k in ("since", "until"))
-        except ValueError:
-            raise _invalid("since and until must be numbers") from None
+        since, until = _finite(q.get("since"), "since"), _finite(q.get("until"), "until")
         calls = [
             c for c in self.calls.values()
             if c["account"] == account and q.get("agent") in (None, c["agent_id"])
@@ -396,7 +413,7 @@ class FakeCloud:
         @app.get("/v1/node/me")
         async def me(request: Request) -> dict[str, Any]:
             account, device, platform = self._user(request)
-            return {"account": account, "plan": self.plans.get(account), "device": {"id": device, "platform": platform},
+            return {"account": account, "plan": self._plan(account), "device": {"id": device, "platform": platform},
                     "agents": self._agents_of(account), "usage": self.usage(account)}
 
         @app.get("/v1/node/agents")
@@ -490,7 +507,7 @@ class FakeCloud:
             if request_id is not None and not (isinstance(request_id, str) and REQUEST_ID.fullmatch(request_id)):
                 raise _invalid("request_id is not valid")
             delivery = _delivery(body.get("delivery"))
-            plan = self.plans.get(account)
+            plan = self._plan(account)
             if plan is None:
                 raise CloudError(402, "plan_required", "this needs an active plan")
 
@@ -570,7 +587,8 @@ class FakeCloud:
             account, _, _ = self._manager(request, plan=False)
             q = request.query_params
             limit = q.get("limit", "50")
-            if not limit.isdigit() or not 1 <= int(limit) <= 200:
+            # As the Cloud: at most three ASCII digits before int() (it takes other scripts' digits, or fails on "²").
+            if len(limit) > 3 or not limit.isascii() or not limit.isdigit() or not 1 <= int(limit) <= 200:
                 raise _invalid("limit must be an integer from 1 to 200")
             if ("before_at" in q) != ("before_id" in q):
                 raise _invalid("before_at and before_id go together")
@@ -579,7 +597,7 @@ class FakeCloud:
                 raise _invalid("terms are not valid")
             calls = self._query_calls(request, account)[::-1]
             if "before_at" in q:
-                cursor = (float(q["before_at"]), q["before_id"])
+                cursor = (_finite(q["before_at"], "before_at"), q["before_id"])
                 calls = [c for c in calls if (c["created_at"], c["id"]) < cursor]
 
             def matches(call: dict[str, Any]) -> bool:

@@ -257,12 +257,12 @@ class _Agents:
     def __init__(self, client: CloudClient, seal: SealCodec, now: Callable[[], float], ttl_s: float) -> None:
         self._client, self._seal, self._now, self._ttl_s = client, seal, now, ttl_s
         self._cache: dict[str, _Listing] = {}  # account -> its last listing
-        # account -> writes so far: a listing that was in flight while a write landed is not cached (it may predate it)
-        self._writes: dict[str, int] = {}
+        # Writes so far, of any account, only ever growing: a listing that was in flight while a write landed is not
+        # cached (it may predate it). One counter for all accounts, so no reset can make an old count come back.
+        self._writes = 0
 
     def forget_all(self) -> None:
         self._cache.clear()
-        self._writes.clear()
 
     def _record(self, account: str, raw: Any) -> AgentRecord | None:
         """The agent as the server uses it, its spec opened with the proof's account; None (logged by id) when the
@@ -289,16 +289,24 @@ class _Agents:
             found = [self._record(account, raw) for raw in raws]
         return [r for r in found if r is not None]
 
+    def opened(self, account: str, raws: list[Any]) -> list[AgentRecord]:
+        """Agents as the Cloud sent them elsewhere (`GET /v1/node/me`), opened as `list` opens them. Raises
+        `CloudUnavailable` when one is not an object or lacks its fields."""
+        if not all(isinstance(a, dict) for a in raws):
+            log.warning("Wristcall Cloud answered agents that are not objects")
+            raise CloudUnavailable("Wristcall Cloud answered agents that are not objects")
+        return self._records(account, raws)
+
     async def _listing(self, proof: UserProof, *, revalidate: bool = False) -> list[dict[str, Any]]:
         cached = self._cache.get(proof.account)
         now = self._now()
         if cached is not None and not revalidate and now - cached.fetched_at < self._ttl_s:
             return cached.agents
         headers = {"If-None-Match": cached.etag} if cached is not None else None
-        writes = self._writes.get(proof.account, 0)
+        writes = self._writes
         resp = await _account_request(self._client, "GET", "/v1/node/agents", proof, headers=headers)
         if resp.status == 304 and cached is not None:
-            if self._writes.get(proof.account, 0) == writes:
+            if self._writes == writes:
                 cached.fetched_at = now
             return cached.agents
         if resp.status != 200:
@@ -308,7 +316,7 @@ class _Agents:
             if not all(isinstance(a, dict) for a in agents):
                 raise TypeError("an agent is not an object")
             etag = _str(resp.body["etag"])
-        if self._writes.get(proof.account, 0) == writes:
+        if self._writes == writes:
             self._cache.pop(proof.account, None)
             if len(self._cache) >= AGENTS_CACHE_SIZE:
                 self._cache.pop(next(iter(self._cache)))  # the account cached longest ago
@@ -317,9 +325,7 @@ class _Agents:
 
     def _changed(self, account: str) -> None:
         self._cache.pop(account, None)
-        if len(self._writes) >= 4 * AGENTS_CACHE_SIZE and account not in self._writes:
-            self._writes.clear()  # bounded: a reset only makes a listing in flight skip the cache
-        self._writes[account] = self._writes.get(account, 0) + 1
+        self._writes += 1
 
     async def list(self, user_id: str) -> list[AgentRecord]:
         proof = require_proof(user_id)

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 import secrets
 import time
 from collections.abc import Awaitable, Callable
@@ -14,6 +15,7 @@ from fastapi import FastAPI, Header, Request, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import __version__, protocol
 from .account import AccountError, AccountService
@@ -25,6 +27,9 @@ from .agents import (
 from .api import management_router
 from .auth import Authenticator, Principal
 from .bootstrap import bootstrap, log_report
+from .cloud_node.calls import CloudPushNotifier
+from .cloud_node.node import CloudNode
+from .cloud_node.proof import ProofMismatch, require_proof
 from .config import AppConfig
 from .delivery import DeliveryPolicy
 from .history import History, check_key
@@ -39,7 +44,9 @@ from .push import PushNotifier, push_router
 from .ratelimit import RateLimiter
 from .redelivery import Redelivery
 from .session import CallSession
-from .storage import Storage, open_sqlite_storage
+from .storage import (
+    CallOpen, CloudUnavailable, DeviceRevoked, NotSupported, PlanRequired, Storage, open_sqlite_storage,
+)
 from .users import UserService
 from .vad import build_vad
 from .warmup import run_background, warm_all, warmup_targets
@@ -87,6 +94,55 @@ class _WsTransport:
             await self._ws.send_bytes(data)
 
 
+# Cloud mode: the routes of a server with its own users and devices. The Cloud keeps accounts and devices, so a
+# cloud node answers them 404 `not_in_cloud_mode` (and redelivery until it goes through the Cloud, Task 8b).
+_NOT_IN_CLOUD_MODE = re.compile(
+    r"^/v1/(?:pair(?:/.*)?|pairing-codes(?:/.*)?|pairing-requests(?:/.*)?|account/link|devices(?:/.*)?"
+    r"|calls/[^/]+/redeliver)/?$"
+)
+_CLOUD_ERRORS: list[tuple[type[Exception], int, str, str]] = [
+    (CloudUnavailable, 503, "cloud_unavailable", "Wristcall Cloud is unavailable; try again."),
+    (PlanRequired, 402, "plan_required", "This account has no Wristcall Cloud plan."),
+    (DeviceRevoked, 403, "device_revoked", "This device was removed from the account."),
+    (NotSupported, 404, "not_in_cloud_mode", "Not available on a Wristcall Cloud node."),
+    (CallOpen, 409, "call_open", "This call is still open."),
+    # Only the storage adapter's own check (no proof, or one for another account): never any PermissionError.
+    (ProofMismatch, 401, "unauthorized", "missing or invalid token"),
+]
+
+
+def _not_in_cloud_mode() -> JSONResponse:
+    return JSONResponse({"error": "not_in_cloud_mode", "message": "Not available on a Wristcall Cloud node."},
+                        status_code=404)
+
+
+class _NotInCloudMode:
+    """Pure ASGI: answers the routes a cloud node does not have, and passes everything else on untouched. Unlike
+    BaseHTTPMiddleware it never moves the endpoint to another task, so the request's account proof (a ContextVar
+    set by the authenticator inside the endpoint) stays where the storage adapter reads it."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and (
+            _NOT_IN_CLOUD_MODE.fullmatch(scope["path"])
+            or (scope["method"] == "DELETE" and scope["path"].rstrip("/") == "/v1/me")
+        ):
+            await _not_in_cloud_mode()(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+def _add_cloud_error_handlers(app: FastAPI) -> None:
+    for error, status, code, message in _CLOUD_ERRORS:
+        def handler(_request: Request, _e: Exception, status: int = status, code: str = code, message: str = message
+                    ) -> JSONResponse:
+            return JSONResponse({"error": code, "message": message}, status_code=status)
+
+        app.add_exception_handler(error, handler)
+
+
 def _check_audience(config: AppConfig) -> None:
     """Not an error (the server may have another public name), but apps that reach it at `public_url` would
     ask the Cloud for tokens this server refuses."""
@@ -105,7 +161,16 @@ def create_app(
     start_timeout_s: float = 10.0,
     delivery_policy: DeliveryPolicy = DeliveryPolicy(),
     resolver: Resolver | None = None,
+    cloud_http: httpx.AsyncClient | None = None,
+    cloud_stop_s: float = 20.0,
+    background_grace_s: float = 8.0,
+    outbox_max_delay_s: float = 60.0,
 ) -> FastAPI:
+    """Cloud mode (`config.is_cloud`) assembles a `CloudNode` (`app.state.cloud_node`; None self-hosted) whose
+    storage and authenticator replace the SQLite ones; `storage` is then ignored. `cloud_http` reaches the Cloud
+    (created and closed here when not given). `cloud_stop_s` is the outbox's time to empty at shutdown,
+    `background_grace_s` the work after calls', `outbox_max_delay_s` the outbox's longest retry wait (tests shorten
+    them)."""
     own_http = http is None
     http_client = http or httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0))
     check_providers(config, http_client)
@@ -115,49 +180,76 @@ def create_app(
     user_http = (
         public_http_client(resolver, timeout=httpx.Timeout(30.0, connect=5.0)) if own_user_http else http_client
     )
-    store = storage or open_sqlite_storage(config.server.data_dir)
+    slots = CallSlots(config.limits.max_concurrent_calls)
+    node: CloudNode | None = None
+    own_cloud_http = cloud_http is None
+    if config.is_cloud:
+        cloud_http = cloud_http or httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0))
+        node = CloudNode.build(config, slots=slots, http=cloud_http, outbox_max_delay_s=outbox_max_delay_s)
+        store: Storage = node.storage  # type: ignore[assignment] - the same interface, over the Cloud's API
+    else:
+        store = storage or open_sqlite_storage(config.server.data_dir)
+    # Cloud mode: no local users, devices nor pairing (those routes answer 404, see _NotInCloudMode).
     pairing_svc = PairingService(
         store, config.server.pairing_approval, max_devices_per_user=config.limits.max_devices_per_user
     )
-    agents = AgentService(store, config, http_client, resolver=resolver)
-    auth = Authenticator(store)
+    agents = AgentService(
+        store, config, http_client, resolver=resolver, plan_check=node.check_agent_plan if node else None
+    )
+    auth: Authenticator = node.auth if node else Authenticator(store)  # type: ignore[assignment]
     limiter = RateLimiter(limit=10, window_s=60)
-    account = AccountService(store, config.central_account, http_client) if config.central_account else None
-    links = LinkService(store, canonical_public_url(config)) if config.central_account else None
-    if config.central_account:
+    linked = config.central_account is not None and node is None
+    account = AccountService(store, config.central_account, http_client) if linked else None
+    links = LinkService(store, canonical_public_url(config)) if linked else None
+    if linked:
         _check_audience(config)
-    history = History(store, HistoryCodec(config.history.key()), config.history)
+    history = History(store, HistoryCodec(config.history.key()), config.history, account_scoped=node is not None)
     targets = warmup_targets(config, http_client)
     call_targets = [t for t in targets if t.config.on_call]
-    after_calls = Background()
-    slots = CallSlots(config.limits.max_concurrent_calls)
+    after_calls = Background(grace_s=background_grace_s)
     # Pushes run with the work after the calls: the shutdown gives them the same few seconds, then cancels them.
     notifier = PushNotifier(store, config.push, http_client) if config.push else None
+    # How a one-way call's device hears how it ended: the relay self-hosted, the Cloud's queue in cloud mode.
+    call_notifier: PushNotifier | CloudPushNotifier | None = (
+        CloudPushNotifier(node.outbox, node.registry) if node else notifier
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        await check_key(store, history.codec)
-        log_report(await bootstrap(store, config))
-        try:
-            if invite := await startup_invite(store, config, UserService(store), links):
-                logging.getLogger("wristcall.link").info("%s", invite)
-        except Exception:  # the QR is a convenience: the server starts without it
-            log.warning("could not prepare the link QR code; run `wristcall link` for one", exc_info=True)
-        await history.apply_retention()
-        purging = asyncio.create_task(purge_forever(history, config.history.purge_every_s))
-        # Only the server does this (the CLI may run next to a live server): its own calls died with it.
-        if interrupted := await store.calls.interrupt_unfinished(time.time()):
-            log.warning("%d call(s) left unfinished by the last run marked as interrupted", interrupted)
+        purging: asyncio.Task[None] | None = None
+        if node is not None:
+            # Cloud mode: no key, users, retention nor leftover calls to look after here (the Cloud keeps the data,
+            # moves its expiry and fails the calls an older boot left); the node starts beating and its outbox.
+            await node.start()
+        else:
+            await check_key(store, history.codec)
+            log_report(await bootstrap(store, config))
+            try:
+                if invite := await startup_invite(store, config, UserService(store), links):
+                    logging.getLogger("wristcall.link").info("%s", invite)
+            except Exception:  # the QR is a convenience: the server starts without it
+                log.warning("could not prepare the link QR code; run `wristcall link` for one", exc_info=True)
+            await history.apply_retention()
+            purging = asyncio.create_task(purge_forever(history, config.history.purge_every_s))
+            # Only the server does this (the CLI may run next to a live server): its own calls died with it.
+            if interrupted := await store.calls.interrupt_unfinished(time.time()):
+                log.warning("%d call(s) left unfinished by the last run marked as interrupted", interrupted)
         background = asyncio.create_task(run_background(targets)) if targets else None
         yield
-        purging.cancel()
-        with suppress(asyncio.CancelledError):
-            await purging
+        if purging is not None:
+            purging.cancel()
+            with suppress(asyncio.CancelledError):
+                await purging
         await after_calls.close()
         if background is not None:
             background.cancel()
             with suppress(asyncio.CancelledError):
                 await background
+        if node is not None:
+            # After the work after calls: what it queued (final status, push) gets the outbox's time to leave.
+            await node.stop(cloud_stop_s)
+            if own_cloud_http and cloud_http is not None:
+                await cloud_http.aclose()
         if own_user_http:
             await user_http.aclose()
         if own_http:
@@ -171,6 +263,7 @@ def create_app(
     app.state.account = account
     app.state.history = history
     app.state.call_slots = slots
+    app.state.cloud_node = node
 
     def client_ip(request: Request) -> str:
         header = config.server.client_ip_header
@@ -188,25 +281,36 @@ def create_app(
 
     app.include_router(push_router(store, auth, config, on_discarded=discard_at_relay if notifier else None))
 
-    redelivery = Redelivery(
-        history, agents, config, http_client, user_http=user_http, policy=delivery_policy, background=after_calls
-    )
-    app.include_router(calls_router(auth, agents, history, redelivery.start))
+    if node is None:
+        redelivery = Redelivery(
+            history, agents, config, http_client, user_http=user_http, policy=delivery_policy, background=after_calls
+        )
+        app.include_router(calls_router(auth, agents, history, redelivery.start))
+    else:  # redelivery through the Cloud comes in Task 8b; until then its route answers not_in_cloud_mode
+        app.include_router(calls_router(auth, agents, history, None))
 
     async def device_from(authorization: str | None) -> Principal | None:
         principal = await auth.authenticate(authorization)
         return principal if principal is not None and principal.kind == "device" else None
 
     @app.get("/v1/health")
-    async def health() -> dict[str, Any]:
+    async def health() -> Any:
         central = config.central_account
-        return {
+        body = {
             "status": "ok",
             "version": __version__,
             "protocol": protocol.PROTOCOL_VERSION,
             "account": {"issuer": central.issuer, "device_credential": central.device_credential} if central else None,
             "push": {"relay": config.push.relay_url} if config.push else None,
         }
+        if node is None:
+            return body
+        body["mode"] = "cloud"
+        # Not ready before the Cloud accepted a heartbeat, nor while draining: the Cloud routes no calls here then.
+        if node.draining or not node.ready.is_set():
+            body["status"] = "draining" if node.draining else "starting"
+            return JSONResponse(body, status_code=503)
+        return body
 
     @app.post("/v1/pair")
     async def pair(body: PairBody, request: Request) -> Any:
@@ -286,8 +390,28 @@ def create_app(
             return {"device_id": result.device_id, "token": result.token}
         return JSONResponse({"request_id": result.request_id, "expires_at": result.expires_at}, status_code=202)
 
+    async def cloud_me(cloud: CloudNode, authorization: str | None) -> Any:
+        # Any platform: the watch and the apps alike. The Cloud says who the account is and what it may do.
+        principal = await cloud.auth.authenticate(authorization)
+        if principal is None:
+            return JSONResponse({"error": "unauthorized", "message": "missing or invalid token"}, status_code=401)
+        proof = require_proof(principal.user_id)
+        found = await cloud.me(proof)
+        listed = [Agent.from_record(r) for r in found["agents"]]
+        return {
+            "device_id": proof.device,
+            "device_name": proof.platform,
+            "user": {"id": proof.account, "handle": proof.account, "display_name": ""},
+            "agents": [agent_summary(a) for a in listed],
+            "profiles": [{"name": a.slug, "display_name": a.display_name} for a in listed],
+            "plan": found["plan"],  # the Cloud's {"plan", "source", "expires_at"}, or null without a plan
+            "usage": found["usage"],  # {"month", "used_s", "quota_s", "remaining_s"}
+        }
+
     @app.get("/v1/me")
     async def me(authorization: str | None = Header(default=None)) -> Any:
+        if node is not None:
+            return await cloud_me(node, authorization)
         principal = await device_from(authorization)
         if principal is None or principal.device is None:
             return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -353,10 +477,10 @@ def create_app(
         finally:
             # Transcribed and delivered: the call stops counting against the limit (the push needs no GPU).
             slot.release()
-        if notifier is None:
+        if call_notifier is None:
             return
         try:
-            await notifier.call_finished(record)
+            await call_notifier.call_finished(record)
         except Exception as e:  # noqa: BLE001 - the call is already in the history; a push failure only logs
             log.warning("call %s: push failed: %s", record.id, type(e).__name__)
 
@@ -412,6 +536,9 @@ def create_app(
     @app.websocket("/v1/call")
     async def call(ws: WebSocket) -> None:
         await ws.accept()
+        if node is not None:  # calls through the Cloud come in Task 9; until then a cloud node takes none
+            await ws.close(code=protocol.CLOSE_UNAUTHORIZED)
+            return
         principal = await device_from(ws.headers.get("authorization"))
         if principal is None or principal.device is None:
             await ws.close(code=protocol.CLOSE_UNAUTHORIZED)
@@ -521,6 +648,11 @@ def create_app(
         finally:
             # First, with no await before it: under cancellation the first await would skip the rest.
             slot.release()
+
+    if node is not None:
+        _add_cloud_error_handlers(app)
+        # Inside CORS (added after it would be outside): the 404s carry its headers too.
+        app.add_middleware(_NotInCloudMode)
 
     if config.server.cors_origins:
         # Bearer tokens in a header, no cookies: no credentials. The outermost layer, so errors answered by the

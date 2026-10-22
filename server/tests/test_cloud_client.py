@@ -1,6 +1,7 @@
 """The node's HTTP client for the Cloud's `/v1/node/*` API, the account proof and the in-process fake Cloud."""
 
 import logging
+import time
 
 import httpx
 import pytest
@@ -349,3 +350,35 @@ async def test_fake_cloud_agents_and_calls(fake: FakeCloud) -> None:
     assert fake.heartbeats == [beat]
     assert (await client.request("DELETE", "/v1/node/calls", user=user)).status == 422
     assert (await client.request("DELETE", "/v1/node/calls", user=user, params=[("all", "true")])).body == {"deleted": 1}
+
+
+async def test_fake_cloud_expired_plan_is_no_plan(fake: FakeCloud) -> None:
+    # The real Cloud keeps only entitlements without `expires_at` or with one still ahead.
+    client = CloudClient(CLOUD_URL, SECRET, fake.http())
+    fake.plans["acc-1"] = {"plan": "full", "source": "beta", "expires_at": time.time() - 60}
+    me = await client.request("GET", "/v1/node/me", user=proof(fake))
+    assert (me.status, me.body["plan"]) == (200, None)
+    agent = {"id": "ag_0123456789ab", "slug": "helper", "display_name": "Helper", "icon": "star",
+             "call_type": "one-shot", "spec": {}}
+    created = await client.request("POST", "/v1/node/agents", user=proof(fake), json=agent)
+    assert (created.status, created.code) == (402, "plan_required")
+    fake.plans["acc-1"] = {"plan": "full", "source": "beta", "expires_at": time.time() + 3600}
+    me = await client.request("GET", "/v1/node/me", user=proof(fake))
+    assert me.body["plan"]["plan"] == "full"
+    assert (await client.request("POST", "/v1/node/agents", user=proof(fake), json=agent)).status == 201
+
+
+@pytest.mark.parametrize("params", [
+    {"before_at": "soon", "before_id": "c_0000000000000000"},
+    {"before_at": "nan", "before_id": "c_0000000000000000"},
+    {"before_at": "inf", "before_id": "c_0000000000000000"},
+    {"limit": "²"},  # a digit to str.isdigit, not to int()
+    {"limit": "١"},  # an Arabic-Indic one: int() takes it, the Cloud does not
+    {"limit": "0050"},
+    {"since": "nan"},
+])
+async def test_fake_cloud_bad_listing_params_are_422(fake: FakeCloud, params) -> None:
+    client = CloudClient(CLOUD_URL, SECRET, fake.http())
+    fake.plans["acc-1"] = FULL_PLAN
+    resp = await client.request("GET", "/v1/node/calls", user=proof(fake), params=params)
+    assert (resp.status, resp.code) == (422, "invalid")

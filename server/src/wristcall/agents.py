@@ -4,7 +4,7 @@ import asyncio
 import re
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -426,6 +426,9 @@ def new_agent_id() -> str:
     return f"ag_{secrets.token_hex(6)}"
 
 
+_CLOUD_REFUSED = "Wristcall Cloud refused this agent; check its fields"
+
+
 class AgentService:
     def __init__(
         self,
@@ -435,12 +438,16 @@ class AgentService:
         *,
         now: Callable[[], float] = time.time,
         resolver: Resolver = system_resolver,
+        plan_check: Callable[[str, "AgentSpec"], Awaitable[None]] | None = None,
     ) -> None:
         self._st = storage
         self._config = config
         self._http = http
         self._now = now
         self._resolver = resolver
+        # Cloud mode: the account's plan may refuse an agent (no plan, or the operator's voice on a `custom` plan).
+        # Runs before anything is written; raises AgentError or the storage's PlanRequired.
+        self._plan_check = plan_check
 
     async def list(self, user_id: str) -> list[Agent]:
         return [Agent.from_record(r) for r in await self._st.agents.list(user_id)]
@@ -549,6 +556,8 @@ class AgentService:
             id=new_agent_id(), user_id=user_id, slug=inp.slug, display_name=inp.display_name or inp.slug,
             icon=icon, call_type=call_type, position=0, spec=spec, created_at=now, updated_at=now, color=inp.color,
         )
+        if self._plan_check is not None:
+            await self._plan_check(user_id, spec)
         await self.check_public(agent)
         limit = self._config.limits.max_agents_per_user
         try:
@@ -557,6 +566,8 @@ class AgentService:
             raise AgentError("conflict", f"an agent with slug '{inp.slug}' already exists") from None
         except LimitReached:
             raise AgentError("limit", f"agent limit reached ({limit})") from None
+        except ValueError:  # the Cloud refused it (cloud mode); its answer may quote the agent: not repeated
+            raise AgentError("invalid", _CLOUD_REFUSED) from None
         if inp.position is not None:
             return await self._move(user_id, created.id, inp.position)
         return created
@@ -594,6 +605,8 @@ class AgentService:
             icon=icon, call_type=call_type, position=current.position,
             spec=spec, created_at=current.created_at, updated_at=self._now(), color=inp.color or current.color,
         )
+        if self._plan_check is not None:
+            await self._plan_check(user_id, spec)
         await self.check_public(updated)
         try:
             saved = Agent.from_record(await self._st.agents.update(updated.to_record()))
@@ -601,6 +614,8 @@ class AgentService:
             raise AgentError("conflict", f"an agent with slug '{slug}' already exists") from None
         except KeyError:
             raise AgentError("not_found", f"agent not found: {ref}") from None
+        except ValueError:
+            raise AgentError("invalid", _CLOUD_REFUSED) from None
         if saved.spec.retention_days != current.spec.retention_days:
             await self._st.calls.set_expiry(
                 user_id, saved.id, retention_seconds(self._config.history.effective_days(saved.spec.retention_days)),

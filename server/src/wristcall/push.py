@@ -45,8 +45,12 @@ def push_router(
     now: Callable[[], float] = time.time,
 ) -> APIRouter:
     """`on_discarded(key)` runs in the background, after the response, for a key that was replaced or deleted
-    (the relay should forget it). Its failures are logged without the key."""
+    (the relay should forget it). Its failures are logged without the key.
+
+    In cloud mode the Cloud is the relay and keeps one key per device: no `push` block is needed, and the key is
+    always the device's (every cloud-mode principal names its device; a self-hosted API token has none)."""
     router = APIRouter(prefix="/v1")
+    available = config.push is not None or config.is_cloud
     pending: set[asyncio.Task[None]] = set()
 
     def discard(key: str | None) -> None:
@@ -67,7 +71,7 @@ def push_router(
 
     @router.put("/push")
     async def put_push(request: Request, authorization: str | None = Header(default=None)) -> Any:
-        if config.push is None:
+        if not available:
             return not_configured()
         who = await auth.authenticate(authorization)
         if who is None:
@@ -81,23 +85,25 @@ def push_router(
         if not isinstance(key, str) or not PUSH_KEY.fullmatch(key):
             return _error("invalid", "push_key must be a wc_push_ key", 422)
         try:
-            if who.kind == "device":
+            if who.device is not None:
                 replaced = await storage.push.set(who.user_id, key, now(), device_id=who.device.id)
             else:
                 replaced = await storage.push.set(who.user_id, key, now(), token_id=who.token_id)
         except KeyError:  # the client stopped being valid between the authentication and now
             return _error("unauthorized", "missing or invalid token", 401)
+        except ValueError:  # the Cloud refused the key (cloud mode)
+            return _error("invalid", "push_key was refused", 422)
         discard(replaced)
         return Response(status_code=204)
 
     @router.delete("/push")
     async def delete_push(authorization: str | None = Header(default=None)) -> Any:
-        if config.push is None:
+        if not available:
             return not_configured()
         who = await auth.authenticate(authorization)
         if who is None:
             return _error("unauthorized", "missing or invalid token", 401)
-        if who.kind == "device":
+        if who.device is not None:
             deleted = await storage.push.clear(device_id=who.device.id)
         else:
             deleted = await storage.push.clear(token_id=who.token_id)

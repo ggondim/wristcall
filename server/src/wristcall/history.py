@@ -181,7 +181,15 @@ class History:
         self, user_id: str, *, agent_id: str | None = None, since: float | None = None, until: float | None = None,
         terms: list[list[str]] | None = None, page: int = 100,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Every matching call of the user, newest first, read a page at a time (export, CLI)."""
+        """Every matching call of the user, newest first, read a page at a time (export, CLI).
+
+        A storage that exports by itself (`calls.exports`, the Cloud in cloud mode) streams them in one request,
+        oldest first (only without `terms`: it does not search)."""
+        if terms is None and getattr(self.storage.calls, "exports", False):
+            exported = self.storage.calls.export(user_id, agent_id=agent_id, since=since, until=until)
+            async for record, entries in exported:
+                yield call_detail(record, [self._open(e, record.user_id) for e in entries])
+            return
         before = None
         while True:
             found = await self.storage.calls.list(

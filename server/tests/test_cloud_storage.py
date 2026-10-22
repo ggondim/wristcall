@@ -477,6 +477,23 @@ async def test_listing_in_flight_during_a_write_is_not_cached(fake: FakeCloud):
     assert [a.display_name for a in await st.agents.list(ACCOUNT)] == ["Renamed"]  # not served from the cache
 
 
+async def test_many_accounts_writing_never_let_a_stale_listing_in(fake: FakeCloud):
+    # The write counter once reset itself past 4096 accounts: the account's count could come back to the value a
+    # listing in flight had seen, and that stale listing went into the cache.
+    client = RacingClient(CLOUD_URL, SECRET, fake.http())
+    st = CloudStorage(client, SealCodec(KEY))
+    await st.agents.create(agent("coach", AG1))
+
+    async def others_then_rename():
+        for i in range(4096):
+            st.agents._changed(f"acc-other-{i}")  # writes of other accounts, without 4096 trips to the fake
+        await st.agents.update(agent("coach", AG1, display_name="Renamed"))
+
+    client.during = others_then_rename
+    assert [a.display_name for a in await st.agents.list(ACCOUNT)] == ["Coach"]  # read before the write
+    assert [a.display_name for a in await st.agents.list(ACCOUNT)] == ["Renamed"]  # not served from the cache
+
+
 def odd_cloud(answers: dict[tuple[str, str], httpx.Response]) -> CloudStorage:
     def handler(request: httpx.Request) -> httpx.Response:
         return answers[(request.method, request.url.path)]

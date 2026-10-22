@@ -8,7 +8,7 @@ went, and a device token reads only the calls made from that device. Everything 
 import math
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -59,6 +59,14 @@ def parse_cursor(value: str) -> tuple[float, str] | None:
     if not sep or not call_id or not math.isfinite(position):
         return None
     return position, call_id
+
+
+async def _chain(first: dict[str, Any] | None, rest: AsyncIterator[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
+    if first is None:
+        return
+    yield first
+    async for view in rest:
+        yield view
 
 
 def _error(code: str, message: str, status: int) -> JSONResponse:
@@ -169,6 +177,9 @@ def calls_router(
         moment = now()
         stamp = datetime.fromtimestamp(moment, UTC).strftime("%Y%m%d-%H%M%S")
         views = history.details(who.user_id, **where)
+        # The first call is read before the response starts: a storage that cannot answer (the Cloud down) becomes a
+        # real error status, not a 200 cut short.
+        views = _chain(await anext(views, None), views)
         body = export_markdown(views, moment) if format == "md" else export_json(views, moment)
         media = "text/markdown; charset=utf-8" if format == "md" else "application/json"
         return StreamingResponse(
@@ -184,7 +195,8 @@ def calls_router(
             return _error("unauthorized", "missing or invalid token", 401)
         record = await calls.get(who.user_id, call_id)
         # A device token reads only the calls made from that device; another one looks just like a missing call.
-        if record is None or (who.device is not None and record.device_id != who.device.id):
+        # (In cloud mode the apps' principals carry their device too, and they read every call of the account.)
+        if record is None or (who.kind == "device" and record.device_id != who.device.id):
             return _error("not_found", "call not found", 404)
         return await history.detail(record)
 
