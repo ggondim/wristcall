@@ -1,13 +1,14 @@
 """`wristcall-cloud admin`: beta entitlements, invite codes, numbers and the node registry, straight on the database.
 
-One line per item, `key: value`, on stdout; errors go to stderr. Exit codes: 0 done, 1 no such account,
-2 bad usage or configuration, 3 the database failed
+One line per item, `key: value`, on stdout; errors go to stderr. Exit codes: 0 done, 1 no such account (or, for
+`provision`, no plan), 2 bad usage or configuration, 3 the database failed
 (only the exception type is printed). The invite codes `invites create` prints are the only time
 they exist in clear, and so are the node secrets `nodes add` and `nodes rotate` print: nothing here logs one.
 """
 
 import argparse
 import asyncio
+import re
 import sys
 import time
 from collections.abc import Mapping
@@ -20,11 +21,14 @@ from pymongo.errors import PyMongoError
 from . import __version__
 from .account_store import PLANS, AccountStore
 from .cloud_store import CloudModeStore, usage_month
-from .config import ConfigError, admin_settings
+from .config import ConfigError, ProvisionSettings, admin_provision_settings, admin_settings
 from .nodes import CAPABILITIES, KINDS, NodeExists, NodeStore
+from .provision import cloud_entry, provision
+from .store import Store
 
 PROG = "wristcall-cloud admin"
 MAX_INVITES = 1000
+_LANGUAGE = re.compile(r"[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?")
 
 
 class _Parser(argparse.ArgumentParser):
@@ -46,6 +50,12 @@ def _count(raw: str) -> int:
     return value
 
 
+def _language(raw: str) -> str:
+    if not _LANGUAGE.fullmatch(raw):
+        raise argparse.ArgumentTypeError("must be a language code such as en or pt-BR")
+    return raw
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = _Parser(prog=PROG)
     commands = parser.add_subparsers(dest="command", required=True, parser_class=_Parser)
@@ -55,6 +65,11 @@ def build_parser() -> argparse.ArgumentParser:
     grant.add_argument("account")
     grant.add_argument("--plan", choices=PLANS, required=True)
     grant.add_argument("--days", type=_positive, default=None, help="for how long; without it, with no end")
+    grant.add_argument("--language", type=_language, default=None, help='of "Voice notes" (default from the env)')
+    provision_ = commands.add_parser("provision", help='creates what a plan gives: the Cloud entry, "Voice notes"')
+    provision_.add_argument("account", nargs="?")
+    provision_.add_argument("--all", action="store_true", help="every account with a plan")
+    provision_.add_argument("--language", type=_language, default=None, help='of "Voice notes" (default from the env)')
     revoke = commands.add_parser("revoke", help="takes the account's plan away")
     revoke.add_argument("account")
     invites = commands.add_parser("invites", help="invite codes")
@@ -94,6 +109,40 @@ def _line(key: str, value: object) -> None:
 def _no_such_account() -> int:
     print(f"{PROG}: no such account", file=sys.stderr)
     return 1
+
+
+def _usage_error(message: str) -> int:
+    print(f"{PROG}: {message}", file=sys.stderr)
+    return 2
+
+
+def _bool(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _provisioned(created: dict[str, bool]) -> None:
+    _line("provisioned", f"entry={_bool(created['entry'])} voice_notes={_bool(created['voice_notes'])}")
+
+
+async def _ensure_provision_indexes(store: AccountStore) -> None:
+    # The unique `account_url` and `account_slug` indexes decide races, even before the Cloud's first start.
+    await Store(store.db).ensure_indexes()
+    await CloudModeStore(store.db).ensure_indexes()
+
+
+async def _provision_all(store: AccountStore, settings: ProvisionSettings, language: str | None, now: float) -> int:
+    servers, cloud = Store(store.db), CloudModeStore(store.db)
+    accounts = entries = voice_notes = 0
+    entitled = {"$or": [{"expires_at": None}, {"expires_at": {"$gt": now}}]}
+    async for doc in store.entitlements.find(entitled, {"plan": 1}).sort("_id", 1):
+        created = await provision(servers, cloud, doc["_id"], doc["plan"], settings, language=language, now=now)
+        accounts += 1
+        entries += created["entry"]
+        voice_notes += created["voice_notes"]
+    _line("accounts", accounts)
+    _line("entries_created", entries)
+    _line("voice_notes_created", voice_notes)
+    return 0
 
 
 def _no_such_node() -> int:
@@ -145,9 +194,19 @@ async def _run_nodes(args: argparse.Namespace, nodes: NodeStore) -> int:
     return 0
 
 
-async def run(args: argparse.Namespace, store: AccountStore) -> int:
+async def run(args: argparse.Namespace, store: AccountStore, *, settings: ProvisionSettings | None = None) -> int:
+    """`settings` (from `admin_provision_settings`): None without WRISTCALL_CLOUD_PUBLIC_URL, and then `grant`
+    provisions nothing and `provision` is a usage error."""
     now = time.time()
     cloud = CloudModeStore(store.db)
+    if args.command == "provision":
+        if (args.account is None) == (not args.all):
+            return _usage_error("give an account or --all (not both)")
+        if settings is None:
+            return _usage_error("WRISTCALL_CLOUD_PUBLIC_URL is required")
+        await _ensure_provision_indexes(store)
+        if args.all:
+            return await _provision_all(store, settings, args.language, now)
     if args.command == "nodes":
         await cloud.ensure_indexes()  # so a duplicate URL is refused even before the Cloud's first start on this version
         return await _run_nodes(args, NodeStore(cloud))
@@ -174,6 +233,17 @@ async def run(args: argparse.Namespace, store: AccountStore) -> int:
     account = await store.get_account(args.account)
     if account is None:
         return _no_such_account()
+    if args.command == "provision":
+        entitlement = await store.entitlement(args.account, now=now)
+        if entitlement is None:
+            print(f"{PROG}: no plan", file=sys.stderr)
+            return 1
+        _provisioned(
+            await provision(
+                Store(store.db), cloud, args.account, entitlement["plan"], settings, language=args.language, now=now
+            )
+        )
+        return 0
     if args.command == "show":
         entitlement = await store.entitlement(args.account, now=now)
         identities = await store.identities_of(args.account)
@@ -187,26 +257,37 @@ async def run(args: argparse.Namespace, store: AccountStore) -> int:
         if entitlement is not None:
             _line("plan_expires_at", _iso(entitlement.get("expires_at")))
         usage = await cloud.usage.find_one({"_id": f"{args.account}:{usage_month(now)}"}, {"total_s": 1})
+        _line("cloud_entry", _bool(await cloud_entry(Store(store.db), args.account) is not None))
         _line("cloud_agents", await cloud.agents.count_documents({"account": args.account}))
         _line("cloud_calls", await cloud.calls.count_documents({"account": args.account}))
         _line("usage_month_s", usage.get("total_s", 0) if usage else 0)
         return 0
     if args.command == "grant":
+        await _ensure_provision_indexes(store)
         granted = await store.grant(args.account, args.plan, days=args.days, now=now)
         _line("account", args.account)
         _line("plan", granted["plan"])
         _line("expires_at", _iso(granted["expires_at"]))
+        if settings is None:
+            _line("provisioned", "skipped")
+        else:
+            created = await provision(
+                Store(store.db), cloud, args.account, args.plan, settings, language=args.language, now=now
+            )
+            _provisioned(created)
         return 0
     _line("revoked", "true" if await store.revoke_entitlement(args.account) else "false")
     return 0
 
 
-async def _run_on_database(args: argparse.Namespace, url: str, database: str) -> int:
+async def _run_on_database(
+    args: argparse.Namespace, url: str, database: str, settings: ProvisionSettings | None
+) -> int:
     client: AsyncMongoClient = AsyncMongoClient(
         url, appname=f"wristcall-cloud-admin/{__version__}", tz_aware=True, serverSelectionTimeoutMS=10000
     )
     try:
-        return await run(args, AccountStore(client[database]))
+        return await run(args, AccountStore(client[database]), settings=settings)
     finally:
         await client.close()
 
@@ -218,11 +299,12 @@ def main(argv: list[str], env: Mapping[str, str]) -> int:
         return e.code if isinstance(e.code, int) else 2
     try:
         url, database = admin_settings(env)
+        settings = admin_provision_settings(env)
     except ConfigError as e:
         print(f"{PROG}: {e}", file=sys.stderr)
         return 2
     try:
-        return asyncio.run(_run_on_database(args, url, database))
+        return asyncio.run(_run_on_database(args, url, database, settings))
     except PyMongoError as e:  # the message of a driver error can name hosts; the type is enough
         print(f"{PROG}: database error ({type(e).__name__})", file=sys.stderr)
         return 3
