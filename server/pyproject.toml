@@ -36,5 +36,6 @@ asyncio_mode = "auto"
 markers = [
   "integration: needs the real providers (WRISTCALL_INTEGRATION_CONFIG)",
   "zitadel: needs the real central account issuer (WRISTCALL_ZITADEL_E2E_SECRET)",
+  "cloud_real: needs a MongoDB for the real Wristcall Cloud (WRISTCALL_TEST_CLOUD_MONGO_URL) and wristcall_cloud",
 ]
-addopts = "-m 'not integration and not zitadel'"
+addopts = "-m 'not integration and not zitadel and not cloud_real'"

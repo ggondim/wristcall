@@ -55,6 +55,25 @@ jobs:
         run: diff ../server/src/wristcall/audience.py src/wristcall_cloud/audience.py
       - run: docker build -t wristcall-cloud-ci .
 
+  cloud-node:
+    # A cloud-mode server against the real Cloud on a real MongoDB (server/tests/test_cloud_real.py). Same kernel
+    # caveat as the cloud job: MongoDB 8 refuses to start on Linux 6.19+.
+    runs-on: ubuntu-22.04
+    services:
+      mongo:
+        image: mongo:8
+        ports: ["27017:27017"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -e 'cloud[dev]' -e 'server[dev]'
+      - run: pytest -q -m cloud_real tests/test_cloud_real.py
+        working-directory: server
+        env:
+          WRISTCALL_TEST_CLOUD_MONGO_URL: mongodb://localhost:27017
+
   directory:
     runs-on: ubuntu-latest
     defaults:

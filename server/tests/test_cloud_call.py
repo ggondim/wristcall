@@ -21,6 +21,7 @@ from wristcall.cloud_node.auth import CloudAuthenticator
 from wristcall.cloud_node.calls import CallRefused, OpenedCall, call_deadline, check_plan, open_call
 from wristcall.cloud_node.node import CloudNode
 from wristcall.cloud_node.proof import UserProof
+from wristcall.config import CLOUD_NODE_CONCURRENT_CALLS
 from wristcall.history import aad_scoped
 from wristcall.history_api import _ClosingStream
 from wristcall.history_codec import HistoryCodec
@@ -264,7 +265,9 @@ def test_refusals(fake: FakeCloud, case: str):
     with TestClient(call_app(fake)) as c:
         wait_ready(c)
         slots = c.app.state.call_slots
-        held = [slots.try_acquire("one_way") for _ in range(10)] if case == "slots_full" else []
+        full = CLOUD_NODE_CONCURRENT_CALLS["one_way"] if case == "slots_full" else 0
+        held = [slots.try_acquire("one_way") for _ in range(full)]
+        assert None not in held
         headers = watch(fake)
         if case == "cloud_down":
             assert c.get("/v1/calls", headers=ios(fake)).status_code == 200  # the Cloud's keys are fetched

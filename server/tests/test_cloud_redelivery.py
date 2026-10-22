@@ -309,7 +309,7 @@ async def test_drain_calls_gives_up_after_its_time(fake: FakeCloud):
 async def test_draining_node_tells_the_cloud_it_takes_no_calls(fake: FakeCloud):
     node, slots = node_for(fake)
     slots.try_acquire("conversation")
-    assert node.heartbeat.body()["capacity"] == {"conversation": 3, "one_way": 10}
+    assert node.heartbeat.body()["capacity"] == {"conversation": 2, "one_way": 2}
     assert await node.drain_calls(slots, 0.1, poll_s=0.01) == 1
     beat = fake.heartbeats[-1]  # sent at once, not at the next beat
     assert beat["capacity"] == {"conversation": 0, "one_way": 0}

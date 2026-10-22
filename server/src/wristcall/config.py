@@ -182,8 +182,9 @@ class ConcurrentCallsConfig(BaseModel):
     one_way: int | None = Field(default=None, ge=1)
 
 
-# Starting limits for a cloud-mode node until the GPU is measured; self-hosted servers have none.
-CLOUD_NODE_CONCURRENT_CALLS: dict[str, int] = {"conversation": 3, "one_way": 10}
+# A cloud-mode node's limits when the operator does not set them, measured on the GPU of the `home` node (the XTTS
+# queue is the bottleneck); self-hosted servers have none.
+CLOUD_NODE_CONCURRENT_CALLS: dict[str, int] = {"conversation": 2, "one_way": 2}
 
 
 class LimitsConfig(BaseModel):

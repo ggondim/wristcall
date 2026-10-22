@@ -467,15 +467,15 @@ def test_cloud_mode_forces_limits():
     cfg = parse_config(cloud_yaml(), {})
     assert cfg.limits.public_only is True
     assert cfg.limits.history_only_one_way is True
-    assert cfg.limits.max_concurrent_calls.conversation == 3
-    assert cfg.limits.max_concurrent_calls.one_way == 10
+    assert cfg.limits.max_concurrent_calls.conversation == 2
+    assert cfg.limits.max_concurrent_calls.one_way == 2
     assert cfg.limits.max_conversation_s == 3600
     cfg = parse_config(
         cloud_yaml(limits={"max_concurrent_calls": {"conversation": 5}, "max_conversation_s": 600, "public_only": False}),
         {},
     )
     assert cfg.limits.public_only is True  # not up to the operator
-    assert (cfg.limits.max_concurrent_calls.conversation, cfg.limits.max_concurrent_calls.one_way) == (5, 10)
+    assert (cfg.limits.max_concurrent_calls.conversation, cfg.limits.max_concurrent_calls.one_way) == (5, 2)
     assert cfg.limits.max_conversation_s == 600
 
 
