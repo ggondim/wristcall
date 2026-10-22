@@ -19,6 +19,8 @@ class Principal:
     kind: Literal["device", "api"]
     device: Device | None = None
     token_id: str | None = None
+    # Cloud mode: the platform claim of the per-server token ("watchos", "ios", ...). Self-hosted leaves it None.
+    platform: str | None = None
 
 
 def bearer(authorization: str | None) -> str | None:
