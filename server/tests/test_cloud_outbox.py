@@ -435,3 +435,26 @@ async def test_an_item_that_always_fails_unexpectedly_is_dropped_after_five_trie
     assert registry.ids() == []  # the finish behind it went through
     assert fake.calls[call_id]["status"] == "ended"
     assert "RuntimeError" in caplog.text and "secret words" not in caplog.text
+    assert "repeated errors while sending" in caplog.text and "refused by the Cloud" not in caplog.text
+
+
+@respx.mock
+async def test_a_non_json_4xx_is_retried_not_dropped():
+    """A proxy's HTML 404 during a deploy is not the Cloud refusing the item: it waits, then goes out."""
+    from wristcall.cloud_node.client import CloudClient
+
+    base = "https://cloud.test"
+    route = respx.post(f"{base}/v1/node/calls/c_1/finish").mock(side_effect=[
+        httpx.Response(404, text="<html>not found</html>", headers={"content-type": "text/html"}),
+        httpx.Response(404, text="<html>not found</html>", headers={"content-type": "text/html"}),
+        httpx.Response(200, json={"ok": True}),
+    ])
+    registry = CallRegistry()
+    registry.open("c_1", "g1")
+    sleeps = Sleeps()
+    outbox = Outbox(CloudClient(base, "secret", httpx.AsyncClient()), registry, sleep=sleeps)
+    outbox.put(finish("c_1", "g1"))
+    async with running(outbox):
+        await until(lambda: outbox.idle)
+    assert route.call_count == 3 and sleeps.waits == [1, 2]
+    assert outbox.dropped == 0 and registry.ids() == []

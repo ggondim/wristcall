@@ -107,9 +107,20 @@ async def test_lenient_body_accepts_a_2xx_on_its_status(outcome) -> None:
     assert resp.status == outcome.status_code and resp.body is None
 
 
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        httpx.Response(502, text="<html>"),
+        httpx.Response(404, text="<html>not found</html>", headers={"content-type": "text/html"}),
+        httpx.Response(403, content=b"{not json", headers={"content-type": "application/json"}),
+        httpx.Response(302, text="<html>moved</html>", headers={"content-type": "text/html"}),
+    ],
+    ids=["502", "404-html", "403-bad-json", "302-html"],
+)
 @respx.mock
-async def test_lenient_body_still_raises_on_5xx() -> None:
-    respx.post(f"{CLOUD_URL}/v1/node/calls/c_1/finish").mock(return_value=httpx.Response(502, text="<html>"))
+async def test_lenient_body_only_applies_to_a_2xx(outcome) -> None:
+    # A non-JSON answer that is not a 2xx is not the Cloud talking (a proxy, say): still CloudUnavailable.
+    respx.post(f"{CLOUD_URL}/v1/node/calls/c_1/finish").mock(return_value=outcome)
     client = CloudClient(CLOUD_URL, SECRET, httpx.AsyncClient())
     with pytest.raises(CloudUnavailable):
         await client.request("POST", "/v1/node/calls/c_1/finish", grant="g", json={}, lenient_body=True)

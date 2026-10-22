@@ -116,6 +116,7 @@ class Outbox:
         self._idle = asyncio.Event()
         self._idle.set()
         self._worker: asyncio.Task[None] | None = None  # the task running `run`
+        self._gave_up = False  # the last `_send` returned False for repeated unexpected errors, not a refusal
         self._unauthorized_since: float | None = None  # first of an unbroken run of 401 answers
         self.dropped = 0
 
@@ -189,6 +190,8 @@ class Outbox:
                 item = self._sending = self._items[0]
                 try:
                     accepted = await self._send(item)
+                    gave_up = self._gave_up
+                    self._gave_up = False
                 finally:
                     self._sending = None
                 if self._items and self._items[0] is item:
@@ -196,7 +199,7 @@ class Outbox:
                     if accepted:
                         self._settled(item)
                     else:
-                        self._drop(item, "refused by the Cloud")
+                        self._drop(item, "repeated errors while sending" if gave_up else "refused by the Cloud")
                 if not self._items:
                     self._idle.set()
         finally:
@@ -219,8 +222,7 @@ class Outbox:
             except Exception as e:  # noqa: BLE001 - the worker must outlive any surprise; its text may hold a body
                 unexpected += 1
                 if unexpected >= MAX_UNEXPECTED_TRIES:
-                    log.error("outbox: %s of call %s: %d unexpected errors in a row (%s); dropping it",
-                              item.kind, item.call_id, unexpected, type(e).__name__)
+                    self._gave_up = True
                     return False
                 why = f"unexpected {type(e).__name__}"
             else:

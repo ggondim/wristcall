@@ -74,8 +74,9 @@ class CloudClient:
         lenient_body: bool = False,
     ) -> CloudResponse:
         """One request to the Cloud. 2xx, 3xx and 4xx answers come back; anything else raises `CloudUnavailable`.
-        `lenient_body`: the status is what matters (the outbox), so a body that is not JSON comes back as `None`
-        instead of raising."""
+        `lenient_body`: for a 2xx the status is what matters (the outbox), so a body that is not JSON comes back as
+        `None` instead of raising. Any other status with such a body (a proxy's HTML 4xx during a deploy) still
+        raises: it is not the Cloud talking."""
         try:
             resp = await self._http.request(
                 method, self._base + path, json=json, params=params, headers=self._headers(user, grant, headers)
@@ -89,14 +90,14 @@ class CloudClient:
         body: Any = None
         if resp.content:
             if not _is_json(resp.headers.get("content-type", "")):
-                if lenient_body:
+                if lenient_body and 200 <= resp.status_code < 300:
                     return CloudResponse(status=resp.status_code, body=None, headers=resp.headers)
                 log.warning("Wristcall Cloud answered %d without JSON on %s %s", resp.status_code, method, path)
                 raise CloudUnavailable("Wristcall Cloud answered without JSON")
             try:
                 body = resp.json()
             except ValueError:
-                if lenient_body:
+                if lenient_body and 200 <= resp.status_code < 300:
                     return CloudResponse(status=resp.status_code, body=None, headers=resp.headers)
                 log.warning("Wristcall Cloud answered %d with invalid JSON on %s %s", resp.status_code, method, path)
                 raise CloudUnavailable("Wristcall Cloud answered invalid JSON") from None
