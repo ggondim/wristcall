@@ -127,7 +127,7 @@ def calls_router(
         position = parse_cursor(before) if before is not None else None
         if before is not None and position is None:
             return _error("invalid", "before: pass the next_before of the previous page", 422)
-        terms = history.codec.query_terms(q) if q and q.strip() else None
+        terms = history.query_terms(who.user_id, q)
         page = await calls.list(who.user_id, **where, terms=terms, before=position, limit=limit)
         return {
             "calls": [await history.detail(r) for r in page],

@@ -10,6 +10,7 @@ The hashes reveal which entries share a word, not the word. A query is whole wor
 
 import base64
 import binascii
+import copy
 import hashlib
 import hmac
 import os
@@ -27,6 +28,7 @@ NONCE_BYTES = 12
 MAX_WORD = 64
 MAX_QUERY_WORDS = 16
 _WORD = re.compile(r"[^\W_]+")
+_ACCOUNT_INDEX_INFO = b"wristcall history account index v1|"
 
 
 class HistoryKeyError(Exception):
@@ -91,6 +93,17 @@ class HistoryCodec:
             return self._aead.decrypt(raw[:NONCE_BYTES], raw[NONCE_BYTES:], aad.encode()).decode()
         except (InvalidTag, ValueError, binascii.Error):
             raise HistoryKeyError("a history entry cannot be decrypted (another key, or damaged)") from None
+
+    def for_account(self, account: str) -> "HistoryCodec":
+        """The same text key, with a search index of its own for this account (cloud mode: several accounts share
+        one key, and the same word must not hash alike across them). Without a key there is nothing to scope."""
+        if self._index_key is None:
+            return self
+        scoped = copy.copy(self)
+        scoped._index_key = HKDF(
+            algorithm=hashes.SHA256(), length=32, salt=None, info=_ACCOUNT_INDEX_INFO + account.encode()
+        ).derive(self._index_key)
+        return scoped
 
     def _hash(self, word: str) -> str:
         assert self._index_key is not None
