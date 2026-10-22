@@ -149,3 +149,12 @@ def test_avoid_and_disabled_are_left_out():
     off = node("off", enabled=False)
     assert choose([home, other, off], need(country="BR")) == ["home", "other"]
     assert choose([home, other, off], need(country="BR", avoid={"home"})) == ["other"]
+
+
+def test_record_prunes_every_node():
+    # Reports for a node nobody asks about any more must not pile up.
+    rep = reports()
+    rep.record("a", "acc1", NOW)
+    rep.record("b", "acc2", NOW + 301)
+    assert "a" not in rep._seen
+    assert rep.count("b", NOW + 301) == 1

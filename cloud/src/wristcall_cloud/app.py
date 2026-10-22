@@ -58,6 +58,8 @@ from .push.api import router as push_router
 from .push.apns import ApnsChannel
 from .push.channels import Channel, FakeChannel
 from .push.limits import RegistrationLimiter, SendLimiter
+from .route_api import router as route_router
+from .routing import NodeReports
 from .push.registry import PushError, purge_idle_loop
 from .push.webpush import WebPushChannel
 from .session_tokens import MANAGER_PLATFORMS, AccountTokens
@@ -549,6 +551,7 @@ def create_app(
     app.state.attempt_limiter = AttemptLimiter(config.session_attempts_per_minute)
     app.state.poll_limiter = PollLimiter()
     app.state.node_limiter = NodeLimiter(config.node_requests_per_minute)
+    app.state.node_reports = NodeReports(config.node_reports_window_s, config.node_reports_accounts)
     if config.push_fake:
         log.warning("push: fake channel, nothing is delivered (WRISTCALL_CLOUD_PUSH_FAKE)")
     app.add_middleware(BodyLimit, limit=MAX_BODY)
@@ -595,6 +598,7 @@ def create_app(
 
     app.include_router(router)
     app.include_router(sessions_router)
+    app.include_router(route_router)
     app.include_router(push_router)
     app.include_router(node_me_router)
     app.include_router(node_heartbeat_router)

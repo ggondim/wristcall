@@ -24,7 +24,9 @@ class NodeReports:
     def record(self, node_id: str, account: str, now: float) -> None:
         by_account = self._seen.setdefault(node_id, {})
         by_account[account] = now
-        self._prune(node_id, now)
+        # Every node, not only this one: reports for a node nobody asks about any more must not pile up.
+        for seen in list(self._seen):
+            self._prune(seen, now)
 
     def count(self, node_id: str, now: float) -> int:
         """Distinct accounts that reported the node within the window."""
