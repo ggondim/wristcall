@@ -30,6 +30,7 @@ from .bootstrap import bootstrap, log_report
 from .cloud_node.calls import CloudPushNotifier
 from .cloud_node.node import CloudNode
 from .cloud_node.proof import ProofMismatch, require_proof
+from .cloud_node.redelivery import CloudRedelivery
 from .config import AppConfig
 from .delivery import DeliveryPolicy
 from .history import History, check_key
@@ -95,10 +96,9 @@ class _WsTransport:
 
 
 # Cloud mode: the routes of a server with its own users and devices. The Cloud keeps accounts and devices, so a
-# cloud node answers them 404 `not_in_cloud_mode` (and redelivery until it goes through the Cloud, Task 8b).
+# cloud node answers them 404 `not_in_cloud_mode`.
 _NOT_IN_CLOUD_MODE = re.compile(
-    r"^/v1/(?:pair(?:/.*)?|pairing-codes(?:/.*)?|pairing-requests(?:/.*)?|account/link|devices(?:/.*)?"
-    r"|calls/[^/]+/redeliver)/?$"
+    r"^/v1/(?:pair(?:/.*)?|pairing-codes(?:/.*)?|pairing-requests(?:/.*)?|account/link|devices(?:/.*)?)/?$"
 )
 _CLOUD_ERRORS: list[tuple[type[Exception], int, str, str]] = [
     (CloudUnavailable, 503, "cloud_unavailable", "Wristcall Cloud is unavailable; try again."),
@@ -286,8 +286,11 @@ def create_app(
             history, agents, config, http_client, user_http=user_http, policy=delivery_policy, background=after_calls
         )
         app.include_router(calls_router(auth, agents, history, redelivery.start))
-    else:  # redelivery through the Cloud comes in Task 8b; until then its route answers not_in_cloud_mode
-        app.include_router(calls_router(auth, agents, history, None))
+    else:  # the Cloud hands the call over, the node delivers it and reports by PATCH
+        cloud_redelivery = CloudRedelivery(
+            node, history, config, after_calls, http_client, user_http=user_http, policy=delivery_policy
+        )
+        app.include_router(calls_router(auth, agents, history, cloud_redelivery.start))
 
     async def device_from(authorization: str | None) -> Principal | None:
         principal = await auth.authenticate(authorization)

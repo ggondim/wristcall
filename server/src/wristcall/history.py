@@ -9,6 +9,7 @@ import logging
 import secrets
 import time
 from collections.abc import AsyncIterator, Callable
+from contextlib import aclosing
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -185,10 +186,11 @@ class History:
 
         A storage that exports by itself (`calls.exports`, the Cloud in cloud mode) streams them in one request,
         oldest first (only without `terms`: it does not search)."""
-        if terms is None and getattr(self.storage.calls, "exports", False):
+        if terms is None and self.storage.calls.exports:
             exported = self.storage.calls.export(user_id, agent_id=agent_id, since=since, until=until)
-            async for record, entries in exported:
-                yield call_detail(record, [self._open(e, record.user_id) for e in entries])
+            async with aclosing(exported):  # closing this generator closes the stream behind it
+                async for record, entries in exported:
+                    yield call_detail(record, [self._open(e, record.user_id) for e in entries])
             return
         before = None
         while True:
@@ -268,7 +270,11 @@ class History:
             return Entry(seq=e.seq, role=e.role, text=None, error="unreadable", at=e.at)
 
     async def entries(self, record: CallRecord) -> list[Entry]:
-        return [self._open(e, record.user_id) for e in await self.storage.calls.entries(record.user_id, record.id)]
+        return self.open_entries(record, await self.storage.calls.entries(record.user_id, record.id))
+
+    def open_entries(self, record: CallRecord, entries: list[EntryRecord]) -> list[Entry]:
+        """The call's stored entries, opened (entries that came another way: the Cloud's redelivery answer)."""
+        return [self._open(e, record.user_id) for e in entries]
 
     async def detail(self, record: CallRecord) -> dict[str, Any]:
         return call_detail(record, await self.entries(record))

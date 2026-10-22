@@ -111,6 +111,32 @@ class CloudNode:
         if self._beating is None or self._beating.done():
             self._beating = asyncio.create_task(self.heartbeat.run(self.ready))
 
+    async def drain_calls(self, slots: CallSlots, timeout_s: float = 30.0, *, poll_s: float = 0.1) -> int:
+        """Stops taking calls (`accepting` False: health 503 `draining`, a new call `busy`) and waits up to `timeout_s`
+        for the open ones (`slots`) to end; returns how many are still open. The Cloud hears it at once: one heartbeat
+        offering no capacity, so it routes no new call here (best effort; the regular beats offer none either)."""
+        self.draining = True
+        self.heartbeat.draining = True
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_s
+        telling = asyncio.create_task(self.heartbeat.beat())
+        try:
+            still_open = sum(slots.active().values())
+            if still_open:
+                log.info("draining: waiting up to %g s for %d open call(s)", timeout_s, still_open)
+            while still_open and loop.time() < deadline:
+                await asyncio.sleep(max(0.0, min(poll_s, deadline - loop.time())))
+                still_open = sum(slots.active().values())
+        finally:
+            if not telling.done():
+                telling.cancel()
+            await asyncio.gather(telling, return_exceptions=True)
+        if still_open:
+            log.warning("draining: %d call(s) still open after %g s; leaving anyway", still_open, timeout_s)
+        else:
+            log.info("draining: no open calls")
+        return still_open
+
     async def stop(self, drain_s: float = 20.0) -> int:
         """Stops the heartbeat, gives the outbox up to `drain_s` to empty, and returns how many items were lost."""
         beating, self._beating = self._beating, None

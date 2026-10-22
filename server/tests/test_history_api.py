@@ -251,3 +251,74 @@ def test_encrypted_history_is_searchable_and_unreadable_on_disk():
         stored = db.query("SELECT text, sealed FROM call_entries")[0]
         assert stored["sealed"] == 1 and "cofre" not in stored["text"]
         assert "cofre" not in db.query("SELECT terms FROM history_fts")[0]["terms"]
+
+
+async def test_chain_closes_what_is_left_of_the_stream():
+    from wristcall.history_api import _chain
+
+    closed = []
+
+    async def views():
+        try:
+            for i in range(5):
+                yield {"n": i}
+        finally:
+            closed.append(True)
+
+    rest = views()
+    chained = _chain(await anext(rest), rest)
+    assert await anext(chained) == {"n": 0}
+    assert await anext(chained) == {"n": 1}
+    await chained.aclose()  # the client went away: the rest (the Cloud's stream) is closed now, not at garbage time
+    assert closed == [True]
+
+    rest = views()
+    await anext(rest)
+    empty = _chain(None, rest)
+    assert [v async for v in empty] == []
+    assert closed == [True, True]
+
+
+def test_export_closes_the_stream_when_the_client_goes_away(client):
+    # A client that disconnects mid-download (uvicorn's send raises OSError): the views being read are closed.
+    t = api_token(client)
+    closed = []
+
+    async def details(*_args, **_kwargs):
+        try:
+            for i in range(1000):
+                yield {"id": f"c_{i}", "agent": {"id": "ag_1", "slug": "a", "display_name": "A"},
+                       "call_type": "conversation", "status": "ended", "error": None, "delivery": None, "attempts": 0, "last_http_status": None,
+                       "created_at": T0, "ended_at": T0, "finished_at": T0, "expires_at": None, "text": None,
+                       "entries": [{"role": "user", "text": "x" * 1000, "error": None, "at": T0}]}
+        finally:
+            closed.append(True)
+
+    client.app.state.history.details = details
+    sent = []
+
+    async def send(message):
+        sent.append(message["type"])
+        if message["type"] == "http.response.body" and len(sent) > 3:
+            raise OSError("client went away")
+
+    async def receive():
+        await asyncio.sleep(10)
+        return {"type": "http.disconnect"}
+
+    scope = {
+        "type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"}, "http_version": "1.1", "method": "GET",
+        "scheme": "http", "path": "/v1/calls/export", "raw_path": b"/v1/calls/export", "root_path": "",
+        "query_string": b"format=json",
+        "headers": [(b"host", b"testserver"), (b"authorization", f"Bearer {t}".encode())],
+        "client": ("127.0.0.1", 1), "server": ("testserver", 80), "state": {},
+    }
+
+    async def go():
+        try:
+            await client.app(scope, receive, send)
+        except Exception:  # noqa: BLE001 - ClientDisconnect: what uvicorn sees
+            pass
+
+    client.portal.call(go)
+    assert closed == [True]

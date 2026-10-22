@@ -211,6 +211,9 @@ class CallStore(Protocol):
     """Calls and their entries (the history). Texts arrive sealed or not and terms arrive computed (history_codec.py):
     the storage keeps what it gets and never sees the key."""
 
+    # Capability: True when the store streams a whole export itself (`export`, the Cloud's); otherwise History pages.
+    exports: bool
+
     async def create(self, record: CallRecord) -> CallRecord: ...
 
     async def get(self, user_id: str, call_id: str) -> CallRecord | None:

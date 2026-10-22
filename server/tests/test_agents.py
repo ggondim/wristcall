@@ -733,3 +733,17 @@ async def test_providers_of_an_agent_without_an_action():
             build_one_way_providers(history_only(False), spec, http)
         with pytest.raises(ProviderError, match="a conversation needs an action"):
             build_agent_providers(history_only(), spec.model_copy(update={"tts": ProviderRef(provider="tts")}), http)
+
+
+async def test_self_hosted_storage_value_error_is_not_turned_into_a_cloud_refusal(svc, monkeypatch):
+    # The Cloud's wording (422) belongs to cloud mode: a ValueError of SQLite stays the error it is (a 500), as before.
+    async def refuse(*_args, **_kwargs):
+        raise ValueError("database says no")
+
+    await svc.create("u_a", {"slug": "kept"})
+    monkeypatch.setattr(svc._st.agents, "create", refuse)
+    monkeypatch.setattr(svc._st.agents, "update", refuse)
+    with pytest.raises(ValueError, match="database says no"):
+        await svc.create("u_a", {"slug": "helper"})
+    with pytest.raises(ValueError, match="database says no"):
+        await svc.update("u_a", "kept", {"display_name": "Kept"})

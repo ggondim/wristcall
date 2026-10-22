@@ -312,6 +312,8 @@ class _Agents:
 
 
 class _Calls:
+    exports = False
+
     def __init__(self) -> None:
         self.rows: dict[str, CallRecord] = {}
         self.entry_rows: dict[str, list[tuple[EntryRecord, set[str]]]] = {}

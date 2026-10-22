@@ -46,14 +46,20 @@ class Heartbeat:
         self._every_s = every_s
         self._sleep = sleep
         self._failing = False
+        # Set when the node drains before exiting: it then offers no capacity, so the Cloud routes no new call here.
+        self.draining = False
 
     def body(self) -> dict[str, Any]:
+        capacity = (
+            {"conversation": 0, "one_way": 0} if self.draining
+            else {"conversation": self._capacity.conversation, "one_way": self._capacity.one_way}
+        )
         return {
             "boot_id": self.boot_id,
             "version": self._version,
             "active_call_ids": self._registry.ids()[:MAX_ACTIVE_IDS],
             "active_by_type": self._slots.active(),
-            "capacity": {"conversation": self._capacity.conversation, "one_way": self._capacity.one_way},
+            "capacity": capacity,
             "providers_ok": True,  # D10: the operator's provider health comes in O3f
         }
 

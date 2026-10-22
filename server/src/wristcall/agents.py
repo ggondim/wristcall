@@ -566,7 +566,11 @@ class AgentService:
             raise AgentError("conflict", f"an agent with slug '{inp.slug}' already exists") from None
         except LimitReached:
             raise AgentError("limit", f"agent limit reached ({limit})") from None
-        except ValueError:  # the Cloud refused it (cloud mode); its answer may quote the agent: not repeated
+        except ValueError:
+            # Cloud mode only: the Cloud refused it, and its answer may quote the agent (not repeated). Self-hosted, a
+            # ValueError of the database stays what it is.
+            if not self._config.is_cloud:
+                raise
             raise AgentError("invalid", _CLOUD_REFUSED) from None
         if inp.position is not None:
             return await self._move(user_id, created.id, inp.position)
@@ -615,6 +619,8 @@ class AgentService:
         except KeyError:
             raise AgentError("not_found", f"agent not found: {ref}") from None
         except ValueError:
+            if not self._config.is_cloud:  # as in create
+                raise
             raise AgentError("invalid", _CLOUD_REFUSED) from None
         if saved.spec.retention_days != current.spec.retention_days:
             await self._st.calls.set_expiry(

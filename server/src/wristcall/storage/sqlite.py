@@ -436,6 +436,8 @@ def fts_query(terms: list[list[str]]) -> str:
 
 
 class _Calls:
+    exports = False  # History pages through `list` (only the Cloud's store streams an export itself)
+
     def __init__(self, db: Database) -> None:
         self._db = db
 

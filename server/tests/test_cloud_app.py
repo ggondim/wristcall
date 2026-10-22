@@ -111,7 +111,6 @@ def test_leaving_with_the_cloud_down_is_quick(fake: FakeCloud):
     ("GET", "/v1/devices"),
     ("DELETE", "/v1/devices/d1"),
     ("DELETE", "/v1/me"),
-    ("POST", "/v1/calls/c_0123456789abcdef/redeliver"),  # until Task 8b
 ])
 def test_cloud_only_routes_are_404(fake: FakeCloud, method, path):
     with TestClient(cloud_app(fake)) as c:
@@ -503,3 +502,34 @@ def test_node_build_needs_cloud_mode():
 def test_node_repr_holds_no_secret(fake: FakeCloud):
     node = node_for(fake)
     assert NODE_SECRET not in repr(node) and NODE_SECRET not in repr(node.client)
+
+
+async def test_closing_an_export_closes_the_cloud_stream(fake: FakeCloud):
+    # The export route closes its views when the client goes away; that reaches the HTTP stream of the Cloud's export.
+    from wristcall.history import History
+
+    for at in (100.0, 200.0, 300.0):
+        seed(fake, [("user", "hello")], created_at=at)
+    node = node_for(fake)
+    client = node.storage.calls._client
+    streamed = client.stream_lines
+    closed = []
+
+    async def stream_lines(*args, **kwargs):
+        try:
+            async for line in streamed(*args, **kwargs):
+                yield line
+        finally:
+            closed.append(True)
+
+    client.stream_lines = stream_lines
+    history = History(node.storage, HistoryCodec(cloud_config().history.key()), cloud_config().history,
+                      account_scoped=True)
+    token = current_proof.set(proof(fake))
+    try:
+        views = history.details(ACCOUNT)
+        assert (await anext(views))["text"] == "hello"
+        await views.aclose()
+    finally:
+        current_proof.reset(token)
+    assert closed == [True]

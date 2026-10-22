@@ -30,7 +30,7 @@ import logging
 import re
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
-from contextlib import contextmanager
+from contextlib import aclosing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, NoReturn
@@ -92,13 +92,13 @@ def _unsupported(name: str) -> Callable[..., Any]:
     return method
 
 
-def _unexpected(resp: CloudResponse, what: str) -> NoReturn:
+def unexpected_answer(resp: CloudResponse, what: str) -> NoReturn:
     log.warning("Wristcall Cloud answered %d (%s) on %s", resp.status, resp.code, what)
     raise CloudUnavailable(f"Wristcall Cloud answered {resp.status} on {what}")
 
 
 @contextmanager
-def _shape(what: str) -> Iterator[None]:
+def answer_shape(what: str) -> Iterator[None]:
     """An answer without the fields it should have is no usable answer."""
     try:
         yield
@@ -143,7 +143,7 @@ def _list(value: Any) -> list[Any]:
     return value
 
 
-def _call_record(account: str, c: Any) -> CallRecord:
+def call_record(account: str, c: Any) -> CallRecord:
     return CallRecord(
         id=_str(c["id"]), user_id=account, agent_id=_str(c["agent_id"]), device_id=_opt_str(c["device_id"]),
         call_type=_str(c["call_type"]), status=_str(c["status"]), created_at=_num(c["created_at"]),
@@ -162,7 +162,7 @@ def _entry_record(call_id: str, e: Any) -> EntryRecord:
                        sealed=sealed, error=_opt_str(e["error"]), at=_num(e["at"]))
 
 
-def _entries(call_id: str, raw: Any) -> list[EntryRecord]:
+def entry_records(call_id: str, raw: Any) -> list[EntryRecord]:
     return sorted((_entry_record(call_id, e) for e in _list(raw)), key=lambda e: e.seq)
 
 
@@ -285,7 +285,7 @@ class _Agents:
         return AgentRecord(**fields, spec=opened)
 
     def _records(self, account: str, raws: list[dict[str, Any]]) -> list[AgentRecord]:
-        with _shape("agents"):
+        with answer_shape("agents"):
             found = [self._record(account, raw) for raw in raws]
         return [r for r in found if r is not None]
 
@@ -310,8 +310,8 @@ class _Agents:
                 cached.fetched_at = now
             return cached.agents
         if resp.status != 200:
-            _unexpected(resp, "GET /v1/node/agents")
-        with _shape("GET /v1/node/agents"):
+            unexpected_answer(resp, "GET /v1/node/agents")
+        with answer_shape("GET /v1/node/agents"):
             agents = _list(resp.body["agents"])
             if not all(isinstance(a, dict) for a in agents):
                 raise TypeError("an agent is not an object")
@@ -343,12 +343,12 @@ class _Agents:
         if resp.status == 404:
             return None
         if resp.status != 200:
-            _unexpected(resp, "GET /v1/node/agents/{ref}")
-        with _shape("GET /v1/node/agents/{ref}"):
+            unexpected_answer(resp, "GET /v1/node/agents/{ref}")
+        with answer_shape("GET /v1/node/agents/{ref}"):
             return self._record(proof.account, resp.body)
 
     def _written(self, account: str, resp: CloudResponse, what: str) -> AgentRecord:
-        with _shape(what):
+        with answer_shape(what):
             record = self._record(account, resp.body)
         if record is None:  # what this node just sealed does not open: the Cloud changed it
             raise CloudUnavailable(f"Wristcall Cloud answered {what} with an agent that does not open")
@@ -376,7 +376,7 @@ class _Agents:
         if resp.status == 422:
             raise ValueError("the Cloud refused the agent (invalid)")
         if resp.status not in (200, 201):
-            _unexpected(resp, "POST /v1/node/agents")
+            unexpected_answer(resp, "POST /v1/node/agents")
         return self._written(proof.account, resp, "POST /v1/node/agents")
 
     async def update(self, record: AgentRecord) -> AgentRecord:
@@ -400,7 +400,7 @@ class _Agents:
         if resp.status == 422:
             raise ValueError("the Cloud refused the agent (invalid)")
         if resp.status != 200:
-            _unexpected(resp, "PATCH /v1/node/agents/{id}")
+            unexpected_answer(resp, "PATCH /v1/node/agents/{id}")
         return self._written(proof.account, resp, "PATCH /v1/node/agents/{id}")
 
     async def move(self, user_id: str, agent_id: str, index: int) -> AgentRecord | None:
@@ -413,8 +413,8 @@ class _Agents:
         if resp.status == 404:
             return None
         if resp.status != 200:
-            _unexpected(resp, "PUT /v1/node/agents/order")
-        with _shape("PUT /v1/node/agents/order"):
+            unexpected_answer(resp, "PUT /v1/node/agents/order")
+        with answer_shape("PUT /v1/node/agents/order"):
             moved = next((a for a in _list(resp.body["agents"]) if a["id"] == agent_id), None)
             if moved is None:
                 raise KeyError(agent_id)
@@ -431,12 +431,12 @@ class _Agents:
         if resp.status == 404:
             return False
         if resp.status not in (200, 204):
-            _unexpected(resp, "DELETE /v1/node/agents/{id}")
+            unexpected_answer(resp, "DELETE /v1/node/agents/{id}")
         return True
 
 
 class _Calls:
-    # Capability: `export` streams every matching call with its entries in one Cloud request (not in the Protocol).
+    # Capability (CallStore.exports): `export` streams every matching call with its entries in one Cloud request.
     exports = True
 
     def __init__(self, client: CloudClient, now: Callable[[], float]) -> None:
@@ -464,10 +464,10 @@ class _Calls:
         if resp.status == 404:
             return None
         if resp.status != 200:
-            _unexpected(resp, "GET /v1/node/calls/{id}")
-        with _shape("GET /v1/node/calls/{id}"):
-            found = {"call": _call_record(proof.account, resp.body["call"]),
-                     "entries": _entries(call_id, resp.body["entries"])}
+            unexpected_answer(resp, "GET /v1/node/calls/{id}")
+        with answer_shape("GET /v1/node/calls/{id}"):
+            found = {"call": call_record(proof.account, resp.body["call"]),
+                     "entries": entry_records(call_id, resp.body["entries"])}
         if keep:
             while len(memo) >= CALL_MEMO_SIZE:
                 memo.pop(next(iter(memo)))
@@ -503,9 +503,9 @@ class _Calls:
         params += _params(limit=max(1, min(limit, MAX_LIMIT)))
         resp = await _account_request(self._client, "GET", "/v1/node/calls", proof, params=params)
         if resp.status != 200:
-            _unexpected(resp, "GET /v1/node/calls")
-        with _shape("GET /v1/node/calls"):
-            return [_call_record(proof.account, c) for c in _list(resp.body["calls"])]
+            unexpected_answer(resp, "GET /v1/node/calls")
+        with answer_shape("GET /v1/node/calls"):
+            return [call_record(proof.account, c) for c in _list(resp.body["calls"])]
 
     async def delete(self, user_id: str, call_id: str) -> bool:
         proof = require_proof(user_id)
@@ -518,7 +518,7 @@ class _Calls:
         if resp.status == 409 and resp.code == "call_open":
             raise CallOpen("this call is still open")
         if resp.status not in (200, 204):
-            _unexpected(resp, "DELETE /v1/node/calls/{id}")
+            unexpected_answer(resp, "DELETE /v1/node/calls/{id}")
         return True
 
     async def delete_all(self, user_id: str, agent_id: str | None = None) -> int:
@@ -527,8 +527,8 @@ class _Calls:
         params = [("agent", agent_id)] if agent_id is not None else [("all", "true")]
         resp = await _account_request(self._client, "DELETE", "/v1/node/calls", proof, params=params)
         if resp.status != 200:
-            _unexpected(resp, "DELETE /v1/node/calls")
-        with _shape("DELETE /v1/node/calls"):
+            unexpected_answer(resp, "DELETE /v1/node/calls")
+        with answer_shape("DELETE /v1/node/calls"):
             return _int(resp.body["deleted"])
 
     async def set_expiry(self, user_id: str, agent_id: str, retention_s: float | None) -> int:
@@ -542,11 +542,13 @@ class _Calls:
         check `calls.exports`. A stream cut before its end raises `CloudUnavailable` after what did arrive."""
         proof = require_proof(user_id)
         params = _params(agent=agent_id, since=since, until=until)
-        async for line in self._client.stream_lines("/v1/node/calls/export", user=proof, params=params):
-            with _shape("GET /v1/node/calls/export"):
-                call = _call_record(proof.account, line["call"])
-                entries = _entries(call.id, line["entries"])
-            yield call, entries
+        lines = self._client.stream_lines("/v1/node/calls/export", user=proof, params=params)
+        async with aclosing(lines):  # closing the export closes the HTTP stream now
+            async for line in lines:
+                with answer_shape("GET /v1/node/calls/export"):
+                    call = call_record(proof.account, line["call"])
+                    entries = entry_records(call.id, line["entries"])
+                yield call, entries
 
     create = _unsupported("calls.create")  # the call path writes through CloudCallLog and the queue (grant)
     save = _unsupported("calls.save")
@@ -579,7 +581,7 @@ class _Push:
         if resp.status == 422:
             raise ValueError("the Cloud refused the push key")
         if resp.status not in (200, 204):
-            _unexpected(resp, "PUT /v1/node/push-targets")
+            unexpected_answer(resp, "PUT /v1/node/push-targets")
         return None
 
     async def clear(self, *, device_id: str | None = None, token_id: str | None = None) -> str | None:
@@ -590,7 +592,7 @@ class _Push:
             raise ProofMismatch("no account proof for this device")
         resp = await _account_request(self._client, "DELETE", "/v1/node/push-targets", proof)
         if resp.status not in (200, 204):
-            _unexpected(resp, "DELETE /v1/node/push-targets")
+            unexpected_answer(resp, "DELETE /v1/node/push-targets")
         return "cloud"
 
     forget = _unsupported("push.forget")

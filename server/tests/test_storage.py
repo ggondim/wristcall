@@ -850,3 +850,8 @@ async def test_for_apps_excludes_another_users_token(storage):
     await storage.push.set(other.id, "wc_push_bob", 11.0, token_id="t_bob")
     assert await storage.push.for_apps(u.id) == ["wc_push_ana"]
     assert await storage.push.for_apps(other.id) == ["wc_push_bob"]
+
+
+async def test_call_stores_say_whether_they_export(storage):
+    # A capability every call store declares: only the Cloud's streams the whole export in one request.
+    assert storage.calls.exports is False

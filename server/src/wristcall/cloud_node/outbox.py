@@ -70,6 +70,10 @@ class CallRegistry:
         self._open[call_id] = None
         self._grants[call_id] = grant
 
+    def hold(self, call_id: str, grant: str) -> None:
+        """Keeps a grant for a call that is not open on this node (a redelivery): never in `ids()`. `forget` drops it."""
+        self._grants[call_id] = grant
+
     def grant(self, call_id: str) -> str | None:
         return self._grants.get(call_id)
 

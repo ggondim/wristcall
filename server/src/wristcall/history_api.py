@@ -8,12 +8,13 @@ went, and a device token reads only the calls made from that device. Everything 
 import math
 import re
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Header, Query, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.types import Receive, Scope, Send
 
 from .agents import AgentError, AgentService
 from .auth import Authenticator, Principal
@@ -61,12 +62,34 @@ def parse_cursor(value: str) -> tuple[float, str] | None:
     return position, call_id
 
 
-async def _chain(first: dict[str, Any] | None, rest: AsyncIterator[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
-    if first is None:
-        return
-    yield first
-    async for view in rest:
-        yield view
+async def _chain(first: dict[str, Any] | None, rest: AsyncGenerator[dict[str, Any]]) -> AsyncGenerator[dict[str, Any]]:
+    """`first`, then the rest; closing it (or reaching the end) closes `rest` too, so a stream behind it (the Cloud's
+    export) is let go at once, not when the garbage collector gets to it."""
+    try:
+        if first is None:
+            return
+        yield first
+        async for view in rest:
+            yield view
+    finally:
+        await rest.aclose()
+
+
+class _ClosingStream(StreamingResponse):
+    """A StreamingResponse that closes its body and `views` however it ends: Starlette leaves a body a disconnected
+    client stopped reading (`send` raised) suspended where it was."""
+
+    def __init__(self, content: AsyncGenerator[str], views: AsyncGenerator[dict[str, Any]], **kwargs: Any) -> None:
+        super().__init__(content, **kwargs)
+        self._content = content
+        self._views = views
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self._content.aclose()
+            await self._views.aclose()
 
 
 def _error(code: str, message: str, status: int) -> JSONResponse:
@@ -182,8 +205,8 @@ def calls_router(
         views = _chain(await anext(views, None), views)
         body = export_markdown(views, moment) if format == "md" else export_json(views, moment)
         media = "text/markdown; charset=utf-8" if format == "md" else "application/json"
-        return StreamingResponse(
-            body, media_type=media,
+        return _ClosingStream(
+            body, views, media_type=media,
             headers={"Content-Disposition": f'attachment; filename="wristcall-history-{stamp}.{format}"'},
         )
 

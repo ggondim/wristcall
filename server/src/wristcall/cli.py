@@ -16,9 +16,11 @@ import httpx
 import typer
 import uvicorn
 import yaml
+from uvicorn.config import STARTUP_FAILURE
 
 from .agents import AGENT_COLORS, Agent, AgentError, AgentService, agent_detail
 from .bootstrap import bootstrap
+from .cloud_node.draining import GRACEFUL_SHUTDOWN_S, DrainingServer
 from .config import AppConfig, ConfigError, HistoryConfig, load_config
 from .directory_client import DirectoryClient, DirectoryError
 from .history import History, check_key
@@ -159,9 +161,24 @@ def serve(config: ConfigOpt = DEFAULT_CONFIG, host: str = "0.0.0.0", port: int =
         typer.echo(f"config error: {e}", err=True)
         raise typer.Exit(2) from e
     # Trusted proxy: FORWARDED_ALLOW_IPS variable; behind Cloudflare, use server.client_ip_header.
-    uvicorn.run(
-        application, host=host, port=port, ws_ping_interval=20.0, ws_ping_timeout=20.0, proxy_headers=True, log_level="info"
+    options: dict[str, Any] = dict(
+        host=host, port=port, ws_ping_interval=20.0, ws_ping_timeout=20.0, proxy_headers=True, log_level="info"
     )
+    if not cfg.is_cloud:
+        uvicorn.run(application, **options)
+        return
+    # Cloud mode: the first SIGTERM drains the open calls before uvicorn closes them (DrainingServer: the container
+    # needs stop_grace_period >= 75 s). What uvicorn.run does for a single process, with that server.
+    server = DrainingServer(
+        uvicorn.Config(application, timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S, **options),
+        node=application.state.cloud_node, slots=application.state.call_slots,
+    )
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        pass
+    if not server.started:
+        raise typer.Exit(STARTUP_FAILURE)
 
 
 @app.command()
