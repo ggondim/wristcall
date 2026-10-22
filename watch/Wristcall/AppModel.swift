@@ -830,8 +830,8 @@ final class AppModel {
             }
         case .connectionLost:
             message = Message.connectionLost
-        case .serverFatal(let code?):
-            message = "Call failed (\(code.wireValue))."
+        case .serverFatal(let error?):
+            message = "Call failed (\(error.code.wireValue))."
         case .serverFatal(nil):
             message = "Call failed."
         case .normal:

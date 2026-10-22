@@ -15,8 +15,8 @@ public enum CallEvent: Sendable, Equatable {
     /// One-way calls: the server stopped recording by itself (`reason` is free text). The close
     /// that follows is still `.ended(.normal)`; `callID` is the id to ask about the result.
     case captured(callID: String, reason: String)
-    /// The server reported a failure. With `fatal`, `.ended(.serverFatal(code))` follows.
-    case error(code: ServerErrorCode, message: String, fatal: Bool)
+    /// The server reported a failure. With `fatal`, `.ended(.serverFatal(error))` follows.
+    case error(ServerError)
     /// The call is over. Always the last event, exactly once.
     case ended(CallEndReason)
 }
@@ -29,7 +29,7 @@ public enum CallEndReason: Sendable, Equatable {
     case unauthorized
     /// The server reported a fatal error (and/or closed with 4400).
     /// `nil` when it closed with 4400 without an `error` message first.
-    case serverFatal(ServerErrorCode?)
+    case serverFatal(ServerError?)
     /// The connection failed or dropped without a normal close, or `session.ready` never came.
     case connectionLost
 }

@@ -1029,7 +1029,7 @@ struct AppModelTests {
     @Test func oneWayCallEndedByAServerErrorGoesHome() async throws {
         let model = try await makeModelInAOneWayCall()
 
-        model.callDidEnd(.serverFatal(.internal), callID: "c_1")
+        model.callDidEnd(.serverFatal(ServerError(code: .internal, message: "boom", fatal: true)), callID: "c_1")
 
         #expect(model.phase == .home)
         #expect(model.callResult == nil)

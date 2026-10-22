@@ -107,7 +107,12 @@ public final class CallSession: Sendable {
         do {
             try await transport.connect()
         } catch {
-            finish(.connectionLost)
+            if case TransportError.refused(let refusal) = error {
+                // The other end answered the handshake with an error (for example Cloud: no plan).
+                finish(.serverFatal(refusal))
+            } else {
+                finish(.connectionLost)
+            }
             throw CallSessionError.ended(endReason ?? .connectionLost)
         }
 
@@ -266,7 +271,7 @@ public final class CallSession: Sendable {
             if error.fatal {
                 state.withLock { $0.fatalError = error }
             }
-            emit(.error(code: error.code, message: error.message, fatal: error.fatal))
+            emit(.error(error))
         case .unknown:
             break
         }
@@ -277,7 +282,7 @@ public final class CallSession: Sendable {
             return .unauthorized
         }
         if let fatal = state.withLock({ $0.fatalError }) {
-            return .serverFatal(fatal.code)
+            return .serverFatal(fatal)
         }
         switch code {
         case CloseCode.protocolError.rawValue:

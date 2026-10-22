@@ -215,9 +215,9 @@ final class CallCoordinator: CallHandling {
         case .transcript:
             // Informational; not shown in the MVP (and never logged: it is the user's speech).
             break
-        case .error(let code, _, let fatal):
-            Self.log.error("server error \(code.wireValue, privacy: .public) fatal=\(fatal)")
-            if !fatal {
+        case .error(let error):
+            Self.log.error("server error \(error.code.wireValue, privacy: .public) fatal=\(error.fatal)")
+            if !error.fatal {
                 model?.callActivityDidChange(call.idleActivity)
             }
         case .ended(let reason):

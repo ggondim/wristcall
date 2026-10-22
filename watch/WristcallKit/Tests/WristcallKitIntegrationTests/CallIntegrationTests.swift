@@ -54,8 +54,8 @@ struct CallIntegrationTests {
                 await session.end()
             case .captured:
                 Issue.record("unexpected call.captured on a conversation call")
-            case .error(let code, let message, _):
-                Issue.record("server error \(code.wireValue): \(message)")
+            case .error(let error):
+                Issue.record("server error \(error.code.wireValue): \(error.message)")
             case .ended(let reason):
                 #expect(reason == .normal)
             }
@@ -77,14 +77,23 @@ struct CallIntegrationTests {
         let device = try await TestDevices.shared()
         let transport = try NWWebSocketTransport(server: try TestServer.requireBaseURL(), token: device.token)
         let session = CallSession(transport: transport)
-        await #expect(throws: CallSessionError.ended(.serverFatal(.unknownProfile))) {
+        do {
             try await session.start(profile: "no-such-profile")
+            Issue.record("start should have failed")
+        } catch CallSessionError.ended(.serverFatal(let error?)) {
+            #expect(error.code == .unknownProfile)
+        } catch {
+            Issue.record("unexpected error: \(error)")
         }
         var events: [CallEvent] = []
         for await event in session.events {
             events.append(event)
         }
-        #expect(events.last == .ended(.serverFatal(.unknownProfile)))
+        if case .ended(.serverFatal(let error?))? = events.last {
+            #expect(error.code == .unknownProfile)
+        } else {
+            Issue.record("last event: \(String(describing: events.last))")
+        }
     }
 
     @Test func invalidTokenEndsAsUnauthorized() async throws {

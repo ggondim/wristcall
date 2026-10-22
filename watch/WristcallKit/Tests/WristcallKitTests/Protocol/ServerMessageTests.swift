@@ -42,6 +42,9 @@ struct ServerMessageTests {
         ("responder_failed", .responderFailed),
         ("tts_failed", .ttsFailed),
         ("internal", .internal),
+        ("busy", .busy),
+        ("plan_required", .planRequired),
+        ("quota_exceeded", .quotaExceeded),
         ("brand_new", .unknown("brand_new")),
     ])
     func errorCodes(wire: String, code: ServerErrorCode) throws {
@@ -53,6 +56,12 @@ struct ServerMessageTests {
     @Test func fatalErrorFromTheServer() throws {
         let text = #"{"type":"error","code":"unknown_profile","message":"profile 'x' does not exist","fatal":true}"#
         let expected = ServerError(code: .unknownProfile, message: "profile 'x' does not exist", fatal: true)
+        #expect(try ServerMessage.decode(text) == .error(expected))
+    }
+
+    @Test func busyWithReasonDecodes() throws {
+        let text = #"{"type":"error","code":"busy","reason":"too_many_calls","fatal":true,"message":"m"}"#
+        let expected = ServerError(code: .busy, message: "m", fatal: true, reason: "too_many_calls")
         #expect(try ServerMessage.decode(text) == .error(expected))
     }
 
