@@ -194,11 +194,11 @@ and then the account is created on first use). A resource of another account ans
 | `GET /v1/account` | | `200 {"account", "created_at", "servers", "plan", "identities", "key_set"}`: `plan` is `{"plan", "source", "expires_at"}` or `null`, `identities` the kinds linked (`["zitadel"]`), `key_set` whether the account has an account key |
 | `DELETE /v1/account` | | `204`, deletes the account, its servers, its cloud-mode data (agents, calls, history, push targets and usage), devices, identities and plan, and (when configured) the Zitadel users behind it; `403 forbidden` unless the device is an app or the web app (for a Zitadel token: unless it was issued to the iOS or PWA client); `503 account_unavailable` when the provider fails (the agenda is already gone; the same call again finishes) |
 | `GET /v1/servers` | | `200 {"servers": [Server]}` by creation |
-| `POST /v1/servers` | `{name, url, kind?, linked?}` | `201 Server`; `409 conflict` for a repeated URL; `403 limit` over `WRISTCALL_CLOUD_MAX_SERVERS` (the Cloud entry does not count); `422 invalid` for `kind: "cloud"` (only the Cloud creates that entry, see [Routes and the Cloud entry](#routes-and-the-cloud-entry)) |
+| `POST /v1/servers` | `{name, url, kind?, linked?}` | `201 Server`; `409 conflict` for a repeated URL; `403 limit` over `WRISTCALL_CLOUD_MAX_SERVERS` (the Cloud entry does not count); `422 invalid` for `kind: "cloud"` (only the Cloud creates that entry, see [Routes and the Cloud entry](#routes-and-the-cloud-entry); `kind: "cloud"` exists only on the Cloud-managed entry) |
 | `GET /v1/servers/{id}` | | `200 Server`; `404` |
-| `PATCH /v1/servers/{id}` | `{name?, linked?}` | `200 Server`; `404`; `422` (the URL and the kind cannot change: delete and create) |
-| `DELETE /v1/servers/{id}` | | `204`; `404` |
-| `PUT /v1/servers/{id}/agents` | `{"agents": [Agent]}` | `200 {"agents"}` (replaces the list); `403 limit` over `WRISTCALL_CLOUD_MAX_AGENTS_PER_SERVER`; `404`; `422` |
+| `PATCH /v1/servers/{id}` | `{name?, linked?}` | `200 Server`; `404`; `409 managed_by_cloud` (`404` to clients that cannot see the Cloud entry); `422` (the URL and the kind cannot change: delete and create) |
+| `DELETE /v1/servers/{id}` | | `204`; `404`; `409 managed_by_cloud` (`404` to clients that cannot see the Cloud entry) |
+| `PUT /v1/servers/{id}/agents` | `{"agents": [Agent]}` | `200 {"agents"}` (replaces the list); `403 limit` over `WRISTCALL_CLOUD_MAX_AGENTS_PER_SERVER`; `404`; `409 managed_by_cloud` (`404` to clients that cannot see the Cloud entry); `422` |
 | `GET /v1/agents` | | `200 {"agents": [Agent + server_id, server_name, server_url]}` in the order of the servers and of each list |
 
 `Server` is `{id, name, url, kind, linked, agents, created_at, updated_at}`. `name` is 1 to 64 characters without
@@ -596,7 +596,8 @@ checks:
 - an `always_on` node is healthy when its last heartbeat is less than 45 seconds old. During the first 60 seconds after
   the Cloud starts a node last heard from up to 120 seconds before the start also counts, because nodes had no chance to
   send a heartbeat yet. On a `call`, the node must also have room: `active_by_type` below `capacity` for the kind of the
-  agent (`conversation`, or `one_way` for one-shot and monologue), unless that `capacity` is `null`;
+  agent (`conversation`, or `one_way` for one-shot and monologue), unless that `capacity` sets no limit for that kind
+  (missing or `null`);
 - an `on_demand` node (it has no heartbeat) is healthy unless 3 different accounts put it in `avoid` within the last 300
   seconds. Failure reports are kept in memory, so a restart forgets them, and ids that are not registered nodes are
   ignored.
@@ -780,7 +781,8 @@ Going forward again finds the cloud-mode data where it was.
 A browser app (the wristcall PWA) can call the Cloud only from an origin listed in `WRISTCALL_CLOUD_CORS_ORIGINS`.
 With the variable empty the Cloud sends no `Access-Control-*` header and browsers refuse every cross origin call, as
 before. For a listed origin the Cloud allows the methods `GET`, `POST`, `PUT`, `PATCH` and `DELETE`, the request
-headers `Authorization`, `Content-Type` and `X-Wristcall-Client`, caches the preflight answer for 10 minutes and exposes `Retry-After` (the
+headers `Authorization`, `Content-Type` and `X-Wristcall-Client`, caches the preflight answer for 10 minutes and exposes
+`Retry-After` (the
 `429` of the push registration) to the page.
 
 Credentials are not allowed (`Access-Control-Allow-Credentials` is never sent): the API takes a bearer token in a
@@ -812,13 +814,18 @@ shares the proxy's address.
   a node can no longer be asked for as the audience of `POST /v1/server-tokens`. Until a node is registered the heartbeat
   sweeper has nothing to do.
 - **Cloud 0.6.0.** No schema change and no new collection (the Cloud entry is a document of `servers` with a new `managed`
-  field, "Voice notes" one of `cloud_agents`). Going back to 0.5.1 needs no restore, but then the entry shows to every app
-  as an ordinary `kind: cloud` server with no agents, which the user can delete. Run `wristcall-cloud admin provision --all` once after
+  field, "Voice notes" one of `cloud_agents`). **Going back to 0.5.1** after
+  `admin provision --all` has run needs one step first: 0.5.1 apps would see the managed entry (its URL is the Cloud's
+  public URL), pair with every agenda entry and could overwrite its agents. Before rolling back, delete the managed
+  entries: `db.servers.deleteMany({kind: "cloud", managed: true})` on the `wristcall_cloud` database. The "Voice notes"
+  agents in `cloud_agents` can stay (0.5.1 apps never read them). Caveat: upgrading again and provisioning again
+  creates "Voice notes" anew for users who had deleted it, because the `voice_notes_at` mark lived on the deleted
+  entry. Run `wristcall-cloud admin provision --all` once after
   deploying, so every account that already has a plan gets its Cloud entry (and "Voice notes" on `full`); accounts
   that redeem or are granted a plan later are provisioned by themselves. Until a node is registered and healthy,
   `POST /v1/route` answers `503 no_node_available`. Nobody sees the Cloud entry until
   `WRISTCALL_CLOUD_CLOUD_ENTRY_CLIENTS` names a version, so current apps (watch 0.5.1, iPhone 0.2.2, PWA 0.3.0) see no
-  change. Register the `home` node with `--region sao` and the `operator_stt` and `operator_tts` capabilities, and name
+  change. Register the `home` node with `--region sao --capability operator_stt --capability operator_tts`, and name
   its speech to text provider like `WRISTCALL_CLOUD_VOICE_NOTES_STT` (`stt-default`).
 - **Replay between servers.** The block that kept the Cloud API from being deployed (a Zitadel token given to a server
   could be replayed here) is lifted only once every server linked to a Cloud account runs 0.6.0 with
