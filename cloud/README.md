@@ -65,6 +65,20 @@ Cloud nodes (all optional; the node routes need the two per-server token variabl
 Three more values are not configurable: a node counts as silent after 120 seconds without a heartbeat, the sweeper
 runs every 30 seconds, and a call younger than 30 seconds is never closed as an orphan.
 
+Routes and the Cloud entry (all optional; see [Routes and the Cloud entry](#routes-and-the-cloud-entry)). A value that
+does not parse stops the start, naming the variable:
+
+| Variable | Default | |
+|---|---|---|
+| `WRISTCALL_CLOUD_ROUTE_REGIONS` | `BR=sao,gru;US=iad;CA=iad;MX=iad;*=iad` | country to regions, best first: `COUNTRY=region,region;...`, a country is two capital letters or `*`, a region three lowercase letters. The `*` row is required and serves every other country (and a missing one) |
+| `WRISTCALL_CLOUD_CLOUD_ENTRY_CLIENTS` | | minimum app version that sees the Cloud entry, per platform: `ios=0.3.0,watchos=0.6.0,web=0.4.0` (platforms `ios`, `ipados`, `macos`, `watchos`, `web`, each once). Empty: nobody sees it |
+| `WRISTCALL_CLOUD_VOICE_NOTES_LANGUAGE` | `en` | language of the "Voice notes" agent for an account whose country is not Portuguese-speaking (a code such as `en` or `pt-BR`) |
+| `WRISTCALL_CLOUD_VOICE_NOTES_STT` | `stt-default` | name of the operator's speech to text provider on the nodes, written in "Voice notes" |
+
+Five more values are not configurable: an always-on node is fresh for 45 seconds after its last heartbeat (and for 60
+seconds after the Cloud starts, see below), failure reports of a node count for 300 seconds and block it from 3 accounts,
+and `503 no_node_available` asks to wait 30 seconds.
+
 Push relay (all optional; a channel exists only when its credentials are set):
 
 | Variable | Default | |
@@ -180,7 +194,7 @@ and then the account is created on first use). A resource of another account ans
 | `GET /v1/account` | | `200 {"account", "created_at", "servers", "plan", "identities", "key_set"}`: `plan` is `{"plan", "source", "expires_at"}` or `null`, `identities` the kinds linked (`["zitadel"]`), `key_set` whether the account has an account key |
 | `DELETE /v1/account` | | `204`, deletes the account, its servers, its cloud-mode data (agents, calls, history, push targets and usage), devices, identities and plan, and (when configured) the Zitadel users behind it; `403 forbidden` unless the device is an app or the web app (for a Zitadel token: unless it was issued to the iOS or PWA client); `503 account_unavailable` when the provider fails (the agenda is already gone; the same call again finishes) |
 | `GET /v1/servers` | | `200 {"servers": [Server]}` by creation |
-| `POST /v1/servers` | `{name, url, kind?, linked?}` | `201 Server`; `409 conflict` for a repeated URL; `403 limit` over `WRISTCALL_CLOUD_MAX_SERVERS` |
+| `POST /v1/servers` | `{name, url, kind?, linked?}` | `201 Server`; `409 conflict` for a repeated URL; `403 limit` over `WRISTCALL_CLOUD_MAX_SERVERS` (the Cloud entry does not count); `422 invalid` for `kind: "cloud"` (only the Cloud creates that entry, see [Routes and the Cloud entry](#routes-and-the-cloud-entry)) |
 | `GET /v1/servers/{id}` | | `200 Server`; `404` |
 | `PATCH /v1/servers/{id}` | `{name?, linked?}` | `200 Server`; `404`; `422` (the URL and the kind cannot change: delete and create) |
 | `DELETE /v1/servers/{id}` | | `204`; `404` |
@@ -519,6 +533,154 @@ later, so a Cloud that was down does not blame the nodes) has all its open calls
 that runs every 30 seconds. When the `boot_id` changes, or the node goes silent, its calls left `processing` become
 `failed` with `error` `interrupted`, because nothing is processing them any more.
 
+## Routes and the Cloud entry
+
+Since 0.6.0 an app asks the Cloud which node serves it, and the Cloud adds a **Cloud entry** to the agenda of an account
+with a plan. Both need the per-server token variables (`WRISTCALL_CLOUD_PUBLIC_URL` and the signing key): without the key
+`POST /v1/route` answers `404 not_configured`, and without the public URL nothing is provisioned. With no node
+registered the route answers `503 no_node_available`.
+
+### The route
+
+`POST /v1/route` takes an account session (the access token of a device; a Zitadel token is `401`). Errors are
+`{"error": code, "message": ...}` as everywhere, and never echo a token or a node URL.
+
+| Body | Meaning |
+|---|---|
+| `purpose` | `call` (a node to run a call) or `manage` (a node to read and change the account's cloud-mode agents and history) |
+| `agent` | the `ag_...` id of one of the account's cloud-mode agents. Required for `call`, refused for `manage` |
+| `avoid` | optional list of up to 8 node ids that just failed for the caller |
+
+```json
+{"purpose": "call", "agent": "ag_0123456789ab", "avoid": ["away"]}
+```
+
+The answer is the chosen node, a per-server token for it and, when a second node can take the request, a fallback with
+its own token (`null` otherwise):
+
+```json
+{
+  "node": {"id": "home", "url": "https://node-a.example.com", "region": "sao"},
+  "token": "eyJ...",
+  "expires_at": 1792580000,
+  "fallback": {
+    "node": {"id": "away", "url": "https://node-b.example.com", "region": "iad"},
+    "token": "eyJ...",
+    "expires_at": 1792580000
+  }
+}
+```
+
+| Status | When |
+|---|---|
+| `200` | a node was chosen |
+| `401 unauthorized` | no session, a Zitadel token, or a device that was removed |
+| `402 plan_required` | a `call` without a plan; a `manage` without a plan from an account that never had the Cloud entry. A lapsed plan can still `manage`, so the history stays readable |
+| `403 device_revoked` | the device was removed between the authentication and the route (rare; a removed device normally gets `401`) |
+| `404 not_found` | `agent` is not one of the account's cloud-mode agents |
+| `404 not_configured` | the Cloud has no signing key |
+| `422 invalid` | an unknown field, a bad `purpose`, `agent` missing or sent with `manage`, or a bad `avoid` (the message never echoes the values) |
+| `503 no_node_available` | no node can take it now; `Retry-After: 30` |
+
+The token is the per-server token of [Per-server tokens](#per-server-tokens), signed `wc-server+jwt` with the audience set
+to the chosen node's URL (so it works on that node only), the `did` of the device, the `plt` of the platform stored for
+that device, the `client_id` of the session and a lifetime of 300 seconds. It is not the token `POST /v1/server-tokens`
+issues: that route still refuses the URL of a registered node.
+
+**Node choice.** The Cloud reads the nodes from the database on every request and keeps the nodes that pass these
+checks:
+
+- the node is `enabled` and not in `avoid`;
+- on a `call` of an account on the `full` plan, the node has both `operator_stt` and `operator_tts` and its heartbeat did
+  not report `providers_ok: false` (this check does not apply to other plans);
+- an `always_on` node is healthy when its last heartbeat is less than 45 seconds old. During the first 60 seconds after
+  the Cloud starts a node last heard from up to 120 seconds before the start also counts, because nodes had no chance to
+  send a heartbeat yet. On a `call`, the node must also have room: `active_by_type` below `capacity` for the kind of the
+  agent (`conversation`, or `one_way` for one-shot and monologue), unless that `capacity` is `null`;
+- an `on_demand` node (it has no heartbeat) is healthy unless 3 different accounts put it in `avoid` within the last 300
+  seconds. Failure reports are kept in memory, so a restart forgets them, and ids that are not registered nodes are
+  ignored.
+
+The nodes left are ordered by the position of their `region` in the row of the caller's country (a region outside the row
+goes last), then by `priority` (lower first), then by load (calls in progress), then by `id`. The first is `node`, the
+second is `fallback`. The country comes from `WRISTCALL_CLOUD_CLIENT_COUNTRY_HEADER` (`CF-IPCountry` behind Cloudflare);
+without it, or for a country not in the table, the `*` row is used. The default table:
+
+| Country | Regions, best first |
+|---|---|
+| `BR` | `sao`, `gru` |
+| `US`, `CA`, `MX` | `iad` |
+| every other country (`*`) | `iad` |
+
+Change it with `WRISTCALL_CLOUD_ROUTE_REGIONS`. A `home` node registered with `--region sao` therefore serves Brazil first
+and everyone else second, after a node in `iad`.
+
+### Which apps see the Cloud entry
+
+Every app sends `X-Wristcall-Client: <platform>/<x.y.z>` (platform `ios`, `ipados`, `macos`, `watchos` or `web`, for
+example `ios/0.3.0`). The Cloud shows the Cloud entry only to a caller whose header is well formed, names the same
+platform as the session's token, lists that platform in `WRISTCALL_CLOUD_CLOUD_ENTRY_CLIENTS` and reaches the minimum
+version. With the variable empty, or for any older app (which does not send the header), the entry does not exist: it is
+absent from `GET /v1/servers` and `GET /v1/agents`, `GET /v1/servers/{id}` answers `404`, and the `servers` count of
+`GET /v1/account` leaves it out. The header is allowed by [CORS](#browsers-cors).
+
+### The Cloud entry
+
+The Cloud entry is a server of the agenda that only the Cloud creates, one per account with a plan:
+`{"name": "Wristcall Cloud", "kind": "cloud", "url": <WRISTCALL_CLOUD_PUBLIC_URL>, "linked": true}`, kept in the account's
+servers with `managed: true`. Its agents are not stored in it: they are the account's cloud-mode agents (the ones of
+[Node routes](#node-routes)), read when the entry is shown, as `{id, slug, display_name, icon, call_type}` and `color`
+when set. A visible entry in `GET /v1/servers` looks like this:
+
+```json
+{
+  "id": "srv_0123456789ab",
+  "name": "Wristcall Cloud",
+  "url": "https://cloud.example.com",
+  "kind": "cloud",
+  "linked": true,
+  "agents": [
+    {"id": "ag_0123456789ab", "slug": "voice-notes", "display_name": "Voice notes", "icon": "note.text", "call_type": "one-shot", "color": "yellow"}
+  ],
+  "created_at": 1792576000.0,
+  "updated_at": 1792576000.0
+}
+```
+
+The Cloud owns the entry: `PATCH`, `DELETE` and `PUT .../agents` on it answer `409 managed_by_cloud` to an app that sees
+it, and `404 not_found` to one that does not. `POST /v1/servers` with `kind: "cloud"` answers `422 invalid`. The entry does
+not count against `WRISTCALL_CLOUD_MAX_SERVERS`, and it goes away only with the account. Revoking a plan removes neither
+the entry nor the agents, so the history stays readable until its retention ends. Entries with `kind: "cloud"` that apps
+made before 0.6.0 (no `managed` field) are ordinary servers and keep working as they did: visible, editable, with their
+own agents.
+
+### Voice notes
+
+An account on the `full` plan also gets one agent, **Voice notes**: `slug` `voice-notes`, `icon` `note.text`, `color`
+`yellow`, `call_type` `one-shot`, and a `spec` of `{"language": ..., "stt": {"provider": "<WRISTCALL_CLOUD_VOICE_NOTES_STT>"},
+"action": null, "retention_days": null}`. Nothing in it is a secret, so nothing is sealed: the node reads the provider
+name in clear and uses its own speech to text provider with that name (`stt-default` unless you change the variable), so
+the node of the `full` plan must name its provider the same. The language is `pt` when the country of the request (the
+redeem or the first route) is Portuguese-speaking (`BR`, `PT`, `AO`, `MZ`, `CV`, `GW`, `ST`, `TL`), otherwise
+`WRISTCALL_CLOUD_VOICE_NOTES_LANGUAGE`; `admin grant` and `admin provision` take `--language` to choose it. The user can
+change the language later in the app.
+
+The agent is created once per account: the entry records it (`voice_notes_at`), so an account that deletes "Voice notes"
+does not get it back at the next `grant` or `provision --all`. An account that already has an agent with the slug
+`voice-notes` keeps it.
+
+### Provisioning
+
+The Cloud entry (and "Voice notes" on `full`) is created, safely and at most once, when:
+
+- an account redeems an invite (`POST /v1/entitlements/redeem`). If provisioning fails the redeem still answers `200`
+  (the invite is spent) and the failure is logged;
+- an operator runs `admin grant`, or `admin provision <account>` or `admin provision --all`;
+- an account with a plan and no entry calls `POST /v1/route`, which repairs a provisioning that failed.
+
+If the account already has a server of its own at the Cloud's URL, no entry is created (that server is never turned into
+a managed one), and a warning is logged.
+
 ## Transition flag
 
 `WRISTCALL_CLOUD_LEGACY_ZITADEL_TOKENS=1` keeps the Cloud working for the app builds that predate account sessions: the
@@ -542,8 +704,10 @@ service configuration. Output is one `key: value` line per item on stdout; error
 
 | Command | What it does |
 |---|---|
-| `admin show <account>` | account, kind, created_at, last_seen_at, devices, identities, plan (and plan_expires_at), then cloud_agents, cloud_calls and usage_month_s (call seconds this month, UTC) |
-| `admin grant <account> --plan full\|custom [--days N]` | gives the account a beta plan, replacing any; without `--days` it has no end |
+| `admin show <account>` | account, kind, created_at, last_seen_at, devices, identities, plan (and plan_expires_at), then cloud_entry (`true` or `false`), cloud_agents, cloud_calls and usage_month_s (call seconds this month, UTC) |
+| `admin grant <account> --plan full\|custom [--days N] [--language L]` | gives the account a beta plan, replacing any; without `--days` it has no end. Then provisions the account (Cloud entry and, on `full`, "Voice notes", see [Routes and the Cloud entry](#routes-and-the-cloud-entry)) and prints `provisioned: entry=true\|false voice_notes=true\|false` (what this call created), or `provisioned: skipped` when `WRISTCALL_CLOUD_PUBLIC_URL` is not set. `--language` is the language of "Voice notes" (default from `WRISTCALL_CLOUD_VOICE_NOTES_LANGUAGE`) |
+| `admin provision <account> [--language L]` | gives an account that has a plan what the plan includes: the Cloud entry and, on `full`, "Voice notes" (once). Safe to repeat. Prints `provisioned: entry=... voice_notes=...`. Exit `1` for no such account or no plan; exit `2` without `WRISTCALL_CLOUD_PUBLIC_URL` |
+| `admin provision --all [--language L]` | the same for every account with a plan that has not ended; prints `accounts`, `entries_created` and `voice_notes_created` |
 | `admin revoke <account>` | takes the plan away (`revoked: true` or `false`) |
 | `admin invites create --plan full\|custom [--count N] [--days N]` | prints `N` new single-use codes (1 to 1000, default 1) that can be redeemed for `--days` days (default 30). This is the only time the codes exist in clear |
 | `admin stats` | counts: accounts, anonymous_24h, devices, identities, entitlements, then schema (the database's `meta` version, `none` before the first start), nodes, nodes_enabled, cloud_calls_open (calls open right now) and usage_month_s (call seconds this month, all accounts) |
@@ -555,8 +719,11 @@ service configuration. Output is one `key: value` line per item on stdout; error
 Every `admin nodes` command creates the indexes first, so a repeated URL is refused even before the Cloud has started
 on 0.5.0.
 
-Exit codes: `0` done, `1` no such account, `2` bad usage or configuration, `3` the database failed (only the exception
-type is printed).
+The `provision` and `grant` commands read `WRISTCALL_CLOUD_PUBLIC_URL` (the Cloud entry points at it) and the two
+`WRISTCALL_CLOUD_VOICE_NOTES_*` variables; set them the way the service has them.
+
+Exit codes: `0` done, `1` no such account (or, for `provision`, no plan), `2` bad usage or configuration, `3` the
+database failed (only the exception type is printed).
 
 In a container, with the connection string in a secret (the service then sets `WRISTCALL_CLOUD_MONGO_URL_FILE`, not
 `WRISTCALL_CLOUD_MONGO_URL`: both together are a configuration error, and the service does not start):
@@ -565,7 +732,8 @@ In a container, with the connection string in a secret (the service then sets `W
 docker exec <container> wristcall-cloud admin stats
 docker exec <container> wristcall-cloud admin grant acc_xxxxxxxxxxxxxxxxxxxxxxxxxx --plan full --days 30
 docker exec <container> wristcall-cloud admin invites create --plan full --count 5
-docker exec <container> wristcall-cloud admin nodes add home --url https://node.example.com --region gru --kind always_on
+docker exec <container> wristcall-cloud admin nodes add home --url https://node.example.com --region sao --kind always_on
+docker exec <container> wristcall-cloud admin provision --all
 ```
 
 ## Data and migration
@@ -612,7 +780,7 @@ Going forward again finds the cloud-mode data where it was.
 A browser app (the wristcall PWA) can call the Cloud only from an origin listed in `WRISTCALL_CLOUD_CORS_ORIGINS`.
 With the variable empty the Cloud sends no `Access-Control-*` header and browsers refuse every cross origin call, as
 before. For a listed origin the Cloud allows the methods `GET`, `POST`, `PUT`, `PATCH` and `DELETE`, the request
-headers `Authorization` and `Content-Type`, caches the preflight answer for 10 minutes and exposes `Retry-After` (the
+headers `Authorization`, `Content-Type` and `X-Wristcall-Client`, caches the preflight answer for 10 minutes and exposes `Retry-After` (the
 `429` of the push registration) to the page.
 
 Credentials are not allowed (`Access-Control-Allow-Credentials` is never sent): the API takes a bearer token in a
@@ -643,6 +811,15 @@ shares the proxy's address.
   URL needs `--allow-loopback`, for development), keep its secret in a secret store, and note that a URL registered as
   a node can no longer be asked for as the audience of `POST /v1/server-tokens`. Until a node is registered the heartbeat
   sweeper has nothing to do.
+- **Cloud 0.6.0.** No schema change and no new collection (the Cloud entry is a document of `servers` with a new `managed`
+  field, "Voice notes" one of `cloud_agents`). Going back to 0.5.1 needs no restore, but then the entry shows to every app
+  as an ordinary `kind: cloud` server with no agents, which the user can delete. Run `wristcall-cloud admin provision --all` once after
+  deploying, so every account that already has a plan gets its Cloud entry (and "Voice notes" on `full`); accounts
+  that redeem or are granted a plan later are provisioned by themselves. Until a node is registered and healthy,
+  `POST /v1/route` answers `503 no_node_available`. Nobody sees the Cloud entry until
+  `WRISTCALL_CLOUD_CLOUD_ENTRY_CLIENTS` names a version, so current apps (watch 0.5.1, iPhone 0.2.2, PWA 0.3.0) see no
+  change. Register the `home` node with `--region sao` and the `operator_stt` and `operator_tts` capabilities, and name
+  its speech to text provider like `WRISTCALL_CLOUD_VOICE_NOTES_STT` (`stt-default`).
 - **Replay between servers.** The block that kept the Cloud API from being deployed (a Zitadel token given to a server
   could be replayed here) is lifted only once every server linked to a Cloud account runs 0.6.0 with
   `central_account.audience` set: those servers take only per-server tokens. A server still on 0.5.0 with a
