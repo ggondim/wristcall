@@ -486,6 +486,69 @@ def test_self_hosted_call_unchanged():
             assert closed_with(ws) == 1000
 
 
+def test_self_hosted_conversation_limit(fake: FakeCloud):
+    # I1: limits.max_conversation_s applies self-hosted too when set. Assigned after parsing (the YAML floor is 60 s)
+    # so the test does not wait a minute.
+    config = fake_config()
+    config.limits.max_conversation_s = 1
+    with TestClient(create_app(config, storage=open_sqlite_storage(":memory:"))) as c:
+        user = asyncio.run(c.app.state.storage.users.by_handle("owner"))
+        code = asyncio.run(c.app.state.pairing.create_code(user.id)).code
+        token = c.post("/v1/pair", json={"code": code, "device_name": "Watch"}).json()["token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        with c.websocket_connect("/v1/call", headers=headers) as ws:
+            ws.send_json(START)
+            ready = ws.receive_json()
+            started = time.monotonic()
+            assert ws.receive_json() == {"type": "call.captured", "call_id": ready["call_id"], "reason": "limit"}
+            assert 0.8 <= time.monotonic() - started < 3.0
+            assert closed_with(ws) == 1000
+        view = c.get(f"/v1/calls/{ready['call_id']}", headers=headers).json()
+        assert view["status"] == "empty" and view["ended_at"] is not None
+
+
+def test_one_way_quota_cut_wins_over_the_audio_limit(fake: FakeCloud):
+    # Audio faster than real time: 1.5 s heard before the 1 s wall-clock cut. The audio limit sits a second past the
+    # cut, so the user is told the minutes ran out, not `call.captured`.
+    seed_voice_notes(fake)
+    fake.quota_s = 1
+    with TestClient(call_app(fake)) as c:
+        wait_ready(c)
+        with c.websocket_connect("/v1/call", headers=watch(fake)) as ws:
+            ws.send_json(START)
+            ready = ws.receive_json()
+            ws.send_bytes(silence(1500))
+            msg = ws.receive_json()
+            assert (msg["type"], msg.get("code"), msg.get("fatal")) == ("error", "quota_exceeded", False), msg
+            assert closed_with(ws) == 1000
+        call_id = ready["call_id"]
+        wait_for(lambda: not fake.calls[call_id]["open"])
+
+
+def test_cloud_conversation_bills_no_teardown(fake: FakeCloud, llm, monkeypatch):
+    # The end is taken before the session's teardown: a slow close is not billed.
+    from wristcall.session import CallSession
+
+    real_close = CallSession.close
+
+    async def slow_close(self):
+        await asyncio.sleep(1.5)
+        await real_close(self)
+
+    monkeypatch.setattr(CallSession, "close", slow_close)
+    with TestClient(call_app(fake)) as c:
+        wait_ready(c)
+        create_talk(c, fake)
+        with c.websocket_connect("/v1/call", headers=watch(fake)) as ws:
+            ws.send_json({**START, "agent": "talk"})
+            ready = ws.receive_json()
+            ws.send_json({"type": "session.end"})
+            assert closed_with(ws) == 1000
+        call_id = ready["call_id"]
+        wait_for(lambda: not fake.calls[call_id]["open"])
+        assert fake.calls[call_id]["seconds"] == 1
+
+
 # --- open_call and check_plan ------------------------------------------------------------------------------------
 
 

@@ -62,15 +62,16 @@ log = logging.getLogger("wristcall.app")
 
 @dataclass(frozen=True)
 class _Cut:
-    """When a cloud call is cut by the wall clock (D12): after `seconds` from ready; `quota` when it is the month's
-    minutes that run out then (the user is told `quota_exceeded`), else the call's limit (`call.captured`)."""
+    """When a call is cut by the wall clock (D12; self-hosted, `limits.max_conversation_s`): after `seconds` from
+    ready; `quota` when it is the month's minutes that run out then (cloud mode: the user is told `quota_exceeded`),
+    else the call's limit (`call.captured`)."""
 
     seconds: int
     quota: bool
 
 
-# Opens the call's record when the call is admitted: the history's (self-hosted) or the Cloud's (cloud mode, with its
-# cut). May raise CallRefused (cloud mode).
+# Opens the call's record when the call is admitted, with its cut if any: the history's (self-hosted) or the Cloud's
+# (cloud mode). May raise CallRefused (cloud mode).
 _OpenLog = Callable[[], Awaitable[tuple[CallLog | CloudCallLog, _Cut | None]]]
 
 
@@ -534,7 +535,7 @@ def create_app(
         on_mute: Callable[[bool], Awaitable[None]],
         cut: _Cut | None,
     ) -> bool:
-        """`pump`, ended by the wall clock at `cut` (cloud mode); True when the clock ended it."""
+        """`pump`, ended by the wall clock at `cut` when there is one; True when the clock ended it."""
         if cut is None:
             await pump(ws, transport, on_audio, on_mute)
             return False
@@ -582,7 +583,8 @@ def create_app(
                 await refuse(ws, e)
                 return
             record = call_log.record
-            max_call_s = config.limits.max_one_way_call_s if cut is None else cut.seconds
+            # Cloud mode: the audio limit a second past the wall-clock cut, so the cut (and its quota_exceeded) wins.
+            max_call_s = config.limits.max_one_way_call_s if cut is None else cut.seconds + 1
             call = OneWayCall(
                 agent, providers, vad, call_log,  # type: ignore[arg-type] - CloudCallLog has CallLog's surface
                 max_call_ms=max_call_s * 1000, policy=delivery_policy,
@@ -665,8 +667,10 @@ def create_app(
             finally:
                 if warming is not None and not warming.done():
                     warming.cancel()
+                # Cloud mode bills up to the end of the talk, not the teardown after it (P12).
+                cloud_ended = time.time() if isinstance(call_log, CloudCallLog) else None
                 await session.close()
-                ended = time.time()
+                ended = cloud_ended or time.time()
                 await call_log.save(status="ended" if call_log.count else "empty", ended_at=ended, finished=True)
                 if node is not None:  # the finish is queued with its grant: nothing else writes this call
                     node.registry.forget(record.id)
@@ -850,8 +854,12 @@ def create_app(
             return
         device_id = principal.device.id
 
-        async def open_log() -> tuple[CallLog, None]:
-            return await history.start(agent, device_id), None
+        # limits.max_conversation_s (I1): when set, a conversation ends at it here too, as `call.captured` limit.
+        conversation_s = None if agent.call_type in ONE_WAY else config.limits.max_conversation_s
+
+        async def open_log() -> tuple[CallLog, _Cut | None]:
+            cut = None if conversation_s is None else _Cut(conversation_s, quota=False)
+            return await history.start(agent, device_id), cut
 
         await run_call(ws, start, device_id, agent, providers, slot, open_log)
 
