@@ -145,6 +145,8 @@ class History:
 
     async def start(self, agent: Agent, device_id: str | None) -> CallLog:
         """Creates the call's record, open (recording), with the agent's retention in force now."""
+        if self.account_scoped:  # cloud mode: the Cloud opens calls and CloudCallLog writes them, sealed to the account
+            raise RuntimeError("an account-scoped history does not start calls; use the cloud node's CloudCallLog")
         now = self._now()
         retention = self.retention_s(agent)
         record = await self.storage.calls.create(CallRecord(

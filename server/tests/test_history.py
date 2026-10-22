@@ -150,7 +150,7 @@ async def test_scoped_history_aad(st):
     codec = HistoryCodec(KEY)
     scoped = codec.for_account("u_a")
     history = History(st, codec, account_scoped=True)
-    call_log = await history.start(agent(), None)
+    call_log = await History(st, codec).start(agent(), None)  # a scoped history does not start calls
     cid = call_log.record.id
     stored, sealed = codec.seal("comprar leite", aad_scoped("u_a", cid, 0))
     await st.calls.add_entry("u_a", EntryRecord(

@@ -117,7 +117,8 @@ def _name(value: str, fallback: str) -> str:
     return clean or fallback
 
 
-def _call_text(record: CallRecord) -> tuple[str, str] | None:
+def call_text(record: CallRecord) -> tuple[str, str] | None:
+    """Title and body of the `call.finished` push for a one-way call; None while it is not finished."""
     agent = _name(record.agent_name, "your agent")
     if record.status == "delivered":
         if record.delivery == "history":
@@ -132,6 +133,9 @@ def _call_text(record: CallRecord) -> tuple[str, str] | None:
     if record.error == "stt_failed":
         return "Not transcribed", f"Your message to {agent} could not be transcribed."
     return "Call failed", f"Your call to {agent} did not finish."
+
+
+_call_text = call_text  # the old private name
 
 
 class PushNotifier:
@@ -189,7 +193,7 @@ class PushNotifier:
         """Tells the device that made a one-way call how it ended."""
         if record.call_type not in ONE_WAY or record.device_id is None:
             return
-        text = _call_text(record)
+        text = call_text(record)
         if text is None:
             return
         key = await self._storage.push.for_device(record.device_id)

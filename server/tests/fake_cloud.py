@@ -253,6 +253,11 @@ class FakeCloud:
             self.entries.setdefault(call["id"], {})[entry["seq"]] = entry
         return call["id"]
 
+    def issue_grant(self, call_id: str, *, platform: str = "watchos") -> str:
+        """A call grant for a seeded call, as `POST /v1/node/calls` would have given the node (device: the call's)."""
+        call = self.calls[call_id]
+        return self._issue(call, call["device_id"], platform, call["max_s"])
+
     def _days(self, spec: dict[str, Any] | None) -> int:
         days = (spec or {}).get("retention_days")
         return self.retention_days if days is None else 365 if days == "forever" else min(days, 365)
