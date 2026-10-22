@@ -80,6 +80,15 @@ public struct CloudClient: Sendable {
         return try await expect(200, try http.request(url("v1/server-tokens"), method: "POST", bearer: accessToken, json: body))
     }
 
+    /// `POST /v1/route`: the node that serves `purpose` and a fallback. `agent` (an `ag_...` id) only with `.call`;
+    /// `avoid` lists nodes that just failed for the caller. Both are left out of the body when empty.
+    public func route(
+        purpose: RoutePurpose, agent: String? = nil, avoid: [String] = [], accessToken: String
+    ) async throws -> CloudRoute {
+        let body = RouteBody(purpose: purpose.rawValue, agent: agent, avoid: avoid.isEmpty ? nil : avoid)
+        return try await expect(200, try http.request(url("v1/route"), method: "POST", bearer: accessToken, json: body))
+    }
+
     // MARK: - Plumbing
 
     func url(_ path: String) -> URL { cloud.appending(path: path) }
@@ -102,6 +111,13 @@ public struct CloudClient: Sendable {
 private struct ServerList: Decodable { var servers: [CloudServer] }
 private struct AgentList: Encodable { var agents: [CloudAgent] }
 private struct AudienceBody: Encodable { var audience: String }
+
+/// Encodes only the fields that are set (`encodeIfPresent` leaves `nil` out).
+private struct RouteBody: Encodable {
+    var purpose: String
+    var agent: String?
+    var avoid: [String]?
+}
 
 private struct NewServer: Encodable {
     var name: String
