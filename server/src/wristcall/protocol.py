@@ -23,6 +23,9 @@ class ErrorCode:
     AGENT_UNAVAILABLE = "agent_unavailable"
     NOT_STARTED = "not_started"
     BUSY = "busy"
+    # Cloud mode (server.mode: cloud): the account has no plan, or has used this month's minutes.
+    PLAN_REQUIRED = "plan_required"
+    QUOTA_EXCEEDED = "quota_exceeded"
     STT_FAILED = "stt_failed"
     RESPONDER_FAILED = "responder_failed"
     TTS_FAILED = "tts_failed"

@@ -1,4 +1,5 @@
 import base64
+import re
 
 import pytest
 
@@ -77,3 +78,27 @@ def test_queries_are_capped_at_sixteen_words():
     query = " ".join(f"w{i}" for i in range(30))
     assert len(HistoryCodec().query_terms(query)) == 16
     assert HistoryCodec().query_terms("!!! ...") == []
+
+
+def test_for_account_hashes_differ():
+    codec = HistoryCodec(KEY)
+    a, b = codec.for_account("a"), codec.for_account("b")
+    ta, tb = a.index_terms("leite"), b.index_terms("leite")
+    assert ta != tb and ta != codec.index_terms("leite")
+    for t in ta + tb:
+        assert re.fullmatch(r"x[0-9a-f]{16}", t)
+    assert a.query_terms("LEITE") == [["leite", ta[0]]]
+    assert set(ta) & {h for g in a.query_terms("leite") for h in g}
+    assert not set(tb) & {h for g in a.query_terms("leite") for h in g}
+    assert a.key_id == codec.key_id
+
+
+def test_for_account_shares_the_text_key():
+    codec = HistoryCodec(KEY)
+    stored, sealed = codec.seal("oi", "aad")
+    assert codec.for_account("a").open(stored, sealed, "aad") == "oi"
+
+
+def test_for_account_without_a_key_is_the_same_codec():
+    plain = HistoryCodec()
+    assert plain.for_account("a") is plain

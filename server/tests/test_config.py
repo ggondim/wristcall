@@ -411,3 +411,172 @@ def test_push_parses_and_normalizes_relay_url():
 def test_bad_push_is_rejected(push):
     with pytest.raises(ConfigError):
         parse_config(_with_push(**push), ENV)
+
+
+# ---------- server.mode: cloud ----------
+
+NODE_SECRET = "wc_node_" + "A1b2C3d4" * 5 + "xyz"  # prefix + 43 characters
+HISTORY_KEY = "A" * 43
+SEAL_KEY = "B" * 43
+CLOUD_URL = "https://cloud.example.test"
+assert len(NODE_SECRET) == len("wc_node_") + 43
+
+
+def cloud_yaml(**over):
+    """The smallest valid cloud-mode config; `over` replaces top-level sections (None removes one)."""
+    data = {
+        "server": {"public_url": "https://node.example.test", "mode": "cloud"},
+        "providers": {
+            "stt1": {"type": "openai_stt", "base_url": "https://stt.example.test/v1", "model": "w"},
+            "tts1": {"type": "openai_tts", "base_url": "https://tts.example.test/v1", "model": "t", "voice": "alloy"},
+        },
+        "central_account": {"issuer": CLOUD_URL, "audience": ["https://node.example.test"]},
+        "history": {"encryption_key": HISTORY_KEY},
+        "cloud_node": {"cloud_url": CLOUD_URL, "node_id": "node-1", "node_secret": NODE_SECRET, "seal_key": SEAL_KEY},
+    }
+    for key, value in over.items():
+        if value is None:
+            data.pop(key, None)
+        else:
+            data[key] = value
+    return data
+
+
+def test_mode_defaults_to_self_hosted():
+    cfg = parse_config(base(), ENV)
+    assert cfg.server.mode == "self-hosted"
+    assert cfg.is_cloud is False
+    assert cfg.cloud_node is None
+    assert cfg.limits.public_only is False
+    assert cfg.limits.history_only_one_way is False
+    assert cfg.limits.max_conversation_s is None
+    assert cfg.limits.max_concurrent_calls.conversation is None and cfg.limits.max_concurrent_calls.one_way is None
+
+
+def test_cloud_mode_parses_the_node_block():
+    cfg = parse_config(cloud_yaml(), {})
+    assert cfg.is_cloud is True
+    node = cfg.cloud_node
+    assert node.cloud_url == CLOUD_URL and node.node_id == "node-1" and node.heartbeat_s == 15.0
+    assert node.node_secret.get_secret_value() == NODE_SECRET
+    assert node.seal() == parse_config(cloud_yaml(), {}).cloud_node.seal() and len(node.seal()) == 32
+    assert NODE_SECRET not in repr(cfg) and SEAL_KEY not in repr(cfg)
+
+
+def test_cloud_mode_forces_limits():
+    cfg = parse_config(cloud_yaml(), {})
+    assert cfg.limits.public_only is True
+    assert cfg.limits.history_only_one_way is True
+    assert cfg.limits.max_concurrent_calls.conversation == 2
+    assert cfg.limits.max_concurrent_calls.one_way == 2
+    assert cfg.limits.max_conversation_s == 3600
+    cfg = parse_config(
+        cloud_yaml(limits={"max_concurrent_calls": {"conversation": 5}, "max_conversation_s": 600, "public_only": False}),
+        {},
+    )
+    assert cfg.limits.public_only is True  # not up to the operator
+    assert (cfg.limits.max_concurrent_calls.conversation, cfg.limits.max_concurrent_calls.one_way) == (5, 2)
+    assert cfg.limits.max_conversation_s == 600
+
+
+def test_max_conversation_s_applies_in_both_modes_and_is_bounded():
+    data = base()
+    data["limits"] = {"max_conversation_s": 900}
+    assert parse_config(data, ENV).limits.max_conversation_s == 900
+    for bad in (59, 14_401):
+        data["limits"] = {"max_conversation_s": bad}
+        with pytest.raises(ConfigError, match="max_conversation_s"):
+            parse_config(data, ENV)
+
+
+def _mut(path, value):
+    def build():
+        data = cloud_yaml()
+        node = data
+        *head, last = path
+        for key in head:
+            node = node[key]
+        if value is None:
+            del node[last]
+        else:
+            node[last] = value
+        return data
+
+    return build
+
+
+def _with_providers(**providers):
+    return lambda: cloud_yaml(providers=providers)
+
+
+REFUSED = {
+    "no cloud_node": lambda: cloud_yaml(cloud_node=None),
+    "no central_account": lambda: cloud_yaml(central_account=None),
+    "audience without public_url": _mut(["central_account", "audience"], ["https://other.example.test"]),
+    "audience with extra url": _mut(["central_account", "audience"], ["https://node.example.test", "https://other.example.test"]),
+    "no encryption_key": lambda: cloud_yaml(history={}),
+    "openai_chat provider": _with_providers(
+        stt1={"type": "openai_stt", "base_url": "https://s.example.test/v1", "model": "w"},
+        llm1={"type": "openai_chat", "base_url": "https://l.example.test/v1", "model": "m"},
+    ),
+    "webhook provider": _with_providers(hook={"type": "webhook", "url": "https://h.example.test"}),
+    "unknown provider type": _with_providers(odd={"type": "no_such_type"}),
+    "push block": lambda: cloud_yaml(push={"relay_url": CLOUD_URL}),
+    "short node_secret": _mut(["cloud_node", "node_secret"], "wc_node_short"),
+    "node_secret wrong prefix": _mut(["cloud_node", "node_secret"], "wc_xxxx_" + "a" * 43),
+    "node_secret bad chars": _mut(["cloud_node", "node_secret"], "wc_node_" + "a" * 42 + "!"),
+    "seal_key equals history key": _mut(["cloud_node", "seal_key"], HISTORY_KEY),
+    "seal_key not base64 key": _mut(["cloud_node", "seal_key"], "tooshort"),
+    "cloud_url with user": _mut(["cloud_node", "cloud_url"], "https://user:pw@cloud.example.test"),
+    "cloud_url with query": _mut(["cloud_node", "cloud_url"], "https://cloud.example.test?x=1"),
+    "cloud_url with fragment": _mut(["cloud_node", "cloud_url"], "https://cloud.example.test#x"),
+    "cloud_url ftp": _mut(["cloud_node", "cloud_url"], "ftp://cloud.example.test"),
+    "cloud_url without host": _mut(["cloud_node", "cloud_url"], "https:///path"),
+    "node_id uppercase": _mut(["cloud_node", "node_id"], "Node-1"),
+    "node_id digit first": _mut(["cloud_node", "node_id"], "1node"),
+    "node_id too long": _mut(["cloud_node", "node_id"], "a" * 33),
+    "node_id underscore": _mut(["cloud_node", "node_id"], "node_1"),
+    "heartbeat_s zero": _mut(["cloud_node", "heartbeat_s"], 0),
+    "unknown cloud_node field": _mut(["cloud_node", "extra"], 1),
+}
+
+
+@pytest.mark.parametrize("build", REFUSED.values(), ids=REFUSED.keys())
+def test_cloud_mode_refuses(build):
+    with pytest.raises(ConfigError) as caught:
+        parse_config(build(), {})
+    message = str(caught.value)
+    for secret in (NODE_SECRET, SEAL_KEY, HISTORY_KEY, "pw@"):
+        assert secret not in message
+
+
+def test_cloud_url_is_normalized_and_may_be_plain_http():
+    data = cloud_yaml()
+    data["cloud_node"]["cloud_url"] = "http://wristcall-cloud:8800/"
+    assert parse_config(data, {}).cloud_node.cloud_url == "http://wristcall-cloud:8800"
+    data["cloud_node"]["cloud_url"] = "https://cloud.example.test/"
+    assert parse_config(data, {}).cloud_node.cloud_url == "https://cloud.example.test"
+
+
+def test_audience_matches_public_url_in_canonical_form():
+    data = cloud_yaml()
+    data["server"]["public_url"] = "https://Node.Example.test:443/"
+    assert parse_config(data, {}).is_cloud
+
+
+def test_cloud_node_block_needs_cloud_mode():
+    data = cloud_yaml()
+    data["server"]["mode"] = "self-hosted"
+    with pytest.raises(ConfigError, match="cloud_node") as caught:
+        parse_config(data, {})
+    assert NODE_SECRET not in str(caught.value)
+    del data["server"]["mode"]
+    with pytest.raises(ConfigError, match="cloud_node"):
+        parse_config(data, {})
+
+
+def test_unknown_mode_is_rejected():
+    data = cloud_yaml()
+    data["server"]["mode"] = "hybrid"
+    with pytest.raises(ConfigError, match="mode"):
+        parse_config(data, {})

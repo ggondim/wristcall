@@ -20,6 +20,23 @@ class NotSupported(StorageError):
     """An operator-only operation that this adapter does not offer (the Cloud API adapter of epic E9)."""
 
 
+class CloudUnavailable(StorageError):
+    """Cloud mode: the Wristcall Cloud gave no usable answer (unreachable, timeout, 5xx, a body that is not the JSON it
+    should be, a refused node credential, a rate limit). The REST API answers 503, a call `cloud_unreachable`."""
+
+
+class PlanRequired(StorageError):
+    """Cloud mode: the account has no Wristcall Cloud plan for this (402 `plan_required` from the Cloud)."""
+
+
+class DeviceRevoked(StorageError):
+    """Cloud mode: the device was removed from the account (403 `device_revoked` from the Cloud)."""
+
+
+class CallOpen(Conflict):
+    """Cloud mode: the call is still open and cannot be deleted (409 `call_open` from the Cloud)."""
+
+
 @dataclass(frozen=True)
 class User:
     id: str

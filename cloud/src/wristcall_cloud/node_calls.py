@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, Header, Request, Response
 from pymongo import UpdateOne
 from pymongo.errors import DuplicateKeyError
 
-from .api_common import ApiError, json_object
+from .api_common import ApiError, bson_safe, json_object
 from .cloud_store import CALL_STATUSES, CALL_TYPES, ONE_WAY, CloudModeStore, purge_at
 from .config import CloudConfig
 from .node_auth import NodeCaller, _signer, current_node, issue_grant, node_caller, verify_grant
@@ -36,6 +36,7 @@ MAX_TERMS_PER_ENTRY = 2000
 MAX_ENTRY_TEXT = 256 * 1024
 MAX_SEQ = 100000
 MAX_ATTEMPTS = 10000
+MAX_NUMBER = 2**53  # the largest whole number a double holds exactly; a time or a number of seconds never gets near
 ENTRY_ROLES = ("user", "agent")
 DELIVERIES = ("webhook", "history")  # how the node delivered a call (the server's `CallRecord.delivery`)
 FINISH_STATUSES = tuple(s for s in CALL_STATUSES if s != "recording")
@@ -51,8 +52,14 @@ def _not_found() -> ApiError:
 
 
 def _number(value: Any) -> bool:
-    """A finite JSON number (a bool is an int in Python, but not a number here)."""
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    """A finite JSON number below `MAX_NUMBER` in absolute value (a bool is an int in Python, but not a number
+    here). A huge integer cannot become a float (`OverflowError`), and past int64 BSON cannot hold it."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value) and abs(float(value)) < MAX_NUMBER
+    except OverflowError:
+        return False
 
 
 def _integer(value: Any, low: int, high: int) -> bool:
@@ -82,11 +89,9 @@ def _entry(value: Any) -> dict[str, Any]:
     if text is not None:
         if not isinstance(text, str):
             raise _invalid("text must be a string or null")
-        try:
-            size = len(text.encode("utf-8"))
-        except UnicodeEncodeError:  # a lone surrogate: not text BSON can hold
-            raise _invalid("text is not valid") from None
-        if size > MAX_ENTRY_TEXT:
+        if not bson_safe(text):  # a lone surrogate: not text BSON can hold
+            raise _invalid("text is not valid")
+        if len(text.encode("utf-8")) > MAX_ENTRY_TEXT:
             raise _invalid(f"text must be at most {MAX_ENTRY_TEXT} bytes")
         if not sealed:
             raise _invalid("text must be sealed")
@@ -195,7 +200,7 @@ async def open_call(
 ) -> dict[str, Any]:
     body = await json_object(request)
     ref, call_type, request_id = body.get("agent"), body.get("call_type"), body.get("request_id")
-    if not isinstance(ref, str) or not 0 < len(ref) <= 64:
+    if not isinstance(ref, str) or not 0 < len(ref) <= 64 or not bson_safe(ref):
         raise _invalid("agent must be the id or slug of an agent")
     if call_type not in CALL_TYPES:
         raise _invalid(f"call_type must be one of {', '.join(CALL_TYPES)}")

@@ -355,7 +355,7 @@ Unknown fields are ignored (future compatibility).
 | `{"type":"turn.agent_start"}` | the response audio is about to start |
 | `{"type":"turn.agent_end"}` | all of the response audio has been sent |
 | `{"type":"error","code":"...","message":"...","fatal":false}` | failure; with `fatal:true` the server closes right after |
-| `{"type":"call.captured","call_id":"c_...","reason":"limit"}` | one-way calls only: the server stopped recording by itself and closes the call (1000). See [One-way calls](#one-way-calls-one-shot-monologue) |
+| `{"type":"call.captured","call_id":"c_...","reason":"limit"}` | the server stopped the call by itself and closes it (1000): a one-way call at its recording limit (see [One-way calls](#one-way-calls-one-shot-monologue)); since 0.10.0 also a conversation at `limits.max_conversation_s` or at the deadline of a [cloud-mode](#cloud-mode) call |
 
 While the agent is responding, the client's audio is discarded. The server only
 starts listening again after the estimated playback time of the audio sent plus 200 ms.
@@ -686,6 +686,65 @@ server of the account's agenda with `POST /v1/pair/account` (see [Pairing with t
 `200` pairs at once, `202` waits for approval on a managing app (`GET /v1/pairing-requests`, then `approve` or
 `deny`). Apps send nothing but the `request_id` they got from the server when they answer a push for a device
 approval; the server is picked by the push's tag, never by an address inside it.
+
+## Cloud mode
+
+Since server 0.10.0 a server may run as a node of the Wristcall Cloud (`server.mode: cloud`, see
+[README](../README.md#cloud-mode)). The routes, messages and shapes above stay the same; this section lists what
+differs. A node keeps nothing on disk: accounts, devices, agents and history live in the Cloud, which the node reads
+and writes on each request.
+
+**Token.** Every request (`WS /v1/call` and REST) carries `Authorization: Bearer <token>`, where the token is the
+per-server token the app gets from the Cloud's `POST /v1/route` (see
+[cloud/README.md](../cloud/README.md#routes-and-the-cloud-entry)): `purpose: "call"` with the agent before a call,
+`purpose: "manage"` for agents and history. Its audience is the node's URL, its issuer the Cloud
+(`central_account.issuer`), its `typ` `wc-server+jwt`, and the claims `sub` (account), `did` (device), `plt`
+(platform) and `jti` are all required: a token without any of them (for example one from `/v1/server-tokens`) is
+refused like any invalid token (`401`, close **4401**). There is no pairing, no device token and no personal token on
+a node. Any platform may call (a watch, the iPhone, the web app); the management routes are for the apps: a
+`watchos` token gets the device view (`403 forbidden` on management routes, and `GET /v1/calls/{id}` only for the
+calls made from that watch). An app's token reads every call of the account, the watch's included.
+
+**Calls.** Before a call the node asks the Cloud what the account may do and opens the call there; `session.ready`
+carries the Cloud's `call_id`. New errors at opening (fatal, then close 4400):
+
+| Code | `reason` | Cause |
+|---|---|---|
+| `plan_required` | | the account has no Wristcall Cloud plan ("This account has no Wristcall Cloud plan.") |
+| `quota_exceeded` | | the month's call minutes are used up ("You've used this month's call minutes.") |
+| `busy` | `too_many_calls` | another call of the account is still open ("Another call is still open on this account.") |
+| `busy` | | the node is full, starting or shutting down ("This server is busy; try again in a minute.") |
+| `agent_unavailable` | `cloud_unreachable` | the node could not reach the Cloud ("Wristcall Cloud is unavailable; try again.") |
+| `agent_unavailable` | `needs_voice_url` | on the `custom` plan, the agent names one of the operator's voices instead of its own addresses ("This agent needs your own transcription and voice addresses.") |
+
+A revoked device is closed with **4401**. During the call the Cloud is not needed: if it goes away, the call goes on
+and what it said reaches the Cloud when it is back.
+
+The Cloud bills wall-clock time, and each call has a deadline: the account's minutes left in the month or the longest
+call the operator allows (`max_s`), whichever is shorter. When it arrives the node stops the call by itself and closes
+with 1000:
+
+- by the quota: `{"type":"error","code":"quota_exceeded","fatal":false}`, then the close;
+- by the longest call: `{"type":"call.captured","call_id":"c_...","reason":"limit"}`, now also for conversations.
+
+What a one-way call recorded until the cut is transcribed and delivered as usual. A one-way agent without an action
+(the Cloud's "Voice notes", for one) saves its transcript to the history: the call ends `delivered` with
+`delivery: "history"`.
+
+**REST.** Routes keep their shapes; `GET /v1/me` also carries `plan` (the Cloud's object `{"plan", "source",
+"expires_at"}`, or `null`) and `usage` (`{"month", "used_s", "quota_s", "remaining_s"}`). `GET /v1/health` adds
+`"mode": "cloud"` and answers `503` with `status` `starting` (before the Cloud accepted the node's first heartbeat) or
+`draining` (shutting down). Errors of their own:
+
+| Status | `error` | When |
+|---|---|---|
+| `503` | `cloud_unavailable` | the Cloud cannot be reached ("Wristcall Cloud is unavailable; try again.") |
+| `402` | `plan_required` | the account has no plan (creating or changing an agent; a lapsed plan still reads and deletes its history) |
+| `403` | `device_revoked` | the device was removed from the account |
+| `409` | `call_open` | deleting a call that is still open |
+| `404` | `not_in_cloud_mode` | routes a node does not have: `/v1/pair...`, `/v1/pairing-codes...`, `/v1/pairing-requests...`, `/v1/account/link`, `/v1/devices...` and `DELETE /v1/me` |
+
+`POST /v1/calls/{id}/redeliver` answers `409 not_failed` also when the Cloud no longer has the call.
 
 ## Versioning
 

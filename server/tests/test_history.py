@@ -5,8 +5,9 @@ import pytest
 
 from memory_storage import MemoryStorage
 from wristcall.agents import Agent, AgentSpec, ProviderRef
-from wristcall.history import KEY_ID, History, check_key
+from wristcall.history import KEY_ID, History, aad, aad_scoped, check_key
 from wristcall.history_codec import HistoryCodec, HistoryKeyError
+from wristcall.storage import EntryRecord
 
 KEY = bytes(range(32))
 
@@ -143,3 +144,38 @@ async def test_purge_deletes_expired_closed_calls(st):
     assert await later.purge() == 1
     assert await st.calls.get("u_a", done.record.id) is None
     assert await st.calls.get("u_a", still_open.record.id) is not None
+
+
+async def test_scoped_history_aad(st):
+    codec = HistoryCodec(KEY)
+    scoped = codec.for_account("u_a")
+    history = History(st, codec, account_scoped=True)
+    call_log = await History(st, codec).start(agent(), None)  # a scoped history does not start calls
+    cid = call_log.record.id
+    stored, sealed = codec.seal("comprar leite", aad_scoped("u_a", cid, 0))
+    await st.calls.add_entry("u_a", EntryRecord(
+        call_id=cid, seq=0, role="user", text=stored, sealed=sealed, error=None, at=1.0,
+    ), scoped.index_terms("comprar leite"))
+    assert aad_scoped("acc", "c_1", 0) == "acc|c_1|0"
+    with pytest.raises(ValueError):  # an account id with "|" would blur the fields of the AAD
+        aad_scoped("a|b", "c_1", 0)
+    view = await history.detail(await call_log.save(status="ended", finished=True))
+    assert view["text"] == "comprar leite"
+    terms = history.query_terms("u_a", "LEITE")
+    assert [c.id for c in await st.calls.list("u_a", terms=terms)] == [cid]
+    assert await st.calls.list("u_a", terms=history.query_terms("u_b", "leite")) == []
+    # A history that is not scoped cannot open it (and the default aad does not fit the scoped entry).
+    plain = await History(st, codec).entries(call_log.record)
+    assert [(e.text, e.error) for e in plain] == [(None, "unreadable")]
+    assert aad("c_1", 0) != aad_scoped("u_a", "c_1", 0)
+
+
+def test_query_terms_per_user(st):
+    codec = HistoryCodec(KEY)
+    normal = History(None, codec)
+    assert normal.query_terms("u_a", "Leite leite") == codec.query_terms("Leite leite")
+    assert normal.query_terms("u_a", None) is None and normal.query_terms("u_a", "  ") is None
+    scoped = History(None, codec, account_scoped=True)
+    assert scoped.query_terms("u_a", "leite") == codec.for_account("u_a").query_terms("leite")
+    assert scoped.query_terms("u_a", "leite") != scoped.query_terms("u_b", "leite")
+    assert scoped.query_terms("u_a", "") is None

@@ -410,3 +410,134 @@ def test_calls_of_another_account_are_invisible(world, node_client, mongo_db, si
     with db(mongo_db) as d:
         assert d["cloud_call_entries"].count_documents({"call": done}) == 2
 
+
+
+def test_limit_with_huge_number_is_422(world):
+    for limit in ("1" * 5000, "1" * 4301, "1" * 400, "0" * 5000 + "1", "1000", "0", "201", "-1", "\u0661"):
+        r = world.client.get("/v1/node/calls", headers=ios(world), params={"limit": limit})
+        assert r.status_code == 422 and r.json()["error"] == "invalid", limit[:10]
+    # Leading zeros are digits too, within three of them.
+    assert world.client.get("/v1/node/calls?limit=010", headers=ios(world)).status_code == 200
+    assert world.client.get("/v1/node/calls?limit=200", headers=ios(world)).status_code == 200
+
+
+def put_entries(world: World, call_id: str, opened: dict, hashes_by_entry: list[list[str]]) -> None:
+    items = [entry(n, term_hashes=hashes) for n, hashes in enumerate(hashes_by_entry)]
+    r = world.client.post(f"/v1/node/calls/{call_id}/entries", headers=world.node_with(opened), json={"entries": items})
+    assert r.status_code == 204, r.text
+
+
+def call_with(world: World, hashes_by_entry: list[list[str]], *, created_at: float, agent: str | None = None,
+              call_type: str = "one-shot", status: str = "delivered", headers: dict | None = None) -> str:
+    """A finished call whose entries carry `hashes_by_entry` (one list per entry), placed at `created_at`."""
+    opened = world.opened(agent, call_type, headers=headers)
+    call_id = opened["call_id"]
+    put_entries(world, call_id, opened, hashes_by_entry)
+    r = world.client.post(
+        f"/v1/node/calls/{call_id}/finish", headers=world.node_with(opened), json={"status": status, "seconds": 1}
+    )
+    assert r.status_code == 204, r.text
+    with db(world.mongo_db) as d:
+        d["cloud_calls"].update_one({"_id": call_id}, {"$set": {"created_at": created_at}})
+        d["cloud_call_entries"].update_many({"call": call_id}, {"$set": {"call_created_at": created_at}})
+    return call_id
+
+
+def test_search_pages_with_cursor(world):
+    # Seven calls with the same hash; pairs share a `created_at` so that the id breaks the tie.
+    made = {call_with(world, [[HASH_A]], created_at=BASE + n // 2): BASE + n // 2 for n in range(7)}
+    expected = sorted(made, key=lambda c: (made[c], c), reverse=True)
+    pages: list[list[str]] = []
+    params: dict = {"terms": HASH_A, "limit": 3}
+    while True:
+        r = history(world, **params)
+        assert r.status_code == 200, r.text
+        calls = r.json()["calls"]
+        if not calls:
+            break
+        pages.append([c["id"] for c in calls])
+        params = {"terms": HASH_A, "limit": 3, "before_at": calls[-1]["created_at"], "before_id": calls[-1]["id"]}
+    assert [len(p) for p in pages] == [3, 3, 1]
+    assert [i for page in pages for i in page] == expected
+    # The same pages come without `terms` (the plain listing and the search agree).
+    assert ids(history(world, limit=7)) == expected
+
+
+def test_search_keeps_the_window_and_the_agent(world):
+    old = call_with(world, [[HASH_A]], created_at=BASE)
+    mid = call_with(world, [[HASH_A]], created_at=BASE + 10, agent=world.convo, call_type="conversation", status="ended")
+    new = call_with(world, [[HASH_A]], created_at=BASE + 20)
+    other = call_with(world, [[HASH_B]], created_at=BASE + 15)
+    assert ids(history(world, terms=HASH_A)) == [new, mid, old]
+    assert ids(history(world, terms=HASH_A, since=BASE + 10)) == [new, mid]
+    assert ids(history(world, terms=HASH_A, until=BASE + 10)) == [old]  # `until` is exclusive
+    assert ids(history(world, terms=HASH_A, since=BASE + 5, until=BASE + 20)) == [mid]
+    assert ids(history(world, terms=HASH_A, agent=world.convo)) == [mid]
+    assert ids(history(world, terms=HASH_A, agent=world.oneshot)) == [new, old]
+    assert ids(history(world, terms=HASH_A, agent=world.oneshot, since=BASE + 1)) == [new]
+    assert ids(history(world, terms=HASH_B)) == [other]
+    r = history(world, terms=HASH_A, limit=1, before_at=BASE + 20, before_id=new)
+    assert ids(r) == [mid]
+    # A cursor with nothing older, and a limit that cuts the match short.
+    assert ids(history(world, terms=HASH_A, before_at=BASE, before_id=old)) == []
+    assert ids(history(world, terms=HASH_A, limit=2)) == [new, mid]
+
+
+def test_search_groups_are_and_and_hashes_are_or(world):
+    both = call_with(world, [[HASH_A], [HASH_B]], created_at=BASE)  # the groups match different entries
+    one = call_with(world, [[HASH_A]], created_at=BASE + 1)
+    third = call_with(world, [[HASH_C]], created_at=BASE + 2)
+    same = call_with(world, [[HASH_A, HASH_B]], created_at=BASE + 3)
+    assert ids(history(world, terms=[HASH_A, HASH_B])) == [same, both]
+    assert ids(history(world, terms=[HASH_A, HASH_B, HASH_C])) == []
+    assert ids(history(world, terms=[f"{HASH_A},{HASH_C}"])) == [same, third, one, both]
+    assert ids(history(world, terms=[f"{HASH_B},{HASH_C}", HASH_A])) == [same, both]
+    # The same hash twice is the same group; a group naming the hash twice is not a second condition.
+    assert ids(history(world, terms=[HASH_A, HASH_A])) == [same, one, both]
+    assert ids(history(world, terms=[f"{HASH_A},{HASH_A}"])) == [same, one, both]
+
+
+def test_search_finds_nothing_for_an_unknown_hash(world):
+    call_with(world, [[HASH_A]], created_at=BASE)
+    r = history(world, terms="x" + "1" * 16)
+    assert r.status_code == 200 and r.json() == {"calls": []}
+    assert history(world, terms=[HASH_A, "x" + "1" * 16]).json() == {"calls": []}
+
+
+def test_search_stays_inside_the_account(world):
+    mine = call_with(world, [[HASH_A]], created_at=BASE)
+    stranger = World(world.client, world.mongo_db, world.nodes, world.signing_key, world.app, first_agent=10)
+    theirs = call_with(stranger, [[HASH_A]], created_at=BASE + 1, headers=stranger.watch)
+    assert ids(history(world, terms=HASH_A)) == [mine]
+    assert ids(history(stranger, headers=stranger.user(stranger.ios_device, "ios"), terms=HASH_A)) == [theirs]
+    # Another account's agent name does not open its calls either.
+    assert ids(history(world, terms=HASH_A, agent=stranger.oneshot)) == []
+
+
+def test_search_with_many_matches_is_paged_in_the_database(world, monkeypatch):
+    """A large match is not collected in Python: `distinct` is not asked of the entries any more."""
+    for n in range(5):
+        call_with(world, [[HASH_A]], created_at=BASE + n)
+    from pymongo.asynchronous.collection import AsyncCollection
+
+    async def forbidden(self, *args, **kwargs):
+        raise AssertionError("distinct")
+
+    monkeypatch.setattr(AsyncCollection, "distinct", forbidden)
+    assert len(ids(history(world, terms=HASH_A, limit=2))) == 2
+
+
+def test_search_page_is_not_short_when_an_entry_outlives_its_call(world):
+    real = [call_with(world, [[HASH_A]], created_at=BASE + n) for n in range(4)]
+    # An orphan entry (its call is gone) is the newest match: it must not take a slot of the page.
+    with db(world.mongo_db) as d:
+        d["cloud_call_entries"].insert_one({
+            "_id": "c_0000000000000dead:0", "account": world.account, "call": "c_0000000000000dead",
+            "agent": world.oneshot, "call_created_at": BASE + 100, "term_hashes": [HASH_A], "seq": 0,
+        })
+    expected = list(reversed(real))
+    first = history(world, terms=HASH_A, limit=3)
+    assert ids(first) == expected[:3]
+    last = first.json()["calls"][-1]
+    second = history(world, terms=HASH_A, limit=3, before_at=last["created_at"], before_id=last["id"])
+    assert ids(second) == expected[3:]

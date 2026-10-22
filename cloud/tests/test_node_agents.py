@@ -1,8 +1,11 @@
 """Cloud-mode agents for nodes: `/v1/node/agents*` (validation, ETag, platform and plan rules, order, retention)."""
 
+import asyncio
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 
+import httpx
 import pytest
 from node_fixtures import (
     NODE_A,
@@ -459,3 +462,105 @@ def test_patch_without_retention_change_leaves_expiry(node_client, mongo_db, nod
         assert node_client.patch(f"/v1/node/agents/{agent}", headers=headers, json=patch).status_code == 200
     with db(mongo_db) as d:
         assert d["cloud_calls"].find_one({"_id": "c_1"})["expires_at"] == 123.0
+
+
+def post_raw(client, headers, path, body, method="post"):
+    """A body sent as bytes, so that lone surrogates (`json.dumps` escapes them) and huge integers reach the server."""
+    return getattr(client, method)(
+        path, headers={**headers, "Content-Type": "application/json"}, content=json.dumps(body).encode()
+    )
+
+
+@pytest.mark.parametrize("value", [2**63, -(2**63) - 1, 10**30, -(10**30)], ids=["2^63", "-2^63-1", "1e30", "-1e30"])
+def test_spec_integer_out_of_int64_is_422(node_client, mongo_db, nodes, signing_key, value):
+    _, headers = caller(node_client, mongo_db, nodes, signing_key)
+    for spec in ({"n": value}, {"deep": {"list": [1, {"n": value}]}}):
+        r = post_raw(node_client, headers, "/v1/node/agents", agent_body(1, spec=spec))
+        assert r.status_code == 422 and r.json()["error"] == "invalid", r.text
+    assert node_client.get("/v1/node/agents", headers=headers).json()["agents"] == []
+    create(node_client, headers, 1)
+    r = post_raw(node_client, headers, "/v1/node/agents/ag_000000000001", {"spec": {"n": value}}, method="patch")
+    assert r.status_code == 422 and r.json()["error"] == "invalid", r.text
+    assert node_client.get("/v1/node/agents/ag_000000000001", headers=headers).json()["spec"]["retention_days"] == 30
+
+
+def test_spec_integer_at_the_int64_edges_is_stored(node_client, mongo_db, nodes, signing_key):
+    _, headers = caller(node_client, mongo_db, nodes, signing_key)
+    r = post_raw(node_client, headers, "/v1/node/agents", agent_body(1, spec={"hi": 2**63 - 1, "lo": -(2**63)}))
+    assert r.status_code == 201, r.text
+    assert r.json()["spec"] == {"hi": 2**63 - 1, "lo": -(2**63)}
+    r = post_raw(node_client, headers, "/v1/node/agents/ag_000000000001", {"spec": {"hi": 2**63 - 1}}, method="patch")
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"display_name": "a\ud800b"},
+        {"display_name": "\udfff"},
+        {"spec": {"key\ud800": 1}},
+        {"spec": {"k": "a\ud800b"}},
+        {"spec": {"k": ["fine", {"nested\udc00": "x"}]}},
+        {"spec": {"k": ["fine", {"nested": "x\ud800"}]}},
+    ],
+    ids=["name", "name-low", "key", "value", "nested-key", "nested-value"],
+)
+def test_lone_surrogate_is_422(node_client, mongo_db, nodes, signing_key, bad):
+    _, headers = caller(node_client, mongo_db, nodes, signing_key)
+    r = post_raw(node_client, headers, "/v1/node/agents", agent_body(1, **bad))
+    assert r.status_code == 422 and r.json()["error"] == "invalid", r.text
+    create(node_client, headers, 2)
+    r = post_raw(node_client, headers, "/v1/node/agents/ag_000000000002", bad, method="patch")
+    assert r.status_code == 422 and r.json()["error"] == "invalid", r.text
+    assert [a["id"] for a in node_client.get("/v1/node/agents", headers=headers).json()["agents"]] == [
+        "ag_000000000002"
+    ]
+
+
+def test_name_with_accent_and_emoji_is_fine(node_client, mongo_db, nodes, signing_key):
+    _, headers = caller(node_client, mongo_db, nodes, signing_key)
+    created = create(node_client, headers, 1, display_name="Caf\u00e9 \U0001f600")
+    assert created["display_name"] == "Caf\u00e9 \U0001f600"
+    r = post_raw(node_client, headers, "/v1/node/agents", agent_body(2, spec={"k\u00e9": "\U0001f600"}))
+    assert r.status_code == 201, r.text
+
+
+def test_agent_limit_holds_under_concurrency(node_config, mongo_db, fake_verifier, signing_key):
+    for client in served_node(replace(node_config, max_cloud_agents=2), mongo_db, fake_verifier, signing_key):
+        secrets = register_nodes(client)
+        account, device, _ = new_account(client)
+        grant_plan(mongo_db, account)
+        headers = node_headers(secrets["home"], user=user_token(signing_key, account, device, "ios", NODE_A))
+
+        async def burst():
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(client.app), base_url="https://cloud.test"
+            ) as http:
+                return await asyncio.gather(
+                    *(http.post("/v1/node/agents", headers=headers, json=agent_body(n)) for n in range(1, 9))
+                )
+
+        # The TestClient's portal is the loop the app's Mongo client is bound to.
+        answers = client.portal.call(burst)
+        statuses = sorted(r.status_code for r in answers)
+        assert set(statuses) <= {201, 403}, statuses
+        with db(mongo_db) as d:
+            count = d["cloud_agents"].count_documents({"account": account})
+        assert count <= 2 and statuses.count(201) == count, (count, statuses)
+        assert all(r.json()["error"] == "limit" for r in answers if r.status_code == 403)
+        # What was refused left nothing behind: the survivors are the ones answered 201.
+        with db(mongo_db) as d:
+            kept = {a["_id"] for a in d["cloud_agents"].find({"account": account})}
+        assert kept == {r.json()["id"] for r in answers if r.status_code == 201}
+
+
+def test_if_none_match_variants(node_client, mongo_db, nodes, signing_key):
+    _, headers = caller(node_client, mongo_db, nodes, signing_key)
+    create(node_client, headers, 1)
+    etag = node_client.get("/v1/node/agents", headers=headers).json()["etag"]
+    for header in (etag, f"W/{etag}", f'"x", {etag}', f'W/"x",W/{etag}', "*"):
+        r = node_client.get("/v1/node/agents", headers={**headers, "If-None-Match": header})
+        assert r.status_code == 304 and r.content == b"" and r.headers["ETag"] == etag, header
+    for header in ('"x"', "", "W/", etag[:-2] + '"', f"{etag}x"):
+        r = node_client.get("/v1/node/agents", headers={**headers, "If-None-Match": header})
+        assert r.status_code == 200, header

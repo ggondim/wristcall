@@ -77,7 +77,8 @@ def _limit(request: Request) -> int:
     raw = _single(request, "limit")
     if raw is None:
         return DEFAULT_LIMIT
-    if not raw.isascii() or not raw.isdigit() or not 1 <= int(raw) <= MAX_LIMIT:
+    # At most three digits before `int()`: it refuses a string of thousands of digits with an error of its own.
+    if len(raw) > len(str(MAX_LIMIT)) or not raw.isascii() or not raw.isdigit() or not 1 <= int(raw) <= MAX_LIMIT:
         raise _invalid(f"limit must be an integer from 1 to {MAX_LIMIT}")
     return int(raw)
 
@@ -98,33 +99,60 @@ def _term_groups(request: Request) -> list[list[str]]:
     return groups
 
 
-def _range(request: Request) -> dict[str, Any]:
-    """The `created_at` window: `since <= created_at < until`."""
+def _range(request: Request, field: str = "created_at") -> dict[str, Any]:
+    """The window on a call's creation date, `since <= created_at < until`; `field` names it where it is stored (the
+    entries keep it as `call_created_at`)."""
     since, until = _time(request, "since"), _time(request, "until")
     window: dict[str, Any] = {}
     if since is not None:
         window["$gte"] = since
     if until is not None:
         window["$lt"] = until
-    return {"created_at": window} if window else {}
+    return {field: window} if window else {}
 
 
-async def _calls_with_terms(
-    cloud: CloudModeStore, account: str, agent: str | None, groups: list[list[str]]
-) -> list[str] | None:
-    """The ids of the calls that have, for every group, an entry with one of its hashes (None: no search)."""
-    if not groups:
-        return None
-    found: set[str] | None = None
-    for group in groups:
-        query: dict[str, Any] = {"account": account, "term_hashes": {"$in": group}}
-        if agent is not None:
-            query["agent"] = agent
-        ids = set(await cloud.entries.distinct("call", query))
-        found = ids if found is None else found & ids
-        if not found:
-            return []
-    return sorted(found or ())
+def _before(before_at: float | None, before_id: str | None, created: str, ident: str) -> dict[str, Any]:
+    """The page after the cursor, in `(created, ident)` descending order; `created`/`ident` name the fields."""
+    if before_at is None:
+        return {}
+    return {"$or": [{created: {"$lt": before_at}}, {created: before_at, ident: {"$lt": before_id}}]}
+
+
+def _search_pipeline(
+    account: str, agent: str | None, groups: list[list[str]], window: dict[str, Any], before: dict[str, Any],
+    limit: int, calls_collection: str,
+) -> list[dict[str, Any]]:
+    """The calls that have, for every group, an entry with one of its hashes (any hash of a group; every group; the
+    groups may match different entries of the call), newest first, one page. It all happens in the database: the
+    entries already hold the account, the agent and the date of their call, so the first `$match` narrows by all of
+    them (and by the hashes, through the `account_terms` index), and what is left is grouped by call, one flag per
+    group; the matching calls are then looked up, sorted and cut to the page. No list of ids passes through Python."""
+    match: dict[str, Any] = {
+        "account": account, "term_hashes": {"$in": list(dict.fromkeys(h for group in groups for h in group))}
+    }
+    if agent is not None:
+        match["agent"] = agent
+    clauses = [match, window, before]
+
+    def flag(group: list[str]) -> dict[str, Any]:
+        shared = {"$size": {"$setIntersection": ["$term_hashes", {"$literal": group}]}}
+        return {"$max": {"$cond": [{"$gt": [shared, 0]}, 1, 0]}}
+
+    flags = {f"g{n}": flag(group) for n, group in enumerate(groups)}
+    return [
+        {"$match": {"$and": [c for c in clauses if c]}},
+        {"$group": {"_id": "$call", "at": {"$first": "$call_created_at"}, **flags}},
+        {"$match": {name: 1 for name in flags}},
+        # The calls are looked up before the page is cut: an entry can outlive its call (a delete cut short, the
+        # two TTL indexes expiring at different times), and such an orphan must not take a slot of the page, or a short
+        # page would read as the last one.
+        {"$lookup": {"from": calls_collection, "localField": "_id", "foreignField": "_id", "as": "call"}},
+        {"$unwind": "$call"},
+        {"$replaceRoot": {"newRoot": "$call"}},
+        {"$match": {"account": account}},
+        {"$sort": {"created_at": DESCENDING, "_id": DESCENDING}},
+        {"$limit": limit},
+    ]
 
 
 @router.get("/calls")
@@ -135,16 +163,17 @@ async def list_calls(request: Request, caller: NodeCaller = Depends(node_caller)
     if (before_at is None) != (before_id is None):
         raise _invalid("before_at and before_id go together")
     cloud: CloudModeStore = request.app.state.cloud
+    if groups:
+        pipeline = _search_pipeline(
+            caller.account, agent, groups, _range(request, "call_created_at"),
+            _before(before_at, before_id, "call_created_at", "call"), limit, cloud.calls.name,
+        )
+        found = await (await cloud.entries.aggregate(pipeline, allowDiskUse=True)).to_list(limit)
+        return {"calls": [public_call(doc) for doc in found]}
     clauses: list[dict[str, Any]] = [{"account": caller.account}, _range(request)]
     if agent is not None:
         clauses.append({"agent": agent})
-    if before_at is not None:
-        clauses.append(
-            {"$or": [{"created_at": {"$lt": before_at}}, {"created_at": before_at, "_id": {"$lt": before_id}}]}
-        )
-    ids = await _calls_with_terms(cloud, caller.account, agent, groups)
-    if ids is not None:
-        clauses.append({"_id": {"$in": ids}})
+    clauses.append(_before(before_at, before_id, "created_at", "_id"))
     cursor = cloud.calls.find({"$and": [c for c in clauses if c]}).sort(
         [("created_at", DESCENDING), ("_id", DESCENDING)]
     ).limit(limit)

@@ -22,6 +22,16 @@ class ApiError(Exception):
         self.retry_after = retry_after
 
 
+def bson_safe(text: str) -> bool:
+    """Whether `text` can be stored: a lone surrogate (JSON can carry one as `\\ud800`) is not UTF-8, and BSON
+    refuses it with an error that would surface as a 500."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 async def json_object(request: Request) -> dict[str, Any]:
     """The request body as a JSON object (422 `invalid` otherwise); size already capped by BodyLimit."""
     try:

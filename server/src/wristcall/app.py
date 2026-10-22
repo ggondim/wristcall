@@ -3,10 +3,12 @@
 import asyncio
 import json
 import logging
+import re
 import secrets
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -14,6 +16,7 @@ from fastapi import FastAPI, Header, Request, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import __version__, protocol
 from .account import AccountError, AccountService
@@ -25,26 +28,72 @@ from .agents import (
 from .api import management_router
 from .auth import Authenticator, Principal
 from .bootstrap import bootstrap, log_report
+from .cloud_node.calls import (
+    BUSY, CLOUD_UNREACHABLE, PLAN_REQUIRED, QUOTA_EXCEEDED, CallRefused, CloudCallLog, CloudPushNotifier, call_deadline,
+    check_plan, open_call,
+)
+from .cloud_node.node import CloudNode
+from .cloud_node.proof import ProofMismatch, current_proof, require_proof
+from .cloud_node.redelivery import CloudRedelivery
 from .config import AppConfig
 from .delivery import DeliveryPolicy
-from .history import History, check_key
+from .history import CallLog, History, check_key, delivery_of
 from .history_api import calls_router
 from .history_codec import HistoryCodec
 from .link import LinkService, canonical_public_url, public_url_in_audience, startup_invite
 from .netguard import Resolver, public_http_client, system_resolver
 from .oneway import Background, OneWayCall
 from .pairing import DeviceLimit, Paired, PairingDenied, PairingGone, PairingService, Pending, clean_device_name
-from .providers import ProviderError, check_providers
+from .providers import ProviderError, ProviderSet, check_providers
 from .push import PushNotifier, push_router
 from .ratelimit import RateLimiter
 from .redelivery import Redelivery
 from .session import CallSession
-from .storage import Storage, open_sqlite_storage
+from .storage import (
+    AgentRecord, CallOpen, CallRecord, CloudUnavailable, DeviceRevoked, NotSupported, PlanRequired, Storage,
+    open_sqlite_storage,
+)
 from .users import UserService
 from .vad import build_vad
 from .warmup import run_background, warm_all, warmup_targets
 
 log = logging.getLogger("wristcall.app")
+
+
+@dataclass(frozen=True)
+class _Cut:
+    """When a call is cut by the wall clock (D12; self-hosted, `limits.max_conversation_s`): after `seconds` from
+    ready; `quota` when it is the month's minutes that run out then (cloud mode: the user is told `quota_exceeded`),
+    else the call's limit (`call.captured`)."""
+
+    seconds: int
+    quota: bool
+
+
+# Opens the call's record when the call is admitted, with its cut if any: the history's (self-hosted) or the Cloud's
+# (cloud mode). May raise CallRefused (cloud mode).
+_OpenLog = Callable[[], Awaitable[tuple[CallLog | CloudCallLog, _Cut | None]]]
+
+
+def _cloud_unreachable() -> protocol.ProtocolError:
+    return protocol.ProtocolError(protocol.ErrorCode.AGENT_UNAVAILABLE, CLOUD_UNREACHABLE, reason="cloud_unreachable")
+
+
+def _pick_agent(records: list[AgentRecord], ref: str | None) -> AgentRecord:
+    """The agent the client named (id or slug), or the account's first one."""
+    if ref is None:
+        if not records:
+            raise protocol.ProtocolError(protocol.ErrorCode.UNKNOWN_PROFILE, "this account has no agents yet")
+        return records[0]
+    for record in records:
+        if ref in (record.id, record.slug):
+            return record
+    raise protocol.ProtocolError(protocol.ErrorCode.UNKNOWN_PROFILE, f"unknown agent: {ref}")
+
+
+def _plan_name(me: dict[str, Any]) -> str | None:
+    """B4: the Cloud's plan is an object (`{"plan", "source", "expires_at"}`) or null."""
+    return me["plan"]["plan"] if me["plan"] else None
 
 
 class PairBody(BaseModel):
@@ -87,6 +136,54 @@ class _WsTransport:
             await self._ws.send_bytes(data)
 
 
+# Cloud mode: the routes of a server with its own users and devices. The Cloud keeps accounts and devices, so a
+# cloud node answers them 404 `not_in_cloud_mode`.
+_NOT_IN_CLOUD_MODE = re.compile(
+    r"^/v1/(?:pair(?:/.*)?|pairing-codes(?:/.*)?|pairing-requests(?:/.*)?|account/link|devices(?:/.*)?)/?$"
+)
+_CLOUD_ERRORS: list[tuple[type[Exception], int, str, str]] = [
+    (CloudUnavailable, 503, "cloud_unavailable", "Wristcall Cloud is unavailable; try again."),
+    (PlanRequired, 402, "plan_required", "This account has no Wristcall Cloud plan."),
+    (DeviceRevoked, 403, "device_revoked", "This device was removed from the account."),
+    (NotSupported, 404, "not_in_cloud_mode", "Not available on a Wristcall Cloud node."),
+    (CallOpen, 409, "call_open", "This call is still open."),
+    # Only the storage adapter's own check (no proof, or one for another account): never any PermissionError.
+    (ProofMismatch, 401, "unauthorized", "missing or invalid token"),
+]
+
+
+def _not_in_cloud_mode() -> JSONResponse:
+    return JSONResponse({"error": "not_in_cloud_mode", "message": "Not available on a Wristcall Cloud node."},
+                        status_code=404)
+
+
+class _NotInCloudMode:
+    """Pure ASGI: answers the routes a cloud node does not have, and passes everything else on untouched. Unlike
+    BaseHTTPMiddleware it never moves the endpoint to another task, so the request's account proof (a ContextVar
+    set by the authenticator inside the endpoint) stays where the storage adapter reads it."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and (
+            _NOT_IN_CLOUD_MODE.fullmatch(scope["path"])
+            or (scope["method"] == "DELETE" and scope["path"].rstrip("/") == "/v1/me")
+        ):
+            await _not_in_cloud_mode()(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+def _add_cloud_error_handlers(app: FastAPI) -> None:
+    for error, status, code, message in _CLOUD_ERRORS:
+        def handler(_request: Request, _e: Exception, status: int = status, code: str = code, message: str = message
+                    ) -> JSONResponse:
+            return JSONResponse({"error": code, "message": message}, status_code=status)
+
+        app.add_exception_handler(error, handler)
+
+
 def _check_audience(config: AppConfig) -> None:
     """Not an error (the server may have another public name), but apps that reach it at `public_url` would
     ask the Cloud for tokens this server refuses."""
@@ -105,7 +202,16 @@ def create_app(
     start_timeout_s: float = 10.0,
     delivery_policy: DeliveryPolicy = DeliveryPolicy(),
     resolver: Resolver | None = None,
+    cloud_http: httpx.AsyncClient | None = None,
+    cloud_stop_s: float = 20.0,
+    background_grace_s: float = 8.0,
+    outbox_max_delay_s: float = 60.0,
 ) -> FastAPI:
+    """Cloud mode (`config.is_cloud`) assembles a `CloudNode` (`app.state.cloud_node`; None self-hosted) whose
+    storage and authenticator replace the SQLite ones; `storage` is then ignored. `cloud_http` reaches the Cloud
+    (created and closed here when not given). `cloud_stop_s` is the outbox's time to empty at shutdown,
+    `background_grace_s` the work after calls', `outbox_max_delay_s` the outbox's longest retry wait (tests shorten
+    them)."""
     own_http = http is None
     http_client = http or httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0))
     check_providers(config, http_client)
@@ -115,49 +221,76 @@ def create_app(
     user_http = (
         public_http_client(resolver, timeout=httpx.Timeout(30.0, connect=5.0)) if own_user_http else http_client
     )
-    store = storage or open_sqlite_storage(config.server.data_dir)
+    slots = CallSlots(config.limits.max_concurrent_calls)
+    node: CloudNode | None = None
+    own_cloud_http = cloud_http is None
+    if config.is_cloud:
+        cloud_http = cloud_http or httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0))
+        node = CloudNode.build(config, slots=slots, http=cloud_http, outbox_max_delay_s=outbox_max_delay_s)
+        store: Storage = node.storage  # type: ignore[assignment] - the same interface, over the Cloud's API
+    else:
+        store = storage or open_sqlite_storage(config.server.data_dir)
+    # Cloud mode: no local users, devices nor pairing (those routes answer 404, see _NotInCloudMode).
     pairing_svc = PairingService(
         store, config.server.pairing_approval, max_devices_per_user=config.limits.max_devices_per_user
     )
-    agents = AgentService(store, config, http_client, resolver=resolver)
-    auth = Authenticator(store)
+    agents = AgentService(
+        store, config, http_client, resolver=resolver, plan_check=node.check_agent_plan if node else None
+    )
+    auth: Authenticator = node.auth if node else Authenticator(store)  # type: ignore[assignment]
     limiter = RateLimiter(limit=10, window_s=60)
-    account = AccountService(store, config.central_account, http_client) if config.central_account else None
-    links = LinkService(store, canonical_public_url(config)) if config.central_account else None
-    if config.central_account:
+    linked = config.central_account is not None and node is None
+    account = AccountService(store, config.central_account, http_client) if linked else None
+    links = LinkService(store, canonical_public_url(config)) if linked else None
+    if linked:
         _check_audience(config)
-    history = History(store, HistoryCodec(config.history.key()), config.history)
+    history = History(store, HistoryCodec(config.history.key()), config.history, account_scoped=node is not None)
     targets = warmup_targets(config, http_client)
     call_targets = [t for t in targets if t.config.on_call]
-    after_calls = Background()
-    slots = CallSlots(config.limits.max_concurrent_calls)
+    after_calls = Background(grace_s=background_grace_s)
     # Pushes run with the work after the calls: the shutdown gives them the same few seconds, then cancels them.
     notifier = PushNotifier(store, config.push, http_client) if config.push else None
+    # How a one-way call's device hears how it ended: the relay self-hosted, the Cloud's queue in cloud mode.
+    call_notifier: PushNotifier | CloudPushNotifier | None = (
+        CloudPushNotifier(node.outbox, node.registry) if node else notifier
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        await check_key(store, history.codec)
-        log_report(await bootstrap(store, config))
-        try:
-            if invite := await startup_invite(store, config, UserService(store), links):
-                logging.getLogger("wristcall.link").info("%s", invite)
-        except Exception:  # the QR is a convenience: the server starts without it
-            log.warning("could not prepare the link QR code; run `wristcall link` for one", exc_info=True)
-        await history.apply_retention()
-        purging = asyncio.create_task(purge_forever(history, config.history.purge_every_s))
-        # Only the server does this (the CLI may run next to a live server): its own calls died with it.
-        if interrupted := await store.calls.interrupt_unfinished(time.time()):
-            log.warning("%d call(s) left unfinished by the last run marked as interrupted", interrupted)
+        purging: asyncio.Task[None] | None = None
+        if node is not None:
+            # Cloud mode: no key, users, retention nor leftover calls to look after here (the Cloud keeps the data,
+            # moves its expiry and fails the calls an older boot left); the node starts beating and its outbox.
+            await node.start()
+        else:
+            await check_key(store, history.codec)
+            log_report(await bootstrap(store, config))
+            try:
+                if invite := await startup_invite(store, config, UserService(store), links):
+                    logging.getLogger("wristcall.link").info("%s", invite)
+            except Exception:  # the QR is a convenience: the server starts without it
+                log.warning("could not prepare the link QR code; run `wristcall link` for one", exc_info=True)
+            await history.apply_retention()
+            purging = asyncio.create_task(purge_forever(history, config.history.purge_every_s))
+            # Only the server does this (the CLI may run next to a live server): its own calls died with it.
+            if interrupted := await store.calls.interrupt_unfinished(time.time()):
+                log.warning("%d call(s) left unfinished by the last run marked as interrupted", interrupted)
         background = asyncio.create_task(run_background(targets)) if targets else None
         yield
-        purging.cancel()
-        with suppress(asyncio.CancelledError):
-            await purging
+        if purging is not None:
+            purging.cancel()
+            with suppress(asyncio.CancelledError):
+                await purging
         await after_calls.close()
         if background is not None:
             background.cancel()
             with suppress(asyncio.CancelledError):
                 await background
+        if node is not None:
+            # After the work after calls: what it queued (final status, push) gets the outbox's time to leave.
+            await node.stop(cloud_stop_s)
+            if own_cloud_http and cloud_http is not None:
+                await cloud_http.aclose()
         if own_user_http:
             await user_http.aclose()
         if own_http:
@@ -171,6 +304,7 @@ def create_app(
     app.state.account = account
     app.state.history = history
     app.state.call_slots = slots
+    app.state.cloud_node = node
 
     def client_ip(request: Request) -> str:
         header = config.server.client_ip_header
@@ -188,25 +322,39 @@ def create_app(
 
     app.include_router(push_router(store, auth, config, on_discarded=discard_at_relay if notifier else None))
 
-    redelivery = Redelivery(
-        history, agents, config, http_client, user_http=user_http, policy=delivery_policy, background=after_calls
-    )
-    app.include_router(calls_router(auth, agents, history, redelivery.start))
+    if node is None:
+        redelivery = Redelivery(
+            history, agents, config, http_client, user_http=user_http, policy=delivery_policy, background=after_calls
+        )
+        app.include_router(calls_router(auth, agents, history, redelivery.start))
+    else:  # the Cloud hands the call over, the node delivers it and reports by PATCH
+        cloud_redelivery = CloudRedelivery(
+            node, history, config, after_calls, http_client, user_http=user_http, policy=delivery_policy
+        )
+        app.include_router(calls_router(auth, agents, history, cloud_redelivery.start))
 
     async def device_from(authorization: str | None) -> Principal | None:
         principal = await auth.authenticate(authorization)
         return principal if principal is not None and principal.kind == "device" else None
 
     @app.get("/v1/health")
-    async def health() -> dict[str, Any]:
+    async def health() -> Any:
         central = config.central_account
-        return {
+        body = {
             "status": "ok",
             "version": __version__,
             "protocol": protocol.PROTOCOL_VERSION,
             "account": {"issuer": central.issuer, "device_credential": central.device_credential} if central else None,
             "push": {"relay": config.push.relay_url} if config.push else None,
         }
+        if node is None:
+            return body
+        body["mode"] = "cloud"
+        # Not ready before the Cloud accepted a heartbeat, nor while draining: the Cloud routes no calls here then.
+        if node.draining or not node.ready.is_set():
+            body["status"] = "draining" if node.draining else "starting"
+            return JSONResponse(body, status_code=503)
+        return body
 
     @app.post("/v1/pair")
     async def pair(body: PairBody, request: Request) -> Any:
@@ -286,8 +434,28 @@ def create_app(
             return {"device_id": result.device_id, "token": result.token}
         return JSONResponse({"request_id": result.request_id, "expires_at": result.expires_at}, status_code=202)
 
+    async def cloud_me(cloud: CloudNode, authorization: str | None) -> Any:
+        # Any platform: the watch and the apps alike. The Cloud says who the account is and what it may do.
+        principal = await cloud.auth.authenticate(authorization)
+        if principal is None:
+            return JSONResponse({"error": "unauthorized", "message": "missing or invalid token"}, status_code=401)
+        proof = require_proof(principal.user_id)
+        found = await cloud.me(proof)
+        listed = [Agent.from_record(r) for r in found["agents"]]
+        return {
+            "device_id": proof.device,
+            "device_name": proof.platform,
+            "user": {"id": proof.account, "handle": proof.account, "display_name": ""},
+            "agents": [agent_summary(a) for a in listed],
+            "profiles": [{"name": a.slug, "display_name": a.display_name} for a in listed],
+            "plan": found["plan"],  # the Cloud's {"plan", "source", "expires_at"}, or null without a plan
+            "usage": found["usage"],  # {"month", "used_s", "quota_s", "remaining_s"}
+        }
+
     @app.get("/v1/me")
     async def me(authorization: str | None = Header(default=None)) -> Any:
+        if node is not None:
+            return await cloud_me(node, authorization)
         principal = await device_from(authorization)
         if principal is None or principal.device is None:
             return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -353,15 +521,65 @@ def create_app(
         finally:
             # Transcribed and delivered: the call stops counting against the limit (the push needs no GPU).
             slot.release()
-        if notifier is None:
+        if call_notifier is None:
             return
         try:
-            await notifier.call_finished(record)
+            await call_notifier.call_finished(record)
         except Exception as e:  # noqa: BLE001 - the call is already in the history; a push failure only logs
             log.warning("call %s: push failed: %s", record.id, type(e).__name__)
 
+    async def pump_until(
+        ws: WebSocket,
+        transport: "_WsTransport",
+        on_audio: Callable[[bytes], Awaitable[bool]],
+        on_mute: Callable[[bool], Awaitable[None]],
+        cut: _Cut | None,
+    ) -> bool:
+        """`pump`, ended by the wall clock at `cut` when there is one; True when the clock ended it."""
+        if cut is None:
+            await pump(ws, transport, on_audio, on_mute)
+            return False
+        try:
+            async with asyncio.timeout(cut.seconds) as cm:
+                await pump(ws, transport, on_audio, on_mute)
+        except TimeoutError:
+            if not cm.expired():  # a timeout from inside the call, not the cut
+                raise
+            return True
+        return False
+
+    async def tell_cut(transport: "_WsTransport", call_id: str, cut: _Cut) -> None:
+        """D12: the month's minutes ran out (not fatal: the call then closes 1000), or the call reached its limit."""
+        log.info("call %s cut after %d s (%s)", call_id, cut.seconds, "quota" if cut.quota else "limit")
+        with suppress(Exception):
+            if cut.quota:
+                await transport.send_json(protocol.error(protocol.ErrorCode.QUOTA_EXCEEDED, QUOTA_EXCEEDED, False))
+            else:
+                await transport.send_json(protocol.call_captured(call_id, "limit"))
+
+    def became_ready(call_log: CallLog | CloudCallLog) -> None:
+        if isinstance(call_log, CloudCallLog):  # the Cloud bills from session.ready (P12)
+            call_log.mark_ready(time.time())
+
+    async def refuse(ws: WebSocket, e: CallRefused) -> None:
+        if e.code == "unauthorized":  # the device was removed from the account
+            with suppress(Exception):
+                await ws.close(code=protocol.CLOSE_UNAUTHORIZED)
+            return
+        await fatal(ws, protocol.ProtocolError(e.code, e.message, e.reason))
+
+    async def abandon(call_log: CallLog | CloudCallLog) -> None:
+        """An exception after the call opened on the Cloud and before its own try: finish it as failed, or the
+        heartbeat would keep reporting it open (`too_many_calls` for the account). Self-hosted: nothing changes."""
+        if not isinstance(call_log, CloudCallLog):
+            return
+        with suppress(Exception):
+            await call_log.save(status="failed", error="internal", finished=True)
+        if node is not None:
+            node.registry.forget(call_log.record.id)
+
     async def one_way_call(
-        ws: WebSocket, device_id: str, agent: Agent, providers: OneWayProviders, slot: Slot,
+        ws: WebSocket, device_id: str, agent: Agent, providers: OneWayProviders, slot: Slot, open_log: _OpenLog,
     ) -> None:
         """Records until hang-up (or the limit); transcription and delivery go on after the WebSocket closes."""
         # The slot goes with the transcription once it is spawned; any way out before that gives it back here.
@@ -369,13 +587,23 @@ def create_app(
         try:
             # Before the record exists: a VAD that fails to load must not leave a call stuck in "recording".
             vad = build_vad(agent.spec.vad)
-            call_log = await history.start(agent, device_id)
+            try:
+                call_log, cut = await open_log()
+            except CallRefused as e:
+                await refuse(ws, e)
+                return
             record = call_log.record
-            call = OneWayCall(
-                agent, providers, vad, call_log,
-                max_call_ms=config.limits.max_one_way_call_s * 1000, policy=delivery_policy,
-            )
-            transport = _WsTransport(ws)
+            try:
+                # Cloud mode: the audio limit a second past the wall-clock cut, so the cut (and its quota_exceeded) wins.
+                max_call_s = config.limits.max_one_way_call_s if cut is None else cut.seconds + 1
+                call = OneWayCall(
+                    agent, providers, vad, call_log,  # type: ignore[arg-type] - CloudCallLog has CallLog's surface
+                    max_call_ms=max_call_s * 1000, policy=delivery_policy,
+                )
+                transport = _WsTransport(ws)
+            except BaseException:
+                await abandon(call_log)
+                raise
             warming: asyncio.Task[None] | None = None
 
             async def on_audio(data: bytes) -> bool:
@@ -394,9 +622,11 @@ def create_app(
                     secrets.token_hex(8), agent_summary(agent), "manual",
                     protocol.AudioFormat(sample_rate=protocol.INPUT_SAMPLE_RATE), call_id=record.id,
                 ))
+                became_ready(call_log)
                 log.info("call %s started: device=%s agent=%s (%s) type=%s", record.id, device_id, agent.id, agent.slug, agent.call_type)
                 warming = asyncio.create_task(warm_all(call_targets)) if call_targets else None
-                await pump(ws, transport, on_audio, on_mute)
+                if await pump_until(ws, transport, on_audio, on_mute, cut) and cut is not None:
+                    await tell_cut(transport, record.id, cut)
             finally:
                 if warming is not None and not warming.done():
                     warming.cancel()
@@ -409,84 +639,27 @@ def create_app(
             if not handed_over:
                 slot.release()
 
-    @app.websocket("/v1/call")
-    async def call(ws: WebSocket) -> None:
-        await ws.accept()
-        principal = await device_from(ws.headers.get("authorization"))
-        if principal is None or principal.device is None:
-            await ws.close(code=protocol.CLOSE_UNAUTHORIZED)
-            return
-        try:
-            first = await asyncio.wait_for(ws.receive(), start_timeout_s)
-        except TimeoutError:
-            await fatal(ws, protocol.ProtocolError(protocol.ErrorCode.NOT_STARTED, "session.start did not arrive in time"))
-            return
-        if first["type"] == "websocket.disconnect":
-            return
-        try:
-            text = first.get("text")
-            if text is None:
-                raise protocol.ProtocolError(protocol.ErrorCode.NOT_STARTED, "the first message must be session.start")
-            start = protocol.parse_client_message(text)
-            if not isinstance(start, protocol.SessionStart):
-                raise protocol.ProtocolError(protocol.ErrorCode.NOT_STARTED, "the first message must be session.start")
-            protocol.check_session_start(start)
-            ref = start.agent or start.profile
-            if ref is None:
-                agent = await agents.default(principal.user_id)
-                if agent is None:
-                    raise protocol.ProtocolError(protocol.ErrorCode.UNKNOWN_PROFILE, "this account has no agents yet")
-            else:
-                try:
-                    agent = await agents.get(principal.user_id, ref)
-                except AgentError:
-                    raise protocol.ProtocolError(protocol.ErrorCode.UNKNOWN_PROFILE, f"unknown agent: {ref}") from None
-            try:
-                if agent.call_type in ONE_WAY:
-                    one_way = build_one_way_providers(config, agent.spec, http_client, user_http=user_http)
-                else:
-                    provider_set = build_agent_providers(config, agent.spec, http_client, user_http=user_http)
-            except ProviderError as e:
-                log.warning("agent %s unavailable: %s", agent.id, e)
-                raise protocol.ProtocolError(
-                    protocol.ErrorCode.AGENT_UNAVAILABLE, "this agent is not available; check its providers"
-                ) from None
-            # Before the call is recorded: an address that turned private since the agent was saved (or was saved
-            # before public_only) fails now, before the user speaks. Every connection is checked again later.
-            try:
-                await agents.check_public(agent, include_stored_tts=False)
-            except AgentError as e:
-                log.warning("agent %s unavailable: %s", agent.id, e.message)
-                raise protocol.ProtocolError(
-                    protocol.ErrorCode.AGENT_UNAVAILABLE, "This agent uses an address this server cannot call.",
-                    reason="url_not_public",
-                ) from None
-            # Last check before the call is recorded: a refused call leaves no trace in the history.
-            kind = call_kind(agent.call_type)
-            slot = slots.try_acquire(kind)
-            if slot is None:
-                log.warning("call refused: %s calls at the limit", kind)
-                raise protocol.ProtocolError(protocol.ErrorCode.BUSY, "This server is busy; try again in a minute.")
-        except protocol.ProtocolError as e:
-            await fatal(ws, e)
-            return
-
-        if agent.call_type in ONE_WAY:
-            await one_way_call(ws, principal.device.id, agent, one_way, slot)
-            return
-
-        # Clients that name the agent get its mode; 0.2.x clients (profile or nothing) keep 0.2.0's default,
-        # because watch 0.1.0 omits turn_end when the user picks auto.
-        turn_end = start.turn_end or (agent.spec.turn_end if start.agent else "auto")
+    async def conversation_call(
+        ws: WebSocket, device_id: str, agent: Agent, provider_set: ProviderSet, slot: Slot, turn_end: protocol.TurnEnd,
+        open_log: _OpenLog,
+    ) -> None:
         transport = _WsTransport(ws)
         # Holds a slot from here until the WebSocket is closed, whatever happens.
         try:
             vad = build_vad(agent.spec.vad)
-            call_log = await history.start(agent, principal.device.id)
+            try:
+                call_log, cut = await open_log()
+            except CallRefused as e:
+                await refuse(ws, e)
+                return
             record = call_log.record
-            session = CallSession(
-                agent.spec, provider_set, vad, transport, turn_end=turn_end, record=call_log.add,
-            )
+            try:
+                session = CallSession(
+                    agent.spec, provider_set, vad, transport, turn_end=turn_end, record=call_log.add,
+                )
+            except BaseException:
+                await abandon(call_log)
+                raise
             warming: asyncio.Task[None] | None = None
 
             async def on_audio(data: bytes) -> bool:
@@ -501,18 +674,24 @@ def create_app(
                         protocol.AudioFormat(sample_rate=provider_set.tts.sample_rate), call_id=record.id,
                     )
                 )
+                became_ready(call_log)
                 log.info(
                     "call %s started: device=%s agent=%s (%s) turn_end=%s",
-                    record.id, principal.device.id, agent.id, agent.slug, turn_end,
+                    record.id, device_id, agent.id, agent.slug, turn_end,
                 )
                 warming = asyncio.create_task(warm_all(call_targets)) if call_targets else None
-                await pump(ws, transport, on_audio, session.on_mute)
+                if await pump_until(ws, transport, on_audio, session.on_mute, cut) and cut is not None:
+                    await tell_cut(transport, record.id, cut)
             finally:
                 if warming is not None and not warming.done():
                     warming.cancel()
+                # Cloud mode bills up to the end of the talk, not the teardown after it (P12).
+                cloud_ended = time.time() if isinstance(call_log, CloudCallLog) else None
                 await session.close()
-                ended = time.time()
+                ended = cloud_ended or time.time()
                 await call_log.save(status="ended" if call_log.count else "empty", ended_at=ended, finished=True)
+                if node is not None:  # the finish is queued with its grant: nothing else writes this call
+                    node.registry.forget(record.id)
                 # Before the close: once the client sees it closed, its next call must find the slot free.
                 slot.release()
                 with suppress(Exception):
@@ -521,6 +700,191 @@ def create_app(
         finally:
             # First, with no await before it: under cancellation the first await would skip the rest.
             slot.release()
+
+    async def receive_start(ws: WebSocket) -> protocol.SessionStart | None:
+        """The call's first message, checked; None when the client left or was refused (told here)."""
+        try:
+            first = await asyncio.wait_for(ws.receive(), start_timeout_s)
+        except TimeoutError:
+            await fatal(ws, protocol.ProtocolError(protocol.ErrorCode.NOT_STARTED, "session.start did not arrive in time"))
+            return None
+        if first["type"] == "websocket.disconnect":
+            return None
+        try:
+            text = first.get("text")
+            if text is None:
+                raise protocol.ProtocolError(protocol.ErrorCode.NOT_STARTED, "the first message must be session.start")
+            start = protocol.parse_client_message(text)
+            if not isinstance(start, protocol.SessionStart):
+                raise protocol.ProtocolError(protocol.ErrorCode.NOT_STARTED, "the first message must be session.start")
+            protocol.check_session_start(start)
+        except protocol.ProtocolError as e:
+            await fatal(ws, e)
+            return None
+        return start
+
+    async def admit(agent: Agent) -> tuple[OneWayProviders | ProviderSet, Slot]:
+        """The agent's providers, its own addresses checked, and a slot. Raises ProtocolError."""
+        try:
+            if agent.call_type in ONE_WAY:
+                providers: OneWayProviders | ProviderSet = build_one_way_providers(
+                    config, agent.spec, http_client, user_http=user_http
+                )
+            else:
+                providers = build_agent_providers(config, agent.spec, http_client, user_http=user_http)
+        except ProviderError as e:
+            log.warning("agent %s unavailable: %s", agent.id, e)
+            raise protocol.ProtocolError(
+                protocol.ErrorCode.AGENT_UNAVAILABLE, "this agent is not available; check its providers"
+            ) from None
+        # Before the call is recorded: an address that turned private since the agent was saved (or was saved
+        # before public_only) fails now, before the user speaks. Every connection is checked again later.
+        try:
+            await agents.check_public(agent, include_stored_tts=False)
+        except AgentError as e:
+            log.warning("agent %s unavailable: %s", agent.id, e.message)
+            raise protocol.ProtocolError(
+                protocol.ErrorCode.AGENT_UNAVAILABLE, "This agent uses an address this server cannot call.",
+                reason="url_not_public",
+            ) from None
+        # Last check before the call is recorded: a refused call leaves no trace in the history.
+        kind = call_kind(agent.call_type)
+        slot = slots.try_acquire(kind)
+        if slot is None:
+            log.warning("call refused: %s calls at the limit", kind)
+            raise protocol.ProtocolError(protocol.ErrorCode.BUSY, BUSY)
+        return providers, slot
+
+    async def run_call(
+        ws: WebSocket, start: protocol.SessionStart, device_id: str, agent: Agent,
+        providers: OneWayProviders | ProviderSet, slot: Slot, open_log: _OpenLog,
+    ) -> None:
+        if agent.call_type in ONE_WAY:
+            await one_way_call(ws, device_id, agent, providers, slot, open_log)  # type: ignore[arg-type]
+            return
+        # Clients that name the agent get its mode; 0.2.x clients (profile or nothing) keep 0.2.0's default,
+        # because watch 0.1.0 omits turn_end when the user picks auto.
+        turn_end = start.turn_end or (agent.spec.turn_end if start.agent else "auto")
+        await conversation_call(ws, device_id, agent, providers, slot, turn_end, open_log)  # type: ignore[arg-type]
+
+    async def cloud_call(ws: WebSocket, cloud: CloudNode) -> None:
+        """Cloud mode (D1, D12): the Cloud says what the account may do (`GET /v1/node/me`), the node checks the plan
+        rules, the minutes left and a slot, then the Cloud opens the call (`POST /v1/node/calls`). The call is written
+        through the outbox with its grant and cut by the wall clock when its time is up."""
+        try:
+            found = await cloud.auth.identify(ws.headers.get("authorization"))
+        except CloudUnavailable:  # the token cannot be checked now: told after session.start, like the Cloud down
+            found, keys_down = None, True
+        else:
+            keys_down = False
+            if found is None:
+                await ws.close(code=protocol.CLOSE_UNAUTHORIZED)
+                return
+        start = await receive_start(ws)
+        if start is None:
+            return
+        try:
+            if not cloud.accepting:  # before the first heartbeat the Cloud accepts, or draining
+                raise protocol.ProtocolError(protocol.ErrorCode.BUSY, BUSY)
+            if found is None or keys_down:
+                raise _cloud_unreachable()
+            principal, proof = found
+            current_proof.set(proof)
+            try:
+                me = await cloud.me(proof)
+            except DeviceRevoked:
+                await ws.close(code=protocol.CLOSE_UNAUTHORIZED)
+                return
+            except PlanRequired:
+                raise protocol.ProtocolError(protocol.ErrorCode.PLAN_REQUIRED, PLAN_REQUIRED) from None
+            except CloudUnavailable:
+                raise _cloud_unreachable() from None
+            record = _pick_agent(me["agents"], start.agent or start.profile)
+            check_plan(_plan_name(me), record)
+            remaining = me["usage"].get("remaining_s")
+            if isinstance(remaining, bool) or not isinstance(remaining, int | float):
+                log.warning("Wristcall Cloud answered GET /v1/node/me without the minutes left")
+                raise _cloud_unreachable()
+            if remaining <= 0:
+                raise protocol.ProtocolError(protocol.ErrorCode.QUOTA_EXCEEDED, QUOTA_EXCEEDED)
+            try:
+                agent = Agent.from_record(record)
+            except ValueError:
+                log.warning("agent %s unavailable: its spec does not open", record.id)
+                raise protocol.ProtocolError(
+                    protocol.ErrorCode.AGENT_UNAVAILABLE, "this agent is not available; check its providers"
+                ) from None
+            providers, slot = await admit(agent)
+        except CallRefused as e:
+            await refuse(ws, e)
+            return
+        except protocol.ProtocolError as e:
+            await fatal(ws, e)
+            return
+        # One id for both tries of the open (open_call): a replay gets the call already opened, not a second one.
+        request_id = secrets.token_urlsafe(16)
+        local_s = config.limits.max_one_way_call_s if agent.call_type in ONE_WAY else config.limits.max_conversation_s
+
+        async def open_log() -> tuple[CloudCallLog, _Cut]:
+            opened = await open_call(cloud, proof, record, delivery=delivery_of(agent), request_id=request_id)
+            now = time.time()
+            call_log = CloudCallLog(
+                CallRecord(
+                    id=opened.call_id, user_id=proof.account, agent_id=agent.id, device_id=proof.device,
+                    call_type=agent.call_type, status="recording", created_at=opened.started_at, updated_at=now,
+                    agent_slug=agent.slug, agent_name=agent.display_name, delivery=delivery_of(agent),
+                ),
+                opened.grant, history.codec, cloud.outbox, cloud.registry,
+            )
+            seconds, quota = call_deadline(opened, local_s)
+            cloud.registry.open(opened.call_id, opened.grant)  # in the heartbeat until its finish is taken
+            return call_log, _Cut(seconds, quota)
+
+        await run_call(ws, start, principal.device.id, agent, providers, slot, open_log)  # type: ignore[union-attr]
+
+    @app.websocket("/v1/call")
+    async def call(ws: WebSocket) -> None:
+        await ws.accept()
+        if node is not None:
+            await cloud_call(ws, node)
+            return
+        principal = await device_from(ws.headers.get("authorization"))
+        if principal is None or principal.device is None:
+            await ws.close(code=protocol.CLOSE_UNAUTHORIZED)
+            return
+        start = await receive_start(ws)
+        if start is None:
+            return
+        try:
+            ref = start.agent or start.profile
+            if ref is None:
+                agent = await agents.default(principal.user_id)
+                if agent is None:
+                    raise protocol.ProtocolError(protocol.ErrorCode.UNKNOWN_PROFILE, "this account has no agents yet")
+            else:
+                try:
+                    agent = await agents.get(principal.user_id, ref)
+                except AgentError:
+                    raise protocol.ProtocolError(protocol.ErrorCode.UNKNOWN_PROFILE, f"unknown agent: {ref}") from None
+            providers, slot = await admit(agent)
+        except protocol.ProtocolError as e:
+            await fatal(ws, e)
+            return
+        device_id = principal.device.id
+
+        # limits.max_conversation_s (I1): when set, a conversation ends at it here too, as `call.captured` limit.
+        conversation_s = None if agent.call_type in ONE_WAY else config.limits.max_conversation_s
+
+        async def open_log() -> tuple[CallLog, _Cut | None]:
+            cut = None if conversation_s is None else _Cut(conversation_s, quota=False)
+            return await history.start(agent, device_id), cut
+
+        await run_call(ws, start, device_id, agent, providers, slot, open_log)
+
+    if node is not None:
+        _add_cloud_error_handlers(app)
+        # Inside CORS (added after it would be outside): the 404s carry its headers too.
+        app.add_middleware(_NotInCloudMode)
 
     if config.server.cors_origins:
         # Bearer tokens in a header, no cookies: no credentials. The outermost layer, so errors answered by the

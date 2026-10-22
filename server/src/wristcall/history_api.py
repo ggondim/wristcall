@@ -8,12 +8,13 @@ went, and a device token reads only the calls made from that device. Everything 
 import math
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Header, Query, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.types import Receive, Scope, Send
 
 from .agents import AgentError, AgentService
 from .auth import Authenticator, Principal
@@ -59,6 +60,38 @@ def parse_cursor(value: str) -> tuple[float, str] | None:
     if not sep or not call_id or not math.isfinite(position):
         return None
     return position, call_id
+
+
+async def _chain(first: dict[str, Any] | None, rest: AsyncGenerator[dict[str, Any]]) -> AsyncGenerator[dict[str, Any]]:
+    """`first`, then the rest; closing it (or reaching the end) closes `rest` too, so a stream behind it (the Cloud's
+    export) is let go at once, not when the garbage collector gets to it."""
+    try:
+        if first is None:
+            return
+        yield first
+        async for view in rest:
+            yield view
+    finally:
+        await rest.aclose()
+
+
+class _ClosingStream(StreamingResponse):
+    """A StreamingResponse that closes its body and `views` however it ends: Starlette leaves a body a disconnected
+    client stopped reading (`send` raised) suspended where it was."""
+
+    def __init__(self, content: AsyncGenerator[str], views: AsyncGenerator[dict[str, Any]], **kwargs: Any) -> None:
+        super().__init__(content, **kwargs)
+        self._content = content
+        self._views = views
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            try:
+                await self._content.aclose()
+            finally:  # the views too, even when closing the body raised
+                await self._views.aclose()
 
 
 def _error(code: str, message: str, status: int) -> JSONResponse:
@@ -127,7 +160,7 @@ def calls_router(
         position = parse_cursor(before) if before is not None else None
         if before is not None and position is None:
             return _error("invalid", "before: pass the next_before of the previous page", 422)
-        terms = history.codec.query_terms(q) if q and q.strip() else None
+        terms = history.query_terms(who.user_id, q)
         page = await calls.list(who.user_id, **where, terms=terms, before=position, limit=limit)
         return {
             "calls": [await history.detail(r) for r in page],
@@ -169,10 +202,13 @@ def calls_router(
         moment = now()
         stamp = datetime.fromtimestamp(moment, UTC).strftime("%Y%m%d-%H%M%S")
         views = history.details(who.user_id, **where)
+        # The first call is read before the response starts: a storage that cannot answer (the Cloud down) becomes a
+        # real error status, not a 200 cut short.
+        views = _chain(await anext(views, None), views)
         body = export_markdown(views, moment) if format == "md" else export_json(views, moment)
         media = "text/markdown; charset=utf-8" if format == "md" else "application/json"
-        return StreamingResponse(
-            body, media_type=media,
+        return _ClosingStream(
+            body, views, media_type=media,
             headers={"Content-Disposition": f'attachment; filename="wristcall-history-{stamp}.{format}"'},
         )
 
@@ -184,7 +220,8 @@ def calls_router(
             return _error("unauthorized", "missing or invalid token", 401)
         record = await calls.get(who.user_id, call_id)
         # A device token reads only the calls made from that device; another one looks just like a missing call.
-        if record is None or (who.device is not None and record.device_id != who.device.id):
+        # (In cloud mode the apps' principals carry their device too, and they read every call of the account.)
+        if record is None or (who.kind == "device" and record.device_id != who.device.id):
             return _error("not_found", "call not found", 404)
         return await history.detail(record)
 

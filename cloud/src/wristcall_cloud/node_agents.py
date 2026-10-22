@@ -19,7 +19,7 @@ from pymongo import ASCENDING, DESCENDING, ReturnDocument, UpdateOne
 from pymongo.errors import DuplicateKeyError
 
 from .agenda import COLORS
-from .api_common import ApiError, json_object
+from .api_common import ApiError, bson_safe, json_object
 from .cloud_store import CALL_TYPES, CloudModeStore
 from .config import CloudConfig
 from .node_auth import NodeCaller, node_caller, require_manager
@@ -36,6 +36,7 @@ MAX_NAME = 64
 MAX_SPEC_BYTES = 256 * 1024
 MAX_SPEC_DEPTH = 32  # BSON stops at 100 levels; stay well under it instead of answering 500
 MAX_RETENTION_DAYS = 36500
+INT64_MIN, INT64_MAX = -(2**63), 2**63 - 1  # BSON holds no integer outside this range
 
 _NEW_FIELDS = {"id", "slug", "display_name", "icon", "color", "call_type", "spec"}
 _REQUIRED = _NEW_FIELDS - {"color"}
@@ -63,23 +64,30 @@ def _text(value: Any, field: str, pattern: re.Pattern[str], limit: int) -> str:
 def _display_name(value: Any) -> str:
     if not isinstance(value, str) or not 1 <= len(value) <= MAX_NAME:
         raise _invalid(f"display_name must be a string of 1 to {MAX_NAME} characters")
-    if any(unicodedata.category(c) in ("Cc", "Cf") for c in value):
+    # `Cs` is a lone surrogate: not text BSON can hold.
+    if not bson_safe(value) or any(unicodedata.category(c) in ("Cc", "Cf", "Cs") for c in value):
         raise _invalid("display_name must not contain control characters")
     return value
 
 
 def _walk(value: Any, depth: int) -> None:
-    """Rejects what BSON cannot store: nesting past `MAX_SPEC_DEPTH`, a NUL in a key."""
+    """Rejects what BSON cannot store: nesting past `MAX_SPEC_DEPTH`, a NUL in a key, a lone surrogate in a key or a
+    string, an integer outside int64."""
     if depth > MAX_SPEC_DEPTH:
         raise _invalid("spec is nested too deeply")
     if isinstance(value, dict):
         for key, item in value.items():
-            if "\x00" in key:
+            if "\x00" in key or not bson_safe(key):
                 raise _invalid("spec has a key that is not allowed")
             _walk(item, depth + 1)
     elif isinstance(value, list):
         for item in value:
             _walk(item, depth + 1)
+    elif isinstance(value, str):
+        if not bson_safe(value):
+            raise _invalid("spec has text that is not valid")
+    elif isinstance(value, int) and not INT64_MIN <= value <= INT64_MAX:
+        raise _invalid("spec has a number out of range")
 
 
 def _spec(value: Any) -> dict[str, Any]:
@@ -239,8 +247,11 @@ async def create_agent(request: Request, caller: NodeCaller = Depends(node_calle
     fields = parse_new_agent(await json_object(request))
     cloud: CloudModeStore = request.app.state.cloud
     config: CloudConfig = request.app.state.config
+    limit_reached = ApiError("limit", f"at most {config.max_cloud_agents} agents per account", 403)
+    # A cheap check first; it cannot hold the cap alone (requests that all pass it would all insert), so the insert
+    # is checked after, below.
     if await cloud.agents.count_documents({"account": caller.account}) >= config.max_cloud_agents:
-        raise ApiError("limit", f"at most {config.max_cloud_agents} agents per account", 403)
+        raise limit_reached
     last = await cloud.agents.find_one({"account": caller.account}, sort=[("position", DESCENDING)])
     now = time.time()
     doc = {
@@ -255,6 +266,13 @@ async def create_agent(request: Request, caller: NodeCaller = Depends(node_calle
         await cloud.agents.insert_one(doc)
     except DuplicateKeyError:
         raise _conflict() from None
+    # Insert, then count: of requests racing past the check above, each sees at least the agents inserted before its
+    # own, so no more than the cap survive (a request may be refused that would have fitted, never the reverse).
+    # Known limits: this may over-refuse in a race, and a fault between `insert_one` and `delete_one` can leave the
+    # account above the cap until an agent is deleted.
+    if await cloud.agents.count_documents({"account": caller.account}) > config.max_cloud_agents:
+        await cloud.agents.delete_one({"_id": doc["_id"], "account": caller.account})
+        raise limit_reached
     return public_agent(doc)
 
 

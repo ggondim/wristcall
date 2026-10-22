@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from pymongo import ReturnDocument
 from starlette.datastructures import State
 
-from .api_common import ApiError, json_object
+from .api_common import ApiError, bson_safe, json_object
 from .cloud_store import ONE_WAY, CloudModeStore
 from .node_auth import current_node
 from .node_calls import _integer
@@ -45,7 +45,7 @@ def _invalid(message: str) -> ApiError:
 
 
 def _text(value: Any, name: str, longest: int) -> str:
-    if not isinstance(value, str) or not 0 < len(value) <= longest:
+    if not isinstance(value, str) or not 0 < len(value) <= longest or not bson_safe(value):
         raise _invalid(f"{name} must be a string of 1 to {longest} characters")
     return value
 

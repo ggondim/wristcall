@@ -9,6 +9,7 @@ import respx
 import yaml
 from typer.testing import CliRunner
 
+from test_config import cloud_yaml
 from wristcall import cli
 from wristcall.pairing import Paired, PairingGone, PairingService
 from wristcall.storage import open_sqlite_storage
@@ -515,3 +516,106 @@ def test_cli_agents_add_and_edit_take_a_color(tmp_path):
     assert invoke(cfg, "agents", "add", "bad", "--color", "magenta").exit_code == 1
     assert invoke(cfg, "agents", "edit", "tinted", "--color", "magenta").exit_code == 1
     assert json.loads(ok(cfg, "agents", "show", "tinted"))["color"] == "teal"
+
+
+def _leaf_commands(group, prefix=()):
+    for name, command in group.commands.items():
+        if hasattr(command, "commands"):
+            yield from _leaf_commands(command, (*prefix, name))
+        else:
+            yield (*prefix, name)
+
+
+# Every command but `serve`, with the arguments it needs.
+OPERATOR_COMMANDS = {
+    ("pair",): [],
+    ("link",): [],
+    ("devices", "list"): [],
+    ("devices", "approve"): ["req1"],
+    ("devices", "deny"): ["req1"],
+    ("devices", "revoke"): ["dev1"],
+    ("devices", "assign"): ["dev1"],
+    ("users", "list"): [],
+    ("users", "add"): ["bob"],
+    ("users", "edit"): ["bob"],
+    ("users", "unlink"): ["bob"],
+    ("users", "rm"): ["bob", "--yes"],
+    ("users", "tokens", "add"): [],
+    ("users", "tokens", "list"): [],
+    ("users", "tokens", "revoke"): ["tok1"],
+    ("agents", "list"): [],
+    ("agents", "show"): ["a"],
+    ("agents", "add"): ["a"],
+    ("agents", "edit"): ["a"],
+    ("agents", "rm"): ["a", "--yes"],
+    ("history", "list"): [],
+    ("history", "show"): ["x1"],
+    ("history", "rm"): ["x1", "--yes"],
+    ("history", "clear"): ["--all", "--yes"],
+    ("history", "export"): [],
+    ("history", "redeliver"): ["x1"],
+    ("history", "new-key"): [],
+    ("history", "encrypt"): ["--yes"],
+    ("history", "decrypt"): ["--yes"],
+}
+
+
+def test_operator_table_covers_every_command():
+    from typer.main import get_command
+
+    assert set(_leaf_commands(get_command(cli.app))) == {("serve",), *OPERATOR_COMMANDS}
+
+
+def test_operator_commands_refuse_cloud_mode(tmp_path):
+    path = tmp_path / "node.yaml"
+    path.write_text(yaml.safe_dump(cloud_yaml()), encoding="utf-8")
+    for command, args in OPERATOR_COMMANDS.items():
+        r = invoke(path, *command, *args)
+        assert r.exit_code == 2, (command, r.output)
+        assert "not available in cloud mode" in r.output, command
+    assert not (tmp_path / "data").exists()  # nothing was opened on disk
+
+
+def test_agents_list_refuses_cloud_mode(tmp_path):
+    path = tmp_path / "node.yaml"
+    path.write_text(yaml.safe_dump(cloud_yaml()), encoding="utf-8")
+    r = invoke(path, "agents", "list")
+    assert r.exit_code == 2 and "not available in cloud mode" in r.output
+
+
+def test_new_key_needs_no_config_when_self_hosted(tmp_path):
+    r = runner.invoke(cli.app, ["history", "new-key", "-c", str(tmp_path / "missing.yaml")])
+    assert r.exit_code == 0 and len(r.output.strip()) == 43
+    assert ok(write_config(tmp_path), "history", "new-key").strip()
+
+
+def _cloud_serve(tmp_path, monkeypatch, *, started: bool):
+    path = tmp_path / "wristcall.yaml"
+    path.write_text(yaml.safe_dump(cloud_yaml()), encoding="utf-8")
+    servers = []
+
+    def run(self, sockets=None):
+        servers.append(self)
+        self.started = started
+
+    monkeypatch.setattr(cli.DrainingServer, "run", run)
+    monkeypatch.setattr(cli.uvicorn, "run", lambda *a, **kw: pytest.fail("cloud mode must drain: not uvicorn.run"))
+    return runner.invoke(cli.app, ["serve", "-c", str(path), "--port", "9090"]), servers
+
+
+def test_serve_cloud_mode_drains_calls_before_exiting(tmp_path, monkeypatch):
+    r, servers = _cloud_serve(tmp_path, monkeypatch, started=True)
+    assert r.exit_code == 0, r.output
+    [server] = servers
+    application = server.config.app
+    assert server.node is application.state.cloud_node and server.slots is application.state.call_slots
+    assert server.drain_s == 30.0
+    cfg = server.config
+    assert cfg.timeout_graceful_shutdown == 5
+    assert (cfg.ws_ping_interval, cfg.ws_ping_timeout, cfg.proxy_headers) == (20.0, 20.0, True)
+    assert (cfg.host, cfg.port) == ("0.0.0.0", 9090)
+
+
+def test_serve_cloud_mode_that_never_started_exits_3(tmp_path, monkeypatch):
+    r, _ = _cloud_serve(tmp_path, monkeypatch, started=False)
+    assert r.exit_code == 3  # uvicorn's STARTUP_FAILURE, as uvicorn.run exits

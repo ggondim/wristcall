@@ -9,6 +9,7 @@ import logging
 import secrets
 import time
 from collections.abc import AsyncIterator, Callable
+from contextlib import aclosing
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -48,6 +49,13 @@ def new_call_id() -> str:
 def aad(call_id: str, seq: int) -> str:
     """What a sealed text is bound to: its call and position."""
     return f"{call_id}:{seq}"
+
+
+def aad_scoped(account: str, call_id: str, seq: int) -> str:
+    """Cloud mode: also bound to the account, so a sealed text cannot be moved to another account's call."""
+    if "|" in account:  # account ids never hold it (the Cloud's rule); it would blur the fields
+        raise ValueError("account id must not contain '|'")
+    return f"{account}|{call_id}|{seq}"
 
 
 @dataclass(frozen=True)
@@ -114,18 +122,32 @@ def delivery_of(agent: Agent) -> str | None:
 class History:
     def __init__(
         self, storage: Storage, codec: HistoryCodec, settings: HistoryConfig | None = None, *,
-        now: Callable[[], float] = time.time,
+        now: Callable[[], float] = time.time, account_scoped: bool = False,
     ) -> None:
         self.storage = storage
         self.codec = codec
         self.settings = settings or HistoryConfig()
         self._now = now
+        # Cloud mode: entries are bound to their account (aad_scoped) and indexed with the account's own index key.
+        self.account_scoped = account_scoped
+
+    def query_terms(self, user_id: str, q: str | None) -> list[list[str]] | None:
+        """Search groups for the user's query; None when there is nothing to search for."""
+        if not q or not q.strip():
+            return None
+        codec = self.codec.for_account(user_id) if self.account_scoped else self.codec
+        return codec.query_terms(q)
+
+    def _aad(self, e: EntryRecord, user_id: str) -> str:
+        return aad_scoped(user_id, e.call_id, e.seq) if self.account_scoped else aad(e.call_id, e.seq)
 
     def retention_s(self, agent: Agent) -> float | None:
         return retention_seconds(self.settings.effective_days(agent.spec.retention_days))
 
     async def start(self, agent: Agent, device_id: str | None) -> CallLog:
         """Creates the call's record, open (recording), with the agent's retention in force now."""
+        if self.account_scoped:  # cloud mode: the Cloud opens calls and CloudCallLog writes them, sealed to the account
+            raise RuntimeError("an account-scoped history does not start calls; use the cloud node's CloudCallLog")
         now = self._now()
         retention = self.retention_s(agent)
         record = await self.storage.calls.create(CallRecord(
@@ -160,7 +182,16 @@ class History:
         self, user_id: str, *, agent_id: str | None = None, since: float | None = None, until: float | None = None,
         terms: list[list[str]] | None = None, page: int = 100,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Every matching call of the user, newest first, read a page at a time (export, CLI)."""
+        """Every matching call of the user, newest first, read a page at a time (export, CLI).
+
+        A storage that exports by itself (`calls.exports`, the Cloud in cloud mode) streams them in one request,
+        oldest first (only without `terms`: it does not search)."""
+        if terms is None and self.storage.calls.exports:
+            exported = self.storage.calls.export(user_id, agent_id=agent_id, since=since, until=until)
+            async with aclosing(exported):  # closing this generator closes the stream behind it
+                async for record, entries in exported:
+                    yield call_detail(record, [self._open(e, record.user_id) for e in entries])
+            return
         before = None
         while True:
             found = await self.storage.calls.list(
@@ -182,8 +213,13 @@ class History:
                     done += 1
         return done
 
+    def _operator_only(self) -> None:
+        if self.account_scoped:
+            raise RuntimeError("re-sealing the history is a self-hosted operator command")
+
     async def encrypt_all(self) -> int:
         """Operator. Seals the entries kept in the clear (written before the key was set). Returns how many."""
+        self._operator_only()
         if not self.codec.encrypted:
             raise HistoryKeyError("set history.encryption_key first")
         await check_key(self.storage, self.codec)
@@ -200,6 +236,7 @@ class History:
     async def decrypt_all(self) -> int:
         """Operator. Opens every sealed entry with the configured key and forgets the key: afterwards the server runs
         without history.encryption_key. Returns how many."""
+        self._operator_only()
         if not self.codec.encrypted:
             raise HistoryKeyError("set history.encryption_key to the key that encrypted the history")
         await check_key(self.storage, self.codec)
@@ -221,11 +258,11 @@ class History:
         await self.storage.calls.compact()
         return done
 
-    def _open(self, e: EntryRecord) -> Entry:
+    def _open(self, e: EntryRecord, user_id: str) -> Entry:
         if e.text is None:
             return Entry(seq=e.seq, role=e.role, text=None, error=e.error, at=e.at)
         try:
-            return Entry(seq=e.seq, role=e.role, text=self.codec.open(e.text, e.sealed, aad(e.call_id, e.seq)), error=e.error, at=e.at)
+            return Entry(seq=e.seq, role=e.role, text=self.codec.open(e.text, e.sealed, self._aad(e, user_id)), error=e.error, at=e.at)
         except HistoryKeyError:
             # Sealed with a key this server does not have (check_key refuses that at startup; possible only if the
             # history was decrypted while a server with the key kept writing): shown as unreadable, never a 500.
@@ -233,7 +270,11 @@ class History:
             return Entry(seq=e.seq, role=e.role, text=None, error="unreadable", at=e.at)
 
     async def entries(self, record: CallRecord) -> list[Entry]:
-        return [self._open(e) for e in await self.storage.calls.entries(record.user_id, record.id)]
+        return self.open_entries(record, await self.storage.calls.entries(record.user_id, record.id))
+
+    def open_entries(self, record: CallRecord, entries: list[EntryRecord]) -> list[Entry]:
+        """The call's stored entries, opened (entries that came another way: the Cloud's redelivery answer)."""
+        return [self._open(e, record.user_id) for e in entries]
 
     async def detail(self, record: CallRecord) -> dict[str, Any]:
         return call_detail(record, await self.entries(record))

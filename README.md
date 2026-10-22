@@ -81,7 +81,8 @@ watches and agents live in the server's database (`data_dir/wristcall.db`).
   saved, when a call starts and on every connection: turn it on when users are not trusted).
   `history_only_one_way` (`false`; `true` lets a one-shot or monologue agent have no webhook: its text is only
   saved to the history). `max_concurrent_calls` (`conversation`, `one_way`; no limit by default: the most calls open
-  at once per type, above that a call gets `busy`).
+  at once per type, above that a call gets `busy`). `max_conversation_s` (none by default; 60 to 14400: a
+  conversation that reaches it ends with `call.captured` `limit`).
 - `profiles` (optional, the 0.2.x format): on the first start they become agents of a user
   called `owner`, `default` first. After that the section is ignored; manage agents with
   `wristcall agents`.
@@ -236,6 +237,77 @@ shows in the log, and calls and pairing requests never wait for it. Routes and p
 **Privacy.** A notification's title and body (how the call ended and the agent's name, or the name of the device
 asking to pair) and its label (the server's host, set by the device) pass through the Cloud and then through Apple or
 the browser's push service. The transcript of a call never does: the app reads it from this server.
+
+## Cloud mode
+
+Since 0.10.0 the same server can run as a node of a Wristcall Cloud (`server.mode: cloud`): it serves calls and the
+management API to the Cloud's accounts and keeps nothing on disk. Accounts, devices, agents, history, push and the
+monthly quota live in the Cloud, which the node reads and writes through its node API (`/v1/node/*`). Apps learn which
+node to use from the Cloud (`POST /v1/route`) and present the token it hands them. Self-hosted servers are unchanged:
+all of this is off unless `server.mode` is `cloud`.
+
+Register the node in the Cloud first; it prints the node's secret once:
+
+```bash
+wristcall-cloud admin nodes add home --url https://node-1.wristcall.example --region gru --kind always_on \
+  --capability operator_stt --capability operator_tts
+```
+
+```yaml
+server:
+  public_url: https://node-1.wristcall.example  # the URL registered in the Cloud
+  mode: cloud
+providers:                                      # the operator's voices: only stt and tts types
+  stt-default:                                  # the name the full plan's "Voice notes" agent uses
+    type: openai_stt
+    base_url: https://stt.internal.example/v1
+    model: whisper-1
+  tts-default:
+    type: openai_tts
+    base_url: https://tts.internal.example/v1
+    model: tts-1
+    voice: alloy
+central_account:
+  issuer: https://cloud.wristcall.example       # the Cloud's WRISTCALL_CLOUD_PUBLIC_URL
+  audience: ["https://node-1.wristcall.example"] # exactly [server.public_url]
+history:
+  encryption_key: ${HISTORY_ENCRYPTION_KEY}     # seals the history text; the same on every node
+cloud_node:
+  cloud_url: https://cloud.wristcall.example    # https; plain http should only be used on a private overlay network
+  node_id: home                                 # the id it was registered under
+  node_secret: ${WRISTCALL_NODE_SECRET}         # wc_node_... from admin nodes add
+  seal_key: ${WRISTCALL_NODE_SEAL_KEY}          # seals the agents' secrets; the same on every node
+  # heartbeat_s: 15
+```
+
+- Keys: `history.encryption_key` and `cloud_node.seal_key` are two different keys of 32 random bytes in base64
+  (`openssl rand -base64 32`). The Cloud never sees them: it stores the history text and the agents' API
+  keys and URLs sealed with them. Every node of a Cloud must have the same two keys, since an account's next call may
+  land on another node. **Losing the history key loses the cloud-mode history** (it cannot be opened again), and
+  losing the seal key makes the agents whose secrets it sealed unusable (they drop out of the agent list).
+- Forced in this mode: `limits.public_only` and `limits.history_only_one_way` are on (users are not trusted, and a
+  one-shot agent with no action saves its transcript to the history). `limits.max_concurrent_calls` is 2
+  conversations and 2 one-way calls (measured on a single GPU), and `limits.max_conversation_s` 3600 s, unless set.
+  The Cloud also caps each call (`max_s`) and the month's minutes; the shorter wins.
+- Provider names are what agents point to with `{"provider": "<name>"}`: on the `full` plan agents may use the
+  operator's voices by name (the Cloud provisions "Voice notes" with `stt-default`, its
+  `WRISTCALL_CLOUD_VOICE_NOTES_STT`); on the `custom` plan agents bring their own addresses.
+- Not in this mode: `push` (the Cloud sends push), chat and webhook providers in the YAML (agents bring their own),
+  pairing, pairing codes and requests, account links and device routes (`404 not_in_cloud_mode`), and every CLI
+  command but `serve` (`users`, `devices`, `agents`, `history`, `pair`, `link` refuse a cloud-mode configuration).
+  Retention is applied by the Cloud.
+- Health: `GET /v1/health` answers `503` (`starting`) until the Cloud accepts the first heartbeat, then `200` with
+  `"mode": "cloud"`. A heartbeat every `heartbeat_s` tells the Cloud the node is up, which calls it holds and how many
+  more it takes.
+- Stopping: on the first `SIGTERM` the node reports a capacity of 0 (the Cloud routes no new calls to it, management
+  goes on), `/v1/health` answers `503 draining`, open calls get up to 30 s to end, then uvicorn's 5 s, 8 s for one-way
+  transcriptions and deliveries and 20 s to flush the writes still queued for the Cloud: about 63 s. Give the
+  container a `stop_grace_period` of at least 75 s. A second signal exits at once and skips the flush (queued writes
+  are lost; the Cloud closes the calls it no longer hears about).
+- If the Cloud goes away, calls in progress go on and their writes wait in memory; new calls and REST requests answer
+  `cloud_unreachable` / `503 cloud_unavailable` until it is back.
+
+Protocol differences (token claims, errors, routes): [docs/protocol.md](docs/protocol.md#cloud-mode).
 
 ## Upgrading from 0.5.0
 
