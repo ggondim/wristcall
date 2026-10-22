@@ -257,6 +257,7 @@ async def test_redeliver_odd_answer_is_cloud_unavailable_and_puts_the_call_back(
     config = cloud_config()
     node = CloudNode.build(config, slots=CallSlots(config.limits.max_concurrent_calls),
                            http=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    node.ready.set()  # a node taking work (a starting or draining one refuses redelivery: busy)
     history = History(node.storage, HistoryCodec(config.history.key()), config.history, account_scoped=True)
     redelivery = CloudRedelivery(node, history, config, Background(grace_s=0.1), httpx.AsyncClient())
     record = CallRecord(

@@ -39,6 +39,7 @@ REFUSALS = {
     "not_failed": "only a call whose delivery failed can be delivered again",
 }
 UNAVAILABLE = "the agent's webhook is not available; check its action"
+DRAINING = "This server is busy; try again in a minute."
 
 
 class CloudRedelivery:
@@ -72,6 +73,8 @@ class CloudRedelivery:
         account errors (`PlanRequired`, `DeviceRevoked`, `CloudUnavailable`)."""
         if record.delivery == "history":  # nothing to ask the Cloud: such a call never had a webhook
             raise RedeliveryError("no_webhook", "This call was saved to the history; it has no webhook to deliver to.")
+        if not self._node.accepting:  # starting or draining: a delivery handed over now could be cut at exit
+            raise RedeliveryError("busy", DRAINING)
         proof = require_proof(record.user_id)
         body, grant = await self._claim(proof, record.id)
         # From here the Cloud holds the call as this node's `processing`: every way out reports to it with the grant.

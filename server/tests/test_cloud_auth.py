@@ -10,6 +10,7 @@ from wristcall.auth import Principal
 from wristcall.cloud_node.auth import PLATFORMS, CloudAuthenticator
 from wristcall.cloud_node.proof import UserProof, current_proof
 from wristcall.oidc import OidcVerifier
+from wristcall.storage import CloudUnavailable
 
 NODE_URL = "https://node.test"
 SECRET = "wc_node_" + "s" * 43
@@ -116,10 +117,12 @@ async def test_refuses(fake: FakeCloud, auth: CloudAuthenticator, case: str) -> 
     assert current_proof.get() is None
 
 
-async def test_jwks_down_is_none(fake: FakeCloud, auth: CloudAuthenticator) -> None:
+async def test_jwks_down_is_cloud_unavailable(fake: FakeCloud, auth: CloudAuthenticator) -> None:
+    # The Cloud down before its keys are fetched: not a bad token (401) but the Cloud unavailable (503).
     token = fake.user_token("acc-1", "dev-1", "ios")
     fake.down = True
-    assert await auth.authenticate(bearer(token)) is None
+    with pytest.raises(CloudUnavailable):
+        await auth.authenticate(bearer(token))
     assert current_proof.get() is None
 
 

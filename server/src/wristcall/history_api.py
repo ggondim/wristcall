@@ -88,8 +88,10 @@ class _ClosingStream(StreamingResponse):
         try:
             await super().__call__(scope, receive, send)
         finally:
-            await self._content.aclose()
-            await self._views.aclose()
+            try:
+                await self._content.aclose()
+            finally:  # the views too, even when closing the body raised
+                await self._views.aclose()
 
 
 def _error(code: str, message: str, status: int) -> JSONResponse:

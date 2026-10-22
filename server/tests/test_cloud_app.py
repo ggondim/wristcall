@@ -10,7 +10,6 @@ from cloud_app_fixtures import NODE_SECRET, bearer, cloud_app, cloud_config, new
 from conftest import fake_config
 from fake_cloud import FULL_PLAN, FakeCloud
 from fastapi.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
 
 from wristcall.admission import CallSlots
 from wristcall.app import create_app
@@ -123,13 +122,6 @@ def test_self_hosted_keeps_those_routes():
     with TestClient(create_app(fake_config(), storage=open_sqlite_storage(":memory:"))) as c:
         assert c.get("/v1/devices").json()["error"] == "unauthorized"
         assert c.delete("/v1/me").json()["error"] == "unauthorized"
-
-
-def test_websocket_call_refused_until_task_9(fake: FakeCloud):
-    with TestClient(cloud_app(fake)) as c, c.websocket_connect("/v1/call", headers=watch(fake)) as ws:
-        with pytest.raises(WebSocketDisconnect) as e:
-            ws.receive_text()
-    assert e.value.code == 4401
 
 
 # --- error mapping -----------------------------------------------------------------------------------------------
