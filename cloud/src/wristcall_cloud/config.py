@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from .audience import AudienceError, is_loopback, normalize_audience
 from .push.apns import APNS_HOSTS, ProviderToken
 from .push.webpush import DEFAULT_HOSTS, Vapid
+from .session_tokens import PLATFORMS
 from .signing import SigningKey
 
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -17,6 +18,18 @@ _HEADER = re.compile(r"[A-Za-z0-9-]{1,64}")
 _LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 _PUSH_HOST = re.compile(rf"\.?{_LABEL}(?:\.{_LABEL})*")
 _APPLE_ID = re.compile(r"[A-Za-z0-9]{1,64}")  # key and team ids (10 characters at Apple)
+_COUNTRY = re.compile(r"[A-Z]{2}|\*")
+_REGION = re.compile(r"[a-z]{3}")
+_VERSION = re.compile(r"(\d{1,4})\.(\d{1,4})\.(\d{1,4})")
+_LANGUAGE = re.compile(r"[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?")
+_STT_PROVIDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+DEFAULT_ROUTE_REGIONS = {
+    "BR": ("sao", "gru"),
+    "US": ("iad",),
+    "CA": ("iad",),
+    "MX": ("iad",),
+    "*": ("iad",),
+}
 CLIENT_VARS = {"ios": "WRISTCALL_CLOUD_CLIENT_IOS", "pwa": "WRISTCALL_CLOUD_CLIENT_PWA", "watch": "WRISTCALL_CLOUD_CLIENT_WATCH"}
 
 
@@ -95,6 +108,18 @@ class CloudConfig:
     node_stale_s: int = 120  # a node silent for this long counts as offline
     orphan_sweep_every_s: int = 30
     orphan_grace_s: int = 30
+    # Per-call route (POST /v1/route). Country -> node regions in order of preference ("*": any other country).
+    route_regions: dict[str, tuple[str, ...]] = field(default_factory=lambda: dict(DEFAULT_ROUTE_REGIONS))
+    # platform -> minimum app version that sees the managed Cloud entry; empty: nobody does.
+    cloud_entry_clients: dict[str, tuple[int, int, int]] = field(default_factory=dict)
+    # The managed "Voice notes" agent: its transcription language and the operator's STT provider name.
+    voice_notes_language: str = "en"
+    voice_notes_stt: str = "stt-default"
+    node_fresh_s: int = 45  # route health: an always-on node heard from within this long is up
+    route_startup_grace_s: int = 60  # ... or the Cloud itself started less than this long ago
+    node_reports_window_s: int = 300  # on-demand nodes: failure reports count for this long
+    node_reports_accounts: int = 3  # ... and the node is down once this many accounts reported it
+    route_retry_after_s: int = 30  # Retry-After of 503 no_node_available
 
     def retention_days(self, agent_days: int | str | None) -> int:
         """How long an agent's history is kept: absent -> the default, "forever" -> the ceiling, else capped."""
@@ -107,6 +132,59 @@ class CloudConfig:
 
 class ConfigError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class ProvisionSettings:
+    """What creating an account's managed Cloud entry and "Voice notes" agent needs."""
+
+    cloud_url: str
+    language: str
+    stt_provider: str
+
+
+def parse_route_regions(raw: str) -> dict[str, tuple[str, ...]]:
+    """`BR=sao,gru;US=iad;*=iad`: country (two capitals or `*`) -> regions (three lowercase letters). `*` is required.
+    The ValueError never echoes the value."""
+    table: dict[str, tuple[str, ...]] = {}
+    for item in raw.split(";"):
+        item = item.strip()
+        if not item:
+            continue
+        country, sep, regions = item.partition("=")
+        country = country.strip()
+        names = tuple(r.strip() for r in regions.split(","))
+        if not sep or not _COUNTRY.fullmatch(country) or country in table:
+            raise ValueError("not a valid route table")
+        if not all(_REGION.fullmatch(r) for r in names):
+            raise ValueError("not a valid route table")
+        table[country] = names
+    if "*" not in table:
+        raise ValueError("not a valid route table")
+    return table
+
+
+def parse_client_versions(raw: str) -> dict[str, tuple[int, int, int]]:
+    """`ios=0.3.0,watchos=0.6.0`: platform (one of PLATFORMS) -> minimum version. The ValueError never echoes the value."""
+    versions: dict[str, tuple[int, int, int]] = {}
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        platform, sep, version = item.partition("=")
+        platform, version = platform.strip(), version.strip()
+        match = _VERSION.fullmatch(version)
+        if not sep or platform not in PLATFORMS or platform in versions or match is None:
+            raise ValueError("not a valid client version list")
+        versions[platform] = (int(match[1]), int(match[2]), int(match[3]))
+    return versions
+
+
+def provision_settings(config: CloudConfig) -> ProvisionSettings | None:
+    """None when the Cloud has no public URL (no per-server tokens, so no managed entry)."""
+    if config.public_url is None:
+        return None
+    return ProvisionSettings(config.public_url, config.voice_notes_language, config.voice_notes_stt)
 
 
 def _get(env: Mapping[str, str], name: str) -> str | None:
@@ -353,6 +431,51 @@ def _cors_origins(env: Mapping[str, str]) -> tuple[str, ...]:
     return tuple(origins)
 
 
+def _route_regions(env: Mapping[str, str]) -> dict[str, tuple[str, ...]]:
+    name = "WRISTCALL_CLOUD_ROUTE_REGIONS"
+    raw = _get(env, name)
+    if raw is None:
+        return dict(DEFAULT_ROUTE_REGIONS)
+    try:
+        return parse_route_regions(raw)
+    except ValueError:
+        raise ConfigError(
+            f"{name} must look like BR=sao,gru;US=iad;*=iad (two capital letters or *, three lowercase letters; * is required)"
+        ) from None
+
+
+def _cloud_entry_clients(env: Mapping[str, str]) -> dict[str, tuple[int, int, int]]:
+    name = "WRISTCALL_CLOUD_CLOUD_ENTRY_CLIENTS"
+    raw = _get(env, name)
+    if raw is None:
+        return {}
+    try:
+        return parse_client_versions(raw)
+    except ValueError:
+        raise ConfigError(f"{name} must look like ios=0.3.0,watchos=0.6.0 (platforms: {', '.join(PLATFORMS)})") from None
+
+
+def _voice_notes(env: Mapping[str, str]) -> tuple[str, str]:
+    language_var, stt_var = "WRISTCALL_CLOUD_VOICE_NOTES_LANGUAGE", "WRISTCALL_CLOUD_VOICE_NOTES_STT"
+    language = _get(env, language_var) or CloudConfig.voice_notes_language
+    stt = _get(env, stt_var) or CloudConfig.voice_notes_stt
+    if not _LANGUAGE.fullmatch(language):
+        raise ConfigError(f"{language_var} must be a language code such as en or pt-BR")
+    if not _STT_PROVIDER.fullmatch(stt):
+        raise ConfigError(f"{stt_var} must be a provider name (letters, digits, _ . -)")
+    return language, stt
+
+
+def admin_provision_settings(env: Mapping[str, str]) -> ProvisionSettings | None:
+    """What the admin CLI needs to create managed entries; None without WRISTCALL_CLOUD_PUBLIC_URL."""
+    public_url = _https_url(env, "WRISTCALL_CLOUD_PUBLIC_URL", None)
+    if public_url is None:
+        return None
+    check_public_url(public_url, _issuer(env))
+    language, stt = _voice_notes(env)
+    return ProvisionSettings(public_url, language, stt)
+
+
 def admin_settings(env: Mapping[str, str]) -> tuple[str, str]:
     """What the admin CLI needs from the environment: the MongoDB URL and the database name."""
     return _mongo_url(env), _get(env, "WRISTCALL_CLOUD_DATABASE") or CloudConfig.database
@@ -393,6 +516,7 @@ def config_from_env(env: Mapping[str, str]) -> CloudConfig:
         raise ConfigError(
             "WRISTCALL_CLOUD_HISTORY_RETENTION_DAYS must not exceed WRISTCALL_CLOUD_MAX_HISTORY_RETENTION_DAYS"
         )
+    voice_notes_language, voice_notes_stt = _voice_notes(env)
     return CloudConfig(
         mongo_url=mongo_url,
         database=_get(env, "WRISTCALL_CLOUD_DATABASE") or CloudConfig.database,
@@ -449,4 +573,8 @@ def config_from_env(env: Mapping[str, str]) -> CloudConfig:
         max_cloud_agents=_positive_int(env, "WRISTCALL_CLOUD_MAX_CLOUD_AGENTS", CloudConfig.max_cloud_agents),
         history_retention_days=history_retention_days,
         max_history_retention_days=max_history_retention_days,
+        route_regions=_route_regions(env),
+        cloud_entry_clients=_cloud_entry_clients(env),
+        voice_notes_language=voice_notes_language,
+        voice_notes_stt=voice_notes_stt,
     )
