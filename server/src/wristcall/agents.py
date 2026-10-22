@@ -168,12 +168,14 @@ class Agent:
 
 
 class AgentError(Exception):
-    """code: invalid | not_found | conflict | limit | unsupported | url_not_public."""
+    """code: invalid | not_found | conflict | limit | unsupported | url_not_public. `unresolved`: a url_not_public
+    whose cause is the DNS lookup failing (no answer, an empty one or the deadline), not the address being private."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, *, unresolved: bool = False) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.unresolved = unresolved
 
 
 def _pydantic_message(e: ValidationError) -> str:
@@ -521,7 +523,9 @@ class AgentService:
             failures = {h: NO_ADDRESS for h in hosts}
         for field, target in targets:
             if failures[target] is not None:
-                raise AgentError("url_not_public", f"{field}: {failures[target]}")
+                raise AgentError(
+                    "url_not_public", f"{field}: {failures[target]}", unresolved=failures[target] == NO_ADDRESS
+                )
 
     @staticmethod
     def _parse_input(data: dict[str, Any]) -> AgentInput:

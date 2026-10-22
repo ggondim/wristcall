@@ -4,6 +4,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 
 ## [Unreleased]
 
+## [server-0.10.1] - 2026-10-22
+
+Server 0.10.1. In cloud mode (or any server with `limits.public_only`), a failing DNS lookup at `session.start` no longer
+reads as an address the server must never call. Self-hosted servers with `public_only` off are unchanged.
+
+### Fixed
+
+- A call to an agent whose own address could not be looked up (the resolver failed, answered with nothing or took
+  longer than 5 s) now ends with the fatal `agent_unavailable` with `reason: url_unresolved` ("Can't look up this
+  agent's address right now; try again.") instead of `reason: url_not_public`. An address that is private, or resolves
+  to a private one, still ends with `url_not_public`, and saving an agent still answers `422 url_not_public`.
+
 ## [server-0.10.0] - 2026-10-22
 
 Server 0.10.0. Adds cloud mode (`server.mode: cloud`): the same server runs as a node of the Wristcall Cloud 0.6.x,
