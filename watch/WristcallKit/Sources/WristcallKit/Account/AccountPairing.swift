@@ -55,7 +55,7 @@ public struct AccountPairing: Sendable {
     public static func candidates(_ agenda: [CloudServer], paired: [URL]) -> [URL] {
         var seen = Set(paired.map(ServerAddress.canonical))
         return agenda.compactMap { server in
-            guard let url = ServerAddress.parse(server.url), seen.insert(ServerAddress.canonical(url)).inserted else {
+            guard !server.isCloudEntry, let url = ServerAddress.parse(server.url), seen.insert(ServerAddress.canonical(url)).inserted else {
                 return nil
             }
             return url

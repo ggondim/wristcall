@@ -83,6 +83,13 @@ public struct Agent: Decodable, Sendable, Hashable, Identifiable {
         self.init(id: profile.name, slug: profile.name, displayName: profile.displayName)
     }
 
+    /// An agent of the Cloud agenda (it has no turn end, so `.auto`).
+    public init(cloud agent: CloudAgent) {
+        self.init(
+            id: agent.id, slug: agent.slug, displayName: agent.displayName, icon: agent.icon,
+            callType: CallType(wireValue: agent.callType), color: agent.color)
+    }
+
     private enum CodingKeys: String, CodingKey {
         case id, slug, icon, color
         case displayName = "display_name"

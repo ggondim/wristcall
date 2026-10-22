@@ -6,10 +6,14 @@ public struct CloudClient: Sendable {
     public let cloud: URL
     let http: APIHTTP
 
-    public init(cloud: URL, session: URLSession = .shared, timeout: TimeInterval = 15) {
+    /// With a `client`, every request carries `X-Wristcall-Client`.
+    public init(cloud: URL, session: URLSession = .shared, timeout: TimeInterval = 15, client: ClientIdentity? = nil) {
         self.cloud = cloud
-        self.http = APIHTTP(session: session, timeout: timeout)
+        self.http = APIHTTP(session: session, timeout: timeout, client: client)
     }
+
+    /// The identity sent on every request, if any.
+    public var client: ClientIdentity? { http.client }
 
     /// `GET /v1/config` (no token).
     public func config() async throws -> CloudConfig {

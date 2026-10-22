@@ -12,9 +12,9 @@ public struct PushRelayClient: Sendable {
     private let relayURL: URL
     private let http: PushHTTP
 
-    public init(relayURL: URL, session: URLSession = .shared) {
+    public init(relayURL: URL, session: URLSession = .shared, client: ClientIdentity? = nil) {
         self.relayURL = relayURL
-        self.http = PushHTTP(session: session)
+        self.http = PushHTTP(session: session, client: client)
     }
 
     /// `POST /v1/push/registrations` with `events: ["call.finished"]` (the watch); returns the push key.

@@ -23,11 +23,12 @@ public actor DeviceSession: CloudAccess {
         cloud: URL,
         store: any DeviceSessionStore,
         session: URLSession = .shared,
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = Date.init,
+        client: ClientIdentity? = nil
     ) {
         self.store = store
         self.now = now
-        self.cloudClient = CloudClient(cloud: cloud, session: session)
+        self.cloudClient = CloudClient(cloud: cloud, session: session, client: client)
     }
 
     public var accountID: String? { (try? currentSession())?.account }

@@ -4,11 +4,14 @@ import Foundation
 struct PushHTTP: Sendable {
     let session: URLSession
     var timeout: TimeInterval = 15
+    /// Sent as `X-Wristcall-Client` when set; only the relay (the Cloud) gets it, never a self-hosted server.
+    var client: ClientIdentity?
 
     func request(_ url: URL, method: String, bearer: String? = nil, json: (any Encodable)? = nil) throws -> URLRequest {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let client { request.setValue(client.header, forHTTPHeaderField: ClientIdentity.headerName) }
         if let bearer {
             request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
         }

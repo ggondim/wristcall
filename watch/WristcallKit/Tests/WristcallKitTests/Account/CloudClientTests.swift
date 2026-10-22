@@ -202,4 +202,15 @@ struct CloudClientTests {
         let host = StubHost(replies: [(status, body)])
         await #expect(throws: expected) { try await client(host).servers(accessToken: "at") }
     }
+
+    @Test func cloudServerEncodesWithTheKeysItDecodes() throws {
+        let cloud = CloudServer(
+            id: "srv_c", name: "Wristcall Cloud", url: "https://cloud.example", kind: "cloud", linked: true,
+            agents: [CloudAgent(id: "a1", slug: "helper", displayName: "Helper", icon: "sparkles", callType: "one-shot", color: .yellow)])
+        let data = try JSONEncoder().encode(cloud)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["kind"] as? String == "cloud")
+        #expect(object["linked"] as? Bool == true)
+        #expect(try JSONDecoder().decode(CloudServer.self, from: data) == cloud)
+    }
 }

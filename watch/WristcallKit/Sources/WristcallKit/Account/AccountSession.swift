@@ -48,7 +48,8 @@ public actor AccountSession {
         store: any TokenStore,
         session: URLSession = .shared,
         now: @escaping @Sendable () -> Date = { Date() },
-        sleep: @escaping OIDCClient.Sleep = { try await Task.sleep(for: $0) }
+        sleep: @escaping OIDCClient.Sleep = { try await Task.sleep(for: $0) },
+        client: ClientIdentity? = nil
     ) {
         self.cloud = cloud
         self.kind = kind
@@ -56,7 +57,7 @@ public actor AccountSession {
         self.session = session
         self.now = now
         self.sleep = sleep
-        self.cloudClient = CloudClient(cloud: cloud, session: session)
+        self.cloudClient = CloudClient(cloud: cloud, session: session, client: client)
     }
 
     /// Whether there are tokens (an unreadable store counts as signed out).
