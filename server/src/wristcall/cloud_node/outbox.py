@@ -7,7 +7,9 @@ offline: they leave in the order they came in, and when the drawer is full the o
 
 - A transport error, a 5xx (both `CloudUnavailable`) or a 429 hold the head of the queue and try it again after 1, 2,
   4... seconds up to `max_delay_s` (a 429 waits its `Retry-After`).
-- A 401 is tried again for up to 15 minutes (the window for rotating the node secret), then dropped.
+- A 401 is tried again for up to 15 minutes (the window for rotating the node secret), then dropped; a push answered
+  401 (its grant expired) is dropped at once: a push is best effort, and it must not hold the calls behind it.
+- An unexpected error while sending is tried again like an unavailable Cloud (logged with its type only).
 - Any other 4xx drops the item (logged with the status and the Cloud's error code); any 2xx accepts it.
 - Over `max_items` or `max_bytes`, the oldest history entries are dropped first, then the oldest item of any kind,
   never the item being sent. `dropped` counts them all.
@@ -18,6 +20,7 @@ No log carries a grant, the node secret or a body (the entries' text is sealed, 
 import asyncio
 import json
 import logging
+import math
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -105,7 +108,7 @@ class Outbox:
         self._wake = asyncio.Event()
         self._idle = asyncio.Event()
         self._idle.set()
-        self._workers = 0
+        self._worker: asyncio.Task[None] | None = None  # the task running `run`
         self._unauthorized_since: float | None = None  # first of an unbroken run of 401 answers
         self.dropped = 0
 
@@ -154,9 +157,21 @@ class Outbox:
         if item.kind == "finish":
             self._registry.finished(item.call_id)
 
+    @property
+    def running(self) -> bool:
+        return self._worker is not None and not self._worker.done()
+
+    def start(self) -> None:
+        """Starts the worker task (no-op when one runs). `drain` stops it."""
+        if not self.running:
+            self._worker = asyncio.create_task(self.run(), name="wristcall-outbox")
+
     async def run(self) -> None:
-        """The worker: sends the head of the queue until cancelled. Run one at a time (a task of the node)."""
-        self._workers += 1
+        """The worker: sends the head of the queue until cancelled. One at a time: a second concurrent `run` raises
+        RuntimeError. Prefer `start()`, which runs it as a task the outbox owns."""
+        if self.running and self._worker is not asyncio.current_task():
+            raise RuntimeError("the outbox already has a worker")
+        self._worker = asyncio.current_task()
         try:
             while True:
                 if not self._items:
@@ -178,7 +193,8 @@ class Outbox:
                 if not self._items:
                     self._idle.set()
         finally:
-            self._workers -= 1
+            if self._worker is asyncio.current_task():
+                self._worker = None
 
     async def _send(self, item: OutboxItem) -> bool:
         """Tries the item until the Cloud accepts it (True) or refuses it for good (False)."""
@@ -190,7 +206,12 @@ class Outbox:
                 resp = await self._client.request(METHODS[item.kind], item.path, grant=item.grant, json=item.body)
             except CloudUnavailable:
                 why = "Wristcall Cloud unavailable"
+            except Exception as e:  # noqa: BLE001 - the worker must outlive any surprise; its text may hold a body
+                why = f"unexpected {type(e).__name__}"
             else:
+                if resp.status == 401 and item.kind == "push":  # an expired grant, most likely: best effort
+                    log.warning("outbox: push of call %s: Cloud answered 401; dropping it", item.call_id)
+                    return False
                 if resp.status != 401:
                     self._unauthorized_since = None
                 if 200 <= resp.status < 300:
@@ -199,7 +220,7 @@ class Outbox:
                     return True
                 if resp.status == 429:
                     why = "rate limited (429)"
-                    wait = _retry_after(resp.headers.get("retry-after"), delay)
+                    wait = _retry_after(resp.headers.get("retry-after"), max(wait, 1.0))
                 elif resp.status == 401:
                     now = self._clock()
                     if self._unauthorized_since is None:
@@ -219,9 +240,11 @@ class Outbox:
             delay = min(delay * 2, self._max_delay)
 
     async def drain(self, timeout_s: float) -> int:
-        """Shutdown: gives the queue up to `timeout_s` to empty (with the running worker, or one of its own), then
-        empties it and returns how many items were left (logged as lost)."""
-        own = asyncio.create_task(self.run()) if self._workers == 0 and self._items else None
+        """Shutdown: gives the queue up to `timeout_s` to empty (starting the worker if none runs), stops the worker,
+        then empties the queue and returns how many items were left (logged as lost). Afterwards `put` only queues;
+        `start()` would run the worker again."""
+        if self._items and not self.running:
+            self.start()
         try:
             if self._items or self._sending is not None:
                 try:
@@ -229,9 +252,11 @@ class Outbox:
                 except TimeoutError:
                     pass
         finally:
-            if own is not None:
-                own.cancel()
-                await asyncio.gather(own, return_exceptions=True)
+            worker, self._worker = self._worker, None
+            if worker is not None and not worker.done():
+                worker.cancel()
+                await asyncio.gather(worker, return_exceptions=True)
+            self._sending = None
         left = list(self._items)
         if left:
             kinds: dict[str, int] = {}
@@ -246,10 +271,13 @@ class Outbox:
         return len(left)
 
 
-def _retry_after(value: str | None, fallback: float) -> float:
-    """Seconds of a `Retry-After` header (delta-seconds form); the backoff when missing or not a number."""
+def _retry_after(value: str | None, floor: float) -> float:
+    """Seconds of a `Retry-After` header (delta-seconds form), at least `floor` (the current backoff) and at most
+    MAX_RETRY_AFTER_S; `floor` when missing, not a number or not finite."""
     try:
-        seconds = float(value) if value is not None else fallback
+        seconds = float(value) if value is not None else floor
     except ValueError:
-        return fallback
-    return min(max(seconds, 0.0), MAX_RETRY_AFTER_S)
+        return floor
+    if not math.isfinite(seconds):
+        return floor
+    return min(max(seconds, floor), MAX_RETRY_AFTER_S)

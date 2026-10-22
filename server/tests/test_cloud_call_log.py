@@ -48,6 +48,7 @@ def outbox(fake, registry):
 @contextlib.asynccontextmanager
 async def running(outbox: Outbox):
     task = asyncio.create_task(outbox.run())
+    await asyncio.sleep(0)  # the worker is running before the test goes on
     try:
         yield
         await until(lambda: outbox.idle)
@@ -238,13 +239,14 @@ async def test_push_notifier_one_way_only(fake, outbox, registry, caplog):
     conversation = call_log(fake, outbox, registry, call_type="conversation", now=Clock())
     await notifier.call_finished(replace_status(conversation.record, "ended"))
     assert len(outbox) == 0
-    assert registry.grant(conversation.record.id) is not None  # the conversation's grant goes by forget()
-    registry.forget(conversation.record.id)
-    assert registry.grant(conversation.record.id) is None
+    assert registry.grant(conversation.record.id) is None  # no push, and the grant is not kept
+
+    unfinished = call_log(fake, outbox, registry, now=Clock())
+    await notifier.call_finished(unfinished.record)  # still recording: no text, nothing to say
+    assert len(outbox) == 0
+    assert registry.grant(unfinished.record.id) is None
 
     one_way = call_log(fake, outbox, registry, now=Clock())
-    await notifier.call_finished(one_way.record)  # still recording: no text, nothing to say
-    assert len(outbox) == 0
 
     no_grant = record_of(fake, open_call(fake)[0], status="empty")
     caplog.set_level(logging.INFO)

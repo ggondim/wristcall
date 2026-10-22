@@ -127,13 +127,13 @@ class CloudPushNotifier:
         self._registry = registry
 
     async def call_finished(self, record: CallRecord) -> None:
-        """Tells the device that made a one-way call how it ended."""
-        if record.call_type not in ONE_WAY:
-            return
-        text = call_text(record)
-        if text is None:
-            return
+        """Tells the device that made a one-way call how it ended. Called once per call: the call's grant is
+        forgotten whether or not a push goes out."""
         grant = self._registry.grant(record.id)
+        text = call_text(record) if record.call_type in ONE_WAY else None
+        if text is None:
+            self._registry.forget(record.id)
+            return
         if grant is None:
             log.info("call %s: no grant left for its push; not sent", record.id)
             return

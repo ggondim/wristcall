@@ -28,6 +28,7 @@ def finish(call_id: str, grant: str, status: str = "ended", seconds: int = 3) ->
 @contextlib.asynccontextmanager
 async def running(outbox: Outbox):
     task = asyncio.create_task(outbox.run())
+    await asyncio.sleep(0)  # the worker is running before the test goes on
     try:
         yield task
     finally:
@@ -293,3 +294,95 @@ async def test_drain_of_an_empty_outbox_is_immediate(client):
     outbox = Outbox(client, CallRegistry())
     assert outbox.idle
     assert await outbox.drain(0.0) == 0
+
+
+async def test_push_answered_401_is_dropped_at_once(fake, client, caplog):
+    call_id, grant = open_call(fake)
+    sleeps = Sleeps()
+    outbox = Outbox(client, CallRegistry(), sleep=sleeps)
+    outbox.put(OutboxItem(call_id, "push", "/v1/node/push",
+                          {"event": "call.finished", "title": "Saved", "body": "Saved.", "data": {}, "call": call_id},
+                          "expired-grant"))
+    outbox.put(patch(call_id, grant, attempts=6))
+    async with running(outbox):
+        await until(lambda: outbox.idle)
+    assert sleeps.waits == []  # best effort: it does not hold the calls behind it
+    assert outbox.dropped == 1 and fake.calls[call_id]["attempts"] == 6
+    assert "401" in caplog.text and "expired-grant" not in caplog.text
+
+
+@pytest.mark.parametrize(("header", "wait"), [(0, 1.0), (-5, 1.0), ("nan", 1.0), ("inf", 1.0), ("soon", 1.0),
+                                               (7, 7.0), (10_000, 600.0)])
+async def test_bad_retry_after_waits_the_backoff(fake, client, header, wait):
+    call_id, grant = open_call(fake)
+
+    def hook(n: int) -> None:
+        fake.retry_after = None
+
+    sleeps = Sleeps(hook)
+    outbox = Outbox(client, CallRegistry(), sleep=sleeps)
+    fake.retry_after = header
+    outbox.put(patch(call_id, grant))
+    async with running(outbox):
+        await until(lambda: outbox.idle)
+    assert sleeps.waits == [wait]
+
+
+async def test_unexpected_error_is_retried_and_the_worker_lives(fake, client, caplog):
+    call_id, grant = open_call(fake)
+
+    class Flaky:
+        calls = 0
+
+        async def request(self, *args, **kwargs):
+            Flaky.calls += 1
+            if Flaky.calls == 1:
+                raise RuntimeError("body with secret words")
+            return await client.request(*args, **kwargs)
+
+    sleeps = Sleeps()
+    outbox = Outbox(Flaky(), CallRegistry(), sleep=sleeps)
+    outbox.put(patch(call_id, grant, attempts=8))
+    async with running(outbox):
+        await until(lambda: outbox.idle)
+    assert sleeps.waits == [1]
+    assert fake.calls[call_id]["attempts"] == 8
+    assert "RuntimeError" in caplog.text and "secret words" not in caplog.text
+
+
+async def test_one_worker_at_a_time(client):
+    outbox = Outbox(client, CallRegistry())
+    outbox.start()
+    await asyncio.sleep(0)
+    assert outbox.running
+    with pytest.raises(RuntimeError):
+        await outbox.run()
+    outbox.start()  # already running: nothing happens
+    assert await outbox.drain(0.0) == 0
+    assert not outbox.running
+
+
+async def test_drain_stops_the_worker(fake, client):
+    call_id, grant = open_call(fake)
+    outbox = Outbox(client, CallRegistry(), sleep=Sleeps())
+    outbox.start()
+    fake.down = True
+    outbox.put(patch(call_id, grant))
+    await until(lambda: len(fake.requests) >= 2)
+    assert await outbox.drain(0.01) == 1
+    assert not outbox.running and outbox.idle
+    seen = len(fake.requests)
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert len(fake.requests) == seen  # the item counted as lost is no longer tried
+
+
+async def test_drain_stops_an_outside_worker(fake, client):
+    call_id, grant = open_call(fake)
+    outbox = Outbox(client, CallRegistry(), sleep=Sleeps())
+    task = asyncio.create_task(outbox.run())
+    await asyncio.sleep(0)
+    outbox.put(patch(call_id, grant, attempts=9))
+    assert await outbox.drain(5.0) == 0
+    assert task.done() and not outbox.running
+    assert fake.calls[call_id]["attempts"] == 9
