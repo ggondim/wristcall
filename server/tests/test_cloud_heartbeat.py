@@ -165,6 +165,42 @@ async def test_beat_while_another_carries_stats_goes_without(fake, client):
     assert hb.stats.snapshot()["busy"]["one_way"] == 0
 
 
+async def test_a_failing_snapshot_does_not_stop_the_beat(fake, client, caplog):
+    hb = heartbeat(client)
+
+    def boom() -> dict:
+        raise RuntimeError("secret-metrics-text")
+
+    hb.stats.snapshot = boom  # type: ignore[method-assign]
+    caplog.set_level(logging.WARNING, logger="wristcall.cloud_node.heartbeat")
+    assert await hb.beat() is True and await hb.beat() is True
+    assert len(fake.heartbeats) == 2 and all("stats" not in b for b in fake.heartbeats)
+    warns = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warns) == 1 and "RuntimeError" in warns[0].getMessage()
+    assert "secret-metrics-text" not in caplog.text
+
+
+async def test_a_failing_commit_still_accepts_the_beat_and_sets_ready(fake, client):
+    sleeps = Sleeps()
+    hb = heartbeat(client, every_s=15.0, sleep=sleeps)
+
+    def boom(sent: dict) -> None:
+        raise RuntimeError("commit")
+
+    hb.stats.commit = boom  # type: ignore[method-assign]
+    assert await hb.beat() is True and "stats" in fake.heartbeats[0]
+    ready = asyncio.Event()
+    task = asyncio.create_task(hb.run(ready))
+    try:
+        async with asyncio.timeout(5):
+            await ready.wait()
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    assert ready.is_set()
+
+
 START = {"type": "session.start", "protocol": 1, "audio_in": {"codec": "pcm16", "sample_rate": 16000, "channels": 1}}
 VOICE_NOTES = {
     "id": "ag_0123456789ab", "slug": "voice-notes", "display_name": "Voice notes", "icon": "mic", "color": None,

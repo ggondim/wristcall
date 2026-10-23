@@ -58,6 +58,7 @@ class Heartbeat:
         self._clock = clock
         self._unreachable_since: float | None = None  # the start of the current run of refused beats
         self._carrying = False  # a beat with `stats` is on its way: another one at once (draining) goes without
+        self._stats_failing = False  # the counters raised on the last beat: logged once per run of failures
         # Set when the node drains before exiting: it then offers no capacity, so the Cloud routes no new call here.
         self.draining = False
 
@@ -66,15 +67,24 @@ class Heartbeat:
             {"conversation": 0, "one_way": 0} if self.draining
             else {"conversation": self._capacity.conversation, "one_way": self._capacity.one_way}
         )
-        return {
+        body: dict[str, Any] = {
             "boot_id": self.boot_id,
             "version": self._version,
             "active_call_ids": self._registry.ids()[:MAX_ACTIVE_IDS],
             "active_by_type": self._slots.active(),
             "capacity": capacity,
             "providers_ok": True,  # D10: the operator's provider health comes in O3f
-            "stats": self._stats_now(),
         }
+        # A metrics bug must never stop a heartbeat (and with it readiness): the beat then goes without `stats`.
+        try:
+            body["stats"] = self._stats_now()
+        except Exception as e:  # noqa: BLE001
+            if not self._stats_failing:
+                log.warning("heartbeat: the node counters failed (%s); beating without them", type(e).__name__)
+                self._stats_failing = True
+        else:
+            self._stats_failing = False
+        return body
 
     def _stats_now(self) -> dict[str, Any]:
         self.stats.active(self._slots.active())
@@ -108,8 +118,12 @@ class Heartbeat:
             if 200 <= resp.status < 300:
                 if carrying:
                     self._unreachable_since = None
-                    self.stats.active(self._slots.active())
-                    self.stats.commit(body["stats"])
+                    if "stats" in body:
+                        try:
+                            self.stats.active(self._slots.active())
+                            self.stats.commit(body["stats"])
+                        except Exception as e:  # noqa: BLE001 - the beat was accepted; only the counters are in doubt
+                            log.warning("heartbeat: the node counters could not be taken off (%s)", type(e).__name__)
                 if self._failing:
                     log.info("heartbeat: accepted again")
                     self._failing = False
