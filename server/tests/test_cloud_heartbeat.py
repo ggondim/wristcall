@@ -180,6 +180,39 @@ async def test_a_failing_snapshot_does_not_stop_the_beat(fake, client, caplog):
     assert "secret-metrics-text" not in caplog.text
 
 
+async def test_a_failing_snapshot_on_a_beat_that_does_not_carry_still_sends(fake, client):
+    hb = heartbeat(client)
+
+    def boom() -> dict:
+        raise RuntimeError("snapshot")
+
+    hb.stats.snapshot = boom  # type: ignore[method-assign]
+    hb._carrying = True  # another beat is on its way: this one goes without stats
+    assert await hb.beat() is True
+    assert len(fake.heartbeats) == 1 and "stats" not in fake.heartbeats[0]
+
+
+async def test_a_failing_cloud_unreachable_counter_still_beats_and_sets_ready(fake, client):
+    sleeps = Sleeps()
+    hb = heartbeat(client, every_s=15.0, sleep=sleeps)
+
+    def boom(seconds: float) -> None:
+        raise RuntimeError("unreachable")
+
+    hb.stats.cloud_unreachable = boom  # type: ignore[method-assign]
+    hb._unreachable_since = hb._clock() - 30
+    ready = asyncio.Event()
+    task = asyncio.create_task(hb.run(ready))
+    try:
+        async with asyncio.timeout(5):
+            await ready.wait()
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    assert ready.is_set() and len(fake.heartbeats) >= 1 and hb._unreachable_since is None
+
+
 async def test_a_failing_commit_still_accepts_the_beat_and_sets_ready(fake, client):
     sleeps = Sleeps()
     hb = heartbeat(client, every_s=15.0, sleep=sleeps)

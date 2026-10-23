@@ -105,11 +105,16 @@ class Heartbeat:
     async def _beat(self, carrying: bool) -> bool:
         now = self._clock()
         if carrying and self._unreachable_since is not None:
-            self.stats.cloud_unreachable(now - self._unreachable_since)
+            try:
+                self.stats.cloud_unreachable(now - self._unreachable_since)
+            except Exception as e:  # noqa: BLE001 - a metrics bug must not skip the beat
+                if not self._stats_failing:
+                    log.warning("heartbeat: the node counters failed (%s); beating without them", type(e).__name__)
+                    self._stats_failing = True
             self._unreachable_since = now
         body = self.body()
         if not carrying:
-            del body["stats"]
+            body.pop("stats", None)
         try:
             resp = await self._client.request("POST", "/v1/node/heartbeat", json=body)
         except CloudUnavailable:
