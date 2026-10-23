@@ -173,8 +173,11 @@ struct WristcallApp: App {
     private static func makeCloud(_ model: AppModel) -> (setup: LiveSetupBackend, login: LiveAccountLoginBackend)? {
         guard let cloud = AccountLoginModel.cloudURL(
             fromInfoValue: Bundle.main.object(forInfoDictionaryKey: "WristcallCloudURL") as? String) else { return nil }
-        let session = DeviceSession(cloud: cloud, store: KeychainDeviceSessionStore())
-        let legacy = AccountSession(cloud: cloud, kind: .watch, store: KeychainTokenStore(service: KeychainTokenStore.defaultService))
+        // `X-Wristcall-Client: watchos/<version>` on every Cloud request (the Cloud gates its entry by it).
+        let client = ClientIdentity.fromBundle(platform: .watchos)
+        let session = DeviceSession(cloud: cloud, store: KeychainDeviceSessionStore(), client: client)
+        let legacy = AccountSession(
+            cloud: cloud, kind: .watch, store: KeychainTokenStore(service: KeychainTokenStore.defaultService), client: client)
         let keys = KeychainAccountKeyStore(accessGroup: KeychainGroup.shared(
             infoValue: Bundle.main.object(forInfoDictionaryKey: "WristcallKeychainGroup") as? String))
         let enrollment = WatchEnrollment(

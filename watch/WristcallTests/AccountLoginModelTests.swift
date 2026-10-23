@@ -42,6 +42,11 @@ final class FakeAccountBackend: AccountLoginBackend {
         }
     }
 
+    /// The whole agenda (the cloud entry among it).
+    func scriptAgenda(_ servers: [CloudServer]) {
+        state.withLock { $0.servers = .success(servers) }
+    }
+
     func isSignedIn() async -> Bool { signedIn }
 
     func startDeviceAuthorization() async throws -> DeviceAuthorization {
@@ -420,6 +425,51 @@ struct AccountLoginModelTests {
         #expect(model.isBusy)
         model.cancelPairing()
         _ = await other.value
+    }
+
+    // MARK: - Cloud entry
+
+    var cloudEntry: CloudServer {
+        CloudServer(
+            id: "cs-cloud", name: "Wristcall Cloud", url: "https://cloud.example.com", kind: "cloud", linked: true,
+            agents: [CloudAgent(id: "ag_c1", slug: "voice-notes", displayName: "Voice notes", icon: "mic",
+                                callType: "conversation")])
+    }
+
+    @Test func cloudEntryRemovedWhenAgendaLosesIt() async throws {
+        backend.signedIn = true
+        backend.scriptAgenda([cloudEntry])
+        let model = await makeAppModel()
+        let login = makeLogin(model: model)
+
+        await login.sync()
+        #expect(model.servers.map(\.id) == [Credentials.cloudEntryID])
+        #expect(model.phase == .home)
+        // Never paired.
+        #expect(backend.calls == ["servers"])
+        #expect(login.phase == .finished([]))
+
+        backend.scriptAgenda([])
+        await login.sync()
+        #expect(model.servers.isEmpty)
+        #expect(model.phase == .unpaired)
+        let relaunched = AppModel(pairing: pairing, store: store, defaults: defaults, sleep: { _ in })
+        await relaunched.launch()
+        #expect(relaunched.servers.isEmpty)
+    }
+
+    /// The session is gone (the account's sign-out as the login sees it): the entry goes with it.
+    @Test func sessionLostClearsCloudEntry() async throws {
+        let model = await makeAppModel()
+        model.applyCloudEntry(cloudEntry)
+        try #require(model.phase == .home)
+        let login = AccountLoginModel(backend: FailingAgendaBackend(error: AccountError.signedOut), model: model, sendToPhone: nil)
+
+        await login.sync()
+
+        #expect(login.phase == .failed(AccountLoginModel.Message.signInAgain))
+        #expect(model.servers.isEmpty)
+        #expect(model.phase == .unpaired)
     }
 
     @Test func shortForms() {

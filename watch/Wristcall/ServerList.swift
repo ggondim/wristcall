@@ -19,7 +19,10 @@ struct ServerEntry: Identifiable, Equatable {
     var id: String { credentials.id }
     /// What the screens call the server: the host, with the port when there is one (two local
     /// servers differ only by it).
-    var host: String { credentials.serverURL.displayHost }
+    var host: String { credentials.isCloudEntry ? Self.cloudHost : credentials.serverURL.displayHost }
+
+    /// What the grid, the catalog and Settings call the cloud entry.
+    static let cloudHost = "Wristcall Cloud"
 
     /// `GET /v1/me` answered: its agents are listed.
     var isReady: Bool {

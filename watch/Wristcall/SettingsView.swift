@@ -29,7 +29,8 @@ struct SettingsView: View {
     }
 }
 
-/// The paired servers: how each one stands, "Remove" with a confirmation, and "Add server".
+/// The servers: how each one stands, "Remove" with a confirmation (not on the Wristcall Cloud entry), and
+/// "Add server".
 struct ServersView: View {
     let model: AppModel
     @State private var removing: ServerEntry?
@@ -38,20 +39,17 @@ struct ServersView: View {
         List {
             Section {
                 ForEach(model.servers) { entry in
-                    Button {
-                        removing = entry
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(entry.host)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.7)
-                            Text(detail(of: entry))
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
+                    if entry.credentials.isCloudEntry {
+                        // The account's: it comes and goes with the agenda, never removed here.
+                        row(entry)
+                    } else {
+                        Button {
+                            removing = entry
+                        } label: {
+                            row(entry)
                         }
+                        .disabled(model.removingServerIDs.contains(entry.id))
                     }
-                    .disabled(model.removingServerIDs.contains(entry.id))
                 }
             } footer: {
                 if let message = model.message {
@@ -75,6 +73,18 @@ struct ServersView: View {
             Button("Remove", role: .destructive) {
                 Task { await model.removeServer(id: entry.id) }
             }
+        }
+    }
+
+    private func row(_ entry: ServerEntry) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(entry.host)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            Text(detail(of: entry))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
         }
     }
 

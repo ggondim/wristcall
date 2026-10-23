@@ -59,7 +59,9 @@ final class PushCoordinator: NSObject, PushHandling, UNUserNotificationCenterDel
         topic: String,
         environment: PushEnvironment,
         keys: any PushKeyStore = KeychainPushKeyStore(),
-        makeRelay: (URL) -> any PushRelaying = { PushRelayClient(relayURL: $0) },
+        makeRelay: (URL) -> any PushRelaying = {
+            PushRelayClient(relayURL: $0, client: ClientIdentity.fromBundle(platform: .watchos))
+        },
         makeServer: @escaping @Sendable (Credentials) -> any ServerPushing = { ServerPushClient(credentials: $0) },
         requestAuthorization: @escaping @MainActor () async -> Void = PushCoordinator.requestNotificationAuthorization
     ) {
@@ -142,7 +144,8 @@ final class PushCoordinator: NSObject, PushHandling, UNUserNotificationCenterDel
     private func runSyncs() async {
         repeat {
             needsSync = false
-            for credentials in model?.servers.map(\.credentials) ?? [] {
+            // The cloud entry has no device token to register a key with.
+            for credentials in model?.pairedServers.map(\.credentials) ?? [] {
                 guard let token = deviceToken else { break }
                 await sync(credentials, token: token)
             }

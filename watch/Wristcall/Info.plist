@@ -27,6 +27,9 @@
 	<!-- The Cloud for the account login (empty: the watch has no account login). -->
 	<key>WristcallCloudURL</key>
 	<string>$(WRISTCALL_CLOUD_URL)</string>
+	<!-- Product version sent to the Cloud (X-Wristcall-Client); set per target in project.yml. -->
+	<key>WristcallClientVersion</key>
+	<string>$(WRISTCALL_CLIENT_VERSION)</string>
 	<!-- Push relay (Cloud) and APNs environment: set by Config/Push.xcconfig, empty (push off) otherwise. -->
 	<key>WristcallRelayURL</key>
 	<string>$(WRISTCALL_RELAY_URL)</string>
