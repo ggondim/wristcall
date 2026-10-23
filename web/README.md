@@ -23,6 +23,9 @@ What it does:
   from 80 % of the month's call minutes. A one-way agent there may have no webhook: "None, save to History".
 - History: the calls of every server (and of Wristcall Cloud) in one list, with search, filters, export and
   redelivery; a Voice note kept in the history reads "Saved".
+- Every request to the Cloud carries `X-Wristcall-Client: web/0.4.0`, which the Cloud checks against
+  `WRISTCALL_CLOUD_CLOUD_ENTRY_CLIENTS` before it shows the Cloud entry; servers and nodes never get it. The app does
+  not call through the entry (the watch does).
 - Settings: the account's plan with the month's call minutes, "Redeem invite" while there is no plan, the devices
   signed in to the account, notifications, "Device requests" (watches waiting to pair: approve or deny), sign out and
   delete account.

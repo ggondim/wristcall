@@ -746,6 +746,13 @@ What a one-way call recorded until the cut is transcribed and delivered as usual
 
 `POST /v1/calls/{id}/redeliver` answers `409 not_failed` also when the Cloud no longer has the call.
 
+**Apps.** The apps send `X-Wristcall-Client: <platform>/<x.y.z>` (for example `watchos/0.6.0`) on every request to the
+Cloud, and only to the Cloud: never to a node or to a self-hosted server (their CORS does not accept it). An app
+keeps the `manage` route it got from `POST /v1/route` until 30 seconds before its `expires_at`, asks a fresh `call`
+route for each call, and when a node answers `401` drops the route and retries once with a new one. When `POST /v1/route`
+answers `503 no_node_available` (no healthy node), the apps show "Wristcall Cloud is temporarily
+unavailable. Try again in a minute."
+
 ## Versioning
 
 Compatible changes (new fields, new messages the client can ignore)
