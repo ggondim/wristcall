@@ -241,7 +241,13 @@ final class CallCoordinator: CallHandling {
                 model?.callActivityDidChange(call.idleActivity)
             }
         case .ended(let reason):
-            Self.log.notice("call ended by the server or the network: \(String(describing: reason), privacy: .public)")
+            if case .serverFatal(let error?) = reason {
+                // The code (and reason) are the protocol's own; the message is free text from the server or the route.
+                Self.log.notice(
+                    "call ended by the server: \(error.code.wireValue, privacy: .public) reason=\(error.reason ?? "-", privacy: .public) message=\(error.message, privacy: .private)")
+            } else {
+                Self.log.notice("call ended by the server or the network: \(String(describing: reason), privacy: .public)")
+            }
             let resultID = call.resultID
             finish(id, cause: reason == .normal ? .remoteEnded : .failed) { $0.callDidEnd(reason, callID: resultID) }
         }

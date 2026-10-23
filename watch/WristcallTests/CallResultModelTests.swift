@@ -47,6 +47,38 @@ struct CallResultModelTests {
         #expect(pairing.callStatusTokens == ["device-token", "device-token"])
     }
 
+    @Test func aVoiceNoteKeptInTheHistorySaysSaved() async throws {
+        let saved = CallStatus(id: "c_1", callType: .oneShot, state: .delivered, text: "buy milk", delivery: "history")
+        pairing.callStatusResults = [.success(saved)]
+        let result = makeResult()
+
+        #expect(result.headline == "Sending…")
+        await run(result)
+
+        #expect(result.state == .finished(saved))
+        #expect(result.headline == "Saved")
+        #expect(finishes.all == [true])
+    }
+
+    @Test func aWebhookDeliverySaysDelivered() async throws {
+        pairing.callStatusResults = [.success(
+            CallStatus(id: "c_1", callType: .oneShot, state: .delivered, text: "buy milk", delivery: "webhook"))]
+        let result = makeResult()
+
+        await run(result)
+
+        #expect(result.headline == "Delivered")
+    }
+
+    @Test func aServerThatDoesNotSayWhereSaysDelivered() async throws {
+        pairing.callStatusResults = [.success(status(.delivered, text: "buy milk"))]
+        let result = makeResult()
+
+        await run(result)
+
+        #expect(result.headline == "Delivered")
+    }
+
     @Test func failureFinishesWithTheReason() async throws {
         let failed = status(.failed, failure: .deliveryFailed, text: "buy milk", attempts: 3)
         pairing.callStatusResults = [.success(failed)]

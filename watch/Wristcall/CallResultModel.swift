@@ -74,6 +74,23 @@ final class CallResultModel {
             fetch: { try await pairing.callStatus(server: server, token: token, callID: $0) }, poller: poller)
     }
 
+    /// The line under the icon. A Voice notes call kept in the history (no webhook) says "Saved", like the iPhone
+    /// and the web app.
+    var headline: String {
+        switch state {
+        case .waiting: "Sending…"
+        case .finished(let status):
+            switch status.state {
+            case .delivered: status.savedToHistory ? "Saved" : "Delivered"
+            case .failed: "Not delivered"
+            case .empty: "Nothing recorded."
+            default: "Result unavailable."
+            }
+        case .timedOut: "Still processing. Check again later."
+        case .unavailable: "Result unavailable."
+        }
+    }
+
     /// Starts asking, unless a query is already running.
     func start() {
         guard task == nil else { return }

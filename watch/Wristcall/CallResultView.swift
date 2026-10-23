@@ -20,7 +20,7 @@ struct CallResultView: View {
                 indicator
                     .font(.system(size: 32))
                     .frame(minHeight: 36)
-                Text(headline)
+                Text(result.headline)
                     .font(.headline)
                     .multilineTextAlignment(.center)
                 if let detail {
@@ -70,21 +70,6 @@ struct CallResultView: View {
             Image(systemName: "clock.fill").foregroundStyle(.secondary)
         case .unavailable:
             Image(systemName: "questionmark.circle.fill").foregroundStyle(.secondary)
-        }
-    }
-
-    private var headline: String {
-        switch result.state {
-        case .waiting: "Sending…"
-        case .finished(let status):
-            switch status.state {
-            case .delivered: "Delivered"
-            case .failed: "Not delivered"
-            case .empty: "Nothing recorded."
-            default: "Result unavailable."
-            }
-        case .timedOut: "Still processing. Check again later."
-        case .unavailable: "Result unavailable."
         }
     }
 
