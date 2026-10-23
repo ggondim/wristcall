@@ -54,6 +54,15 @@ CALL_FIELDS = (
 ENTRY_FIELDS = ("seq", "role", "text", "sealed", "error", "at")
 CALL_PATCH_FIELDS = {"status", "error", "attempts", "last_http_status", "ended_at", "finished_at", "delivery"}
 MESSAGE_FIELDS = {"event", "title", "body", "data", "ttl_s", "collapse_id"}
+# The heartbeat's optional `stats` (server 0.11.0): the node's counters of the interval.
+STATS_FIELDS = {
+    "calls", "busy", "not_ready", "peak", "first_audio_ms", "stt_ms", "tts_ms", "provider_failures",
+    "cloud_unreachable_s", "outbox_dropped",
+}
+STATS_BUCKETS = {"250", "500", "750", "1000", "1500", "2000", "2500", "3000", "4000", "5000", "7500", "10000", "15000",
+                 "inf"}
+STATS_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+STATS_MAX_NAMES = 8
 
 
 class CloudError(Exception):
@@ -163,6 +172,28 @@ def _counts(value: Any, nullable: bool) -> bool:
     )
 
 
+def _histogram(value: Any) -> bool:
+    return isinstance(value, dict) and all(k in STATS_BUCKETS and _integer(n, 1, 1_000_000) for k, n in value.items())
+
+
+def _named(value: Any, valid: Any) -> bool:
+    return (
+        isinstance(value, dict) and len(value) <= STATS_MAX_NAMES
+        and all(isinstance(k, str) and STATS_NAME.fullmatch(k) and valid(n) for k, n in value.items())
+    )
+
+
+def _stats(value: Any) -> bool:
+    return (
+        isinstance(value, dict) and set(value) == STATS_FIELDS
+        and all(_counts(value[k], False) for k in ("calls", "busy", "peak"))
+        and all(_integer(value[k], 0, 1_000_000_000) for k in ("not_ready", "cloud_unreachable_s", "outbox_dropped"))
+        and _histogram(value["first_audio_ms"])
+        and _named(value["stt_ms"], _histogram) and _named(value["tts_ms"], _histogram)
+        and _named(value["provider_failures"], lambda n: _integer(n, 1, 1_000_000))
+    )
+
+
 def _heartbeat(body: dict[str, Any]) -> None:
     active = body.get("active_call_ids")
     texts = [(body.get("boot_id"), 64), (body.get("version"), 32)] + [(c, 64) for c in active or []]
@@ -170,6 +201,7 @@ def _heartbeat(body: dict[str, Any]) -> None:
         not isinstance(active, list) or len(active) > 500 or not isinstance(body.get("providers_ok"), bool)
         or not all(isinstance(t, str) and 0 < len(t) <= n for t, n in texts)
         or not _counts(body.get("active_by_type"), False) or not _counts(body.get("capacity"), True)
+        or ("stats" in body and not _stats(body["stats"]))
     ):
         raise _invalid("heartbeat is not valid")
 
@@ -195,7 +227,9 @@ class FakeCloud:
     call (public fields plus `account`, `platform`, `request_id`, `max_s`); `entries` call id -> seq -> entry (plus
     `term_hashes`); `grants` grant -> `{call, account, device, platform, exp}`; `push_targets` "account:device" ->
     push key; `pushes` what `POST /v1/node/push` sent (`{account, device, call, message}`); `heartbeats` bodies
-    received; `requests` every request received (`seed_call` adds a call to the history); `down` (every route 503);
+    accepted (their `stats` also in `node_stats`), `heartbeat_bodies` every one received and `heartbeat_answers`
+    statuses the next heartbeats get instead of 204 (one each, in order); `requests` every request received
+    (`seed_call` adds a call to the history); `down` (every route 503);
     `retry_after` (every node route 429 with that Retry-After); `max_agents`, `max_conversation_s`, `max_one_way_s`,
     `retention_days`."""
 
@@ -213,6 +247,9 @@ class FakeCloud:
         self.push_targets: dict[str, str] = {}
         self.pushes: list[dict] = []
         self.heartbeats: list[dict] = []
+        self.heartbeat_bodies: list[dict] = []
+        self.heartbeat_answers: list[int] = []
+        self.node_stats: list[dict] = []
         self.requests: list[dict] = []  # every request received: method, path, params (pairs), headers (lowercase)
         self.down = False
         self.retry_after: int | None = None
@@ -709,8 +746,14 @@ class FakeCloud:
         async def heartbeat(request: Request) -> Response:
             self._node(request)
             body = await body_of(request)
+            self.heartbeat_bodies.append(body)
+            if self.heartbeat_answers:
+                status = self.heartbeat_answers.pop(0)
+                return JSONResponse({"error": "unavailable", "message": "try again"}, status_code=status)
             _heartbeat(body)
             self.heartbeats.append(body)
+            if "stats" in body:
+                self.node_stats.append(body["stats"])
             return Response(status_code=204)
 
         return app

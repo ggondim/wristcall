@@ -4,6 +4,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 
 ## [Unreleased]
 
+## [server-0.11.0] - 2026-10-23
+
+Server 0.11.0. In cloud mode each heartbeat carries the node's counters (`stats`). For Cloud 0.6.1 or later; Cloud
+0.7.0 keeps the hourly summary. Self-hosted servers are unchanged.
+
+### Added
+
+- Heartbeat `stats` (cloud mode), the values of the interval since the last accepted heartbeat: `calls`, `busy` and
+  `peak` by call type, `not_ready`, `first_audio_ms` (end of the user's turn to the first audio of the answer),
+  `stt_ms` and `tts_ms` per provider (TTS: time to the first audio of each sentence), `provider_failures`,
+  `cloud_unreachable_s` and `outbox_dropped`. Times are histograms over fixed buckets (250 ms to 15 s, then `inf`).
+  See "Node metrics" in the README.
+- A heartbeat the Cloud refuses takes nothing off the counters: they add up until one is accepted, with the time the
+  Cloud was not reached.
+
+### Notes
+
+- Provider names in the counters: the operator's YAML name, `user` for the user's own endpoint, and `other` for a
+  name that is not safe to send or any past the first six (at most 8 names per map).
+- A Cloud before 0.7.0 ignores `stats`.
+
 ## [watch-0.6.0] - 2026-10-23
 
 Watch app 0.6.0 (build 8), embedded in iPhone app 0.3.0. For Cloud 0.6.1 with `WRISTCALL_CLOUD_CLOUD_ENTRY_CLIENTS`
