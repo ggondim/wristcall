@@ -103,7 +103,7 @@ describe("AgentsHome", () => {
 const FULL: CloudPlan = { plan: "full", source: "beta", expires_at: null }
 
 /** A signed-in account whose plan is `plan`, with the month's usage read through `servers`. */
-function accountWith(plan: CloudPlan | null, servers: ServersModel): AccountModel {
+function accountWith(plan: CloudPlan | null, servers: ServersModel, refreshAgenda?: () => void): AccountModel {
   const cloud: AccountCloud = {
     account: async () => ({ account: "acc-1", created_at: "", servers: 0, plan, identities: ["zitadel"], key_set: true }),
     deleteAccount: async () => {},
@@ -111,7 +111,7 @@ function accountWith(plan: CloudPlan | null, servers: ServersModel): AccountMode
     devices: async () => [],
     removeDevice: async () => {},
   }
-  return new AccountModel(new FakeSession("signedIn", []), null, null, { cloud, usage: new UsageModel(servers) })
+  return new AccountModel(new FakeSession("signedIn", []), null, null, { cloud, usage: new UsageModel(servers), refreshAgenda })
 }
 
 /** A node that answers the agents, the calls and `me` (the month's usage: `used_s` of 600 minutes). */
@@ -127,6 +127,34 @@ function node(agents: unknown[], calls: CallRecord[] = [], used_s = 0): Handler 
 const nodeCalls = (fetchMock: { calls: { url: string }[] }) => fetchMock.calls.filter((call) => new URL(call.url).host === NODE)
 
 describe("AgentsHome with Wristcall Cloud", () => {
+  test("redeeming an invite replaces Setting up with the Cloud section", async () => {
+    const { servers, fetchMock } = serversWith([], { [NODE]: node([agent("n1", "Notes")]) })
+    attachCloudRoute(servers, fetchMock)
+    // The agenda as the Cloud has it: the entry comes with the plan the invite gives.
+    let agendaHasEntry = false
+    let reads = 0
+    const account = accountWith(null, servers, () => {
+      reads += 1
+      const entry = agendaHasEntry
+      void Promise.resolve().then(() => {
+        if (entry) servers.setCloud(cloudEntry({ agents: [cloudAgent("n1", "Notes")] }))
+      })
+    })
+    render(<AgentsHome model={new AgentsHomeModel(servers)} servers={servers} account={account} />)
+    await waitFor(() => expect(account.state.identities).not.toBeNull())
+    // Opening Agents reads the agenda once.
+    expect(reads).toBe(1)
+    expect(screen.queryByText("Setting up Wristcall Cloud…")).toBeNull()
+    agendaHasEntry = true
+    await act(async () => {
+      expect(await account.redeemInvite("ABCD-1234")).toBe(true)
+    })
+    expect(reads).toBe(2)
+    expect(await screen.findByRole("heading", { name: "Wristcall Cloud · Beta" })).toBeTruthy()
+    expect(await screen.findByText("Notes")).toBeTruthy()
+    expect(screen.queryByText("Setting up Wristcall Cloud…")).toBeNull()
+  })
+
   test("account without cloud entry shows no cloud section", async () => {
     const { servers, fetchMock } = serversWith([savedServer({ id: "home", name: "home" })], {
       "home.example.com": (path) => (path === "agents" ? json({ agents: [agent("h", "Kitchen")] }) : null),
@@ -136,7 +164,7 @@ describe("AgentsHome with Wristcall Cloud", () => {
     render(<AgentsHome model={new AgentsHomeModel(servers)} servers={servers} account={account} />)
     expect(await screen.findByText("Kitchen")).toBeTruthy()
     await waitFor(() => expect(account.state.identities).not.toBeNull())
-    expect(screen.queryByRole("heading", { name: "Wristcall Cloud" })).toBeNull()
+    expect(screen.queryByRole("heading", { name: "Wristcall Cloud · Beta" })).toBeNull()
     expect(screen.queryByText("Setting up Wristcall Cloud…")).toBeNull()
     expect(nodeCalls(fetchMock)).toEqual([])
   })
@@ -154,7 +182,7 @@ describe("AgentsHome with Wristcall Cloud", () => {
     servers.setCloud(cloudEntry({ agents: [cloudAgent("n1", "Notes")] }))
     const account = accountWith(null, servers)
     render(<AgentsHome model={new AgentsHomeModel(servers)} servers={servers} account={account} />)
-    expect(await screen.findByRole("heading", { name: "Wristcall Cloud" })).toBeTruthy()
+    expect(await screen.findByRole("heading", { name: "Wristcall Cloud · Beta" })).toBeTruthy()
     const list = await screen.findByRole("list", { name: "Wristcall Cloud agents" })
     expect(within(list).getByRole("link").getAttribute("href")).toBe("/servers/cloud/agents/n1")
     await waitFor(() => expect(account.state.identities).not.toBeNull())
@@ -178,7 +206,7 @@ describe("AgentsHome with Wristcall Cloud", () => {
     expect(screen.queryByRole("list", { name: "Wristcall Cloud agents" })).toBeNull()
     // Once the agenda lists the entry, its section takes the place of the line.
     act(() => servers.setCloud(cloudEntry()))
-    expect(await screen.findByRole("heading", { name: "Wristcall Cloud" })).toBeTruthy()
+    expect(await screen.findByRole("heading", { name: "Wristcall Cloud · Beta" })).toBeTruthy()
     expect(screen.queryByText("Setting up Wristcall Cloud…")).toBeNull()
   })
 

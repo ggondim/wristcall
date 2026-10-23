@@ -1,8 +1,8 @@
 import { useEffect } from "preact/hooks"
 import type { AccountModel, AccountState } from "../models/account"
 import { callTypeLabel } from "../models/agentForm"
-import { cloudNotice, type AgentsHomeModel, type AgentsSection } from "../models/agentsHome"
-import { CLOUD_ENTRY_NAME, type ServersModel } from "../models/servers"
+import { CLOUD_SECTION_TITLE, cloudNotice, type AgentsHomeModel, type AgentsSection } from "../models/agentsHome"
+import { CLOUD_ENTRY_ID, CLOUD_ENTRY_NAME, type ServersModel } from "../models/servers"
 import { usageExhausted, usageWarning, type UsageModel, type UsageState } from "../models/usage"
 import { resolvedColor } from "./agentColor"
 import { AgentIcon } from "./IconPicker"
@@ -28,10 +28,12 @@ function Row({ agent, href }: { agent: AgentsSection["agents"][number]; href: st
 function Section({ section }: { section: AgentsSection }) {
   const list = agentsPath(section.serverId)
   const readOnly = section.setupHref !== null
+  // The Cloud entry's section says it is a beta, like the iPhone's header.
+  const title = !readOnly && section.serverId === CLOUD_ENTRY_ID ? CLOUD_SECTION_TITLE : section.serverName
   return (
     <section class="agents-section" aria-label={section.serverName}>
       <header class="screen-head">
-        <h2 class="section-title">{section.serverName}</h2>
+        <h2 class="section-title">{title}</h2>
         {readOnly ? (
           <Link class="button quiet" href={section.setupHref!}>
             Set up
@@ -91,6 +93,10 @@ export function AgentsHome({ model, servers, account = null }: { model: AgentsHo
   useEffect(() => {
     model.refreshAccount()
   }, [model, fromAccount, cloudId])
+  // The agenda again on opening: the Cloud entry may have come since it was last read.
+  useEffect(() => {
+    account?.refreshAgenda()
+  }, [account])
   // The plan decides the "Setting up" line; Settings reads it again each time, here once per account.
   useEffect(() => {
     if (screen === "signedIn" && identities === null) void account?.loadProfile()
@@ -110,7 +116,7 @@ export function AgentsHome({ model, servers, account = null }: { model: AgentsHo
       {notice !== null ? (
         <section class="agents-section" aria-label={CLOUD_ENTRY_NAME}>
           <header class="screen-head">
-            <h2 class="section-title">{CLOUD_ENTRY_NAME}</h2>
+            <h2 class="section-title">{CLOUD_SECTION_TITLE}</h2>
           </header>
           <p class="muted">{notice}</p>
         </section>

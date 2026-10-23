@@ -8,6 +8,9 @@ import { CLOUD_ENTRY_ID, CLOUD_ENTRY_NAME, type ServersModel } from "./servers"
 /** A plan, but the Cloud has not added its entry to the agenda yet (the iPhone app says the same). */
 export const SETTING_UP = "Setting up Wristcall Cloud…"
 
+/** The heading of the Wristcall Cloud section on the Agents home (the iPhone's "WRISTCALL CLOUD · BETA"). */
+export const CLOUD_SECTION_TITLE = "Wristcall Cloud · Beta"
+
 /** The line the Agents home shows in place of the Cloud section: only with a plan and no entry yet. */
 export function cloudNotice(plan: CloudPlan | null, cloud: CloudServer | null): string | null {
   return plan !== null && cloud === null ? SETTING_UP : null

@@ -277,6 +277,15 @@ export class AgentFormModel extends BaseModel<FormState> {
     return this.state.callType !== "conversation"
   }
 
+  /** The note under the call type: what a call does with your voice. */
+  get callTypeNote(): string {
+    if (!this.isOneWay) return "You talk and the agent answers with a voice."
+    if (this.state.action === "none" && this.historyOnly) {
+      return "The watch records you and saves the transcript to History. There is no answer and no voice."
+    }
+    return "The watch records you and sends the transcript to a webhook. There is no answer and no voice."
+  }
+
   /** The request body (see the class comment). */
   get fields(): Record<string, unknown> {
     return this.#body()

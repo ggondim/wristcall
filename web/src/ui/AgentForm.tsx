@@ -221,7 +221,7 @@ function FormBody({ form, serverId }: { form: AgentFormModel; serverId: string }
             ))}
           </select>
         </label>
-        <p class="footnote">{oneWay ? "The watch records you and sends the transcript to a webhook. There is no answer and no voice." : "You talk and the agent answers with a voice."}</p>
+        <p class="footnote">{form.callTypeNote}</p>
 
         {stages.map((stage) => (
           <StageSection key={stage} form={form} stage={stage} />

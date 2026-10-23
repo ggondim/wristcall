@@ -20,16 +20,20 @@ import { App } from "./ui/App"
 import { navigate } from "./ui/route"
 
 /**
- * The agenda's servers this browser has no token for ("From your account") and the Wristcall Cloud entry, read now and
- * when the account or the page changes. An agenda that cannot be read keeps the Cloud entry shown.
+ * Reads the agenda's servers this browser has no token for ("From your account") and the Wristcall Cloud entry. An
+ * agenda that cannot be read keeps the Cloud entry shown.
  */
-function showAccountServers(agenda: AgendaSync, servers: ServersModel, session: AccountSession): void {
-  const refresh = (): void => {
+function accountServersRefresh(agenda: AgendaSync, servers: ServersModel): () => void {
+  return () => {
     void agenda.read().then(({ pending, cloud }) => {
       servers.setFromAccount(pending)
       if (cloud !== undefined) servers.setCloud(cloud)
     })
   }
+}
+
+/** The account's servers and the Cloud entry (`refresh`), read now and when the account or the page changes. */
+function showAccountServers(refresh: () => void, session: AccountSession): void {
   refresh()
   session.onStateChange(refresh)
   document.addEventListener("visibilitychange", () => {
@@ -92,7 +96,10 @@ async function start(): Promise<void> {
           },
           sync: push,
         })
-  const account = session === null ? null : new AccountModel(session, agenda, push, { cloud, servers, usage: new UsageModel(servers) })
+  // Read again after an invite is redeemed and when the Agents home opens: the Cloud entry may have come.
+  const refreshAgenda = agenda === null ? null : accountServersRefresh(agenda, servers)
+  const account =
+    session === null ? null : new AccountModel(session, agenda, push, { cloud, servers, usage: new UsageModel(servers), refreshAgenda: refreshAgenda ?? undefined })
   const signIn = cloud === null || account === null ? null : new SignInModel({ cloud, account })
   render(
     <App
@@ -108,7 +115,7 @@ async function start(): Promise<void> {
     document.getElementById("app")!,
   )
   account?.start()
-  if (agenda !== null && session !== null) showAccountServers(agenda, servers, session)
+  if (refreshAgenda !== null && session !== null) showAccountServers(refreshAgenda, session)
   // The badge counts what waits: read on opening and each time the app comes back to the front.
   void approvals.refresh()
   refreshWhenServersChange(servers, approvals)

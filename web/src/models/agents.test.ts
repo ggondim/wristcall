@@ -458,6 +458,17 @@ describe("history-only Voice notes", () => {
     expect(model.form(null).label("none", "action")).toBe("Server default")
   })
 
+  test("history-only one-shot without a webhook says the transcript is saved to History", async () => {
+    const model = new AgentsModel(client(server(true)), "cloud")
+    await model.load()
+    const form = model.form(note)
+    expect(form.callTypeNote).toBe("The watch records you and saves the transcript to History. There is no answer and no voice.")
+    form.update({ action: "custom" })
+    expect(form.callTypeNote).toBe("The watch records you and sends the transcript to a webhook. There is no answer and no voice.")
+    form.selectCallType("conversation")
+    expect(form.callTypeNote).toBe("You talk and the agent answers with a voice.")
+  })
+
   test("one-way without action still needs a webhook on self-hosted", async () => {
     const fetchMock = server(false)
     const model = new AgentsModel(client(fetchMock), "home")
@@ -466,6 +477,7 @@ describe("history-only Voice notes", () => {
     expect(form.historyOnly).toBe(false)
     expect(form.label("none", "action")).toBe("Choose…")
     expect(form.validate()).toBe("Choose Webhook.")
+    expect(form.callTypeNote).toBe("The watch records you and sends the transcript to a webhook. There is no answer and no voice.")
     form.update({ displayName: "Voice notes" })
     await expect(form.save()).rejects.toThrow("Choose Webhook.")
     expect(fetchMock.calls.some((call) => call.init.method === "PATCH")).toBe(false)
