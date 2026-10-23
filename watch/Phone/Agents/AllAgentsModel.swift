@@ -4,7 +4,7 @@ import WristcallKit
 
 /// The agents of every saved server and of the Wristcall Cloud entry, one section each (the Agents home). A server
 /// that does not answer keeps its section (with what was on screen and the reason); the others are not affected.
-/// The Cloud entry's section comes first; when its node does not answer, it shows the agents of the agenda.
+/// The Cloud entry's section comes first; when its node does not answer, it always shows the agents of the agenda.
 @MainActor
 @Observable
 final class AllAgentsModel {
@@ -103,9 +103,8 @@ final class AllAgentsModel {
             }.map(\.element)
             return Section(server: server, agents: ordered, error: nil)
         case .failure(let error):
-            // What was on screen; with nothing there, what the agenda lists (the Cloud entry's agents).
-            let shown = previous?.agents ?? []
-            let agents = shown.isEmpty ? agendaAgents(server) : shown
+            // The Cloud entry always shows what the agenda lists; the others keep what was on screen.
+            let agents = server.isCloudEntry ? agendaAgents(server) : (previous?.agents ?? [])
             return Section(server: server, agents: agents, error: AgentsModel.message(error))
         case nil:
             return Section(server: server, agents: previous?.agents ?? [], error: nil)

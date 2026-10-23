@@ -153,6 +153,22 @@ struct AllAgentsModelTests {
         #expect(model.sections[1].error == nil)
     }
 
+    @Test func cloudReloadFailureShowsAgendaNotWhatWasOnScreen() async throws {
+        let cloud = FakeServerAPI()
+        cloud.agentList = [.sample(slug: "stale")]
+        let state = cloudState(own: [home], cloudAPI: cloud)
+        let model = AllAgentsModel(state: state)
+        await model.load()
+        try #require(model.sections[0].agents.map(\.slug) == ["stale"])
+
+        cloud.agentsError = APIError.noNodeAvailable(retryAfter: nil)
+        await model.reload(server: try #require(state.cloudServer))
+
+        // The Cloud entry shows the agenda; an own server (see failedReloadKeepsWhatWasOnScreen) keeps its agents.
+        #expect(model.sections[0].agents.map(\.id) == ["ag_v"])
+        #expect(model.sections[0].error != nil)
+    }
+
     @Test func cloudOnlyAccountIsNotEmpty() async throws {
         let cloud = FakeServerAPI()
         cloud.agentList = [.sample(slug: "v")]
