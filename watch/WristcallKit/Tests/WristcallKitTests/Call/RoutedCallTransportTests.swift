@@ -4,38 +4,6 @@ import Testing
 import WristcallKit
 import WristcallKitTesting
 
-/// A `CloudRouting` double: every `call(agent:)` runs `answer`, and the agents asked for are recorded.
-final class FakeRouter: CloudRouting {
-    private let answer: @Sendable () async throws -> CloudRoute
-    private let log = Mutex<(agents: [String], cancelled: Bool)>(([], false))
-
-    init(_ answer: @escaping @Sendable () async throws -> CloudRoute) {
-        self.answer = answer
-    }
-
-    /// A router whose answer never comes (until the request is cancelled).
-    static func hanging() -> FakeRouter {
-        FakeRouter { try await Task.sleep(for: .seconds(60)); throw CancellationError() }
-    }
-
-    var agents: [String] { log.withLock { $0.agents } }
-    var wasCancelled: Bool { log.withLock { $0.cancelled } }
-
-    func call(agent: String) async throws -> CloudRoute {
-        log.withLock { $0.agents.append(agent) }
-        do {
-            return try await answer()
-        } catch is CancellationError {
-            log.withLock { $0.cancelled = true }
-            throw CancellationError()
-        }
-    }
-
-    func manage() async throws -> CloudRoute { try await answer() }
-
-    func invalidate() async {}
-}
-
 struct RoutedCallTransportTests {
     static func target(_ node: String) -> RouteTarget {
         RouteTarget(nodeID: node, url: URL(string: "https://\(node).example")!, region: "sao",

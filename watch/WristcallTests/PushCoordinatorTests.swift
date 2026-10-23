@@ -573,3 +573,31 @@ struct PushCoordinatorTests {
         #expect(model.callResult?.callID == "c_7")
     }
 }
+
+extension PushCoordinatorTests {
+    /// The cloud entry has no device token nor push key of its own: only the paired server gets one.
+    @Test func cloudEntryGetsNoPushKey() async throws {
+        try store.save([Credentials(serverURL: serverA, deviceId: "dev-a", token: "ta", id: "srv-a")])
+        pairing.setMeResults([.success(info)], for: serverA)
+        servers.setHealth(.success(ServerHealth(version: "0.6.0", relay: relayURL)), for: "a.example.com")
+        servers.setHealth(.success(ServerHealth(version: "0.6.0", relay: relayURL)), for: "cloud.example.com")
+        let model = AppModel(
+            pairing: pairing, store: store, defaults: defaults, sleep: { _ in }, resultPoller: clock.poller,
+            pendingResults: PendingResultStore(defaults: defaults), cloudEntries: InMemoryCloudEntryStore())
+        model.callHandler = handler
+        await model.launch()
+        model.applyCloudEntry(CloudServer(
+            id: "cs-cloud", name: "Wristcall Cloud", url: "https://cloud.example.com", kind: "cloud", linked: true,
+            agents: [CloudAgent(id: "ag_c1", slug: "voice", displayName: "Voice", icon: "mic", callType: "conversation")]))
+        try #require(model.servers.count == 2)
+        let coordinator = makeCoordinator(model)
+
+        await coordinator.didRegister(token: token)?.value
+
+        #expect(relay.calls.filter { $0.hasPrefix("register") } == [
+            "register tag=srv-a label=a.example.com token=0a0b0c topic=io.github.ggondim.wristcall env=sandbox",
+        ])
+        #expect(Array(keys.all.keys) == ["srv-a"])
+        #expect(!relay.calls.contains { $0.contains("tag=cloud") })
+    }
+}

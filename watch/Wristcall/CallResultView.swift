@@ -29,6 +29,12 @@ struct CallResultView: View {
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
+                if let notice = result.notice {
+                    Text(notice)
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                        .multilineTextAlignment(.center)
+                }
                 if case .timedOut = result.state {
                     Button("Check again") { result.checkAgain() }
                         .frame(minHeight: 44)

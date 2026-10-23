@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import WristcallKit
+import WristcallKitTesting
 @testable import Wristcall
 
 @MainActor
@@ -1132,5 +1133,157 @@ struct AppModelTests {
 
         #expect(model.phase == .unpaired)
         #expect(!model.hasServers)
+    }
+}
+
+// MARK: - Wristcall Cloud entry
+
+extension AppModelTests {
+    static let cloudEntry = CloudServer(
+        id: "cs-cloud", name: "Wristcall Cloud", url: "https://cloud.example.com", kind: "cloud", linked: true,
+        agents: [
+            CloudAgent(id: "ag_c1", slug: "voice", displayName: "Voice", icon: "mic", callType: "conversation"),
+            CloudAgent(id: "ag_c2", slug: "memo", displayName: "Memo", icon: "mic", callType: "one-shot"),
+        ])
+    static let signInAgain = "Open wristcall on your iPhone to sign in again."
+
+    nonisolated static func route(_ node: String) -> CloudRoute {
+        CloudRoute(primary: RouteTarget(
+            nodeID: node, url: URL(string: "https://\(node).example")!, region: "sao", token: "tok-\(node)",
+            expiresAt: .distantFuture))
+    }
+
+    /// `first` paired and answered, the cloud entry applied, and `router` as the model's Cloud router.
+    func makeCloudModel(router: (any CloudRouting)? = nil) async throws -> AppModel {
+        try store.save([first])
+        pairing.meResults = [.success(info)]
+        let model = AppModel(
+            pairing: pairing, store: store, defaults: defaults, sleep: { _ in }, resultPoller: clock.poller,
+            cloudEntries: InMemoryCloudEntryStore())
+        model.cloudRouter = router
+        await model.launch()
+        model.applyCloudEntry(Self.cloudEntry)
+        try #require(model.phase == .home)
+        try #require(model.servers.count == 2)
+        return model
+    }
+
+    func cloudAgent(_ id: String, in model: AppModel) throws -> AgentTarget {
+        try #require(model.agents.first { $0.serverID == Credentials.cloudEntryID && $0.agent.id == id })
+    }
+
+    @Test func busyTooManyCallsShowsText() async throws {
+        let model = try await makeCloudModel()
+        model.startCall(try cloudAgent("ag_c1", in: model))
+
+        model.callDidEnd(.serverFatal(ServerError(code: .busy, message: "busy", fatal: true, reason: "too_many_calls")))
+
+        #expect(model.phase == .home)
+        #expect(model.message == "Another call is still open on this account.")
+    }
+
+    /// Decision D11: the Cloud's texts never apply to a self-hosted server's call.
+    @Test func selfHostedBusyKeepsOldText() async throws {
+        let model = try await makeCloudModel()
+        model.startCall(target(assistant, on: first))
+
+        model.callDidEnd(.serverFatal(ServerError(code: .busy, message: "busy", fatal: true, reason: "too_many_calls")))
+
+        #expect(model.message == "Call failed (busy).")
+        model.startCall(target(assistant, on: first))
+        model.callDidEnd(.serverFatal(ServerError(
+            code: .agentUnavailable, message: "no", fatal: true, reason: "url_not_public")))
+        #expect(model.message == "Call failed (agent_unavailable).")
+    }
+
+    @Test func unknownFatalKeepsOldText() async throws {
+        let model = try await makeCloudModel()
+        model.startCall(try cloudAgent("ag_c1", in: model))
+
+        model.callDidEnd(.serverFatal(ServerError(code: .internal, message: "boom", fatal: true)))
+
+        #expect(model.message == "Call failed (internal).")
+    }
+
+    /// A 4401 on a cloud call: the account's session is what ended, the entry and the paired servers stay.
+    @Test func cloudEntryNeverForgottenOnUnauthorized() async throws {
+        let model = try await makeCloudModel()
+        let before = model.pairedServers
+        model.startCall(try cloudAgent("ag_c1", in: model))
+
+        model.callDidEnd(.unauthorized)
+
+        #expect(model.phase == .home)
+        #expect(model.message == Self.signInAgain)
+        #expect(model.servers.contains { $0.credentials.isCloudEntry })
+        #expect(model.pairedServers == before)
+        #expect(try store.load() == [first])
+    }
+
+    @Test func cloudOneShotResultPollsNodeThroughRoute() async throws {
+        let router = FakeRouter({ Self.route("node-call") }, manage: { Self.route("node-m") })
+        let delivered = CallStatus(id: "c_9", callType: .oneShot, state: .delivered)
+        pairing.callStatusResults = [.success(delivered)]
+        let model = try await makeCloudModel(router: router)
+        model.startCall(try cloudAgent("ag_c2", in: model))
+
+        model.callDidEnd(.normal, callID: "c_9")
+
+        let result = try #require(model.callResult)
+        await waitUntil { !result.isChecking }
+        #expect(result.state == .finished(delivered))
+        #expect(pairing.calls.filter { $0.hasPrefix("callStatus") } == ["callStatus https://node-m.example c_9"])
+        #expect(pairing.callStatusTokens == ["tok-node-m"])
+        #expect(router.manageCount == 1)
+        #expect(router.agents.isEmpty)
+    }
+
+    /// The node said `401` (the cached route's token is stale): a fresh route, one more try.
+    @Test func cloudResultRetriesOnceAfterUnauthorized() async throws {
+        let router = FakeRouter { Self.route("node-m") }
+        let delivered = CallStatus(id: "c_9", callType: .oneShot, state: .delivered)
+        pairing.callStatusResults = [.failure(.unauthorized), .success(delivered)]
+        let model = try await makeCloudModel(router: router)
+        model.startCall(try cloudAgent("ag_c2", in: model))
+
+        model.callDidEnd(.normal, callID: "c_9")
+
+        let result = try #require(model.callResult)
+        await waitUntil { !result.isChecking }
+        #expect(result.state == .finished(delivered))
+        #expect(router.invalidationCount == 1)
+        #expect(router.manageCount == 2)
+        #expect(pairing.callStatusCount == 2)
+        #expect(model.message == nil)
+    }
+
+    /// A second `401`: the result is unavailable and the text says to sign in again; nothing is forgotten.
+    @Test func cloudResultSecondUnauthorizedAsksToSignIn() async throws {
+        let router = FakeRouter { Self.route("node-m") }
+        pairing.callStatusResults = [.failure(.unauthorized), .failure(.unauthorized)]
+        let model = try await makeCloudModel(router: router)
+        model.startCall(try cloudAgent("ag_c2", in: model))
+
+        model.callDidEnd(.normal, callID: "c_9")
+
+        let result = try #require(model.callResult)
+        await waitUntil { !result.isChecking }
+        #expect(result.state == .unavailable)
+        #expect(router.invalidationCount == 1)
+        #expect(pairing.callStatusCount == 2)
+        #expect(model.message == Self.signInAgain)
+        #expect(model.servers.count == 2)
+        #expect(try store.load() == [first])
+    }
+
+    /// Signing out (the agenda loses the entry) drops the cached `manage` route.
+    @Test func losingTheCloudEntryInvalidatesTheRoute() async throws {
+        let router = FakeRouter { Self.route("node-m") }
+        let model = try await makeCloudModel(router: router)
+
+        model.applyCloudEntry(nil)
+
+        await waitUntil { router.invalidationCount == 1 }
+        #expect(router.invalidationCount == 1)
     }
 }

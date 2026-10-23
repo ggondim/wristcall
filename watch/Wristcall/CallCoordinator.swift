@@ -21,19 +21,26 @@ import WristcallKit
 /// A one-way call (one-shot, monologue; decision W9) is the same CallKit call with the same audio
 /// and ends; only the screen differs ("Recording", "Paused" while muted), and its end hands the
 /// `call_id` of `session.ready` to the model, which then asks for the result.
+///
+/// A call to the Wristcall Cloud entry goes through the Cloud's route (`RoutedCallTransport`, decision D5):
+/// the route is asked inside `connect()`, after the audio is active. A call to a paired server opens its
+/// WebSocket with the device token, as before.
 @MainActor
 final class CallCoordinator: CallHandling {
-    typealias TransportFactory = (Credentials) throws -> any CallTransport
+    typealias TransportFactory = (CallRequest) throws -> any CallTransport
 
     /// How long CallKit gets to activate the audio session after the start request.
     static let defaultActivationTimeout: Duration = .seconds(10)
     private static let log = Logger(subsystem: "io.github.ggondim.wristcall", category: "call")
 
     weak var model: AppModel?
+    /// Asks the Cloud where a call to the cloud entry runs; `nil` in a build without the Cloud.
+    var router: (any CloudRouting)?
 
     private let callControl: any CallControlling
     private let audio: any CallAudio
-    private let makeTransport: TransportFactory
+    /// Set by tests; `nil` builds the transport with `defaultTransport(for:router:)`.
+    private let makeTransport: TransportFactory?
     private let activationTimeout: Duration
     private var call: ActiveCall?
 
@@ -72,15 +79,23 @@ final class CallCoordinator: CallHandling {
         callControl: any CallControlling,
         audio: any CallAudio,
         activationTimeout: Duration = CallCoordinator.defaultActivationTimeout,
-        makeTransport: @escaping TransportFactory = { credentials in
-            try NWWebSocketTransport(server: credentials.serverURL, token: credentials.token)
-        }
+        makeTransport: TransportFactory? = nil
     ) {
         self.callControl = callControl
         self.audio = audio
         self.activationTimeout = activationTimeout
         self.makeTransport = makeTransport
         callControl.delegate = self
+    }
+
+    /// The cloud entry: a `RoutedCallTransport` for the agent (none without a router); any other server: its
+    /// WebSocket with the device token.
+    static func defaultTransport(for request: CallRequest, router: (any CloudRouting)?) throws -> any CallTransport {
+        guard request.credentials.isCloudEntry else {
+            return try NWWebSocketTransport(server: request.credentials.serverURL, token: request.credentials.token)
+        }
+        guard let router else { throw TransportError.connectionFailed("no Cloud route in this build") }
+        return RoutedCallTransport(agent: request.target.agent.id, router: router)
     }
 
     /// The id CallKit knows the current call by; `nil` between calls.
@@ -141,9 +156,10 @@ final class CallCoordinator: CallHandling {
     private func openSession(for call: ActiveCall) {
         let transport: any CallTransport
         do {
-            transport = try makeTransport(call.request.credentials)
+            // The router is read now, at the call, not when the coordinator was made.
+            transport = try makeTransport?(call.request) ?? Self.defaultTransport(for: call.request, router: router)
         } catch {
-            Self.log.error("invalid server URL: \(error.localizedDescription, privacy: .public)")
+            Self.log.error("no transport: \(error.localizedDescription, privacy: .public)")
             failBeforeConnecting(call.id, message: AppModel.Message.connectionLost, report: .failed)
             return
         }
@@ -218,6 +234,10 @@ final class CallCoordinator: CallHandling {
         case .error(let error):
             Self.log.error("server error \(error.code.wireValue, privacy: .public) fatal=\(error.fatal)")
             if !error.fatal {
+                // The Cloud cuts the call soon after; its end says why.
+                if error.code == .quotaExceeded {
+                    model?.callDidReachQuota()
+                }
                 model?.callActivityDidChange(call.idleActivity)
             }
         case .ended(let reason):
