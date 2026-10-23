@@ -87,8 +87,8 @@ struct CallCoordinatorTests {
         try #require(model.phase == .home)
         let transport = transport ?? self.transport
         let made = transportsMade
-        let coordinator = CallCoordinator(callControl: callKit, audio: audio, activationTimeout: activationTimeout) { credentials in
-            made.append(credentials)
+        let coordinator = CallCoordinator(callControl: callKit, audio: audio, activationTimeout: activationTimeout) { request in
+            made.append(request.credentials)
             return transport
         }
         coordinator.model = model
@@ -660,5 +660,135 @@ struct CallCoordinatorTests {
         await waitUntil { model.phase == .home }
         #expect(model.callResult == nil)
         #expect(pairing.callStatusCount == 0)
+    }
+}
+
+// MARK: - Wristcall Cloud entry
+
+extension CallCoordinatorTests {
+    static let cloudCredentials = Credentials.cloudEntry(url: URL(string: "https://cloud.example.com")!)
+    static let cloudEntry = CloudServer(
+        id: "cs-cloud", name: "Wristcall Cloud", url: "https://cloud.example.com", kind: "cloud", linked: true,
+        agents: [
+            CloudAgent(id: "ag_c1", slug: "voice", displayName: "Voice", icon: "mic", callType: "conversation"),
+            CloudAgent(id: "ag_c2", slug: "memo", displayName: "Memo", icon: "mic", callType: "one-shot"),
+        ])
+
+    nonisolated static func route(_ node: String) -> CloudRoute {
+        CloudRoute(primary: RouteTarget(
+            nodeID: node, url: URL(string: "https://\(node).example")!, region: "sao", token: "tok-\(node)",
+            expiresAt: .distantFuture))
+    }
+
+    /// Home with the cloud entry only, and a coordinator using `makeTransport` (the default factory when `nil`).
+    func makeCloudCoordinator(
+        router: (any CloudRouting)?,
+        makeTransport: CallCoordinator.TransportFactory? = nil
+    ) async throws -> (CallCoordinator, AppModel) {
+        let model = AppModel(
+            pairing: pairing, store: store, defaults: defaults, sleep: { _ in }, resultPoller: clock.poller,
+            cloudEntries: InMemoryCloudEntryStore())
+        await model.launch()
+        model.applyCloudEntry(Self.cloudEntry)
+        try #require(model.phase == .home)
+        let coordinator = CallCoordinator(callControl: callKit, audio: audio, makeTransport: makeTransport)
+        coordinator.router = router
+        model.cloudRouter = router
+        coordinator.model = model
+        model.callHandler = coordinator
+        return (coordinator, model)
+    }
+
+    func cloudAgent(_ id: String, in model: AppModel) throws -> AgentTarget {
+        try #require(model.agents.first { $0.serverID == Credentials.cloudEntryID && $0.agent.id == id })
+    }
+
+    @Test func cloudCallUsesRoutedTransport() throws {
+        let request = CallRequest(
+            credentials: Self.cloudCredentials,
+            target: AgentTarget(serverID: Credentials.cloudEntryID, serverHost: "Wristcall Cloud", agent: agent))
+
+        let transport = try CallCoordinator.defaultTransport(for: request, router: FakeRouter { Self.route("node-a") })
+
+        #expect(transport is RoutedCallTransport)
+        // Without a router (a build without the Cloud) there is no way to reach the agent.
+        #expect(throws: TransportError.self) { try CallCoordinator.defaultTransport(for: request, router: nil) }
+    }
+
+    @Test func pairedCallKeepsWebSocketTransport() throws {
+        let request = CallRequest(credentials: credentials, target: target)
+
+        let transport = try CallCoordinator.defaultTransport(for: request, router: FakeRouter { Self.route("node-a") })
+
+        #expect(transport is NWWebSocketTransport)
+    }
+
+    /// The Cloud has no node for the call: the route is refused and the call ends with the Cloud's text.
+    @Test func routeUnavailableEndsCallWithCloudText() async throws {
+        let router = FakeRouter { throw APIError.noNodeAvailable(retryAfter: 30) }
+        let (_, model) = try await makeCloudCoordinator(router: router)
+        let voice = try cloudAgent("ag_c1", in: model)
+
+        model.startCall(voice)
+        await waitUntil { callKit.starts.count == 1 }
+        callKit.activateAudio()
+
+        await waitUntil { model.phase == .home }
+        #expect(model.message == "Wristcall Cloud is temporarily unavailable. Try again in a minute.")
+        #expect(router.agents == ["ag_c1"])
+        #expect(try callKit.ends == endReportedForTheStartedCall(.failed))
+        #expect(model.servers.contains { $0.credentials.isCloudEntry })
+    }
+
+    /// The account ran out of minutes during a one-shot: the recording is still delivered and the result says so.
+    @Test func quotaMidCallShowsTextOnOneShotResult() async throws {
+        let transport = transport
+        let router = FakeRouter { Self.route("node-a") }
+        pairing.callStatusResults = [.success(CallStatus(id: "c_42", callType: .oneShot, state: .delivered))]
+        let (_, model) = try await makeCloudCoordinator(router: router) { _ in transport }
+        let memo = try cloudAgent("ag_c2", in: model)
+
+        model.startCall(memo)
+        await waitUntil { callKit.starts.count == 1 }
+        callKit.activateAudio()
+        try await transport.waitUntilSent { $0.count == 1 }
+        transport.serverSends(Self.oneWayReady)
+        await waitUntil { audio.isRunning }
+        transport.serverSends(#"{"type":"error","code":"quota_exceeded","message":"Out of minutes","fatal":false}"#)
+        transport.serverCloses(code: 1000)
+
+        await waitUntil { model.phase == .callResult }
+        #expect(model.callResult?.callID == "c_42")
+        #expect(model.callResult?.notice == "You've used this month's call minutes.")
+    }
+
+    /// The same cut in a conversation: Home says why the call ended.
+    @Test func quotaMidConversationShowsTextAtHome() async throws {
+        let transport = transport
+        let (_, model) = try await makeCloudCoordinator(router: FakeRouter { Self.route("node-a") }) { _ in transport }
+        let voice = try cloudAgent("ag_c1", in: model)
+
+        model.startCall(voice)
+        await waitUntil { callKit.starts.count == 1 }
+        callKit.activateAudio()
+        try await transport.waitUntilSent { $0.count == 1 }
+        transport.serverSends(Self.ready)
+        await waitUntil { audio.isRunning }
+        transport.serverSends(#"{"type":"error","code":"quota_exceeded","message":"Out of minutes","fatal":false}"#)
+        transport.serverCloses(code: 1000)
+
+        await waitUntil { model.phase == .home }
+        #expect(model.message == "You've used this month's call minutes.")
+    }
+
+    /// Decision D11: a self-hosted server's call reads as before, whatever it sends.
+    @Test func pairedQuotaKeepsOldBehaviour() async throws {
+        let (_, model) = try await connectedCall()
+
+        transport.serverSends(#"{"type":"error","code":"quota_exceeded","message":"Out of minutes","fatal":false}"#)
+        transport.serverCloses(code: 1000)
+
+        await waitUntil { model.phase == .home }
+        #expect(model.message == nil)
     }
 }

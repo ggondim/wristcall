@@ -23,6 +23,8 @@ final class AccountWorld: Sendable {
         var id: String
         var name: String
         var url: String
+        /// `self-hosted`, or `cloud` for the Wristcall Cloud's own entry.
+        var kind = "self-hosted"
         var linked: Bool
         var agents: [[String: String]] = []
     }
@@ -199,12 +201,30 @@ final class AccountWorld: Sendable {
     func release() { box.state.withLock { $0.holding = false } }
     var waiting: Int { box.state.withLock { $0.waiting } }
 
-    func seed(name: String, url: String, linked: Bool = false) {
+    @discardableResult
+    func seed(name: String, url: String, kind: String = "self-hosted", linked: Bool = false,
+              agents: [[String: String]] = []) -> String {
         box.state.withLock { state in
-            state.entries.append(Entry(id: "cs-\(state.nextID)", name: name, url: url, linked: linked))
+            let id = "cs-\(state.nextID)"
+            state.entries.append(Entry(id: id, name: name, url: url, kind: kind, linked: linked, agents: agents))
             state.nextID += 1
+            return id
         }
     }
+
+    /// The Cloud's own entry (`kind: cloud`, linked), the way the Cloud adds it when the account has a plan.
+    @discardableResult
+    func seedCloudEntry(agents: [[String: String]] = []) -> String {
+        seed(name: "Wristcall Cloud", url: "https://cloud.wristcall.test", kind: "cloud", linked: true, agents: agents)
+    }
+
+    /// Takes an entry out of the agenda behind the apps' back (the Cloud dropped it).
+    func dropEntry(_ id: String) {
+        box.state.withLock { $0.entries.removeAll { $0.id == id } }
+    }
+
+    /// `POST /v1/route` answers this node (token `node-tok`, five minutes after `clock`).
+    static let routeNode = URL(string: "https://node-a.example")!
 
     var tokenRequests: [StubHost.Request] { endpoints.requests.filter { $0.path.hasSuffix("/token") } }
     /// The Cloud requests sent with a token (`Authorization`), anything else than a device session's.
@@ -247,6 +267,9 @@ final class AccountWorld: Sendable {
             : parts.joined(separator: "/")
         let id = parts.count >= 3 ? parts[2] : ""
         switch (request.method, route) {
+        case ("POST", "v1/route"):
+            guard bearerAccount(request) != nil else { return revoked }
+            return StubHost.Reply(200, #"{"node":{"id":"node-a","url":"\#(routeNode.absoluteString)","region":"gru"},"token":"node-tok","expires_at":1800000300,"fallback":null}"#)
         case ("POST", "v1/server-tokens"):
             let audience = try request.json()["audience"] as? String ?? ""
             return StubHost.Reply(200, #"{"token":"per-server","audience":"\#(audience)","expires_at":1800000300}"#)
@@ -432,7 +455,7 @@ final class AccountWorld: Sendable {
 
     private static func json(_ entry: Entry) -> String {
         let object: [String: Any] = [
-            "id": entry.id, "name": entry.name, "url": entry.url, "kind": "self-hosted", "linked": entry.linked,
+            "id": entry.id, "name": entry.name, "url": entry.url, "kind": entry.kind, "linked": entry.linked,
             "agents": entry.agents, "created_at": 1, "updated_at": 1,
         ]
         let data = try! JSONSerialization.data(withJSONObject: object)
@@ -530,6 +553,8 @@ struct AccountRig {
         makeAPI: @escaping ServerAPIFactory = { _, _ in FakeServerAPI() },
         web: any WebAuthenticator = FakeWeb.approving(),
         cloudURL: URL? = nil,
+        router: (any CloudRouting)? = nil,
+        makeRouter: (@MainActor (DeviceSession) -> any CloudRouting)? = nil,
         configure: (AppState) -> Void = { _ in }
     ) {
         sessions = InMemoryDeviceSessionStore(session)
@@ -540,13 +565,21 @@ struct AccountRig {
         sleeps = SleepLog()
         webAuthenticator = web
         let cloud = cloudURL ?? world.cloud.url
-        let device = DeviceSession(cloud: cloud, store: sessions, session: .stubbed(), now: { AccountWorld.clock })
-        let legacy = AccountSession(cloud: cloud, kind: .ios, store: tokens, session: .stubbed(), now: { AccountWorld.clock })
+        // What the app sends the Cloud as `X-Wristcall-Client` (the host app's Info.plist).
+        let client = ClientIdentity.fromBundle(platform: .ios)
+        let device = DeviceSession(cloud: cloud, store: sessions, session: .stubbed(), now: { AccountWorld.clock },
+                                   client: client)
+        let legacy = AccountSession(cloud: cloud, kind: .ios, store: tokens, session: .stubbed(), now: { AccountWorld.clock },
+                                    client: client)
         let state = AppState(store: InMemoryManagedServerStore(servers), makeAPI: makeAPI)
         configure(state)
+        // A single `router` serves every account (tests that count its invalidations).
+        var routers = makeRouter
+        if routers == nil, let router { routers = { _ in router } }
         model = AccountModel(
             cloudURL: cloud, session: device, keys: self.keys, legacy: legacy, web: web, state: state,
-            device: CloudDeviceInfo(name: "Test iPhone", platform: .ios), defaults: defaults, sleep: sleeps.sleep
+            device: CloudDeviceInfo(name: "Test iPhone", platform: .ios), defaults: defaults, sleep: sleeps.sleep,
+            makeRouter: routers
         )
         sleeps.model = model
     }

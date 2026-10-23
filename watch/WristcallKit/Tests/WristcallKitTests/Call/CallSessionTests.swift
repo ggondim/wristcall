@@ -150,13 +150,44 @@ struct CallSessionTests {
         try await transport.waitUntilSent { $0.count == 1 }
         transport.serverSends(#"{"type":"error","code":"unknown_profile","message":"unknown profile: nope","fatal":true}"#)
         transport.serverCloses(code: 4400)
-        await #expect(throws: CallSessionError.ended(.serverFatal(.unknownProfile))) {
+        let unknownProfile = ServerError(code: .unknownProfile, message: "unknown profile: nope", fatal: true)
+        await #expect(throws: CallSessionError.ended(.serverFatal(unknownProfile))) {
             try await opening.value
         }
         #expect(await collect(session.events) == [
-            .error(code: .unknownProfile, message: "unknown profile: nope", fatal: true),
-            .ended(.serverFatal(.unknownProfile)),
+            .error(unknownProfile),
+            .ended(.serverFatal(unknownProfile)),
         ])
+    }
+
+    @Test func fatalErrorCarriesReasonToEnd() async throws {
+        let session = CallSession(transport: transport)
+        let opening = Task { try await session.start(profile: "demo") }
+        try await transport.waitUntilSent { $0.count == 1 }
+        transport.serverSends(#"{"type":"error","code":"busy","reason":"too_many_calls","message":"m","fatal":true}"#)
+        transport.serverCloses(code: 4400)
+        let busy = ServerError(code: .busy, message: "m", fatal: true, reason: "too_many_calls")
+        await #expect(throws: CallSessionError.ended(.serverFatal(busy))) {
+            try await opening.value
+        }
+        #expect(await collect(session.events) == [.error(busy), .ended(.serverFatal(busy))])
+    }
+
+    @Test func refusedConnectEndsAsServerFatal() async throws {
+        let refused = ServerError(code: .quotaExceeded, message: "m", fatal: true, reason: nil)
+        let session = CallSession(transport: FakeTransport(connectError: .refused(refused)))
+        await #expect(throws: CallSessionError.ended(.serverFatal(refused))) {
+            try await session.start(profile: "demo")
+        }
+        #expect(await collect(session.events) == [.ended(.serverFatal(refused))])
+    }
+
+    @Test func connectFailureStillConnectionLost() async throws {
+        let session = CallSession(transport: FakeTransport(connectError: .connectionFailed("offline")))
+        await #expect(throws: CallSessionError.ended(.connectionLost)) {
+            try await session.start(profile: "demo")
+        }
+        #expect(await collect(session.events) == [.ended(.connectionLost)])
     }
 
     @Test func endWhileWaitingForReady() async throws {
@@ -262,7 +293,7 @@ struct CallSessionTests {
             .agentTurnStarted,
             .agentAudio(agentAudio),
             .agentTurnEnded,
-            .error(code: .ttsFailed, message: "voice failed", fatal: false),
+            .error(ServerError(code: .ttsFailed, message: "voice failed", fatal: false)),
             .ended(.normal),
         ])
     }
@@ -372,9 +403,10 @@ struct CallSessionTests {
         _ = try await open(session)
         transport.serverSends(#"{"type":"error","code":"internal","message":"boom","fatal":true}"#)
         transport.serverCloses(code: 4400)
+        let boom = ServerError(code: .internal, message: "boom", fatal: true)
         #expect(await collect(session.events) == [
-            .error(code: .internal, message: "boom", fatal: true),
-            .ended(.serverFatal(.internal)),
+            .error(boom),
+            .ended(.serverFatal(boom)),
         ])
     }
 
@@ -404,6 +436,6 @@ func collect(_ events: AsyncStream<CallEvent>, timeout: Duration = .seconds(2)) 
         }
         let first = await group.next() ?? nil
         group.cancelAll()
-        return first ?? [.error(code: .unknown("test"), message: "event stream did not finish in \(timeout)", fatal: true)]
+        return first ?? [.error(ServerError(code: .unknown("test"), message: "event stream did not finish in \(timeout)", fatal: true))]
     }
 }

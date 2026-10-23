@@ -214,7 +214,9 @@ final class AccountLoginModel {
     private func pairServers(_ backend: any AccountLoginBackend) async throws {
         phase = .syncing(done: 0, total: 0)
         let agenda = try await backend.servers()
-        let candidates = AccountPairing.candidates(agenda, paired: model.servers.map(\.credentials.serverURL))
+        try Task.checkCancellation()
+        model.applyCloudEntry(agenda.first(where: \.isCloudEntry))
+        let candidates = AccountPairing.candidates(agenda, paired: model.pairedServers.map(\.credentials.serverURL))
         for (index, server) in candidates.enumerated() {
             try Task.checkCancellation()
             phase = .syncing(done: index, total: candidates.count)
@@ -281,6 +283,8 @@ final class AccountLoginModel {
             phase = .failed(Message.denied)
         case AccountError.signedOut:
             isSignedIn = false
+            // The session is gone, and the account's cloud entry with it.
+            model.applyCloudEntry(nil)
             phase = .failed(Message.signInAgain)
         case DeviceFlowError.incomplete:
             phase = .failed(Message.incomplete)

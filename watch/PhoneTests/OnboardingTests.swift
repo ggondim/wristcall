@@ -165,6 +165,31 @@ struct OnboardingTests {
         #expect(outcome.choice == nil)
     }
 
+    @Test func currentPlanCardHidesInviteButton() {
+        let full = Plan(plan: .full, source: "beta")
+        let plan = PlanModel(redeemInvite: { _ in full }, onFinish: { _ in }, currentPlan: full)
+        #expect(PlanOption.currentLabel == "Current plan")
+        #expect(PlanOption.cloud.isCurrent(for: full))
+        #expect(!PlanOption.cloudCustom.isCurrent(for: full))
+        #expect(!PlanOption.ownServer.isCurrent(for: full))
+        #expect(PlanOption.cloudCustom.isCurrent(for: Plan(plan: .custom, source: "beta")))
+        // A plan this build does not know is shown as the Cloud, like the Settings row.
+        #expect(PlanOption.cloud.isCurrent(for: Plan(plan: .other("pro"), source: "beta")))
+
+        plan.selection = .cloud
+        #expect(!plan.showsPrimaryButton)
+        plan.selection = .cloudCustom
+        #expect(plan.showsPrimaryButton)
+        #expect(plan.selection.primaryTitle == "Enter invite code")
+        plan.selection = .ownServer
+        #expect(plan.showsPrimaryButton)
+
+        // Onboarding has no plan yet: the button stays.
+        let onboarding = PlanModel(redeemInvite: { _ in full }, onFinish: { _ in })
+        #expect(onboarding.showsPrimaryButton)
+        #expect(!PlanOption.cloud.isCurrent(for: nil))
+    }
+
     @Test func ownServerOpensTheScanner() {
         let outcome = Outcome()
         let plan = PlanModel(redeemInvite: { _ in throw APIError.invalidCode }, onFinish: { outcome.choice = $0 })

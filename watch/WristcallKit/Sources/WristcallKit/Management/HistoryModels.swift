@@ -37,6 +37,12 @@ public struct CallRecord: Decodable, Sendable, Equatable, Identifiable {
     /// The agent as it was when called (it may have been renamed or deleted since).
     public var agent: AgentRef?
     public var entries: [CallEntry]
+    /// Where a delivered one-way call went: `webhook`, `history` (an agent without an action, cloud mode), or nil
+    /// (a server that does not say).
+    public var delivery: String?
+
+    /// The call's transcript was saved to the history instead of being sent anywhere.
+    public var savedToHistory: Bool { status == "delivered" && delivery == "history" }
 
     public struct AgentRef: Decodable, Sendable, Equatable {
         public var id: String
@@ -70,7 +76,7 @@ public struct CallRecord: Decodable, Sendable, Equatable, Identifiable {
     public init(id: String, agentId: String? = nil, callType: String, status: String, error: String? = nil,
                 text: String? = nil, attempts: Int = 0, lastHttpStatus: Int? = nil, createdAt: Double,
                 endedAt: Double? = nil, finishedAt: Double? = nil, expiresAt: Double? = nil,
-                agent: AgentRef? = nil, entries: [CallEntry] = []) {
+                agent: AgentRef? = nil, entries: [CallEntry] = [], delivery: String? = nil) {
         self.id = id
         self.agentId = agentId
         self.callType = callType
@@ -85,10 +91,11 @@ public struct CallRecord: Decodable, Sendable, Equatable, Identifiable {
         self.expiresAt = expiresAt
         self.agent = agent
         self.entries = entries
+        self.delivery = delivery
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, status, error, text, attempts, agent, entries
+        case id, status, error, text, attempts, agent, entries, delivery
         case agentId = "agent_id"
         case callType = "call_type"
         case lastHttpStatus = "last_http_status"

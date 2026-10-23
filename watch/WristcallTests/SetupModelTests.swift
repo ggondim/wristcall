@@ -203,6 +203,11 @@ final class FakeSetupBackend: SetupBackend {
         }
     }
 
+    /// Whole agenda entries (the cloud entry among them), one list per `agenda()`.
+    func scriptAgenda(servers agendas: [[CloudServer]]) {
+        state.withLock { $0.agenda = agendas.map { .success($0) } }
+    }
+
     func scriptEnroll(_ results: [Result<SetupEnrollResult, any Error>]) {
         state.withLock { $0.enroll = results }
     }
@@ -787,6 +792,55 @@ struct SetupModelTests {
         await setup.settle()
         #expect(backend.agendaCount == 1)
         #expect(backend.enrolls.isEmpty)
+    }
+
+    // MARK: - Cloud entry
+
+    var cloudEntry: CloudServer {
+        CloudServer(
+            id: "cs-cloud", name: "Wristcall Cloud", url: "https://cloud.example.com", kind: "cloud", linked: true,
+            agents: [CloudAgent(id: "ag_c1", slug: "voice-notes", displayName: "Voice notes", icon: "mic",
+                                callType: "conversation")])
+    }
+
+    @Test func syncAppliesCloudEntryFromAgenda() async throws {
+        let model = try await makeModel()
+        backend.script(enroll: [.enrolled(account: "acc_1")], outcomes: [other: .paired(other, homeDevice)])
+        backend.scriptAgenda(servers: [FakeSetupBackend.servers([other]) + [cloudEntry]])
+        pairing.setMeResults([.success(homeInfo)], for: other)
+        let setup = makeSetup(model)
+
+        await setup.start()
+        await setup.settle()
+
+        // Only the self-hosted server is paired; the cloud entry goes first in the grid, out of the Keychain.
+        #expect(backend.paired == [other])
+        #expect(model.servers.map(\.id).first == Credentials.cloudEntryID)
+        #expect(model.agents.map(\.agent.id) == ["ag_c1", "ag_9"])
+        #expect(try store.load().map(\.serverURL) == [other])
+        #expect(setup.phase == .ready)
+    }
+
+    @Test func signOutClearsCloudEntry() async throws {
+        let model = try await makeModel()
+        backend.script(restore: ["acc_1"])
+        backend.scriptAgenda(servers: [[cloudEntry]])
+        let setup = makeSetup(model)
+        await setup.start()
+        await setup.settle()
+        try #require(model.servers.map(\.id) == [Credentials.cloudEntryID])
+        #expect(model.phase == .home)
+        #expect(setup.phase == .ready)
+        #expect(backend.paired.isEmpty)
+
+        await setup.signOut()
+
+        #expect(model.servers.isEmpty)
+        #expect(model.phase == .unpaired)
+        // Gone from storage too: a relaunch does not bring it back.
+        let relaunched = AppModel(pairing: pairing, store: store, defaults: defaults, sleep: { _ in })
+        await relaunched.launch()
+        #expect(relaunched.servers.isEmpty)
     }
 
     /// A loop enrollment whose first sync is still running when the device flow finishes is not announced later.

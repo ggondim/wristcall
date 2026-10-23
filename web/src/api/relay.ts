@@ -1,5 +1,6 @@
 import { ApiError } from "../lib/errors"
-import { json, request } from "../lib/http"
+import { json, request, type RequestOptions } from "../lib/http"
+import { CLIENT } from "./cloud"
 
 export interface PushRegistration {
   push_key: string
@@ -13,15 +14,18 @@ const MAX_LABEL = 64
 
 /**
  * The push relay of the Cloud (`cloud/README.md`, "Push relay"): the same base address as the Cloud. A browser
- * registers its Web Push subscription anonymously and gets a push key (`wc_push_`), which it hands to the server.
+ * registers its Web Push subscription anonymously and gets a push key (`wc_push_`), which it hands to the server. Being the
+ * Cloud, it is told which app calls (`X-Wristcall-Client`).
  */
 export class RelayClient {
   readonly #base: string
   readonly #fetch: typeof fetch | undefined
+  readonly #client: string
 
-  constructor(base: string, fetchImpl?: typeof fetch) {
+  constructor(base: string, fetchImpl?: typeof fetch, client: string = CLIENT) {
     this.#base = base.replace(/\/+$/, "")
     this.#fetch = fetchImpl
+    this.#client = client
   }
 
   /** The phone asks for `device.approval`. `tag` comes back in every push, so the app knows which server it is about. */
@@ -33,13 +37,13 @@ export class RelayClient {
       tag,
       events: ["device.approval"],
     }
-    return json<PushRegistration>(this.#url(), { method: "POST", json: body }, this.#fetch)
+    return json<PushRegistration>(this.#url(), this.#opts({ method: "POST", json: body }), this.#fetch)
   }
 
   /** `200` is ok; `410` means the relay forgot the key. Anything else throws. */
   async check(pushKey: string): Promise<"ok" | "gone"> {
     try {
-      await request(this.#url("current"), { bearer: pushKey }, this.#fetch)
+      await request(this.#url("current"), this.#opts({ bearer: pushKey }), this.#fetch)
       return "ok"
     } catch (error) {
       if (error instanceof ApiError && error.status === 410) return "gone"
@@ -50,11 +54,15 @@ export class RelayClient {
   /** `404` counts as done. */
   async unregister(pushKey: string): Promise<void> {
     try {
-      await request(this.#url("current"), { method: "DELETE", bearer: pushKey }, this.#fetch)
+      await request(this.#url("current"), this.#opts({ method: "DELETE", bearer: pushKey }), this.#fetch)
     } catch (error) {
       if (error instanceof ApiError && error.status === 404) return
       throw error
     }
+  }
+
+  #opts(opts: RequestOptions): RequestOptions {
+    return { ...opts, headers: { "X-Wristcall-Client": this.#client } }
   }
 
   #url(suffix = ""): string {

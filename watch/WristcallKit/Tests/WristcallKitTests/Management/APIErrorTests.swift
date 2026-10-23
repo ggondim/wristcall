@@ -43,4 +43,27 @@ struct APIErrorTests {
         #expect(APIError.retryLater(1e30).message == "Too many attempts. Try again in 1440 minutes.")
         #expect(APIError.retryLater(.nan).message.hasPrefix("Too many attempts."))
     }
+
+    @Test func planRequiredMaps402() {
+        let body = Data(#"{"error":"plan_required","message":"x"}"#.utf8)
+        #expect(APIError.error(status: 402, data: body, headers: [:]) == .planRequired)
+        #expect(APIError.error(status: 402, data: Data(), headers: [:]) == .planRequired)
+        #expect(APIError.planRequired.message == "This account has no Wristcall Cloud plan.")
+    }
+
+    @Test func noNodeAvailableMaps503() {
+        let body = Data(#"{"error":"no_node_available","message":"m"}"#.utf8)
+        #expect(APIError.error(status: 503, data: body, headers: ["retry-after": "30"]) == .noNodeAvailable(retryAfter: 30))
+        #expect(APIError.error(status: 503, data: body, headers: [:]) == .noNodeAvailable(retryAfter: nil))
+        #expect(APIError.error(status: 503, data: body, headers: ["retry-after": "soon"]) == .noNodeAvailable(retryAfter: nil))
+        #expect(APIError.noNodeAvailable(retryAfter: 30).message
+            == "Wristcall Cloud is temporarily unavailable. Try again in a minute.")
+    }
+
+    @Test func otherUnavailableStaysUnavailable() {
+        let body = Data(#"{"error":"account_unavailable","message":"later"}"#.utf8)
+        #expect(APIError.error(status: 503, data: body, headers: ["retry-after": "30"]) == .unavailable("later"))
+        #expect(APIError.error(status: 502, data: Data(#"{"error":"no_node_available"}"#.utf8), headers: [:])
+            == .unavailable("The server is unavailable. Try again later."))
+    }
 }

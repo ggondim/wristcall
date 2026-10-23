@@ -8,6 +8,7 @@ import { BaseModel } from "../ui/useModel"
 import { CloudDevicesModel } from "./cloudDevices"
 import { hasPendingLink } from "./link"
 import type { ServersModel } from "./servers"
+import type { UsageModel } from "./usage"
 
 export type AccountScreen = "unavailable" | "signedOut" | "signingIn" | "signedIn" | { failed: string }
 
@@ -74,6 +75,10 @@ export interface AccountOptions {
   servers?: Pick<ServersModel, "forgetAccount" | "unlinkAccounts"> | null
   /** Leaves the page for an address (the email sign-in page). */
   assign?: (url: string) => void
+  /** The month's call minutes of a Wristcall Cloud plan (the plan row, the Agents home); forgotten when the account leaves. */
+  usage?: UsageModel | null
+  /** Reads the agenda again (the servers from the account, the Cloud entry): after an invite, and when Agents opens. */
+  refreshAgenda?: () => void
 }
 
 const TAP_AGAIN = "Reaching wristcall Cloud. Tap again in a moment."
@@ -138,11 +143,14 @@ export class AccountModel extends BaseModel<AccountState> {
   readonly agenda: AgendaControl | null
   /** The devices of the account (Settings); null without a Cloud. */
   readonly devices: CloudDevicesModel | null
+  /** The month's call minutes of the Wristcall Cloud plan; null without a Cloud. */
+  readonly usage: UsageModel | null
   readonly #session: AccountSessionPort | null
   readonly #push: PushHooks | null
   readonly #cloud: AccountCloud | null
   readonly #servers: Pick<ServersModel, "forgetAccount" | "unlinkAccounts"> | null
   readonly #assign: (url: string) => void
+  readonly #refreshAgenda: (() => void) | null
   #completing: Promise<void> | null = null
   #leaving = false
   #issuer: string | null = null
@@ -159,7 +167,9 @@ export class AccountModel extends BaseModel<AccountState> {
     this.#cloud = opts.cloud ?? null
     this.devices = session === null || this.#cloud === null ? null : new CloudDevicesModel(this.#cloud, session)
     this.#servers = opts.servers ?? null
+    this.usage = session === null ? null : (opts.usage ?? null)
     this.#assign = opts.assign ?? ((url) => globalThis.location.assign(url))
+    this.#refreshAgenda = opts.refreshAgenda ?? null
     session?.onSignedOut((reason) => void this.#sessionEnded(reason))
   }
 
@@ -337,6 +347,11 @@ export class AccountModel extends BaseModel<AccountState> {
     return running
   }
 
+  /** Reads the agenda again while signed in (the Agents home opening, an invite redeemed). */
+  refreshAgenda(): void {
+    if (this.#session !== null && this.state.screen === "signedIn") this.#refreshAgenda?.()
+  }
+
   /** Redeems an invite code (`POST /v1/entitlements/redeem`). True when the account has a plan now. */
   async redeemInvite(code: string): Promise<boolean> {
     const session = this.#session
@@ -351,6 +366,8 @@ export class AccountModel extends BaseModel<AccountState> {
       const plan = await cloud.redeemInvite(token, clean)
       if (generation !== this.#profileGeneration) return false
       this.set({ plan: plan.plan ? plan : null, redeem: "idle" })
+      // The Cloud adds its entry to the agenda with the plan: read it now, not at the next tab switch.
+      this.refreshAgenda()
       return true
     } catch (error) {
       if (generation === this.#profileGeneration) this.set({ redeem: { failed: inviteMessage(error) } })
@@ -368,6 +385,7 @@ export class AccountModel extends BaseModel<AccountState> {
     this.#profileGeneration += 1
     this.#profileLoading = null
     this.devices?.reset()
+    this.usage?.clear()
     this.set({ ...NO_PROFILE })
   }
 

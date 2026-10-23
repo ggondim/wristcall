@@ -6,7 +6,7 @@ app. It does not make calls; the watch does.
 
 It is a static site (TypeScript, Vite, Preact) that talks to your servers and, optionally, to the wristcall Cloud
 straight from the browser. There is no backend of its own: the site stores your server list and credentials in the
-browser and sends them only to the servers you added. Version 0.3.0, published as the image
+browser and sends them only to the servers you added. Version 0.4.0, published as the image
 `ghcr.io/ggondim/wristcall-web` by the `web-vX.Y.Z` tag. It is meant for servers 0.7.0 or later (older ones send no
 CORS headers, so a browser cannot call them) and, for the account features, Cloud 0.4.1 (account sessions). Server
 links (`/link`) and link codes need server 0.8.0; agent colors need server 0.8.1.
@@ -17,10 +17,18 @@ What it does:
   the web) and the browser is signed in, like WhatsApp Web; "Open wristcall app" does it in one tap on an iPhone or
   iPad. "Sign in with email" is for accounts that already sign in with email. "Use your own server without an account"
   skips the Cloud.
-- Agents: the agents of every connected server in one list, each in its color; create, edit and delete them.
-- History: the calls of every server in one list, with search, filters, export and redelivery.
-- Settings: the account's plan and "Redeem invite", the devices signed in to the account, notifications, "Device
-  requests" (watches waiting to pair: approve or deny), sign out and delete account.
+- Agents: the agents of every connected server in one list, each in its color; create, edit and delete them. With a
+  Wristcall Cloud plan, the Cloud's own section comes first (its agents are managed through the Cloud's route to its
+  node; when the node does not answer, the agents the account lists are shown with the reason), and a banner warns
+  from 80 % of the month's call minutes. A one-way agent there may have no webhook: "None, save to History".
+- History: the calls of every server (and of Wristcall Cloud) in one list, with search, filters, export and
+  redelivery; a Voice note kept in the history reads "Saved".
+- Every request to the Cloud carries `X-Wristcall-Client: web/0.4.0`, which the Cloud checks against
+  `WRISTCALL_CLOUD_CLOUD_ENTRY_CLIENTS` before it shows the Cloud entry; servers and nodes never get it. The app does
+  not call through the entry (the watch does).
+- Settings: the account's plan with the month's call minutes, "Redeem invite" while there is no plan, the devices
+  signed in to the account, notifications, "Device requests" (watches waiting to pair: approve or deny), sign out and
+  delete account.
 - Settings > Servers (advanced): add one with its address and a personal token (`wristcall users tokens add --name
   browser`), or with a pairing code when you are signed in; rename, remove; paired watches and pairing codes.
 - Server links: `/link` opens the QR code a server 0.8.0 shows (`wristcall link`, or its startup log), asks you to
@@ -47,7 +55,7 @@ The app sends no Zitadel token to any other Cloud route, so the Cloud may run wi
 ## Run it
 
 ```sh
-docker run -p 8080:8080 -e WRISTCALL_WEB_CLOUD_URL=https://cloud.example.com ghcr.io/ggondim/wristcall-web:0.3.0
+docker run -p 8080:8080 -e WRISTCALL_WEB_CLOUD_URL=https://cloud.example.com ghcr.io/ggondim/wristcall-web:0.4.0
 ```
 
 The image is nginx without root and serves the site on port 8080. Put TLS in front of it: a PWA, its service worker and

@@ -38,6 +38,10 @@ public enum APIError: Error, Sendable, Equatable {
     case network(URLError.Code)
     /// A defined status with a body that does not match the API.
     case malformedResponse
+    /// `402`: the account has no Wristcall Cloud plan (the Cloud's own text is ignored).
+    case planRequired
+    /// `503 no_node_available`: the Cloud has no node to route to; `Retry-After` (seconds) when it sent one.
+    case noNodeAvailable(retryAfter: TimeInterval?)
 
     public var message: String {
         switch self {
@@ -56,6 +60,8 @@ public enum APIError: Error, Sendable, Equatable {
         case .unexpectedStatus(let status): "Unexpected reply from the server (\(status))."
         case .network: "Could not reach the server."
         case .malformedResponse: "The server sent a reply the app does not understand."
+        case .planRequired: "This account has no Wristcall Cloud plan."
+        case .noNodeAvailable: "Wristcall Cloud is temporarily unavailable. Try again in a minute."
         }
     }
 
@@ -109,6 +115,11 @@ public enum APIError: Error, Sendable, Equatable {
                 return .retryLater(seconds)
             }
             return .rateLimited
+        case 402:
+            return .planRequired
+        case 503 where code == "no_node_available":
+            let seconds = headers["retry-after"].flatMap { TimeInterval($0.trimmingCharacters(in: .whitespaces)) }
+            return .noNodeAvailable(retryAfter: seconds.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil })
         case 502, 503:
             return .unavailable(message ?? "The server is unavailable. Try again later.")
         default:

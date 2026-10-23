@@ -272,4 +272,39 @@ describe("AgendaSync", () => {
     expect(await w.agenda.fromAccount()).toEqual([])
     expect(w.agenda.notice).toBe("Can't read your servers from wristcall Cloud.")
   })
+
+  test("agenda sync never writes the cloud entry", async () => {
+    // The Cloud entry shares the address of a saved server: the 409 of the POST points at it.
+    const cloudEntry = entry({ id: "srv_cloud", name: "Wristcall Cloud", kind: "cloud", linked: false })
+    const w = world([saved()], (call) => {
+      if (call.method === "POST") return json({ error: "conflict", message: "exists" }, 409)
+      if (call.method === "GET" && call.path === "/v1/servers") return json({ servers: [cloudEntry] })
+      return null
+    }, () => [agent(1)])
+    w.agenda.pushAll()
+    w.agenda.serverChanged(change("updated", saved()))
+    w.agenda.agentsChanged("home", [agent(2)])
+    w.agenda.agentsChanged("cloud", [agent(3)])
+    w.agenda.serverChanged(change("removed", saved()))
+    await w.agenda.idle()
+    const touched = w.writes().filter((call) => call.method !== "POST")
+    expect(touched).toEqual([])
+    expect(w.calls.some((call) => call.path.startsWith("/v1/servers/srv_cloud"))).toBe(false)
+    expect(w.store.get("home")!.cloudServerId).toBeNull()
+  })
+
+  test("fromAccount leaves the cloud entry out; read hands it apart", async () => {
+    const cloudEntry = entry({ id: "srv_cloud", name: "Wristcall Cloud", url: CLOUD, kind: "cloud" })
+    const office = entry({ id: "c2", url: "https://office.example.com" })
+    const w = world([saved()], (call) => (call.method === "GET" && call.path === "/v1/servers" ? json({ servers: [cloudEntry, office, entry()] }) : null))
+    expect(await w.agenda.fromAccount()).toEqual([office])
+    expect(await w.agenda.read()).toEqual({ pending: [office], cloud: cloudEntry })
+    // An agenda that cannot be read says nothing about the entry (`undefined`: keep what is shown).
+    const down = world([], () => json({ error: "boom", message: "x" }, 500))
+    expect(await down.agenda.read()).toEqual({ pending: [], cloud: undefined })
+    // Signed out: no entry.
+    const out = world([])
+    out.session.state = "signedOut"
+    expect(await out.agenda.read()).toEqual({ pending: [], cloud: null })
+  })
 })

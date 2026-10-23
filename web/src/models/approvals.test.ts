@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest"
-import { json, savedServer, serversWith, type Handler } from "../test/fakeServers"
+import { attachCloudRoute, cloudEntry, json, NODE, savedServer, serversWith, type Handler } from "../test/fakeServers"
 import { ApprovalsBadge, ApprovalsModel, EXPIRED_NOTICE, refreshWhenServersChange } from "./approvals"
 
 const home = savedServer({ id: "home", name: "home", url: "https://home.example.com" })
@@ -17,6 +17,17 @@ describe("ApprovalsModel focus", () => {
     await model.focus("other", "0423", null)
     expect(fetchMock.calls).toHaveLength(0)
     expect(model.state.notice).toBeNull()
+    expect(model.state.focused).toBeNull()
+  })
+
+  test("the Wristcall Cloud entry never reaches device requests", async () => {
+    const { servers, fetchMock } = serversWith([home], { [NODE]: listing(request("0423", 4_000_000_000)) })
+    attachCloudRoute(servers, fetchMock)
+    servers.setCloud(cloudEntry())
+    const model = new ApprovalsModel(servers)
+    await model.focus("cloud", "0423", null)
+    await model.approve({ serverId: "cloud", serverName: "Wristcall Cloud", request: request("0423", 4_000_000_000) })
+    expect(fetchMock.calls.filter((call) => new URL(call.url).host === NODE)).toEqual([])
     expect(model.state.focused).toBeNull()
   })
 

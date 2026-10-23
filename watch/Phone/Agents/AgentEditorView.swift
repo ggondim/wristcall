@@ -95,7 +95,9 @@ struct AgentEditorView: View {
             loadError = model.error ?? "Can't reach the server."
             return
         }
-        let next = AgentFormModel(editing: editing, providers: providers, serverVersion: state.healths[target.id]?.version)
+        // The Cloud entry has no health check: its node always takes the color.
+        let version = target.isCloudEntry ? AgentFormModel.colorVersion : state.healths[target.id]?.version
+        let next = AgentFormModel(editing: editing, providers: providers, serverVersion: version)
         if let previous {
             next.carryOver(from: previous)
         } else if editing == nil {
@@ -165,10 +167,11 @@ struct AgentEditorView: View {
                 Text("CALL")
             }
             if form.showsEndpoint { endpointSection(form) }
-            if !form.isEditing && state.servers.count > 1 {
+            // The Wristcall Cloud entry is one of them (first).
+            if !form.isEditing && state.allServers.count > 1 {
                 Section {
                     Picker("Server", selection: Binding(get: { server.id }, set: { switchServer(to: $0, from: form) })) {
-                        ForEach(state.servers) { Text($0.name).tag($0.id) }
+                        ForEach(state.allServers) { Text($0.name).tag($0.id) }
                     }
                 }
             }
@@ -206,7 +209,7 @@ struct AgentEditorView: View {
     }
 
     private func switchServer(to id: String, from previous: AgentFormModel) {
-        guard id != server.id, let target = state.servers.first(where: { $0.id == id }) else { return }
+        guard id != server.id, let target = state.allServers.first(where: { $0.id == id }) else { return }
         Task { await load(target, carrying: previous) }
     }
 
@@ -278,9 +281,11 @@ struct AgentEditorView: View {
         }
     }
 
-    private func choiceLabel(_ choice: AgentFormModel.EndpointChoice, _ form: AgentFormModel) -> String {
+    private func choiceLabel(
+        _ choice: AgentFormModel.EndpointChoice, _ form: AgentFormModel, for stage: AgentFormModel.Stage
+    ) -> String {
         switch choice {
-        case .none: form.isEditing ? "Choose…" : "Server default"
+        case .none: form.noneLabel(for: stage)
         case .custom: "Custom"
         case .provider(let name): name
         }
@@ -293,7 +298,7 @@ struct AgentEditorView: View {
         return Section {
             if form.endpointHasPicker {
                 Picker(form.isOneWay ? "Webhook" : "Responder", selection: $form.action) {
-                    ForEach(form.choices(for: .action), id: \.self) { Text(choiceLabel($0, form)).tag($0) }
+                    ForEach(form.choices(for: .action), id: \.self) { Text(choiceLabel($0, form, for: .action)).tag($0) }
                 }
             }
             if form.action == .custom {
@@ -318,9 +323,7 @@ struct AgentEditorView: View {
         } header: {
             Text("AGENT ENDPOINT")
         } footer: {
-            Text(form.isOneWay
-                ? "Your server sends the transcript to this webhook."
-                : "Your server turns your voice into text, sends it to this endpoint and speaks the answer.")
+            Text(form.endpointFooter)
         }
     }
 
@@ -339,7 +342,7 @@ struct AgentEditorView: View {
         // A custom voice service is set up under Advanced; here the providers of the server.
         let choices = form.choices(for: .tts).filter { $0 != .custom || form.tts == .custom }
         return Picker("Voice", selection: $form.tts) {
-            ForEach(choices, id: \.self) { Text(choiceLabel($0, form)).tag($0) }
+            ForEach(choices, id: \.self) { Text(choiceLabel($0, form, for: .tts)).tag($0) }
         }
     }
 }

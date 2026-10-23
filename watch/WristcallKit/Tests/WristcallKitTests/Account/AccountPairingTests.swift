@@ -57,6 +57,15 @@ struct AccountPairingTests {
             == [URL(string: "https://b.test")!, URL(string: "https://c.test")!])
     }
 
+    @Test func candidatesSkipCloudEntry() {
+        let cloudEntry = CloudServer(
+            id: "srv_c", name: "Wristcall Cloud", url: "https://cloud.example", kind: "cloud", linked: true, agents: [])
+        #expect(cloudEntry.isCloudEntry)
+        #expect(!CloudServer.sample(url: "https://a.example").isCloudEntry)
+        let agenda = [CloudServer.sample(url: "https://a.example"), cloudEntry]
+        #expect(AccountPairing.candidates(agenda, paired: []) == [URL(string: "https://a.example")!])
+    }
+
     @Test func candidatesSkipInsecureURL() {
         let agenda = [
             CloudServer.sample(url: "http://plain.test", linked: true),
@@ -220,7 +229,7 @@ struct AccountPairingTests {
 }
 
 extension CloudServer {
-    static func sample(url: String, linked: Bool) -> CloudServer {
+    static func sample(url: String, linked: Bool = true) -> CloudServer {
         CloudServer(id: UUID().uuidString, name: "Server", url: url, kind: "self-hosted", linked: linked, agents: [])
     }
 }

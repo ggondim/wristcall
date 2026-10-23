@@ -427,3 +427,59 @@ describe("AgentFormModel", () => {
     expect(invalid.calls).toHaveLength(0)
   })
 })
+
+describe("history-only Voice notes", () => {
+  // A one-shot agent the server keeps in the history only: no webhook, no voice.
+  const note = agent({ id: "ag_n", slug: "notes", display_name: "Notes", call_type: "one-shot", action: null, tts: null })
+  const server = (historyOnly: boolean) =>
+    mockFetch((url, init) => {
+      if (url.endsWith("/v1/providers")) return ok({ providers: PROVIDERS, custom_endpoints: false, ...(historyOnly ? { history_only_one_way: true } : {}) })
+      if (url.endsWith("/v1/agents") && (init.method ?? "GET") === "GET") return ok({ agents: [note] })
+      if (init.method === "PATCH") return ok({ ...note, ...JSON.parse(init.body as string) })
+      return ok({ error: "not_found", message: "no such route" }, 404)
+    })
+
+  test("history-only one-shot saves on edit", async () => {
+    const fetchMock = server(true)
+    const model = new AgentsModel(client(fetchMock), "cloud")
+    await model.load()
+    const form = model.form(note)
+    expect(form.historyOnly).toBe(true)
+    // "None" stays offered while the agent has no action, and says where the call goes.
+    expect(form.choices("action")).toContain("none")
+    expect(form.label("none", "action")).toBe("None, save to History")
+    expect(form.label("none", "stt")).toBe("Choose…")
+    expect(form.validate()).toBeNull()
+    form.update({ displayName: "Voice notes" })
+    await form.save()
+    const patch = fetchMock.calls.find((call) => call.init.method === "PATCH")!
+    expect(JSON.parse(patch.init.body as string)).toEqual({ display_name: "Voice notes" })
+    // A new agent keeps the server's default, as before.
+    expect(model.form(null).label("none", "action")).toBe("Server default")
+  })
+
+  test("history-only one-shot without a webhook says the transcript is saved to History", async () => {
+    const model = new AgentsModel(client(server(true)), "cloud")
+    await model.load()
+    const form = model.form(note)
+    expect(form.callTypeNote).toBe("The watch records you and saves the transcript to History. There is no answer and no voice.")
+    form.update({ action: "custom" })
+    expect(form.callTypeNote).toBe("The watch records you and sends the transcript to a webhook. There is no answer and no voice.")
+    form.selectCallType("conversation")
+    expect(form.callTypeNote).toBe("You talk and the agent answers with a voice.")
+  })
+
+  test("one-way without action still needs a webhook on self-hosted", async () => {
+    const fetchMock = server(false)
+    const model = new AgentsModel(client(fetchMock), "home")
+    await model.load()
+    const form = model.form(note)
+    expect(form.historyOnly).toBe(false)
+    expect(form.label("none", "action")).toBe("Choose…")
+    expect(form.validate()).toBe("Choose Webhook.")
+    expect(form.callTypeNote).toBe("The watch records you and sends the transcript to a webhook. There is no answer and no voice.")
+    form.update({ displayName: "Voice notes" })
+    await expect(form.save()).rejects.toThrow("Choose Webhook.")
+    expect(fetchMock.calls.some((call) => call.init.method === "PATCH")).toBe(false)
+  })
+})

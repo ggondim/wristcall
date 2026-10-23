@@ -73,6 +73,11 @@ final class AppState {
     /// yet" (or unreadable, see `loadError`), not "no servers".
     private(set) var didLoad = false
     var hooks = AppHooks()
+    /// The Wristcall Cloud's own agenda entry (`kind == "cloud"`), read by the agenda while the account has one.
+    /// Never in `servers`: no token, never saved, never mirrored, pushed or checked.
+    private(set) var cloudEntry: CloudServer?
+    /// What the Cloud entry's requests go through (the Cloud route); set by the account model.
+    @ObservationIgnored var cloudAPI: (any ServerAPI)?
 
     @ObservationIgnored private let store: any ManagedServerStore
     @ObservationIgnored private let makeAPI: ServerAPIFactory
@@ -90,7 +95,25 @@ final class AppState {
         self.makeAPI = makeAPI
     }
 
-    func api(for server: ManagedServer) -> any ServerAPI { makeAPI(server.url, server.token) }
+    func api(for server: ManagedServer) -> any ServerAPI {
+        guard server.isCloudEntry else { return makeAPI(server.url, server.token) }
+        return cloudAPI ?? UnroutedServerAPI()
+    }
+
+    /// How the self-hosted APIs are made: the Cloud route uses it for the node it names.
+    var serverAPIFactory: ServerAPIFactory { makeAPI }
+
+    /// The Cloud entry as a virtual server (id `cloud`), or `nil` when the agenda has none.
+    var cloudServer: ManagedServer? { cloudEntry.map(ManagedServer.cloudEntry) }
+
+    /// The Cloud entry first, then the servers of this iPhone.
+    var allServers: [ManagedServer] { (cloudServer.map { [$0] } ?? []) + servers }
+
+    /// `nil` removes it (no entry in the agenda, signed out).
+    func setCloudEntry(_ entry: CloudServer?) {
+        guard entry != cloudEntry else { return }
+        cloudEntry = entry
+    }
 
     /// A `ServerAPI` for a server not saved yet, without a token: only the routes that need none
     /// (`health`, the account link by code).
@@ -246,8 +269,9 @@ final class AppState {
         _ = try? change(id) { $0.cloudServerID = cloudID }
     }
 
-    /// After signing out: agenda ids and links belonged to that account. Servers and tokens stay.
+    /// After signing out: agenda ids, links and the Cloud entry belonged to that account. Servers and tokens stay.
     func forgetAccount() {
+        cloudEntry = nil
         guard ensureReadable(), servers.contains(where: { $0.cloudServerID != nil || $0.linked }) else { return }
         var list = servers
         for index in list.indices {

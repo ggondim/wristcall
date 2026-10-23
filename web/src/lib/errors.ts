@@ -27,9 +27,22 @@ export class TimeoutError extends Error {
   }
 }
 
+// Wristcall Cloud: the route (or a node) has its own text for these; the Cloud's own text is not shown.
+export const PLAN_REQUIRED = "This account has no Wristcall Cloud plan."
+export const NO_NODE_AVAILABLE = "Wristcall Cloud is temporarily unavailable. Try again in a minute."
+
+/** The fixed text of a Wristcall Cloud refusal (`402 plan_required`, `503 no_node_available`), or null. */
+function cloudRefusal(e: ApiError): string | null {
+  if (e.status === 402 && e.code === "plan_required") return PLAN_REQUIRED
+  if (e.status === 503 && e.code === "no_node_available") return NO_NODE_AVAILABLE
+  return null
+}
+
 /** Text for the screen. */
 export function userMessage(e: unknown): string {
   if (e instanceof ApiError) {
+    const refusal = cloudRefusal(e)
+    if (refusal !== null) return refusal
     switch (e.code) {
       case "bad_response":
         return e.message
@@ -68,6 +81,8 @@ export function userMessage(e: unknown): string {
 export function cloudMessage(error: unknown): string {
   if (error instanceof NetworkError || error instanceof TimeoutError) return "Can't reach wristcall Cloud."
   if (error instanceof ApiError) {
+    const refusal = cloudRefusal(error)
+    if (refusal !== null) return refusal
     return error.status === 503 || error.status === 502 ? "wristcall Cloud is busy. Try again in a moment." : "wristcall Cloud refused the request."
   }
   return "Something went wrong. Try again."

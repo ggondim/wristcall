@@ -1,7 +1,8 @@
 import { useEffect, useState } from "preact/hooks"
-import type { CloudPlan } from "../api/cloud"
+import type { CloudPlan, CloudServer } from "../api/cloud"
 import type { AccountModel } from "../models/account"
 import type { CloudDevicesModel } from "../models/cloudDevices"
+import { USAGE_UNAVAILABLE, usageSummary, type UsageState } from "../models/usage"
 import type { NotificationsModel } from "../push/notifications"
 import { Link } from "./Link"
 import { NotificationsSetting } from "./NotificationsSetting"
@@ -67,9 +68,23 @@ function RedeemInvite({ model }: { model: AccountModel }) {
   )
 }
 
-/** The plan of the account, once read; or why it could not be, with a retry. */
-function PlanSection({ model }: { model: AccountModel }) {
+/** Stand-ins when the caller has no servers (so no Cloud entry) or the account no usage to read. */
+const NO_ENTRY: Model<{ cloud: CloudServer | null }> = { state: { cloud: null }, subscribe: () => () => {} }
+const NO_USAGE: Model<UsageState> = { state: { usage: null, unavailable: false }, subscribe: () => () => {} }
+
+/**
+ * The plan of the account, once read; or why it could not be, with a retry. With a plan, the second line says the
+ * month's call minutes (or that they cannot be read now). The invite field is there only without a plan and without the
+ * Wristcall Cloud entry (a lapsed plan keeps its entry).
+ */
+function PlanSection({ model, entry }: { model: AccountModel; entry: Model<{ cloud: CloudServer | null }> }) {
   const { plan, identities, profileError } = useModel(model)
+  const { cloud } = useModel(entry)
+  const { usage, unavailable } = useModel(model.usage ?? NO_USAGE)
+  const hasPlan = plan !== null
+  useEffect(() => {
+    if (hasPlan) void model.usage?.load()
+  }, [model, hasPlan])
   if (identities === null) {
     return profileError === null ? null : (
       <div>
@@ -85,6 +100,7 @@ function PlanSection({ model }: { model: AccountModel }) {
     )
   }
   const { title, detail } = planRow(plan)
+  const minutes = !hasPlan ? null : usage !== null ? usageSummary(usage) : unavailable ? USAGE_UNAVAILABLE : null
   return (
     <section aria-labelledby="plan-title">
       <h3 id="plan-title">Plan</h3>
@@ -93,10 +109,11 @@ function PlanSection({ model }: { model: AccountModel }) {
           <div class="row">
             <span class="row-title">{title}</span>
             {detail !== null ? <span class="row-sub">{detail}</span> : null}
+            {minutes !== null ? <span class="row-sub">{minutes}</span> : null}
           </div>
         </li>
       </ul>
-      <RedeemInvite model={model} />
+      {!hasPlan && cloud === null ? <RedeemInvite model={model} /> : null}
     </section>
   )
 }
@@ -139,8 +156,11 @@ function DevicesSection({ model }: { model: CloudDevicesModel }) {
   )
 }
 
-/** The account part of Settings: sign in, sign out, delete. The caller leaves it out when the site has no Cloud. */
-export function AccountSection({ model }: { model: AccountModel }) {
+/**
+ * The account part of Settings: sign in, sign out, delete. The caller leaves it out when the site has no Cloud. `servers`
+ * tells whether the agenda lists the Wristcall Cloud entry.
+ */
+export function AccountSection({ model, servers = NO_ENTRY }: { model: AccountModel; servers?: Model<{ cloud: CloudServer | null }> }) {
   const { screen, error, busy, identities } = useModel(model)
   const [confirming, setConfirming] = useState(false)
   const [action, setAction] = useState<Action | null>(null)
@@ -182,7 +202,7 @@ export function AccountSection({ model }: { model: AccountModel }) {
               {error}
             </p>
           ) : null}
-          <PlanSection model={model} />
+          <PlanSection model={model} entry={servers} />
           {model.devices !== null ? <DevicesSection model={model.devices} /> : null}
           {/* The watch's code page is a Zitadel (email) page: only an account with an email sign-in has one to approve. */}
           {identities?.includes("zitadel") ? (
@@ -277,15 +297,17 @@ export function SettingsView({
   account,
   notifications = null,
   badge = NO_REQUESTS,
+  servers = NO_ENTRY,
 }: {
   account: AccountModel | null
   notifications?: NotificationsModel | null
   badge?: Model<{ count: number }>
+  servers?: Model<{ cloud: CloudServer | null }>
 }) {
   return (
     <main class="screen">
       <h1>Settings</h1>
-      {account !== null ? <AccountSection model={account} /> : null}
+      {account !== null ? <AccountSection model={account} servers={servers} /> : null}
       {notifications !== null ? <NotificationsSetting model={notifications} /> : null}
       <AdvancedSection requests={badge} />
     </main>

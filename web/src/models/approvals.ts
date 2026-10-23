@@ -1,9 +1,9 @@
 import { ApiError, userMessage } from "../lib/errors"
 import { REQUEST_ID } from "../lib/ids"
 import { unixNow } from "../lib/time"
-import type { ApprovalRequest } from "../api/server"
+import type { ApprovalRequest, ServerClient } from "../api/server"
 import { BaseModel, type Model } from "../ui/useModel"
-import type { ServerRow, ServersModel } from "./servers"
+import { CLOUD_ENTRY_ID, type ServerRow, type ServersModel } from "./servers"
 
 export interface PendingApproval {
   serverId: string
@@ -124,7 +124,7 @@ export class ApprovalsModel extends BaseModel<ApprovalsState> {
    */
   async focus(serverId: string, requestId: string, expiresAt: number | null): Promise<void> {
     if (!REQUEST_ID.test(requestId)) return
-    if ((await this.#servers.client(serverId)) === null) return
+    if ((await this.#ownClient(serverId)) === null) return
     if (expiresAt !== null && !(expiresAt > this.#now())) {
       this.set({ notice: EXPIRED_NOTICE, focused: null })
       return
@@ -158,7 +158,7 @@ export class ApprovalsModel extends BaseModel<ApprovalsState> {
     if (this.#busy.has(key)) return
     this.#busy.add(key)
     try {
-      const client = await this.#servers.client(serverId)
+      const client = await this.#ownClient(serverId)
       if (client === null) {
         this.#drop(serverId, requestId)
         return
@@ -189,6 +189,11 @@ export class ApprovalsModel extends BaseModel<ApprovalsState> {
       pending: this.state.pending.filter((item) => !(item.serverId === serverId && item.request.request_id === requestId)),
       focused: this.state.focused === key ? null : this.state.focused,
     })
+  }
+
+  /** A saved server's client; never the Wristcall Cloud entry's (it has no device requests, and a notification naming it is not ours). */
+  #ownClient(serverId: string): Promise<ServerClient | null> {
+    return serverId === CLOUD_ENTRY_ID ? Promise.resolve(null) : this.#servers.client(serverId)
   }
 
   /** The servers are read once if nothing has read them yet (a notification can open the app straight on this screen). */

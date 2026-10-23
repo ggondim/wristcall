@@ -5,7 +5,7 @@ import { AGENT_COLORS } from "../ui/agentColor"
 import { ApiError } from "../lib/errors"
 import { parseServerAddress, sameUrl } from "../lib/address"
 import type { AgendaControl } from "../models/account"
-import type { ServerChange, ServersModel, ServerStorage } from "../models/servers"
+import { CLOUD_ENTRY_ID, isCloudEntry, type ServerChange, type ServersModel, type ServerStorage } from "../models/servers"
 import type { AccountSession } from "./session"
 
 /** What the mirror needs from the sign-in: the state, a fresh access token and the Cloud client. */
@@ -156,7 +156,8 @@ export class AgendaSync implements AgendaControl {
 
   /** The agents of a server, as the screen read them: only the latest list is sent (`PUT`, the first 50). */
   agentsChanged(serverId: string, agents: AgentDetail[]): void {
-    if (!this.#active()) return
+    // The Cloud owns its entry's agents.
+    if (!this.#active() || serverId === CLOUD_ENTRY_ID) return
     const queued = this.#pendingAgents.has(serverId)
     this.#pendingAgents.set(serverId, agents)
     if (queued) return
@@ -212,23 +213,39 @@ export class AgendaSync implements AgendaControl {
 
   /**
    * The agenda's servers with no token in this browser (compared by canonical URL), to set up here. Entries whose address
-   * the app would not use (`http://` off localhost: the Cloud accepts any) are left out.
+   * the app would not use (`http://` off localhost: the Cloud accepts any) are left out, and so is the Wristcall Cloud entry.
    */
   async fromAccount(): Promise<CloudServer[]> {
-    if (this.#session.state !== "signedIn") return []
+    return (await this.read()).pending
+  }
+
+  /**
+   * One read of the agenda: the servers to set up here (`fromAccount`) and, apart, the Wristcall Cloud entry (null when
+   * there is none or when signed out; `undefined` when the agenda could not be read, so the screen keeps what it shows).
+   */
+  async read(): Promise<{ pending: CloudServer[]; cloud: CloudServer | null | undefined }> {
+    if (this.#session.state !== "signedIn") return { pending: [], cloud: null }
     const generation = this.#generation
     try {
       const entries = await this.#session.cloudClient.servers(await this.#token())
       const local = (await this.#store.list()).map((server) => server.url)
-      if (generation !== this.#generation) return []
+      if (generation !== this.#generation) return { pending: [], cloud: null }
       this.#setNotice(null)
-      return entries.filter((entry) => parseServerAddress(entry.url) !== null && !local.some((url) => sameUrl(url, entry.url)))
+      return {
+        pending: entries.filter(
+          (entry) => !isCloudEntry(entry) && parseServerAddress(entry.url) !== null && !local.some((url) => sameUrl(url, entry.url)),
+        ),
+        cloud: entries.find(isCloudEntry) ?? null,
+      }
     } catch (error) {
-      if (generation !== this.#generation) return []
+      if (generation !== this.#generation) return { pending: [], cloud: null }
       this.#refusedToken(error)
-      if (isSignedOut(error)) this.#signedOut()
-      else this.#setNotice(READ_NOTICE)
-      return []
+      if (isSignedOut(error)) {
+        this.#signedOut()
+        return { pending: [], cloud: null }
+      }
+      this.#setNotice(READ_NOTICE)
+      return { pending: [], cloud: undefined }
     }
   }
 
@@ -328,7 +345,8 @@ export class AgendaSync implements AgendaControl {
         const cloud = this.#session.cloudClient
         let id = removed.cloudServerId
         if (id === null) {
-          id = (await cloud.servers(token)).find((entry) => sameUrl(entry.url, removed.url))?.id ?? null
+          // Never the Cloud's own entry, even at the same address.
+          id = (await cloud.servers(token)).find((entry) => !isCloudEntry(entry) && sameUrl(entry.url, removed.url))?.id ?? null
         }
         if (id === null) return
         this.#check(generation)
@@ -359,6 +377,8 @@ export class AgendaSync implements AgendaControl {
     }
     this.#check(generation)
     const entry = await cloud.addServer(token, { name, url: server.url, linked: server.linked })
+    // The `409` pointed at the Cloud's own entry (same address): the Cloud manages it, nothing is written to it.
+    if (isCloudEntry(entry)) return null
     if (entry.linked !== server.linked || entry.name !== name) {
       this.#check(generation)
       await cloud.updateServer(token, entry.id, { name, linked: server.linked })

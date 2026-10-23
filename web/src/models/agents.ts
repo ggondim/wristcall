@@ -10,6 +10,8 @@ export interface AgentsState {
   providers: Provider[]
   /** Whether the server accepts an agent's own endpoints (`custom_endpoints` of `GET /v1/providers`). */
   customEndpoints: boolean
+  /** Whether a one-way agent may have no action, its calls saved to the history (`history_only_one_way`, Wristcall Cloud). */
+  historyOnly: boolean
   error: string | null
   /** True once the agents were read. */
   loaded: boolean
@@ -27,7 +29,7 @@ export class AgentsModel extends BaseModel<AgentsState> {
 
   /** `serverId` is the saved server's local id: the agenda mirror files the agents under it. */
   constructor(client: ServerClient, serverId: string) {
-    super({ agents: [], providers: [], customEndpoints: false, error: null, loaded: false, providersLoaded: false })
+    super({ agents: [], providers: [], customEndpoints: false, historyOnly: false, error: null, loaded: false, providersLoaded: false })
     this.#client = client
     this.#serverId = serverId
   }
@@ -47,7 +49,7 @@ export class AgentsModel extends BaseModel<AgentsState> {
     try {
       const reply = await this.#client.providers()
       if (load !== this.#loads) return
-      this.set({ providers: reply.providers, customEndpoints: reply.custom_endpoints === true, providersLoaded: true, error: null })
+      this.set({ providers: reply.providers, customEndpoints: reply.custom_endpoints === true, historyOnly: reply.history_only_one_way, providersLoaded: true, error: null })
     } catch (e) {
       if (load !== this.#loads) return
       this.set({ error: userMessage(e) })
@@ -95,6 +97,7 @@ export class AgentsModel extends BaseModel<AgentsState> {
   form(existing: AgentDetail | null, colorSupported = false): AgentFormModel {
     return new AgentFormModel(this.#client, existing, this.state.providers, {
       customEndpoints: this.state.customEndpoints,
+      historyOnly: this.state.historyOnly,
       colorSupported,
       onSaved: () => this.load(),
     })

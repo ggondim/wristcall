@@ -51,6 +51,23 @@ extension ManagedServer: CustomStringConvertible, CustomDebugStringConvertible {
     public var debugDescription: String { description }
 }
 
+/// The Wristcall Cloud's agenda entry (`kind == "cloud"`) as a virtual server in the iPhone app's lists: no
+/// personal token (its calls go through the Cloud route) and never saved in the Keychain list.
+extension ManagedServer {
+    /// The fixed local id, like the watch's `Credentials.cloudEntryID`.
+    public static let cloudEntryID = "cloud"
+
+    /// `url` is the Cloud's address as the agenda gives it (a placeholder when it is not even a URL: nothing
+    /// talks to it, the route names the node).
+    public static func cloudEntry(_ entry: CloudServer) -> ManagedServer {
+        ManagedServer(
+            id: cloudEntryID, name: entry.name, url: URL(string: entry.url) ?? URL(string: "https://cloud.invalid")!,
+            token: "", cloudServerID: entry.id, linked: true)
+    }
+
+    public var isCloudEntry: Bool { id == Self.cloudEntryID }
+}
+
 /// `dump(_:)` and other Mirror based output show the token as `<redacted>` too.
 extension ManagedServer: CustomReflectable {
     public var customMirror: Mirror {

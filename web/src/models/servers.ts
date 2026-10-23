@@ -3,6 +3,7 @@ import { ApiError, userMessage } from "../lib/errors"
 import { newId } from "../lib/ids"
 import { ServerClient, type Health } from "../api/server"
 import type { CloudServer } from "../api/cloud"
+import { RoutedServerClient, type ManageRouter } from "../api/routedServer"
 import type { SavedServer } from "../store/servers"
 import { openDb } from "../store/db"
 import { ServerStore } from "../store/servers"
@@ -30,8 +31,10 @@ export interface ServerRow {
 
 export interface ServersState {
   rows: ServerRow[]
-  /** Servers of the account's agenda that this browser has no token for. */
+  /** Servers of the account's agenda that this browser has no token for (never the Wristcall Cloud entry). */
   fromAccount: CloudServer[]
+  /** The Wristcall Cloud entry of the account's agenda: managed through the Cloud route, never saved here. */
+  cloud: CloudServer | null
   loading: boolean
   /** True once the first read of the database finished. */
   loaded: boolean
@@ -39,6 +42,17 @@ export interface ServersState {
 }
 
 export type ServerChange = { kind: "added" | "updated" | "removed"; server: SavedServer }
+
+/** The id `client()` takes for the Wristcall Cloud entry (a saved server's id is a UUID). */
+export const CLOUD_ENTRY_ID = "cloud"
+
+/** What the screens call the Wristcall Cloud entry (its section, the history's server filter), whatever the agenda names it. */
+export const CLOUD_ENTRY_NAME = "Wristcall Cloud"
+
+/** The Cloud's own entry in the agenda (`kind: "cloud"`): the Cloud manages it, no app writes it. */
+export function isCloudEntry(server: CloudServer): boolean {
+  return server.kind === "cloud"
+}
 
 // Same texts as the iPhone app.
 export const UNREACHABLE = "Can't reach host."
@@ -134,6 +148,9 @@ export class ServersModel extends BaseModel<ServersState> {
   readonly #clientFor: (server: SavedServer) => ServerClient
   readonly #listeners = new Set<(event: ServerChange) => void>()
   #account: CloudServer[] = []
+  #router: ManageRouter | null = null
+  #routedFetch: typeof fetch | undefined
+  #signedIn: () => boolean = () => true
   #beforeRemove: (server: SavedServer) => Promise<void> = async () => {}
   #generation = 0
   readonly #cleanups = new Set<Promise<void>>()
@@ -141,7 +158,7 @@ export class ServersModel extends BaseModel<ServersState> {
   #changes = 0
 
   constructor(store: ServerStorage, serverClientFor: (server: SavedServer) => ServerClient = defaultServerClient) {
-    super({ rows: [], fromAccount: [], loading: false, loaded: false, loadError: null })
+    super({ rows: [], fromAccount: [], cloud: null, loading: false, loaded: false, loadError: null })
     this.#store = store
     this.#clientFor = serverClientFor
   }
@@ -181,8 +198,16 @@ export class ServersModel extends BaseModel<ServersState> {
     if (generation === this.#generation) this.set({ loading: false })
   }
 
-  /** The management client of a saved server, or null when it is not (any longer) saved. */
+  /**
+   * The management client of a saved server, or null when it is not (any longer) saved. For `CLOUD_ENTRY_ID`, the routed
+   * client of the Wristcall Cloud entry while the account is signed in (and has a router), even before the agenda read
+   * finished (a reload on the entry's screens): made without reaching the Cloud, it asks for the route on every request,
+   * so a missing plan or node surfaces on the first one (`402`, `404`, `503`) with its own text.
+   */
   async client(id: string): Promise<ServerClient | null> {
+    if (id === CLOUD_ENTRY_ID) {
+      return this.#router === null || !this.#signedIn() ? null : new RoutedServerClient(this.#router, this.#routedFetch)
+    }
     const server = await this.#store.get(id)
     return server === null ? null : this.#clientFor(server)
   }
@@ -302,6 +327,8 @@ export class ServersModel extends BaseModel<ServersState> {
    */
   async forgetAccount(): Promise<void> {
     this.#account = []
+    this.#router?.invalidate()
+    this.set({ cloud: null })
     for (const server of await this.#store.list()) {
       if (server.linked || server.cloudServerId !== null) await this.#store.update(server.id, { linked: false, cloudServerId: null })
     }
@@ -324,8 +351,23 @@ export class ServersModel extends BaseModel<ServersState> {
 
   /** The account's agenda; the servers that are already saved here are left out. */
   setFromAccount(servers: CloudServer[]): void {
-    this.#account = servers
+    this.#account = servers.filter((server) => !isCloudEntry(server))
     this.set({ fromAccount: this.#pending(this.state.rows) })
+  }
+
+  /** The Wristcall Cloud entry the agenda holds now (null: none, or signed out). Only a `kind: "cloud"` entry is taken. */
+  setCloud(entry: CloudServer | null): void {
+    this.set({ cloud: entry !== null && isCloudEntry(entry) ? entry : null })
+  }
+
+  /**
+   * The account's router: the Cloud entry's client asks it for the node on every request. `signedIn` tells whether the
+   * account is signed in (no client otherwise); `fetchImpl` is for tests.
+   */
+  attachRouter(router: ManageRouter, opts: { signedIn?: () => boolean; fetchImpl?: typeof fetch } = {}): void {
+    this.#router = router
+    this.#signedIn = opts.signedIn ?? (() => true)
+    this.#routedFetch = opts.fetchImpl
   }
 
   /** Runs before a server is deleted (the push key is unregistered there). Task 10 sets it. */

@@ -2,7 +2,7 @@ import { useEffect, useState } from "preact/hooks"
 import type { DeviceRecord } from "../api/server"
 import { DevicesModel } from "../models/devices"
 import type { ApprovalsModel } from "../models/approvals"
-import type { ServersModel } from "../models/servers"
+import { CLOUD_ENTRY_ID, type ServersModel } from "../models/servers"
 import { approvalKey } from "../models/approvals"
 import { ApprovalNotice, ApprovalRow, useApprovalsRefresh } from "./ApprovalsView"
 import { Link } from "./Link"
@@ -17,6 +17,11 @@ export function DevicesScreen({ servers, approvals, target }: { servers: Servers
   useEffect(() => {
     let live = true
     setModel(null)
+    // The Wristcall Cloud entry has no devices of its own here: only saved servers do.
+    if (serverId === CLOUD_ENTRY_ID) {
+      setModel("missing")
+      return
+    }
     servers
       .client(serverId)
       .then((client) => {

@@ -52,7 +52,7 @@ struct WristcallApp: App {
         push = Self.makePush(model)
         let link = WatchLinkReceiver(model: model)
         self.link = link
-        let cloud = Self.makeCloud(model)
+        let cloud = Self.makeCloud(model: model, coordinator: coordinator)
         let login = AccountLoginModel(
             backend: cloud?.login, model: model, sendToPhone: { [weak link] in link?.send($0) })
         // Unit tests run inside this app: they talk to their own receiver, never to WatchConnectivity, and make
@@ -168,13 +168,22 @@ struct WristcallApp: App {
 
     /// The Cloud comes from the build only (never from a server or the iPhone); empty: no account, no setup.
     /// One `DeviceSession` for the whole app (its refresh token is single use); the Zitadel `AccountSession` is only
-    /// the device flow's and the 0.4.0 migration's.
+    /// the device flow's and the 0.4.0 migration's. Its `CloudRouter` routes the calls of the cloud entry
+    /// (`coordinator.router`) and their results (`model.cloudRouter`).
     @MainActor
-    private static func makeCloud(_ model: AppModel) -> (setup: LiveSetupBackend, login: LiveAccountLoginBackend)? {
+    private static func makeCloud(
+        model: AppModel, coordinator: CallCoordinator
+    ) -> (setup: LiveSetupBackend, login: LiveAccountLoginBackend)? {
         guard let cloud = AccountLoginModel.cloudURL(
             fromInfoValue: Bundle.main.object(forInfoDictionaryKey: "WristcallCloudURL") as? String) else { return nil }
-        let session = DeviceSession(cloud: cloud, store: KeychainDeviceSessionStore())
-        let legacy = AccountSession(cloud: cloud, kind: .watch, store: KeychainTokenStore(service: KeychainTokenStore.defaultService))
+        // `X-Wristcall-Client: watchos/<version>` on every Cloud request (the Cloud gates its entry by it).
+        let client = ClientIdentity.fromBundle(platform: .watchos)
+        let session = DeviceSession(cloud: cloud, store: KeychainDeviceSessionStore(), client: client)
+        let router = CloudRouter(access: session)
+        model.cloudRouter = router
+        coordinator.router = router
+        let legacy = AccountSession(
+            cloud: cloud, kind: .watch, store: KeychainTokenStore(service: KeychainTokenStore.defaultService), client: client)
         let keys = KeychainAccountKeyStore(accessGroup: KeychainGroup.shared(
             infoValue: Bundle.main.object(forInfoDictionaryKey: "WristcallKeychainGroup") as? String))
         let enrollment = WatchEnrollment(

@@ -132,7 +132,7 @@ public struct CloudAgent: Codable, Sendable, Equatable {
 
 /// One server of the account's agenda. `url` is as the Cloud stored it: it accepts any `http://`, so check it
 /// with `ServerAddress.parse` before talking to it.
-public struct CloudServer: Decodable, Sendable, Equatable, Identifiable {
+public struct CloudServer: Codable, Sendable, Equatable, Identifiable {
     public var id: String
     public var name: String
     public var url: String
@@ -149,6 +149,10 @@ public struct CloudServer: Decodable, Sendable, Equatable, Identifiable {
         self.linked = linked
         self.agents = agents
     }
+
+    /// The Wristcall Cloud's own entry in the agenda (`kind == "cloud"`): the Cloud routes calls to a node, it is
+    /// not a server to pair with.
+    public var isCloudEntry: Bool { kind == "cloud" }
 }
 
 /// `POST /v1/server-tokens`: a token for one server (`audience`), signed by the Cloud. A secret: `description`

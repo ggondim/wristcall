@@ -21,6 +21,14 @@ enum SettingsContent {
     struct PlanRow: Equatable {
         var title: String
         var detail: String
+        /// The month's call minutes (Wristcall Cloud plans); `nil` when there is nothing to say.
+        var usage: String?
+
+        init(title: String, detail: String, usage: String? = nil) {
+            self.title = title
+            self.detail = detail
+            self.usage = usage
+        }
     }
 
     enum AccountRow: Equatable {
@@ -28,15 +36,21 @@ enum SettingsContent {
     }
 
     /// The top row: the plan of the account (Cloud, or Cloud with the user's models), or the way to choose one.
-    static func planRow(for plan: Plan?) -> PlanRow {
+    /// With a plan, the second line says the month's call minutes (`usage`), or that they cannot be read.
+    static func planRow(for plan: Plan?, usage: CloudUsage? = nil, usageUnavailable: Bool = false) -> PlanRow {
         guard let plan else { return PlanRow(title: "No plan", detail: "Choose how to start") }
+        // A failed reading says so: the last figure (kept by `UsageModel`) would be stale.
+        let line = usageUnavailable ? usageUnavailableText : usage?.summary
         switch plan.plan {
-        case .full: return PlanRow(title: PlanOption.cloud.title, detail: "Beta · \(sourceText(plan.source))")
-        case .custom: return PlanRow(title: PlanOption.cloudCustom.title, detail: "Beta · \(sourceText(plan.source))")
+        case .full: return PlanRow(title: PlanOption.cloud.title, detail: "Beta · \(sourceText(plan.source))", usage: line)
+        case .custom: return PlanRow(title: PlanOption.cloudCustom.title, detail: "Beta · \(sourceText(plan.source))", usage: line)
         // A plan this version does not know yet: the Cloud's name for it, as is.
-        case .other(let name): return PlanRow(title: PlanOption.cloud.title, detail: name)
+        case .other(let name): return PlanRow(title: PlanOption.cloud.title, detail: name, usage: line)
         }
     }
+
+    static let usageUnavailableText = "Usage unavailable right now."
+
 
     /// The Cloud writes `beta` for every redeemed invite (and `invite` for older ones): both read "invite".
     /// Any other source prints as is.
@@ -78,6 +92,7 @@ struct SettingsView: View {
     @Environment(AppState.self) private var state
     @Environment(AccountModel.self) private var account
     @Environment(ApprovalsModel.self) private var approvals
+    @Environment(UsageModel.self) private var usage
     @Environment(LinkRouter.self) private var router
     @Environment(\.openURL) private var openURL
     @State private var path: [SettingsRoute] = []
@@ -112,6 +127,8 @@ struct SettingsView: View {
         .task(id: account.state) {
             if isReady { await devices.load() }
         }
+        // The month's call minutes: on opening, and when the Cloud entry comes or goes.
+        .task(id: state.cloudServer?.id) { await usage.load() }
         // A tapped notification: the server of its tag, among the saved ones only (the list may still be
         // loading on a cold start, hence the servers in the key). Its detail screen opens the devices.
         .task(id: OpenKey(request: approvals.openRequest, servers: state.servers.map(\.id))) {
@@ -168,10 +185,12 @@ struct SettingsView: View {
     }
 
     private var planSection: some View {
-        let row = SettingsContent.planRow(for: account.plan)
+        let row = SettingsContent.planRow(for: account.plan, usage: usage.usage, usageUnavailable: usage.unavailable)
         return Section {
             Button(action: onChoosePlan) {
-                SettingsRowLabel(symbol: "cloud.fill", tint: .green, title: row.title, subtitle: row.detail, chevron: true)
+                SettingsRowLabel(
+                    symbol: "cloud.fill", tint: .green, title: row.title, subtitle: row.detail,
+                    extra: row.usage, chevron: true)
             }
             .buttonStyle(.plain)
         }
@@ -264,6 +283,8 @@ private struct SettingsRowLabel: View {
     let tint: Color
     let title: String
     var subtitle: String?
+    /// A second line under the subtitle.
+    var extra: String?
     var value: String?
     /// Something to look at on the right, in orange (approvals waiting).
     var alert: String?
@@ -283,6 +304,9 @@ private struct SettingsRowLabel: View {
                 Text(title).foregroundStyle(titleColor)
                 if let subtitle {
                     Text(subtitle).font(.subheadline).foregroundStyle(.secondary)
+                }
+                if let extra {
+                    Text(extra).font(.subheadline).foregroundStyle(.secondary)
                 }
             }
             Spacer(minLength: 8)

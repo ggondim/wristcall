@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/preact"
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/preact"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import type { CloudAccount, CloudDevice } from "../api/cloud"
 import { OidcError } from "../api/oidc"
@@ -6,7 +6,9 @@ import { ApiError } from "../lib/errors"
 import { AccountModel, type AccountCloud, type AgendaControl } from "../models/account"
 import { ServersModel } from "../models/servers"
 import { SignInModel } from "../models/signIn"
+import { UsageModel } from "../models/usage"
 import { FakeSession, ISSUER } from "../test/fakeAccount"
+import { attachCloudRoute, cloudEntry, json, NODE, serversWith } from "../test/fakeServers"
 import { DELETE_EXPLANATION } from "./AccountView"
 import { App } from "./App"
 import { BaseModel } from "./useModel"
@@ -216,7 +218,8 @@ describe("Plan, devices, sign out and delete", () => {
     expect(await screen.findByText("Wristcall Cloud")).toBeTruthy()
     expect(screen.getByText("Beta · invite")).toBeTruthy()
     expect(w.cloud.redeemInvite).toHaveBeenCalledWith("access-token", "abc-123")
-    expect((screen.getByLabelText("Redeem invite") as HTMLInputElement).value).toBe("")
+    // A plan now: the invite field goes away.
+    expect(screen.queryByLabelText("Redeem invite")).toBeNull()
   })
 
   test.each([
@@ -447,5 +450,53 @@ describe("Callback", () => {
   test("callbackWithoutCloudSaysSo", () => {
     render(<App badge={new Badge()} servers={new ServersModel(emptyStore)} />)
     expect(screen.getByText("Account sign-in is not available here.")).toBeTruthy()
+  })
+})
+
+describe("Plan usage", () => {
+  const full: CloudAccount = { ...PROFILE, plan: { plan: "full", source: "beta", expires_at: null } }
+  const me = { plan: full.plan, usage: { month: "2026-10", used_s: 779, quota_s: 36_000, remaining_s: 35_221 } }
+
+  function settings(profile: CloudAccount, entry: boolean, fail: unknown = null) {
+    const { servers, fetchMock } = serversWith([], { [NODE]: (path) => (path === "me" ? json(me) : null) })
+    attachCloudRoute(servers, fetchMock).fail = fail
+    if (entry) servers.setCloud(cloudEntry())
+    const cloud: AccountCloud = {
+      deleteAccount: async () => {},
+      account: vi.fn(async () => profile),
+      redeemInvite: vi.fn(async () => ({ plan: "full", source: "beta", expires_at: null })),
+      devices: vi.fn(async () => DEVICES),
+      removeDevice: vi.fn(async () => {}),
+    }
+    const model = new AccountModel(new FakeSession("signedIn", []), null, null, { cloud, usage: new UsageModel(servers) })
+    render(<App badge={new Badge()} servers={servers} account={model} />)
+    return { fetchMock, model }
+  }
+
+  test("plan row shows usage or unavailable", async () => {
+    settings(full, true)
+    expect(await screen.findByText("12 of 600 min used this month")).toBeTruthy()
+    expect(screen.getByText("Beta · invite")).toBeTruthy()
+    // A plan already: no invite to redeem.
+    expect(screen.queryByLabelText("Redeem invite")).toBeNull()
+    cleanup()
+
+    // The node does not answer: the plan row says so, and nothing else changes.
+    settings(full, true, new ApiError(503, "no_node_available", "No node can take this account right now.", 30))
+    expect(await screen.findByText("Usage unavailable right now.")).toBeTruthy()
+    expect(screen.getByText("Wristcall Cloud")).toBeTruthy()
+    expect(screen.queryByRole("alert")).toBeNull()
+    cleanup()
+
+    // No plan: no usage line and no request for it. With the Cloud entry still listed (a lapsed plan), no invite field
+    // either; without plan or entry, the invite field.
+    const lapsed = settings(PROFILE, true)
+    expect(await screen.findByText("No plan")).toBeTruthy()
+    expect(screen.queryByLabelText("Redeem invite")).toBeNull()
+    expect(screen.queryByText(/min used this month|Usage unavailable/)).toBeNull()
+    expect(lapsed.fetchMock.calls).toEqual([])
+    cleanup()
+    settings(PROFILE, false)
+    expect(await screen.findByLabelText("Redeem invite")).toBeTruthy()
   })
 })

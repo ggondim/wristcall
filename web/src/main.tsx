@@ -1,12 +1,14 @@
 import { render } from "preact"
 import "./ui/styles.css"
 import { AgendaSync } from "./account/agenda"
+import { CloudRouter } from "./account/router"
 import { AccountSession } from "./account/session"
 import { CloudClient } from "./api/cloud"
 import { RelayClient } from "./api/relay"
 import { loadConfig } from "./config"
 import { AccountModel } from "./models/account"
 import { SignInModel } from "./models/signIn"
+import { UsageModel } from "./models/usage"
 import { ApprovalsBadge, ApprovalsModel, refreshWhenServersChange } from "./models/approvals"
 import { defaultServerClient, openServerStorage, ServersModel } from "./models/servers"
 import { parseWorkerMessage } from "./push/payload"
@@ -17,11 +19,21 @@ import { ServerStore } from "./store/servers"
 import { App } from "./ui/App"
 import { navigate } from "./ui/route"
 
-/** The agenda's servers this browser has no token for ("From your account"), read now and when the account or the page changes. */
-function showAccountServers(agenda: AgendaSync, servers: ServersModel, session: AccountSession): void {
-  const refresh = (): void => {
-    void agenda.fromAccount().then((entries) => servers.setFromAccount(entries))
+/**
+ * Reads the agenda's servers this browser has no token for ("From your account") and the Wristcall Cloud entry. An
+ * agenda that cannot be read keeps the Cloud entry shown.
+ */
+function accountServersRefresh(agenda: AgendaSync, servers: ServersModel): () => void {
+  return () => {
+    void agenda.read().then(({ pending, cloud }) => {
+      servers.setFromAccount(pending)
+      if (cloud !== undefined) servers.setCloud(cloud)
+    })
   }
+}
+
+/** The account's servers and the Cloud entry (`refresh`), read now and when the account or the page changes. */
+function showAccountServers(refresh: () => void, session: AccountSession): void {
   refresh()
   session.onStateChange(refresh)
   document.addEventListener("visibilitychange", () => {
@@ -53,6 +65,11 @@ async function start(): Promise<void> {
   if (config.cloudUrl !== null && storage instanceof ServerStore) {
     cloud = new CloudClient(config.cloudUrl)
     session = new AccountSession(cloud, storage)
+    // The node of the Cloud entry: the session drops its route when the sign-in changes.
+    const router = new CloudRouter(session)
+    session.attachRouter(router)
+    const signedInSession = session
+    servers.attachRouter(router, { signedIn: () => signedInSession.state === "signedIn" })
     await session.load().catch(() => {}) // unreadable: signed out
   }
   // The agenda mirror: every change of the servers (and of an agents list) is queued for the account's agenda.
@@ -79,7 +96,10 @@ async function start(): Promise<void> {
           },
           sync: push,
         })
-  const account = session === null ? null : new AccountModel(session, agenda, push, { cloud, servers })
+  // Read again after an invite is redeemed and when the Agents home opens: the Cloud entry may have come.
+  const refreshAgenda = agenda === null ? null : accountServersRefresh(agenda, servers)
+  const account =
+    session === null ? null : new AccountModel(session, agenda, push, { cloud, servers, usage: new UsageModel(servers), refreshAgenda: refreshAgenda ?? undefined })
   const signIn = cloud === null || account === null ? null : new SignInModel({ cloud, account })
   render(
     <App
@@ -95,7 +115,7 @@ async function start(): Promise<void> {
     document.getElementById("app")!,
   )
   account?.start()
-  if (agenda !== null && session !== null) showAccountServers(agenda, servers, session)
+  if (refreshAgenda !== null && session !== null) showAccountServers(refreshAgenda, session)
   // The badge counts what waits: read on opening and each time the app comes back to the front.
   void approvals.refresh()
   refreshWhenServersChange(servers, approvals)

@@ -70,7 +70,7 @@ function Screen({
 }) {
   const addServer = useMemo(() => new AddServerModel(servers, session), [servers, session])
   const home = useMemo(() => new AgentsHomeModel(servers), [servers])
-  if (route.tab === "agents") return <AgentsHome model={home} servers={servers} />
+  if (route.tab === "agents") return <AgentsHome model={home} servers={servers} account={account} />
   if (route.tab === "servers") {
     const agents = parseAgentsTarget(route.path)
     if (agents !== null) return <AgentsScreen servers={servers} target={agents} onAgentsChanged={onAgentsChanged} />
@@ -89,7 +89,7 @@ function Screen({
   if (route.path === "/settings/watch" && account !== null) return <ApproveWatchSignInView model={account} />
   if (route.path === "/settings/servers") return <ServersView model={servers} />
   if (route.path === "/settings/servers/add") return <AddServerView model={addServer} />
-  return <SettingsView account={account} notifications={notifications} badge={badge} />
+  return <SettingsView account={account} notifications={notifications} badge={badge} servers={servers} />
 }
 
 function decodeId(segment: string): string {

@@ -85,4 +85,16 @@ struct AgentTests {
         let absent = try JSONDecoder().decode(UserInfo.self, from: Data(#"{"id":"u_1","handle":"ana"}"#.utf8))
         #expect(absent.displayName == nil)
     }
+
+    @Test func cloudAgentBecomesAgent() {
+        let cloud = CloudAgent(id: "ag_1", slug: "note", displayName: "Note", icon: "pencil", callType: "one-shot", color: .yellow)
+        let agent = Agent(cloud: cloud)
+        #expect(agent.id == "ag_1")
+        #expect(agent.slug == "note")
+        #expect(agent.displayName == "Note")
+        #expect(agent.icon == "pencil")
+        #expect(agent.callType == .oneShot)
+        #expect(agent.color == .yellow)
+        #expect(Agent(cloud: CloudAgent(id: "a", slug: "s", displayName: "S", icon: "i", callType: "telepathy")).callType == .unknown("telepathy"))
+    }
 }

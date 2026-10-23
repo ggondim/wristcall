@@ -178,6 +178,8 @@ final class SetupModel {
         account = nil
         message = nil
         phase = .idle
+        // The account's cloud entry goes with it.
+        model.applyCloudEntry(nil)
         onAccountReady?(nil)
         await loop?.value
         await sync?.value
@@ -351,7 +353,10 @@ final class SetupModel {
     private func runSync(id: Int) async {
         do {
             let agenda = try await backend.agenda()
-            let candidates = AccountPairing.candidates(agenda, paired: model.servers.map(\.credentials.serverURL))
+            // A sign out meanwhile cleared the entry: an agenda read before it must not bring it back.
+            guard !Task.isCancelled else { return }
+            model.applyCloudEntry(agenda.first(where: \.isCloudEntry))
+            let candidates = AccountPairing.candidates(agenda, paired: model.pairedServers.map(\.credentials.serverURL))
             for server in candidates {
                 guard !Task.isCancelled else { return }
                 // A call or a pairing on screen: nothing is asked now; the next activation goes on.
@@ -365,7 +370,9 @@ final class SetupModel {
             }
         } catch AccountError.signedOut {
             guard !Task.isCancelled else { return }
-            // The session was revoked: enroll again (quietly when there are servers).
+            // The session was revoked: enroll again (quietly when there are servers). The cloud entry was that
+            // session's account's.
+            model.applyCloudEntry(nil)
             account = nil
             announcePending = false
             if syncID == id { syncTask = nil }

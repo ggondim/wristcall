@@ -743,6 +743,11 @@ def create_app(
             await agents.check_public(agent, include_stored_tts=False)
         except AgentError as e:
             log.warning("agent %s unavailable: %s", agent.id, e.message)
+            if e.unresolved:  # a DNS failure may pass: not the same as an address the server must never call
+                raise protocol.ProtocolError(
+                    protocol.ErrorCode.AGENT_UNAVAILABLE, "Can't look up this agent's address right now; try again.",
+                    reason="url_unresolved",
+                ) from None
             raise protocol.ProtocolError(
                 protocol.ErrorCode.AGENT_UNAVAILABLE, "This agent uses an address this server cannot call.",
                 reason="url_not_public",

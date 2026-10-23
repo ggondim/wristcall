@@ -71,7 +71,7 @@ does not parse stops the start, naming the variable:
 | Variable | Default | |
 |---|---|---|
 | `WRISTCALL_CLOUD_ROUTE_REGIONS` | `BR=sao,gru;US=iad;CA=iad;MX=iad;*=iad` | country to regions, best first: `COUNTRY=region,region;...`, a country is two capital letters or `*`, a region three lowercase letters. The `*` row is required and serves every other country (and a missing one) |
-| `WRISTCALL_CLOUD_CLOUD_ENTRY_CLIENTS` | | minimum app version that sees the Cloud entry, per platform: `ios=0.3.0,watchos=0.6.0,web=0.4.0` (platforms `ios`, `ipados`, `macos`, `watchos`, `web`, each once). Empty: nobody sees it |
+| `WRISTCALL_CLOUD_CLOUD_ENTRY_CLIENTS` | | minimum app version that sees the Cloud entry, per platform. Recommended: `ios=0.3.0,watchos=0.6.0,web=0.4.0`, the first app versions that handle the Cloud entry (platforms `ios`, `ipados`, `macos`, `watchos`, `web`, each once). Empty: nobody sees it |
 | `WRISTCALL_CLOUD_VOICE_NOTES_LANGUAGE` | `en` | language of the "Voice notes" agent for an account whose country is not Portuguese-speaking (a code such as `en` or `pt-BR`) |
 | `WRISTCALL_CLOUD_VOICE_NOTES_STT` | `stt-default` | name of the operator's speech to text provider on the nodes, written in "Voice notes" |
 
@@ -825,7 +825,7 @@ shares the proxy's address.
   that redeem or are granted a plan later are provisioned by themselves. Until a node is registered and healthy,
   `POST /v1/route` answers `503 no_node_available`. Nobody sees the Cloud entry until
   `WRISTCALL_CLOUD_CLOUD_ENTRY_CLIENTS` names a version, so current apps (watch 0.5.1, iPhone 0.2.2, PWA 0.3.0) see no
-  change. Register the `home` node with `--region sao --capability operator_stt --capability operator_tts`, and name
+  change. Set it to `ios=0.3.0,watchos=0.6.0,web=0.4.0` (the first apps that handle the entry) once those apps are out. Register the `home` node with `--region sao --capability operator_stt --capability operator_tts`, and name
   its speech to text provider like `WRISTCALL_CLOUD_VOICE_NOTES_STT` (`stt-default`).
 - **Replay between servers.** The block that kept the Cloud API from being deployed (a Zitadel token given to a server
   could be replayed here) is lifted only once every server linked to a Cloud account runs 0.6.0 with

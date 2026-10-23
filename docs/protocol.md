@@ -371,7 +371,7 @@ An `error` may carry `reason`, a stable word that says more about the code.
 | `unsupported_protocol` | yes | `protocol` other than 1 |
 | `unsupported_audio` | yes | `audio_in` other than pcm16 16 kHz mono |
 | `unknown_profile` | yes | the agent (`agent` or `profile`) does not exist for this device's user, or the user has no agents |
-| `agent_unavailable` | yes | the agent exists but cannot be used now (for example, it names a provider the server no longer offers); `reason: url_not_public` when the server only calls public addresses and one of the agent's URLs is not one |
+| `agent_unavailable` | yes | the agent exists but cannot be used now (for example, it names a provider the server no longer offers); `reason: url_not_public` when the server only calls public addresses and one of the agent's URLs is not one; since 0.10.1 `reason: url_unresolved` ("Can't look up this agent's address right now; try again.") when the lookup of one of its names failed, which may pass |
 | `busy` | yes | the server is at its limit of simultaneous calls of this type (`limits.max_concurrent_calls`); try again later |
 | `stt_failed` | no | transcription failed or timed out |
 | `responder_failed` | no | the agent did not answer or stopped midway; if nothing was spoken, the server speaks an apology sentence; if it stopped midway, it keeps what was already said |
@@ -745,6 +745,13 @@ What a one-way call recorded until the cut is transcribed and delivered as usual
 | `404` | `not_in_cloud_mode` | routes a node does not have: `/v1/pair...`, `/v1/pairing-codes...`, `/v1/pairing-requests...`, `/v1/account/link`, `/v1/devices...` and `DELETE /v1/me` |
 
 `POST /v1/calls/{id}/redeliver` answers `409 not_failed` also when the Cloud no longer has the call.
+
+**Apps.** The apps send `X-Wristcall-Client: <platform>/<x.y.z>` (for example `watchos/0.6.0`) on every request to the
+Cloud, and only to the Cloud: never to a node or to a self-hosted server (their CORS does not accept it). An app
+keeps the `manage` route it got from `POST /v1/route` until 30 seconds before its `expires_at`, asks a fresh `call`
+route for each call, and when a node answers `401` drops the route and retries once with a new one. When `POST /v1/route`
+answers `503 no_node_available` (no healthy node), the apps show "Wristcall Cloud is temporarily
+unavailable. Try again in a minute."
 
 ## Versioning
 

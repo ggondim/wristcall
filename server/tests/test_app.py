@@ -789,6 +789,18 @@ def test_public_only_refuses_a_call_to_an_internal_address():
         assert not c.hook.called
 
 
+def test_session_start_dns_failure_says_unresolved():
+    for c in public_only_client(fake_resolver({})):  # the resolver raises OSError for hooks.example
+        token = pair(c)
+        err = expect_fatal(c, token, {**START, "agent": "note"}, "agent_unavailable")
+        assert err == {
+            "type": "error", "code": "agent_unavailable", "fatal": True,
+            "message": "Can't look up this agent's address right now; try again.", "reason": "url_unresolved",
+        }
+        assert c.get("/v1/calls", headers=auth(api_token(c))).json()["calls"] == []
+        assert not c.hook.called
+
+
 def test_public_only_lets_a_public_agent_call():
     for c in public_only_client(fake_resolver({"hooks.example": [PUBLIC_IP]})):
         token = pair(c)

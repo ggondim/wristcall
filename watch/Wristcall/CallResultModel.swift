@@ -25,6 +25,8 @@ final class CallResultModel {
     let target: AgentTarget
     let callID: String
     private(set) var state: State = .waiting(nil)
+    /// A line the screen adds whatever the state, e.g. that the account used its call minutes during the call.
+    var notice: String?
     /// Told once per final status, `true` for `delivered`. The app plays a haptic with it.
     var onFinished: ((Bool) -> Void)?
     /// `401`: the token of this server is no longer valid. The app model removes the server.
@@ -36,26 +38,57 @@ final class CallResultModel {
     /// A query is running.
     var isChecking: Bool { task != nil }
 
-    private let credentials: Credentials
-    private let pairing: any PairingService
+    private let fetch: @Sendable (String) async throws -> CallStatus
     private let poller: CallStatusPoller
     private var task: Task<Void, Never>?
     /// Bumped on every start and stop, so a stopped query that answers late changes nothing.
     private var run = 0
     private static let log = Logger(subsystem: "io.github.ggondim.wristcall", category: "result")
 
+    /// - Parameter fetch: one `GET /v1/calls/{id}` for the call id; the app model picks where it goes (the
+    ///   paired server, or the Cloud's node for the cloud entry).
     init(
+        target: AgentTarget,
+        callID: String,
+        fetch: @escaping @Sendable (String) async throws -> CallStatus,
+        poller: CallStatusPoller = CallStatusPoller()
+    ) {
+        self.target = target
+        self.callID = callID
+        self.fetch = fetch
+        self.poller = poller
+    }
+
+    /// Asks `credentials`' server with its device token.
+    convenience init(
         target: AgentTarget,
         callID: String,
         credentials: Credentials,
         pairing: any PairingService,
         poller: CallStatusPoller = CallStatusPoller()
     ) {
-        self.target = target
-        self.callID = callID
-        self.credentials = credentials
-        self.pairing = pairing
-        self.poller = poller
+        let server = credentials.serverURL
+        let token = credentials.token
+        self.init(
+            target: target, callID: callID,
+            fetch: { try await pairing.callStatus(server: server, token: token, callID: $0) }, poller: poller)
+    }
+
+    /// The line under the icon. A Voice notes call kept in the history (no webhook) says "Saved", like the iPhone
+    /// and the web app.
+    var headline: String {
+        switch state {
+        case .waiting: "Sending…"
+        case .finished(let status):
+            switch status.state {
+            case .delivered: status.savedToHistory ? "Saved" : "Delivered"
+            case .failed: "Not delivered"
+            case .empty: "Nothing recorded."
+            default: "Result unavailable."
+            }
+        case .timedOut: "Still processing. Check again later."
+        case .unavailable: "Result unavailable."
+        }
     }
 
     /// Starts asking, unless a query is already running.
@@ -64,14 +97,12 @@ final class CallResultModel {
         run += 1
         let run = run
         state = .waiting(lastStatus)
-        let pairing = pairing
-        let server = credentials.serverURL
-        let token = credentials.token
+        let fetch = fetch
         let callID = callID
         let poller = poller
         task = Task { [weak self] in
             let outcome = await poller.run(
-                fetch: { try await pairing.callStatus(server: server, token: token, callID: callID) },
+                fetch: { try await fetch(callID) },
                 onUpdate: { [weak self] status in await self?.received(status, run: run) })
             self?.finish(outcome, run: run)
         }

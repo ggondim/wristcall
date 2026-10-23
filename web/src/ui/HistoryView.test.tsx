@@ -308,3 +308,26 @@ describe("App history routes", () => {
     expect((screen.getByLabelText("Server") as HTMLSelectElement).value).toBe("work")
   })
 })
+
+describe("Wristcall Cloud history", () => {
+  test("history shows Saved for calls delivered to history", async () => {
+    const saved = record("c1", now - 120, { delivery: "history", attempts: 0, last_http_status: null })
+    const sent = record("c2", now - 60, { delivery: "webhook" })
+    const { servers } = serversWith([home], { "home.example.com": fake([saved, sent]) })
+    const model = new HistoryModel(servers)
+    render(<HistoryView model={model} servers={servers} />)
+    const list = await screen.findByRole("list", { name: "Calls" })
+    const statuses = Array.from(list.querySelectorAll(".status")).map((status) => status.textContent)
+    expect(statuses).toEqual(["Delivered", "Saved"])
+    cleanup()
+    // The detail says where it went, in place of the attempts.
+    render(<CallDetailView model={model} target={{ serverId: "home", callId: "c1" }} />)
+    expect(await screen.findByText("Saved to History")).toBeTruthy()
+    expect(screen.getByText("Saved")).toBeTruthy()
+    expect(screen.queryByText("Attempts")).toBeNull()
+    cleanup()
+    render(<CallDetailView model={model} target={{ serverId: "home", callId: "c2" }} />)
+    expect(await screen.findByText("Attempts")).toBeTruthy()
+    expect(screen.queryByText("Saved to History")).toBeNull()
+  })
+})

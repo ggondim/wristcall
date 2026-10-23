@@ -34,5 +34,7 @@ export default defineConfig({
     { name: "servers", testMatch: /servers\.spec\.ts/ },
     { name: "push", testMatch: /push\.spec\.ts/, dependencies: ["servers"] },
     { name: "account", testMatch: /account\.spec\.ts/, dependencies: ["push"] },
+    // The Wristcall Cloud entry (`cloud.spec.ts`): on its own, one phase per run (`--project cloud`).
+    ...(process.env.WRISTCALL_E2E_CLOUD_PHASE ? [{ name: "cloud", testMatch: /cloud\.spec\.ts/ }] : []),
   ],
 })

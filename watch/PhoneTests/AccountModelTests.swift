@@ -26,11 +26,14 @@ struct AccountModelTests {
         _ account: AccountWorld.Account = AccountWorld.Account(),
         servers: [ManagedServer] = [],
         makeAPI: @escaping ServerAPIFactory = { _, _ in FakeServerAPI() },
-        web: any WebAuthenticator = FakeWeb.approving()
+        web: any WebAuthenticator = FakeWeb.approving(),
+        router: (any CloudRouting)? = nil,
+        makeRouter: (@MainActor (DeviceSession) -> any CloudRouting)? = nil
     ) async -> AccountRig {
         let key = StoredAccountKey.of("acc_1", age: 60)
         world.addAccount("acc_1", key: key.key, account)
-        let rig = AccountRig(world, session: world.storedSession("acc_1"), keys: [key], servers: servers, makeAPI: makeAPI, web: web)
+        let rig = AccountRig(world, session: world.storedSession("acc_1"), keys: [key], servers: servers, makeAPI: makeAPI, web: web,
+                             router: router, makeRouter: makeRouter)
         _ = await rig.started()
         return rig
     }
@@ -402,6 +405,145 @@ struct AccountModelTests {
         #expect(plan == Plan(plan: .full, source: "invite"))
         #expect(rig.model.plan == plan)
         #expect(try requests("POST", "/v1/entitlements/redeem").first?.json()["code"] as? String == "WC-AAAA-BBBB-CCCC")
+    }
+
+    // MARK: - The Wristcall Cloud entry
+
+    @Test func accountReadyRefreshesCloudEntry() async throws {
+        let cloudID = world.seedCloudEntry()
+        let rig = await readyRig()
+
+        #expect(requests("GET", "/v1/servers").count == 1)
+        #expect(rig.appState.cloudEntry?.id == cloudID)
+        #expect(rig.appState.servers.isEmpty)
+
+        // Back in the foreground (the app starts the account again): read again.
+        world.dropEntry(cloudID)
+        await rig.model.start()
+        #expect(requests("GET", "/v1/servers").count == 2)
+        #expect(rig.appState.cloudEntry == nil)
+
+        // Opening Agents asks too.
+        let again = world.seedCloudEntry()
+        await rig.model.refreshCloudEntry()
+        #expect(rig.appState.cloudEntry?.id == again)
+    }
+
+    @Test func redeemRefreshesCloudEntry() async throws {
+        let rig = await readyRig()
+        #expect(rig.appState.cloudEntry == nil)
+        // The plan makes the Cloud add its entry to the agenda.
+        let cloudID = world.seedCloudEntry()
+
+        _ = try await rig.model.redeemInvite("WC-AAAA-BBBB-CCCC")
+
+        #expect(rig.appState.cloudEntry?.id == cloudID)
+    }
+
+    @Test func signOutClearsCloudEntry() async throws {
+        world.seedCloudEntry()
+        let router = FakeRouter { CloudEntryAPITests.route() }
+        let rig = await readyRig(router: router)
+        #expect(rig.appState.cloudEntry != nil)
+        #expect(rig.appState.cloudAPI != nil)
+
+        await rig.model.deleteAccount()
+
+        #expect(rig.appState.cloudEntry == nil)
+        #expect(rig.appState.cloudServer == nil)
+        #expect(router.invalidationCount == 1)
+    }
+
+    @Test func endedSessionClearsCloudEntry() async throws {
+        world.addAccount("acc_1")
+        world.seedCloudEntry()
+        let router = FakeRouter { CloudEntryAPITests.route() }
+        let rig = AccountRig(world, session: world.storedSession("acc_1"), lastID: "acc_1", router: router)
+        let model = await rig.started()
+        #expect(model.appState.cloudEntry != nil)
+        // The device is signed out elsewhere and there is no key here: back to the restore screen.
+        try rig.sessions.save(world.storedSession("acc_1", expired: true))
+        world.refuseSessionRefresh = true
+
+        await model.refreshAccount()
+        await model.start()
+
+        #expect(model.state == .needsSignIn)
+        #expect(model.appState.cloudEntry == nil)
+        await waitUntil { router.invalidationCount > 0 }
+        #expect(router.invalidationCount == 1)
+    }
+
+    @Test func cloudRequestsCarryIOSClientHeader() async throws {
+        world.seedCloudEntry()
+        let fake = FakeServerAPI()
+        fake.agentList = [AgentDetail(id: "ag_c", slug: "c", displayName: "C")]
+        let nodes = CloudEntryAPITests.Nodes([fake])
+        let rig = await readyRig(makeAPI: nodes.factory)
+        let cloud = try #require(rig.appState.cloudServer)
+
+        // The app's own router: `POST /v1/route` on the Cloud, then the node it named with its token.
+        let agents = try await rig.appState.api(for: cloud).agents()
+
+        #expect(agents.map(\.id) == ["ag_c"])
+        #expect(nodes.made.map(\.url) == [AccountWorld.routeNode])
+        #expect(nodes.made.map(\.token) == ["node-tok"])
+        let routes = requests("POST", "/v1/route")
+        #expect(routes.count == 1)
+        #expect(try routes.first?.json()["purpose"] as? String == "manage")
+        #expect(!requests("GET", "/v1/servers").isEmpty)
+        #expect(!world.cloud.requests.isEmpty)
+        #expect(world.cloud.requests.allSatisfy { $0.headers[ClientIdentity.headerName] == "ios/0.3.0" })
+    }
+
+    @Test func emailRestoreIntoAnotherAccountGetsANewCloudRoute() async throws {
+        world.seedCloudEntry()
+        let maker = RouterMaker()
+        let rig = await readyRig(AccountWorld.Account(servers: 2), makeRouter: maker.make)
+        maker.state = rig.appState
+        #expect(maker.made.count == 1)
+        #expect(rig.appState.cloudEntry != nil)
+        #expect(rig.appState.cloudAPI != nil)
+
+        try await rig.model.restoreWithEmail(leavingCurrent: true)
+
+        #expect(rig.model.info?.account == AccountWorld.zitadelAccount)
+        // The account before took its entry and route along before the next one got its own router.
+        try #require(maker.made.count == 2)
+        #expect(maker.clearedBefore.last == true)
+        #expect(maker.made[0].invalidationCount == 1)
+        let cloud = try #require(rig.appState.cloudServer)
+        _ = try await rig.appState.api(for: cloud).agents()
+        #expect(maker.made[0].manageCount == 0)
+        #expect(maker.made[1].manageCount == 1)
+    }
+
+    @Test func enteringAnotherAccountGetsANewCloudRoute() async throws {
+        // C6: the older synced key of `acc_2` replaces the empty silent account this iPhone just got into.
+        let own = StoredAccountKey.of("acc_1")
+        let other = StoredAccountKey.of("acc_2", age: 3600)
+        world.addAccount("acc_1", key: own.key)
+        world.addAccount("acc_2", key: other.key, AccountWorld.Account(servers: 2))
+        let maker = RouterMaker()
+        let rig = AccountRig(world, session: world.storedSession("acc_1"), keys: [own, other], makeRouter: maker.make) {
+            maker.state = $0
+            $0.setCloudEntry(CloudServer(id: "cs-old", name: "Wristcall Cloud", url: "https://cloud.wristcall.test",
+                                         kind: "cloud", linked: true, agents: []))
+        }
+        let model = await rig.started()
+        #expect(model.info?.account == "acc_2")
+
+        // `acc_1` had its router; `acc_2` got a new one, once the entry and the API of `acc_1` were gone.
+        try #require(maker.made.count == 2)
+        #expect(maker.clearedBefore.last == true)
+        await waitUntil { maker.made[0].invalidationCount > 0 }
+        #expect(maker.made[0].invalidationCount == 1)
+        world.seedCloudEntry()
+        await model.refreshCloudEntry()
+        let cloud = try #require(rig.appState.cloudServer)
+        _ = try await rig.appState.api(for: cloud).agents()
+        #expect(maker.made[0].manageCount == 0)
+        #expect(maker.made[1].manageCount == 1)
     }
 
     // MARK: - Restore
@@ -1077,6 +1219,23 @@ struct AccountModelTests {
             let text = AccountModel.message(for: error)
             #expect(!text.isEmpty)
             #expect(!text.contains("wc_pat_"))
+        }
+    }
+}
+
+/// The routers the account model made, in order, and whether the Cloud entry and its API were gone at each new one.
+@MainActor
+final class RouterMaker {
+    var state: AppState?
+    private(set) var made: [FakeRouter] = []
+    private(set) var clearedBefore: [Bool] = []
+
+    var make: @MainActor (DeviceSession) -> any CloudRouting {
+        { [self] _ in
+            clearedBefore.append(state?.cloudAPI == nil && state?.cloudEntry == nil)
+            let router = FakeRouter { CloudEntryAPITests.route() }
+            made.append(router)
+            return router
         }
     }
 }

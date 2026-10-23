@@ -4,6 +4,8 @@ import Foundation
 struct APIHTTP: Sendable {
     let session: URLSession
     var timeout: TimeInterval = 15
+    /// Sent as `X-Wristcall-Client` when set (requests to the Cloud).
+    var client: ClientIdentity?
 
     func request(_ url: URL, method: String, bearer: String? = nil, json: (any Encodable)? = nil,
                  query: [URLQueryItem] = []) throws -> URLRequest {
@@ -23,6 +25,7 @@ struct APIHTTP: Sendable {
         var request = URLRequest(url: target, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let client { request.setValue(client.header, forHTTPHeaderField: ClientIdentity.headerName) }
         if let bearer {
             request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
         }

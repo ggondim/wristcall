@@ -110,6 +110,11 @@ final class AppModel {
         static let agentNotFound = "Agent not found."
         static let unsupportedAgent = "Update Wristcall to call this agent."
         static let nothingSent = "Nothing was sent."
+        /// A cloud call ended by a `4401`, or a cloud result whose node kept answering `401`: the account's
+        /// session is what ended, not the entry.
+        static let signInAgain = "Open wristcall on your iPhone to sign in again."
+        /// The Cloud cut a call because the account used its minutes (`quota_exceeded`, not fatal).
+        static let quotaReached = "You've used this month's call minutes."
         /// Name on the result screen of a call whose agent the server no longer lists.
         static let unknownAgent = "Last call"
 
@@ -128,7 +133,8 @@ final class AppModel {
     private(set) var customServerURL: URL?
     /// Where codes are resolved. Persisted in `UserDefaults`.
     private(set) var directoryURL: URL
-    /// The paired servers, in the order the grid shows them (the order they were paired in).
+    /// The servers, in the order the grid shows them: the Wristcall Cloud entry first (when the account has
+    /// one, `applyCloudEntry(_:)`), then the paired ones in the order they were paired in.
     private(set) var servers: [ServerEntry] = []
     /// The pairing screen is up to add a server to the ones already paired.
     private(set) var isAddingServer = false
@@ -142,6 +148,9 @@ final class AppModel {
     private(set) var catalog: [CatalogAgent]
     /// Set by the app at launch (task 10). Without one, a call is only a screen with an "End" button.
     var callHandler: (any CallHandling)?
+    /// Asks the Cloud for the node that answers a cloud call's result (`manage` route); `nil` in a build
+    /// without the Cloud.
+    var cloudRouter: (any CloudRouting)?
     /// Told the new catalog whenever it changes (a server answers, is added or removed), to share
     /// it with the widgets and App Intents.
     var onAgentsChanged: (([CatalogAgent]) -> Void)?
@@ -154,6 +163,8 @@ final class AppModel {
     var onServersChanged: (([Credentials]) -> Void)?
 
     private var activeCall: CallRequest?
+    /// The Cloud said the account used its minutes during `activeCall` (`callDidReachQuota()`).
+    private var quotaReached = false
     private var pairingTask: Task<Void, Never>?
     /// The first launch, shared by everyone who needs it (`launchIfNeeded()`).
     private var launchTask: Task<Void, Never>?
@@ -172,6 +183,8 @@ final class AppModel {
     private let resultPoller: CallStatusPoller
     /// One-way calls without a final status, kept across launches.
     private let pendingResults: PendingResultStore
+    /// The cloud entry, kept outside the Keychain.
+    private let cloudEntries: any CloudEntryStore
     /// Results the user closed with "Done" while still waiting: not reopened when the app comes
     /// back to the foreground, only by the next launch.
     private var dismissedResultIDs: Set<String> = []
@@ -187,7 +200,8 @@ final class AppModel {
         sleep: @escaping PairingClient.Sleep = { try await Task.sleep(for: $0) },
         savedCatalog: [CatalogAgent] = [],
         resultPoller: CallStatusPoller = CallStatusPoller(),
-        pendingResults: PendingResultStore? = nil
+        pendingResults: PendingResultStore? = nil,
+        cloudEntries: (any CloudEntryStore)? = nil
     ) {
         self.pairing = pairing
         self.store = store
@@ -197,6 +211,7 @@ final class AppModel {
         self.reachability = reachability
         self.resultPoller = resultPoller
         self.pendingResults = pendingResults ?? PendingResultStore(defaults: defaults)
+        self.cloudEntries = cloudEntries ?? DefaultsCloudEntryStore(defaults: defaults)
         catalog = savedCatalog
         directoryURL = defaults.string(forKey: Self.directoryDefaultsKey).flatMap(ServerAddress.parse)
             ?? PairingClient.defaultDirectory
@@ -222,7 +237,7 @@ final class AppModel {
         if let ref = request.agent {
             entry = AgentRef(ref).flatMap { ref in servers.first { $0.id == ref.serverID } }
         } else {
-            entry = servers.first
+            entry = defaultServer
         }
         return entry?.status == .loading
     }
@@ -253,10 +268,10 @@ final class AppModel {
         } catch CredentialStoreError.corruptedData {
             // The item is not a valid list: pairing again is the only way out.
             try? store.deleteAll()
-            servers = []
+            servers = restoredCloudEntry()
             publishCatalog()
             publishServers()
-            phase = .unpaired
+            phase = servers.isEmpty ? .unpaired : .home
             return
         } catch {
             // Any other Keychain failure may be transient: keep the item, offer "Retry".
@@ -264,10 +279,11 @@ final class AppModel {
             message = Message.keychain
             return
         }
-        servers = stored.map { ServerEntry(credentials: $0, status: .loading) }
+        // The cloud entry comes from the last agenda read, so its agents show without network.
+        servers = restoredCloudEntry() + stored.map { ServerEntry(credentials: $0, status: .loading) }
         publishCatalog()
         publishServers()
-        guard !stored.isEmpty else {
+        guard !servers.isEmpty else {
             phase = .unpaired
             return
         }
@@ -293,18 +309,18 @@ final class AppModel {
         if phase == .unavailable {
             await launch()
         } else {
-            await load(servers.filter(\.isUnavailable).map(\.credentials))
+            await load(pairedServers.filter(\.isUnavailable).map(\.credentials))
         }
     }
 
     /// Asks every server for its agents again ("Refresh watch" on the iPhone, decision R16).
     func reloadAgents() async {
-        await load(servers.map(\.credentials))
+        await load(pairedServers.map(\.credentials))
     }
 
     /// "Retry" on the row of a server that is down.
     func retry(serverID: String) async {
-        guard let entry = servers.first(where: { $0.id == serverID }), entry.isUnavailable else { return }
+        guard let entry = pairedServers.first(where: { $0.id == serverID }), entry.isUnavailable else { return }
         await load([entry.credentials])
     }
 
@@ -489,7 +505,7 @@ final class AppModel {
     /// (complications keep pointing to it) and revokes the old token without waiting. Another user
     /// on the same server is another entry. A server that does not answer is kept, with "Retry".
     private func add(_ credentials: Credentials, info: Result<DeviceInfo, any Error>, leavesScreen: Bool = false) throws {
-        var list = servers
+        var list = pairedServers
         var replaced: Credentials?
         var added = credentials
         switch info {
@@ -507,7 +523,7 @@ final class AppModel {
             list.append(ServerEntry(credentials: credentials, status: .unavailable(Self.text(for: error))))
         }
         try store.save(list.map(\.credentials))
-        servers = list
+        servers = servers.filter(\.credentials.isCloudEntry) + list
         if let replaced {
             let pairing = pairing
             Task { try? await pairing.unpair(server: replaced.serverURL, token: replaced.token) }
@@ -625,7 +641,8 @@ final class AppModel {
     /// `DELETE /v1/me`, then forgets the server even if it could not be reached. Replaces 0.1.0's
     /// "Unpair". A second tap while the first runs does nothing.
     func removeServer(id: String) async {
-        guard let entry = servers.first(where: { $0.id == id }), !removingServerIDs.contains(id) else { return }
+        // The cloud entry is the account's: it goes only when the agenda drops it.
+        guard let entry = pairedServers.first(where: { $0.id == id }), !removingServerIDs.contains(id) else { return }
         removingServerIDs.insert(id)
         defer { removingServerIDs.remove(id) }
         // The server forgets the push key while the token still works.
@@ -648,11 +665,12 @@ final class AppModel {
     /// Drops the server with these exact credentials (not one paired again since) from the list and
     /// the Keychain. With no server left, Home becomes the pairing screen.
     private func forget(_ credentials: Credentials) {
+        guard !credentials.isCloudEntry else { return }
         let remaining = servers.filter { $0.credentials != credentials }
         guard remaining.count < servers.count else { return }
         servers = remaining
         do {
-            try store.save(remaining.map(\.credentials))
+            try store.save(pairedServers.map(\.credentials))
         } catch {
             message = Message.keychain
         }
@@ -669,7 +687,7 @@ final class AppModel {
     /// and shortcuts pointing there survive a launch without network. Removed servers drop out.
     /// Tells `onServersChanged` the paired servers when the list (not just a status) changed.
     private func publishServers() {
-        let list = servers.map(\.credentials)
+        let list = pairedServers.map(\.credentials)
         guard list != publishedServers else { return }
         publishedServers = list
         onServersChanged?(list)
@@ -684,6 +702,47 @@ final class AppModel {
         guard next != catalog else { return }
         catalog = next
         onAgentsChanged?(next)
+    }
+
+    // MARK: - Cloud entry
+
+    /// The servers this watch paired with, without the cloud entry: what the Keychain, `/v1/me`, the iPhone
+    /// (`onServersChanged`) and push know about.
+    var pairedServers: [ServerEntry] { servers.filter { !$0.credentials.isCloudEntry } }
+
+    /// Where a call that names no agent goes (decision W17, and the redial of an empty handle): the first
+    /// paired server, the cloud entry only without one (decision D12).
+    private var defaultServer: ServerEntry? { pairedServers.first ?? servers.first }
+
+    /// The account's agenda was read (`SetupModel`, `AccountLoginModel`): its cloud entry goes first in the grid
+    /// and is kept for the next launch; `nil` (no entry in the agenda, or signed out) removes it.
+    func applyCloudEntry(_ entry: CloudServer?) {
+        let next = entry.flatMap(Self.cloudServerEntry)
+        cloudEntries.save(next == nil ? nil : entry)
+        let current = servers.first(where: \.credentials.isCloudEntry)
+        guard next != current else { return }
+        if next == nil {
+            // Signed out, or the account lost its entry: a cached `manage` route must not outlive it.
+            let router = cloudRouter
+            Task { await router?.invalidate() }
+        }
+        servers = (next.map { [$0] } ?? []) + pairedServers
+        publishCatalog()
+        if servers.isEmpty, phase == .home {
+            phase = .unpaired
+        } else if !servers.isEmpty, phase == .unpaired, !isAddingServer {
+            phase = .home
+        }
+    }
+
+    private func restoredCloudEntry() -> [ServerEntry] {
+        cloudEntries.load().flatMap(Self.cloudServerEntry).map { [$0] } ?? []
+    }
+
+    /// `nil` for an entry whose address is not even a URL.
+    private static func cloudServerEntry(_ entry: CloudServer) -> ServerEntry? {
+        guard let url = URL(string: entry.url) else { return nil }
+        return ServerEntry(credentials: .cloudEntry(url: url), status: .ready(DeviceInfo(cloud: entry)))
     }
 
     // MARK: - Settings
@@ -737,6 +796,7 @@ final class AppModel {
         }
         let request = CallRequest(credentials: entry.credentials, target: current, turnEnd: turnEnd)
         activeCall = request
+        quotaReached = false
         message = nil
         callActivity = .connecting
         phase = .inCall(current)
@@ -750,7 +810,7 @@ final class AppModel {
     func startCall(agent ref: String? = nil, turnEnd: TurnEnd? = nil) {
         guard phase == .home else { return }
         guard let ref else {
-            guard let entry = servers.first else { return }
+            guard let entry = defaultServer else { return }
             guard entry.isReady else {
                 message = Message.cantReach(entry.host)
                 return
@@ -821,24 +881,42 @@ final class AppModel {
             showResult(of: call, callID: callID)
             return
         }
+        // Decision D11: the Cloud's texts only for a call of the cloud entry; a paired server's reads as before.
+        let isCloud = activeCall?.credentials.isCloudEntry == true
         switch reason {
         case .unauthorized:
-            // 4401: the token of this call's server was revoked; the other servers are not affected.
             if let call = activeCall {
-                forget(call.credentials)
-                message = Message.removed(call.target.serverHost)
+                if isCloud {
+                    // The account's session ended, not the entry: it stays until the agenda drops it.
+                    message = Message.signInAgain
+                } else {
+                    // 4401: the token of this call's server was revoked; the other servers are not affected.
+                    forget(call.credentials)
+                    message = Message.removed(call.target.serverHost)
+                }
             }
         case .connectionLost:
             message = Message.connectionLost
-        case .serverFatal(let code?):
-            message = "Call failed (\(code.wireValue))."
+        case .serverFatal(let error?):
+            message = (isCloud ? CallFailureText.text(for: error) : nil) ?? "Call failed (\(error.code.wireValue))."
         case .serverFatal(nil):
             message = "Call failed."
         case .normal:
-            // A one-way call ended before `session.ready` (no call id): nothing was recorded.
-            message = activeCall?.target.agent.callType.isOneWay == true ? Message.nothingSent : nil
+            if quotaReached {
+                message = Message.quotaReached
+            } else {
+                // A one-way call ended before `session.ready` (no call id): nothing was recorded.
+                message = activeCall?.target.agent.callType.isOneWay == true ? Message.nothingSent : nil
+            }
         }
         returnHome()
+    }
+
+    /// Reported by the call layer when the Cloud says the account used its minutes during a cloud call (a
+    /// `quota_exceeded` that is not fatal): the end of the call says so. Ignored for a paired server (D11).
+    func callDidReachQuota() {
+        guard case .inCall = phase, activeCall?.credentials.isCloudEntry == true else { return }
+        quotaReached = true
     }
 
     /// Reported by the call layer when the call could not start or go on for a local reason
@@ -857,6 +935,7 @@ final class AppModel {
 
     private func returnHome() {
         activeCall = nil
+        quotaReached = false
         phase = hasServers ? .home : .unpaired
     }
 
@@ -909,13 +988,14 @@ final class AppModel {
     private func showResult(of call: CallRequest, callID: String) {
         pendingResults.add(PendingResult(
             callID: callID, serverID: call.credentials.id, agentID: call.target.agent.id, startedAt: Date()))
+        let notice = quotaReached ? Message.quotaReached : nil
         activeCall = nil
+        quotaReached = false
         message = nil
-        present(
-            CallResultModel(
-                target: call.target, callID: callID, credentials: call.credentials, pairing: pairing,
-                poller: resultPoller),
-            credentials: call.credentials)
+        let result = CallResultModel(
+            target: call.target, callID: callID, fetch: resultFetch(for: call.credentials), poller: resultPoller)
+        result.notice = notice
+        present(result, credentials: call.credentials)
         pushHandler?.oneWayResultShown()
     }
 
@@ -952,9 +1032,43 @@ final class AppModel {
         present(
             CallResultModel(
                 target: AgentTarget(serverID: entry.id, serverHost: entry.host, agent: agent),
-                callID: pending.callID, credentials: entry.credentials, pairing: pairing,
-                poller: resultPoller),
+                callID: pending.callID, fetch: resultFetch(for: entry.credentials), poller: resultPoller),
             credentials: entry.credentials)
+    }
+
+    /// How a result asks for a call's status: a paired server with its device token; the cloud entry on the
+    /// node of the `manage` route, with the route's token. The node answering `401` (the cached route's token
+    /// went stale) drops the route and asks once more with a fresh one; a second `401`, or no session at all,
+    /// reaches the result as `PairingError.unauthorized`.
+    private func resultFetch(for credentials: Credentials) -> @Sendable (String) async throws -> CallStatus {
+        let pairing = pairing
+        guard credentials.isCloudEntry else {
+            let server = credentials.serverURL
+            let token = credentials.token
+            return { callID in try await pairing.callStatus(server: server, token: token, callID: callID) }
+        }
+        let router = cloudRouter
+        return { callID in
+            guard let router else { throw PairingError.unauthorized }
+            do {
+                return try await Self.nodeStatus(callID, router: router, pairing: pairing)
+            } catch PairingError.unauthorized {
+                await router.invalidate()
+                return try await Self.nodeStatus(callID, router: router, pairing: pairing)
+            }
+        }
+    }
+
+    private nonisolated static func nodeStatus(
+        _ callID: String, router: any CloudRouting, pairing: any PairingService
+    ) async throws -> CallStatus {
+        let route: CloudRoute
+        do {
+            route = try await router.manage()
+        } catch AccountError.signedOut, APIError.unauthorized, APIError.revoked {
+            throw PairingError.unauthorized
+        }
+        return try await pairing.callStatus(server: route.primary.url, token: route.primary.token, callID: callID)
     }
 
     private func present(_ result: CallResultModel, credentials: Credentials) {
@@ -965,8 +1079,13 @@ final class AppModel {
         // The screen stays (it says "Result unavailable"); "Done" then finds the server gone.
         result.onUnauthorized = { [weak self] in
             guard let self else { return }
-            forget(credentials)
-            message = Message.removed(host)
+            if credentials.isCloudEntry {
+                // `resultFetch` already asked for a fresh route once: the account has to sign in again.
+                message = Message.signInAgain
+            } else {
+                forget(credentials)
+                message = Message.removed(host)
+            }
         }
         callResult = result
         phase = .callResult

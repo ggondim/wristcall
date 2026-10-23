@@ -161,15 +161,18 @@ public struct ServerError: Error, Decodable, Sendable, Equatable {
     public var code: ServerErrorCode
     public var message: String
     public var fatal: Bool
+    /// A finer cause the server may add to `code` (for example `too_many_calls` on `busy`).
+    public var reason: String?
 
-    public init(code: ServerErrorCode, message: String, fatal: Bool) {
+    public init(code: ServerErrorCode, message: String, fatal: Bool, reason: String? = nil) {
         self.code = code
         self.message = message
         self.fatal = fatal
+        self.reason = reason
     }
 
     private enum CodingKeys: String, CodingKey {
-        case code, message, fatal
+        case code, message, fatal, reason
     }
 
     public init(from decoder: any Decoder) throws {
@@ -177,6 +180,7 @@ public struct ServerError: Error, Decodable, Sendable, Equatable {
         code = try container.decode(ServerErrorCode.self, forKey: .code)
         message = try container.decode(String.self, forKey: .message)
         fatal = try container.decodeIfPresent(Bool.self, forKey: .fatal) ?? false
+        reason = try container.decodeIfPresent(String.self, forKey: .reason)
     }
 }
 
@@ -266,6 +270,12 @@ public enum ServerErrorCode: OpenWireValue, Sendable, Equatable {
     case ttsFailed
     /// Unexpected server error.
     case `internal`
+    /// The server (or Wristcall Cloud) cannot take another call now (fatal).
+    case busy
+    /// The account has no plan that includes calls (Wristcall Cloud).
+    case planRequired
+    /// The account used its call minutes for the period (Wristcall Cloud).
+    case quotaExceeded
     case unknown(String)
 
     public init(wireValue: String) {
@@ -280,6 +290,9 @@ public enum ServerErrorCode: OpenWireValue, Sendable, Equatable {
         case "responder_failed": self = .responderFailed
         case "tts_failed": self = .ttsFailed
         case "internal": self = .internal
+        case "busy": self = .busy
+        case "plan_required": self = .planRequired
+        case "quota_exceeded": self = .quotaExceeded
         default: self = .unknown(wireValue)
         }
     }
@@ -296,6 +309,9 @@ public enum ServerErrorCode: OpenWireValue, Sendable, Equatable {
         case .responderFailed: "responder_failed"
         case .ttsFailed: "tts_failed"
         case .internal: "internal"
+        case .busy: "busy"
+        case .planRequired: "plan_required"
+        case .quotaExceeded: "quota_exceeded"
         case .unknown(let value): value
         }
     }

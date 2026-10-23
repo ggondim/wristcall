@@ -9,7 +9,7 @@ struct HistoryView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            HistoryContent(model: model, serverIDs: state.servers.map(\.id), showsServer: state.servers.count > 1,
+            HistoryContent(model: model, serverIDs: state.allServers.map(\.id), showsServer: state.allServers.count > 1,
                            listIsVisible: path.isEmpty)
                 .navigationTitle("History")
                 .navigationDestination(for: String.self) { id in
@@ -130,10 +130,10 @@ private struct HistoryContent: View {
 
     private var filterMenu: some View {
         Menu {
-            if state.servers.count > 1 {
+            if state.allServers.count > 1 {
                 Picker("Server", selection: Binding(get: { model.filter.serverID }, set: { model.selectServer($0) })) {
                     Text("All servers").tag(String?.none)
-                    ForEach(state.servers) { server in Text(server.name).tag(String?.some(server.id)) }
+                    ForEach(state.allServers) { server in Text(server.name).tag(String?.some(server.id)) }
                 }
             }
             if model.filter.serverID != nil, !model.agents.isEmpty {
@@ -190,7 +190,7 @@ private struct HistoryContent: View {
     }
 
     private func name(of serverID: String) -> String {
-        state.servers.first { $0.id == serverID }?.name ?? "the server"
+        state.allServers.first { $0.id == serverID }?.name ?? "the server"
     }
 }
 
@@ -255,9 +255,12 @@ struct HistoryRow: View {
     }
 }
 
-/// Colors and words for a call status: delivered green, failed red, everything else (processing, empty,
+/// Colors and words for a call status: delivered (or saved to the history) green, failed red, everything else (processing, empty,
 /// ended, unknown) gray. The word is always shown, so the color is never the only cue.
 enum CallStatusStyle {
+    /// The delivery line of a call kept in the history only.
+    static let savedDetail = "Saved to History"
+
     static func color(_ status: String) -> Color {
         switch status {
         case "delivered": .green
@@ -268,7 +271,7 @@ enum CallStatusStyle {
 
     static func label(_ call: CallRecord) -> String {
         switch call.status {
-        case "delivered": "Delivered"
+        case "delivered": call.savedToHistory ? "Saved" : "Delivered"
         case "failed": call.error.map { "Failed, \(reason($0))" } ?? "Failed"
         case "processing": "Processing"
         case "recording": "Recording"

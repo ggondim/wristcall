@@ -567,4 +567,48 @@ struct AgentFormModelTests {
             #expect(symbol.wholeMatch(of: /[a-z0-9]+(\.[a-z0-9]+)*/) != nil, "\(symbol)")
         }
     }
+
+    // MARK: - History-only agents (Wristcall Cloud)
+
+    private var historyOnly: ProviderList {
+        ProviderList(providers: [Provider(name: "whisper", kind: "stt")], customEndpoints: true, historyOnlyOneWay: true)
+    }
+
+    @Test func historyOnlyOneShotSavesOnEdit() {
+        let model = AgentFormModel(editing: .sample(callType: "one-shot", action: .null), providers: historyOnly)
+        #expect(model.allowsHistoryOnly)
+        #expect(model.validationMessage == nil)
+        #expect(model.noneLabel(for: .action) == "None, save to History")
+        // The other steps keep their label.
+        #expect(model.noneLabel(for: .tts) == "Choose…")
+    }
+
+    @Test func oneShotWithoutActionStillNeedsWebhookOnSelfHosted() {
+        let model = AgentFormModel(editing: .sample(callType: "one-shot", action: .null), providers: .sample)
+        #expect(!model.allowsHistoryOnly)
+        #expect(model.validationMessage == "Choose Webhook.")
+        #expect(model.noneLabel(for: .action) == "Choose…")
+    }
+
+    @Test func endpointFooterSaysHistoryWhenNoWebhookOnAHistoryOnlyServer() {
+        let model = AgentFormModel(editing: .sample(callType: "one-shot", action: .null), providers: historyOnly)
+        #expect(model.endpointFooter == "The transcript is saved to History.")
+        model.action = .custom
+        #expect(model.endpointFooter == "Your server sends the transcript to this webhook.")
+        let selfHosted = AgentFormModel(editing: .sample(callType: "one-shot", action: .null), providers: .sample)
+        #expect(selfHosted.endpointFooter == "Your server sends the transcript to this webhook.")
+        let chat = AgentFormModel(editing: .sample(callType: "conversation", action: .null), providers: historyOnly)
+        #expect(chat.endpointFooter == "Your server turns your voice into text, sends it to this endpoint and speaks the answer.")
+    }
+
+    @Test func historyOnlyDoesNotApplyToConversations() {
+        let model = AgentFormModel(editing: .sample(callType: "conversation", action: .null), providers: historyOnly)
+        #expect(model.validationMessage == "Choose Responder.")
+        #expect(model.noneLabel(for: .action) == "Choose…")
+    }
+
+    @Test func colorIsOfferedOnTheCloudEntry() {
+        let model = AgentFormModel(editing: .sample(callType: "one-shot", action: .null), providers: historyOnly, serverVersion: AgentFormModel.colorVersion)
+        #expect(model.supportsColor)
+    }
 }

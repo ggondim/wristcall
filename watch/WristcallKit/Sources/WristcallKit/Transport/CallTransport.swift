@@ -20,6 +20,8 @@ public enum TransportError: Error, Sendable, Equatable {
     case unsupportedURL(String)
     /// The connection could not be opened (description of the underlying error).
     case connectionFailed(String)
+    /// The connection was refused with an error the caller should show (code, `reason`).
+    case refused(ServerError)
     /// `send` before `connect` finished, or after the connection ended.
     case notConnected
     /// The frame could not be handed to the network stack.

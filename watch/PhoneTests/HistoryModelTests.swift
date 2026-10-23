@@ -44,6 +44,28 @@ struct HistoryModelTests {
         #expect(!model.canLoadMore)
     }
 
+    @Test func historyIncludesCloudEntry() async {
+        let (a, _) = twoServers()
+        let cloud = FakeServerAPI(pages: [CallPage(calls: [.sample(id: "c1", at: 250)], nextBefore: nil)])
+        let state = await loadedState([(home, a)])
+        state.setCloudEntry(CloudServer(
+            id: "cs-9", name: "Wristcall Cloud", url: "https://cloud.wristcall.test", kind: "cloud", linked: true,
+            agents: []))
+        state.cloudAPI = cloud
+        let model = HistoryModel(state: state)
+
+        await model.reload()
+
+        #expect(model.items.map(\.call.id) == ["a1", "c1", "a2"])
+        #expect(model.items.map(\.serverName) == ["Home", "Wristcall Cloud", "Home"])
+        #expect(cloud.queries.count == 1)
+        // The filter can choose it, alone.
+        model.selectServer(ManagedServer.cloudEntryID)
+        await model.reload()
+        #expect(model.filter.serverID == ManagedServer.cloudEntryID)
+        #expect(model.items.map(\.call.id) == ["c1"])
+    }
+
     @Test func sameIDOnTwoServersStaysTwoItems() async {
         let a = FakeServerAPI(pages: [CallPage(calls: [.sample(id: "x", at: 10)])])
         let b = FakeServerAPI(pages: [CallPage(calls: [.sample(id: "x", at: 10)])])
@@ -557,5 +579,18 @@ extension HistoryModelTests {
         #expect(model.filter.serverID == nil)
         #expect(model.filter.agentID == nil)
         #expect(model.items.map(\.call.id) == ["a1", "b1", "a2"])
+    }
+
+    @Test func savedToHistoryLabel() {
+        let saved = CallRecord.sample(delivery: "history")
+        #expect(saved.savedToHistory)
+        #expect(CallStatusStyle.savedDetail == "Saved to History")
+        #expect(CallStatusStyle.label(saved) == "Saved")
+        #expect(CallStatusStyle.color(saved.status) == .green)
+        // A webhook delivery, or a server that does not say, stays "Delivered".
+        #expect(CallStatusStyle.label(.sample(delivery: "webhook")) == "Delivered")
+        #expect(CallStatusStyle.label(.sample()) == "Delivered")
+        // Only a delivered call is "Saved".
+        #expect(CallStatusStyle.label(.sample(status: "failed", error: "delivery_failed", delivery: "history")) == "Failed, not delivered")
     }
 }

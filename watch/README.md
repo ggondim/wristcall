@@ -130,9 +130,10 @@ show no agent color.
 
 ## iPhone app
 
-`Phone/` is the iPhone app (tag `ios-vX.Y.Z`; version 0.2.2). Its bundle id is `<BUNDLE_ID_PREFIX>.wristcall` and
+`Phone/` is the iPhone app (tag `ios-vX.Y.Z`; version 0.3.0). Its bundle id is `<BUNDLE_ID_PREFIX>.wristcall` and
 it embeds the watch app (`Wristcall.app/Watch/`). Apple refuses an embedded watch app whose version differs from the
-iPhone app's, so both bundles carry the same version (0.5.1, build 7), even though the iPhone app's own release is 0.2.2.
+iPhone app's, so both bundles carry the same version (0.6.0, build 8), even though the iPhone app's own release is 0.3.0 (kept in
+the Info key `WristcallClientVersion`, which is also what the app sends to the Cloud).
 
 **No sign-up.** The first launch shows a welcome screen and a plan screen, no sign-in. The app makes a silent
 wristcall account on the Cloud: it keeps the account key in the iPhone's Keychain and in iCloud Keychain, so the account
@@ -170,7 +171,7 @@ What it does (it makes no calls; the watch does):
 account keeps working and nothing is lost. If this iPhone cannot reach the account (a new iPhone, or iCloud Keychain
 off), a screen asks you to "Sign in with email" once to bring it here, or to start over with a new account (the old one
 stays on the Cloud). The watch still signs in on its own with the email provider's device code, which the iPhone asks
-you to approve; the watch 0.5.1 (build 7) also sets itself up (see [First open](#first-open-of-the-watch-app)).
+you to approve; the watch 0.6.0 (build 8) also sets itself up (see [First open](#first-open-of-the-watch-app)).
 
 The default build uses the project's Cloud (`WRISTCALL_CLOUD_URL` = `https://wristcall-cloud.trigram.com.br`, in
 `Config/Base.xcconfig`); set it empty in `Config/Local.xcconfig` and no account features show and nothing talks to a
@@ -259,6 +260,18 @@ The watch app's bundle id (and so its APNs topic) is now `<BUNDLE_ID_PREFIX>.wri
   server that is not paired yet, only when the server names the same Cloud as its issuer; a server that needs your
   approval waits for it on the iPhone ("Approve on your iPhone: 0423"). "Sync with account" repeats this, "Sign out
   of this watch" forgets the account (servers stay).
+- **Wristcall Cloud entry.** An account with a Wristcall Cloud plan gets a virtual server, `cloud`, that is never
+  paired: it comes from the account's agenda (no token, nothing in the Keychain) and its agents ("Voice notes"
+  included) come first in the grid. A call to one of its agents asks the Cloud for a route to a node
+  (`POST /v1/route`, `purpose: "call"`) each time, after the call screen and audio are ready, and connects to that
+  node; the result of a one-shot call is read from the node through the same route. Failures read as plain texts
+  ("You've used this month's call minutes.", "Busy, try again in a minute.", "Can't reach Wristcall Cloud.", "Open
+  wristcall on your iPhone to sign in again.", "Agent not found."); with no Cloud node registered it says "Wristcall Cloud is temporarily
+  unavailable. Try again in a minute." Only calls through the Cloud entry use these texts: a paired server's errors
+  still read "Call failed (code).". Every request to the Cloud (not to a node or your own server) carries
+  `X-Wristcall-Client: watchos/0.6.0`. The complication, control and shortcut without an agent keep using the first
+  paired server; the Cloud entry is the default only when there is no paired server. A "Voice notes" call kept in
+  the Cloud's history (no webhook) reads "Saved" instead of "Delivered".
 - **Agent grid.** Home shows the agents of every server, two per row, in each server's order and each agent's color. Tap an agent to
   call it; long press opens its call options (end of turn, auto or manual, for conversations). The "…" button in
   the toolbar opens the same options: directly for the only callable agent, or a list of agents to pick from.

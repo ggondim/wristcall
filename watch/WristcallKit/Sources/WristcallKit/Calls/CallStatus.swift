@@ -97,6 +97,12 @@ public struct CallStatus: Decodable, Sendable, Equatable {
     public var attempts: Int?
     /// The webhook's last answer; `nil` after a timeout or a connection error.
     public var lastHTTPStatus: Int?
+    /// Where a delivered call went: `webhook`, `history` (an agent without an action, cloud mode), or nil (a server
+    /// that does not say).
+    public var delivery: String?
+
+    /// The transcript was saved to the history instead of being sent anywhere.
+    public var savedToHistory: Bool { state == .delivered && delivery == "history" }
 
     public init(
         id: String,
@@ -105,7 +111,8 @@ public struct CallStatus: Decodable, Sendable, Equatable {
         failure: CallFailure? = nil,
         text: String? = nil,
         attempts: Int? = nil,
-        lastHTTPStatus: Int? = nil
+        lastHTTPStatus: Int? = nil,
+        delivery: String? = nil
     ) {
         self.id = id
         self.callType = callType
@@ -114,10 +121,11 @@ public struct CallStatus: Decodable, Sendable, Equatable {
         self.text = text
         self.attempts = attempts
         self.lastHTTPStatus = lastHTTPStatus
+        self.delivery = delivery
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, text, attempts
+        case id, text, attempts, delivery
         case callType = "call_type"
         case state = "status"
         case failure = "error"

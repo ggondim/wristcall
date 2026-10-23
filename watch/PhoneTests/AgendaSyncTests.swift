@@ -359,6 +359,82 @@ struct AgendaSyncTests {
         #expect(world.entries.map(\.name) == ["After"])
     }
 
+    // MARK: - The Wristcall Cloud entry
+
+    @Test func pendingSetupSkipsCloudEntry() async throws {
+        let cloudID = world.seedCloudEntry()
+        world.seed(name: "Other", url: "https://other.test")
+        let (sync, state) = await sync([])
+
+        let pending = await sync.pendingSetup()
+
+        // Never a server to set up here: it is the Cloud's own, and the read also brings it in.
+        #expect(pending.map(\.name) == ["Other"])
+        #expect(state.cloudEntry?.id == cloudID)
+        #expect(state.servers.isEmpty)
+    }
+
+    @Test func refreshCloudEntryReadsAgenda() async throws {
+        let cloudID = world.seedCloudEntry(agents: [
+            ["id": "ag_c", "slug": "c", "display_name": "C", "icon": "waveform", "call_type": "one-shot"],
+        ])
+        world.seed(name: "Other", url: "https://other.test")
+        let (sync, state) = await sync([home])
+
+        await sync.refreshCloudEntry()
+        #expect(state.cloudEntry?.id == cloudID)
+        #expect(state.cloudEntry?.agents.map(\.id) == ["ag_c"])
+        #expect(state.allServers.map(\.id) == [ManagedServer.cloudEntryID, "home"])
+
+        // The Cloud down: the entry the app has stays.
+        world.cloudFailure = 503
+        await sync.refreshCloudEntry()
+        #expect(state.cloudEntry?.id == cloudID)
+        #expect(sync.notice == nil)
+
+        // Gone from the agenda (no plan any more): gone here too.
+        world.cloudFailure = nil
+        world.dropEntry(cloudID)
+        await sync.refreshCloudEntry()
+        #expect(state.cloudEntry == nil)
+        #expect(state.allServers.map(\.id) == ["home"])
+    }
+
+    @Test func agendaNeverWritesCloudEntry() async throws {
+        let cloudID = world.seedCloudEntry()
+        let (sync, state) = await sync([home], agents: agents(2))
+        await sync.refreshCloudEntry()
+        let cloud = try #require(state.cloudServer)
+
+        sync.pushAll()
+        sync.serverAdded(cloud)
+        sync.serverChanged(cloud)
+        sync.agentsChanged(cloud, agents(3))
+        sync.serverRemoved(cloud)
+        await sync.idle()
+
+        let writes = world.cloud.requests.filter { $0.method != "GET" && $0.path.hasPrefix("/v1/servers/\(cloudID)") }
+        #expect(writes.isEmpty)
+        #expect(world.entries.contains { $0.id == cloudID && $0.kind == "cloud" })
+        #expect(world.entries.filter { $0.kind != "cloud" }.map(\.url) == ["https://home.test"])
+        #expect(sync.notice == nil)
+    }
+
+    @Test func removeByURLSkipsCloudEntry() async throws {
+        // A self-hosted server at the Cloud's address, with no known agenda id: only the self-hosted entry goes.
+        let cloudID = world.seedCloudEntry()
+        let twin = ManagedServer(id: "twin", name: "Twin", url: URL(string: "https://cloud.wristcall.test")!,
+                                 token: "wc_pat_t")
+        let (sync, state) = await sync([])
+
+        sync.serverRemoved(twin)
+        await sync.idle()
+
+        #expect(world.entries.map(\.id) == [cloudID])
+        #expect(world.cloudRequests("DELETE", "/v1/servers/\(cloudID)").isEmpty)
+        #expect(state.cloudEntry?.id == cloudID)
+    }
+
     private func waitUntil(_ condition: () -> Bool) async throws {
         for _ in 0..<200 where !condition() {
             try await Task.sleep(for: .milliseconds(10))

@@ -46,9 +46,14 @@ struct CallDetailView: View {
             }
 
             Section("Delivery") {
-                LabeledContent("Attempts", value: "\(call.attempts)")
-                if let status = call.lastHttpStatus {
-                    LabeledContent("Last answer", value: "HTTP \(status)")
+                if call.savedToHistory {
+                    // Nothing was sent anywhere: no attempts or answer to show.
+                    Text(CallStatusStyle.savedDetail)
+                } else {
+                    LabeledContent("Attempts", value: "\(call.attempts)")
+                    if let status = call.lastHttpStatus {
+                        LabeledContent("Last answer", value: "HTTP \(status)")
+                    }
                 }
             }
 

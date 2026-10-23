@@ -33,6 +33,18 @@ enum PlanOption: CaseIterable, Identifiable {
         }
     }
 
+    /// Shown on the card of the plan the account has (Settings).
+    static let currentLabel = "Current plan"
+
+    /// The card of `plan`; a plan this build does not know is the Cloud, like the Settings row.
+    func isCurrent(for plan: Plan?) -> Bool {
+        guard let plan else { return false }
+        switch plan.plan {
+        case .full, .other: return self == .cloud
+        case .custom: return self == .cloudCustom
+        }
+    }
+
     var symbol: String { isCloud ? "cloud" : "server.rack" }
     var primaryTitle: String { isCloud ? "Enter invite code" : "Connect your server" }
 }
@@ -51,15 +63,24 @@ final class PlanModel {
 
     @ObservationIgnored private let redeemInvite: (String) async throws -> Plan
     @ObservationIgnored private let onFinish: (PlanChoice) -> Void
+    /// The plan the account has when the screen opens from Settings; `nil` in onboarding.
+    let currentPlan: Plan?
 
-    init(redeemInvite: @escaping (String) async throws -> Plan, onFinish: @escaping (PlanChoice) -> Void) {
+    init(
+        redeemInvite: @escaping (String) async throws -> Plan, onFinish: @escaping (PlanChoice) -> Void,
+        currentPlan: Plan? = nil
+    ) {
         self.redeemInvite = redeemInvite
         self.onFinish = onFinish
+        self.currentPlan = currentPlan
     }
 
-    convenience init(account: AccountModel, onFinish: @escaping (PlanChoice) -> Void) {
-        self.init(redeemInvite: { try await account.redeemInvite($0) }, onFinish: onFinish)
+    convenience init(account: AccountModel, currentPlan: Plan? = nil, onFinish: @escaping (PlanChoice) -> Void) {
+        self.init(redeemInvite: { try await account.redeemInvite($0) }, onFinish: onFinish, currentPlan: currentPlan)
     }
+
+    /// The main button; the card of the current plan has nothing to enter an invite for.
+    var showsPrimaryButton: Bool { !selection.isCurrent(for: currentPlan) }
 
     /// The main button: Cloud asks for the invite first, the own server finishes.
     func primaryTapped() {
@@ -146,7 +167,9 @@ private struct PlanContent: View {
 
     init(mode: PlanView.Mode, account: AccountModel, onFinish: @escaping (PlanChoice) -> Void) {
         self.mode = mode
-        _model = State(initialValue: PlanModel(account: account, onFinish: onFinish))
+        // Only Settings knows a current plan; onboarding is the way to get one.
+        _model = State(initialValue: PlanModel(
+            account: account, currentPlan: mode == .settings ? account.plan : nil, onFinish: onFinish))
     }
 
     var body: some View {
@@ -161,7 +184,10 @@ private struct PlanContent: View {
                     .padding(.horizontal, 4)
                     .padding(.bottom, 4)
                 ForEach(PlanOption.allCases) { option in
-                    PlanCard(option: option, selected: model.selection == option) { model.selection = option }
+                    PlanCard(
+                        option: option, selected: model.selection == option,
+                        isCurrent: option.isCurrent(for: model.currentPlan)
+                    ) { model.selection = option }
                 }
             }
             .padding(.horizontal, 20)
@@ -176,12 +202,14 @@ private struct PlanContent: View {
 
     private var footer: some View {
         VStack(spacing: 8) {
-            Button { model.primaryTapped() } label: {
-                Text(model.selection.primaryTitle).font(.headline).frame(maxWidth: .infinity)
+            if model.showsPrimaryButton {
+                Button { model.primaryTapped() } label: {
+                    Text(model.selection.primaryTitle).font(.headline).frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
+                .controlSize(.large)
             }
-            .buttonStyle(.borderedProminent)
-            .buttonBorderShape(.capsule)
-            .controlSize(.large)
             Text("Wristcall Cloud is in invite-only beta. Your own server is always free.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -202,6 +230,8 @@ private struct PlanContent: View {
 private struct PlanCard: View {
     let option: PlanOption
     let selected: Bool
+    /// The plan the account has (Settings).
+    var isCurrent = false
     let action: () -> Void
 
     var body: some View {
@@ -213,7 +243,14 @@ private struct PlanCard: View {
                     .frame(width: 38, height: 38)
                     .background(option == .cloud ? Color.accentColor : Color(.label), in: .rect(cornerRadius: 11))
                 VStack(alignment: .leading, spacing: 4) {
-                    if option.isCloud {
+                    if isCurrent {
+                        Text(PlanOption.currentLabel)
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.green, in: .rect(cornerRadius: 8))
+                    } else if option.isCloud {
                         Text("INVITE-ONLY BETA")
                             .font(.system(size: 11, weight: .bold))
                             .tracking(0.4)

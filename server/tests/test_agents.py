@@ -614,6 +614,37 @@ async def test_check_public_on_a_stored_agent():
     await off.check_public(agent)  # nothing to check with public_only off
 
 
+async def test_check_public_marks_dns_failure_unresolved():
+    cfg = config(limits=PUBLIC_ONLY)
+    svc = await make(cfg, resolver=fake_resolver({"api.example.com": ["93.184.216.34"]}))
+    agent = await svc.create("u_a", {"slug": "own", "stt": PUBLIC_STT})
+    gone = await make(cfg, resolver=fake_resolver({}))  # the resolver raises OSError for every host
+    with pytest.raises(AgentError) as e:
+        await gone.check_public(agent)
+    assert e.value.code == "url_not_public" and e.value.unresolved
+    assert e.value.message == "stt: the host does not resolve"
+
+
+async def test_check_public_empty_answer_is_unresolved():
+    cfg = config(limits=PUBLIC_ONLY)
+    svc = await make(cfg, resolver=fake_resolver({"api.example.com": ["93.184.216.34"]}))
+    agent = await svc.create("u_a", {"slug": "own", "stt": PUBLIC_STT})
+    empty = await make(cfg, resolver=fake_resolver({"api.example.com": []}))
+    with pytest.raises(AgentError) as e:
+        await empty.check_public(agent)
+    assert e.value.code == "url_not_public" and e.value.unresolved
+
+
+async def test_check_public_private_address_is_not_unresolved():
+    cfg = config(limits=PUBLIC_ONLY)
+    svc = await make(cfg, resolver=fake_resolver({"api.example.com": ["93.184.216.34"]}))
+    agent = await svc.create("u_a", {"slug": "own", "stt": PUBLIC_STT})
+    moved = await make(cfg, resolver=fake_resolver({"api.example.com": ["10.0.0.5"]}))
+    with pytest.raises(AgentError) as e:
+        await moved.check_public(agent)
+    assert e.value.code == "url_not_public" and not e.value.unresolved
+
+
 def test_user_urls_lists_custom_endpoints_the_call_type_uses():
     stt = {"type": "openai_stt", "base_url": "https://stt.example.com/v1", "model": "w"}
     tts = {"type": "openai_tts", "base_url": "https://tts.example.com/v1", "model": "t", "voice": "v"}

@@ -1,4 +1,5 @@
 import { canonical } from "../lib/address"
+import type { CloudPlan, CloudUsage } from "./cloud"
 import { ApiError } from "../lib/errors"
 import { DEFAULT_TIMEOUT_MS, download, json } from "../lib/http"
 import { REQUEST_ID } from "../lib/ids"
@@ -24,6 +25,15 @@ export interface Provider {
   name: string
   kind: "stt" | "action" | "tts" | "webhook"
 }
+export interface ProvidersReply {
+  providers: Provider[]
+  custom_endpoints: boolean
+  /** A cloud-mode node: webhooks and endpoints must resolve to public addresses. */
+  public_only: boolean
+  /** A cloud-mode node: a one-way agent may have no action (the call goes to the history). */
+  history_only_one_way: boolean
+}
+
 export interface DeviceRecord {
   id: string
   name: string
@@ -71,6 +81,8 @@ export interface CallRecord {
   expires_at?: number | null
   agent?: CallAgent | null
   entries?: CallEntry[]
+  /** Where a one-way call went: its webhook, or only the history (a cloud-mode node with no action). */
+  delivery?: "webhook" | "history" | null
   [field: string]: unknown
 }
 export interface CallsPage {
@@ -110,11 +122,19 @@ export class ServerClient {
 
   // Health and account link by code carry no personal token.
   health(): Promise<Health> {
-    return json<Health>(this.#url("health"), {}, this.#fetch)
+    return this.through("health", undefined, false, (url) => json<Health>(url, {}, this.#fetch))
   }
 
-  async providers(): Promise<{ providers: Provider[]; custom_endpoints: boolean }> {
-    return this.#get("providers")
+  /** The providers to choose from; `public_only` and `history_only_one_way` come from a cloud-mode node (else `false`). */
+  async providers(): Promise<ProvidersReply> {
+    const reply = await this.#get<Partial<ProvidersReply> & Pick<ProvidersReply, "providers" | "custom_endpoints">>("providers")
+    return { ...reply, public_only: reply.public_only === true, history_only_one_way: reply.history_only_one_way === true }
+  }
+
+  /** The plan and the month's usage of the account (`GET /v1/me`, a cloud-mode node); absent parts are `null`. */
+  async me(): Promise<{ plan: CloudPlan | null; usage: CloudUsage | null }> {
+    const reply = await this.#get<{ plan?: CloudPlan | null; usage?: CloudUsage | null } | undefined>("me")
+    return { plan: reply?.plan ?? null, usage: reply?.usage ?? null }
   }
 
   async agents(): Promise<AgentDetail[]> {
@@ -171,7 +191,7 @@ export class ServerClient {
     serverToken: string,
     code: string,
   ): Promise<{ linked: true; issuer: string; user: { id: string; handle: string }; api_token: string }> {
-    return json(this.#url("account/link"), { method: "POST", json: { token: serverToken, code } }, this.#fetch)
+    return this.through("account/link", undefined, false, (url) => json(url, { method: "POST", json: { token: serverToken, code } }, this.#fetch))
   }
 
   /** Unlinks the user of this token from the account (`DELETE /v1/account/link`). `404` (not linked) counts as done. */
@@ -238,18 +258,23 @@ export class ServerClient {
   ): Promise<{ blob: Blob; filename: string }> {
     const params = new URLSearchParams({ format })
     appendFilters(params, query)
-    const { blob, headers } = await download(
-      this.#url("calls/export", params),
-      { bearer: this.#bearer(), timeoutMs: HISTORY_TIMEOUT_MS },
-      this.#fetch,
+    const { blob, headers } = await this.through("calls/export", params, true, (url, bearer) =>
+      download(url, { bearer, timeoutMs: HISTORY_TIMEOUT_MS }, this.#fetch),
     )
     return { blob, filename: filenameFrom(headers.get("content-disposition"), `wristcall-calls.${format}`) }
   }
 
-  #url(path: string, params?: URLSearchParams): string {
-    // `URLSearchParams.size` is missing before Safari 17: use the string.
-    const qs = params?.toString() ?? ""
-    return `${this.#base}/v1/${path}${qs === "" ? "" : `?${qs}`}`
+  /**
+   * Runs one request: `go` gets the full URL of `path` and, when `auth`, the token (a missing one is a `401` here). The
+   * routed client of the Wristcall Cloud entry overrides it to ask for the node and its token each time.
+   */
+  protected async through<T>(
+    path: string,
+    params: URLSearchParams | undefined,
+    auth: boolean,
+    go: (url: string, bearer: string | undefined) => Promise<T>,
+  ): Promise<T> {
+    return go(apiUrl(this.#base, path, params), auth ? this.#bearer() : undefined)
   }
 
   #bearer(): string {
@@ -268,8 +293,15 @@ export class ServerClient {
     params?: URLSearchParams,
     timeoutMs: number = DEFAULT_TIMEOUT_MS,
   ): Promise<T> {
-    return json<T>(this.#url(path, params), { method, bearer: this.#bearer(), json: body, timeoutMs }, this.#fetch)
+    return this.through(path, params, true, (url, bearer) => json<T>(url, { method, bearer, json: body, timeoutMs }, this.#fetch))
   }
+}
+
+/** `{base}/v1/{path}?{params}`; `base` is canonical (no trailing slash). */
+export function apiUrl(base: string, path: string, params?: URLSearchParams): string {
+  // `URLSearchParams.size` is missing before Safari 17: use the string.
+  const qs = params?.toString() ?? ""
+  return `${base}/v1/${path}${qs === "" ? "" : `?${qs}`}`
 }
 
 /** One path segment: `/`, `?` and `#` are escaped, and `.`/`..` (which a URL would resolve) are refused. */

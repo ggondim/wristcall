@@ -1,3 +1,4 @@
+import type { CloudAgent, CloudRoute, CloudServer } from "../api/cloud"
 import { ServerClient } from "../api/server"
 import { ServersModel } from "../models/servers"
 import type { SavedServer } from "../store/servers"
@@ -40,4 +41,36 @@ export function serversWith(
   }
   const servers = new ServersModel(store, (server) => new ServerClient(new URL(server.url), server.token, fetchMock))
   return { servers, fetchMock }
+}
+
+/** The host of the Wristcall Cloud entry's node in `attachCloudRoute`: answer it with `handlers[NODE]` of `serversWith`. */
+export const NODE = "node.example.com"
+
+export function cloudAgent(id: string, name: string): CloudAgent {
+  return { id, slug: id, display_name: name, icon: "waveform", call_type: "conversation" }
+}
+
+/** The account's Wristcall Cloud entry, as the agenda lists it. */
+export function cloudEntry(over: Partial<CloudServer> = {}): CloudServer {
+  return { id: "srv_0123456789ab", name: "Wristcall Cloud", url: "https://cloud.example.com", kind: "cloud", linked: true, agents: [], created_at: "", updated_at: "", ...over }
+}
+
+/**
+ * Gives `servers` a router whose `manage` route is `NODE`, answered by the same `fetchMock`. Set `route.fail` to make the
+ * route fail with that error (a Cloud with no node, say), and back to null to make it answer again.
+ */
+export function attachCloudRoute(servers: ServersModel, fetchMock: MockFetch): { fail: unknown } {
+  const route: { fail: unknown } = { fail: null }
+  const reply: CloudRoute = { node: { id: "node-1", url: `https://${NODE}`, region: "sao" }, token: "tok-1", expires_at: 4_000_000_000, fallback: null }
+  servers.attachRouter(
+    {
+      manage: async () => {
+        if (route.fail !== null) throw route.fail
+        return reply
+      },
+      invalidate: () => {},
+    },
+    { fetchImpl: fetchMock },
+  )
+  return route
 }

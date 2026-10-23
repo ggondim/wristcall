@@ -29,6 +29,14 @@ final class FakeServerAPI: ServerAPI, @unchecked Sendable {
         if let verifyError { throw verifyError }
     }
 
+    /// What `GET /v1/me` answers (a cloud-mode node only).
+    var meResult: Result<NodeAccount, any Error> = .success(NodeAccount())
+
+    func me() async throws -> NodeAccount {
+        calls.append("me")
+        return try meResult.get()
+    }
+
     var agentList: [AgentDetail] = []
     var agentsError: (any Error)?
     private(set) var createdAgents: [AgentFields] = []

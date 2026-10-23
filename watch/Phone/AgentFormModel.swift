@@ -166,6 +166,8 @@ final class AgentFormModel {
     var isEditing: Bool { editing != nil }
     var isOneWay: Bool { callType != "conversation" }
     var allowsCustom: Bool { providers.customEndpoints }
+    /// The server keeps a one-way agent without an action in the history (Wristcall Cloud): "None" is a choice.
+    var allowsHistoryOnly: Bool { providers.historyOnlyOneWay }
 
     /// The first server version that stores an agent `color`.
     static let colorVersion = "0.8.1"
@@ -265,6 +267,21 @@ final class AgentFormModel {
         case .action: action
         case .tts: tts
         }
+    }
+
+    /// The text under the endpoint section: where the transcript (or the voice) goes.
+    var endpointFooter: String {
+        guard isOneWay else {
+            return "Your server turns your voice into text, sends it to this endpoint and speaks the answer."
+        }
+        if action == .none, allowsHistoryOnly { return "The transcript is saved to History." }
+        return "Your server sends the transcript to this webhook."
+    }
+
+    /// What "no endpoint" is called in the picker of a stage.
+    func noneLabel(for stage: Stage) -> String {
+        if isEditing, stage == .action, isOneWay, allowsHistoryOnly { return "None, save to History" }
+        return isEditing ? "Choose…" : "Server default"
     }
 
     /// What the picker of a stage offers. "Custom" only when the server allows it (or already holds one).
@@ -503,7 +520,10 @@ final class AgentFormModel {
 
     private func validate(_ stage: Stage) -> String? {
         let selected = choice(for: stage)
-        if selected == .none { return isEditing ? "Choose \(label(stage))." : nil }
+        if selected == .none {
+            if stage == .action, isOneWay, allowsHistoryOnly { return nil }
+            return isEditing ? "Choose \(label(stage))." : nil
+        }
         let built = endpoint(stage)
         // Untouched on an edit: the server already holds it, and it is not sent.
         if isUntouched(stage, built) { return nil }

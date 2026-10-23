@@ -37,6 +37,11 @@ public struct ManagementClient: Sendable {
         try await get("v1/providers")
     }
 
+    /// `GET /v1/me` of a cloud-mode node: the account's plan and month usage (the other fields are not read).
+    public func me() async throws -> NodeAccount {
+        try await get("v1/me")
+    }
+
     // MARK: - Agents
 
     public func agents() async throws -> [AgentDetail] {

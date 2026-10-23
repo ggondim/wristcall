@@ -101,6 +101,8 @@ export class AccountSession {
   #refused: string | null = null
   /** Bumped by sign-in, sign-out and an ended session: a renewal that started before must not write over them. */
   #generation = 0
+  /** The Cloud router of this account: dropped with the sign-in, so no route outlives it. */
+  #router: { invalidate(): void } | null = null
 
   constructor(cloud: CloudClient, store: ServerStore, opts: { fetchImpl?: typeof fetch; now?: () => number; origin?: string } = {}) {
     this.#cloud = cloud
@@ -261,6 +263,11 @@ export class AccountSession {
     return null
   }
 
+  /** The router of the Cloud entry: signing in, out or an ended session drop its route. */
+  attachRouter(router: { invalidate(): void }): void {
+    this.#router = router
+  }
+
   /** Calls `listener` whenever `state` changes (signed in, signed out or ended by the Cloud). Returns the unsubscribe. */
   onStateChange(listener: () => void): () => void {
     this.#changeListeners.add(listener)
@@ -296,6 +303,7 @@ export class AccountSession {
     this.#generation += 1
     this.#refreshing = null
     this.#refused = null
+    this.#router?.invalidate()
     await this.#store.setKV(KEY_DEVICE, device)
     await this.#dropZitadelTokens()
     this.#hold(device)
@@ -312,6 +320,7 @@ export class AccountSession {
     const wasSignedIn = this.#state === "signedIn"
     this.#held = null
     this.#state = "signedOut"
+    this.#router?.invalidate()
     if (wasSignedIn) {
       for (const listener of [...this.#listeners]) listener(reason)
       this.#notifyChange()

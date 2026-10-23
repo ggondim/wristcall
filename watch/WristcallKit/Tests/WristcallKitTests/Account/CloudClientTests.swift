@@ -202,4 +202,103 @@ struct CloudClientTests {
         let host = StubHost(replies: [(status, body)])
         await #expect(throws: expected) { try await client(host).servers(accessToken: "at") }
     }
+
+    @Test func cloudServerEncodesWithTheKeysItDecodes() throws {
+        let cloud = CloudServer(
+            id: "srv_c", name: "Wristcall Cloud", url: "https://cloud.example", kind: "cloud", linked: true,
+            agents: [CloudAgent(id: "a1", slug: "helper", displayName: "Helper", icon: "sparkles", callType: "one-shot", color: .yellow)])
+        let data = try JSONEncoder().encode(cloud)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["kind"] as? String == "cloud")
+        #expect(object["linked"] as? Bool == true)
+        #expect(try JSONDecoder().decode(CloudServer.self, from: data) == cloud)
+    }
+
+    // MARK: - Route
+
+    static let routeJSON = """
+    {"node":{"id":"home","url":"https://node-a.example.com","region":"sao"},"token":"eyJ.primary","expires_at":1792580000,
+     "fallback":{"node":{"id":"away","url":"https://node-b.example.com","region":"iad"},"token":"eyJ.fallback","expires_at":1792580010}}
+    """
+
+    @Test func routeSendsPurposeAgentAndAvoid() async throws {
+        let host = StubHost(replies: [(200, Self.routeJSON)])
+        _ = try await client(host).route(purpose: .call, agent: "ag_0123456789ab", avoid: ["away"], accessToken: "at")
+        let request = try #require(host.requests.first)
+        #expect(request.method == "POST")
+        #expect(request.path == "/v1/route")
+        #expect(request.headers["Authorization"] == "Bearer at")
+        let body = try request.json()
+        #expect(body["purpose"] as? String == "call")
+        #expect(body["agent"] as? String == "ag_0123456789ab")
+        #expect(body["avoid"] as? [String] == ["away"])
+        #expect(body.count == 3)
+    }
+
+    @Test func routeLeavesOutAgentAndEmptyAvoid() async throws {
+        let host = StubHost(replies: [(200, Self.routeJSON)])
+        _ = try await client(host).route(purpose: .manage, accessToken: "at")
+        let body = try #require(host.requests.first).json()
+        #expect(body["purpose"] as? String == "manage")
+        #expect(body["agent"] == nil)
+        #expect(body["avoid"] == nil)
+    }
+
+    @Test func routeDecodesPrimaryAndFallback() async throws {
+        let host = StubHost(replies: [(200, Self.routeJSON), (200, """
+        {"node":{"id":"home","url":"http://127.0.0.1:8090","region":"sao"},"token":"eyJ.primary","expires_at":1792580000,"fallback":null}
+        """)])
+        let route = try await client(host).route(purpose: .manage, accessToken: "at")
+        #expect(route.primary == RouteTarget(
+            nodeID: "home", url: URL(string: "https://node-a.example.com")!, region: "sao", token: "eyJ.primary",
+            expiresAt: Date(timeIntervalSince1970: 1_792_580_000)))
+        #expect(route.fallback == RouteTarget(
+            nodeID: "away", url: URL(string: "https://node-b.example.com")!, region: "iad", token: "eyJ.fallback",
+            expiresAt: Date(timeIntervalSince1970: 1_792_580_010)))
+        let local = try await client(host).route(purpose: .manage, accessToken: "at")
+        #expect(local.primary.url == URL(string: "http://127.0.0.1:8090")!)
+        #expect(local.fallback == nil)
+    }
+
+    @Test func routeRejectsInsecureNodeURL() async throws {
+        for url in ["http://node.example", "ftp://localhost", "node.example", "https://"] {
+            let primary = """
+            {"node":{"id":"home","url":"\(url)","region":"sao"},"token":"t","expires_at":1792580000,"fallback":null}
+            """
+            let host = StubHost(replies: [(200, primary)])
+            await #expect(throws: APIError.malformedResponse) {
+                try await client(host).route(purpose: .manage, accessToken: "at")
+            }
+        }
+        // The fallback is checked as well.
+        let fallback = """
+        {"node":{"id":"home","url":"https://node-a.example.com","region":"sao"},"token":"t","expires_at":1792580000,
+         "fallback":{"node":{"id":"away","url":"http://node-b.example.com","region":"iad"},"token":"t","expires_at":1792580000}}
+        """
+        let host = StubHost(replies: [(200, fallback)])
+        await #expect(throws: APIError.malformedResponse) {
+            try await client(host).route(purpose: .manage, accessToken: "at")
+        }
+    }
+
+    @Test func routeMapsCloudErrors() async throws {
+        let planHost = StubHost(replies: [(402, #"{"error":"plan_required","message":"x"}"#)])
+        await #expect(throws: APIError.planRequired) { try await client(planHost).route(purpose: .manage, accessToken: "at") }
+        let noNode = StubHost(replies: [StubHost.Reply(503, #"{"error":"no_node_available","message":"x"}"#, headers: ["Retry-After": "30"])])
+        await #expect(throws: APIError.noNodeAvailable(retryAfter: 30)) {
+            try await client(noNode).route(purpose: .manage, accessToken: "at")
+        }
+        let notFound = StubHost(replies: [(404, #"{"error":"not_found","message":"x"}"#)])
+        await #expect(throws: APIError.notFound) { try await client(notFound).route(purpose: .call, agent: "ag_x", accessToken: "at") }
+    }
+
+    @Test func routeTargetHidesTheToken() {
+        let target = RouteTarget(
+            nodeID: "home", url: URL(string: "https://node-a.example.com")!, region: "sao", token: "eyJ.secret",
+            expiresAt: Date(timeIntervalSince1970: 1_792_580_000))
+        #expect(!target.description.contains("eyJ.secret"))
+        #expect(!target.debugDescription.contains("eyJ.secret"))
+        #expect(!String(reflecting: target).contains("eyJ.secret"))
+        #expect(!String(describing: Mirror(reflecting: target).children.map { "\($0.value)" }).contains("eyJ.secret"))
+    }
 }

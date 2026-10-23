@@ -78,6 +78,7 @@ async function world(
     cloud,
     servers,
     assign: (url) => void assigned.push(url),
+    refreshAgenda: () => void calls.push("agenda.refresh"),
   })
   return { calls, session, agenda, push, cloud, store, servers, assigned, model }
 }
@@ -511,6 +512,24 @@ describe("plan and identities", () => {
     expect(await w.model.redeemInvite("  CODE-1 ")).toBe(true)
     expect(w.cloud.redeemInvite).toHaveBeenCalledWith("access-token", "CODE-1")
     expect(w.model.state).toMatchObject({ plan: { plan: "full", source: "beta" }, redeem: "idle" })
+  })
+
+  test("redeemInvite reads the agenda again only when the invite is redeemed", async () => {
+    const w = await world()
+    w.cloud.redeemInvite.mockRejectedValueOnce(new ApiError(404, "x", "raw"))
+    await w.model.redeemInvite("c")
+    expect(w.calls).not.toContain("agenda.refresh")
+    await w.model.redeemInvite("c")
+    expect(w.calls.filter((call) => call === "agenda.refresh")).toHaveLength(1)
+  })
+
+  test("refreshAgenda reads only while signed in", async () => {
+    const out = await world({ state: "signedOut" })
+    out.model.refreshAgenda()
+    expect(out.calls).not.toContain("agenda.refresh")
+    const w = await world()
+    w.model.refreshAgenda()
+    expect(w.calls).toContain("agenda.refresh")
   })
 
   test("redeemInvite: an empty code is not sent", async () => {
