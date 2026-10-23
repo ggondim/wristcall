@@ -100,6 +100,15 @@ public struct AgentDetail: Decodable, Sendable, Equatable, Identifiable {
     }
 }
 
+public extension AgentDetail {
+    /// An agent of the Cloud's agenda, for the screens that list agents: the fields the agenda carries, the rest
+    /// left at their defaults (read the agent from the node for its configuration).
+    init(cloud agent: CloudAgent) {
+        self.init(id: agent.id, slug: agent.slug, displayName: agent.displayName, icon: agent.icon,
+                  callType: agent.callType, color: agent.color)
+    }
+}
+
 /// Body of `POST /v1/agents` and `PATCH /v1/agents/{ref}`. A missing key leaves the field alone; an
 /// explicit `.null` sends `null` (e.g. `retention_days` back to the server's default).
 public typealias AgentFields = [String: JSONValue]
@@ -118,15 +127,31 @@ public struct Provider: Decodable, Sendable, Hashable {
 public struct ProviderList: Decodable, Sendable, Equatable {
     public var providers: [Provider]
     public var customEndpoints: Bool
+    /// Cloud mode: agents may only use public addresses (`public_only`; `false` when absent).
+    public var publicOnly: Bool
+    /// Cloud mode: only one-way calls go to the history (`history_only_one_way`; `false` when absent).
+    public var historyOnlyOneWay: Bool
 
-    public init(providers: [Provider], customEndpoints: Bool) {
+    public init(providers: [Provider], customEndpoints: Bool, publicOnly: Bool = false, historyOnlyOneWay: Bool = false) {
         self.providers = providers
         self.customEndpoints = customEndpoints
+        self.publicOnly = publicOnly
+        self.historyOnlyOneWay = historyOnlyOneWay
     }
 
     private enum CodingKeys: String, CodingKey {
         case providers
         case customEndpoints = "custom_endpoints"
+        case publicOnly = "public_only"
+        case historyOnlyOneWay = "history_only_one_way"
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        providers = try container.decode([Provider].self, forKey: .providers)
+        customEndpoints = try container.decode(Bool.self, forKey: .customEndpoints)
+        publicOnly = try container.decodeIfPresent(Bool.self, forKey: .publicOnly) ?? false
+        historyOnlyOneWay = try container.decodeIfPresent(Bool.self, forKey: .historyOnlyOneWay) ?? false
     }
 }
 

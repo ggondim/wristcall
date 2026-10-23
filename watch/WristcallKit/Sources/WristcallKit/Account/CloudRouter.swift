@@ -1,9 +1,20 @@
 import Foundation
 
+/// What the apps ask for routes through: `CloudRouter` in the apps, a fake in tests (the watch's tests cannot
+/// stub the network).
+public protocol CloudRouting: Sendable {
+    /// A route for one call to `agent` (an `ag_...` id).
+    func call(agent: String) async throws -> CloudRoute
+    /// The route to read and change the account's cloud-mode agents and history.
+    func manage() async throws -> CloudRoute
+    /// Drops a cached `manage` route (for example after the node answered `401`).
+    func invalidate() async
+}
+
 /// Asks the Cloud which node serves the account. A `call` route is asked for every call and never kept; the
 /// `manage` route is kept until 30 seconds before its token expires, and callers that ask at the same time share
 /// one request. Errors (`APIError`, `AccountError.signedOut`) pass as they came.
-public actor CloudRouter {
+public actor CloudRouter: CloudRouting {
     /// A cached `manage` route is dropped this long before its token expires.
     static let margin: TimeInterval = 30
 
