@@ -19,16 +19,21 @@ listing this version (`ios=0.3.0,watchos=0.6.0,web=0.4.0`), and servers 0.8.0 or
   through the route, asking again once if the node answers `401`.
 - Texts for a Cloud call that fails: "This account has no Wristcall Cloud plan.", "You've used this month's call
   minutes." (also when the quota ends a call in progress), "Another call is still open on this account.", "Busy, try
-  again in a minute.", "Wristcall Cloud is unavailable; try again.", "Can't reach Wristcall Cloud." and "Open
-  wristcall on your iPhone to sign in again." With no Cloud node registered, the Cloud answers
+  again in a minute.", "Wristcall Cloud is unavailable; try again.", "This agent needs your own transcription and
+  voice addresses." (`needs_voice_url`), "This agent uses an address the server can't call." (`url_not_public`),
+  "Can't look up this agent's address right now; try again." (`url_unresolved`), "Can't reach Wristcall Cloud.",
+  "Agent not found." (the route's `404`) and "Open wristcall on your iPhone to sign in again." (also when the Cloud
+  refuses the device with `403`). With no Cloud node registered, the Cloud answers
   "Wristcall Cloud is temporarily unavailable. Try again in a minute." and the "Voice notes" agent stays visible.
   A paired server's `busy` or `agent_unavailable` still reads "Call failed (code).".
+- A "Voice notes" call kept in the Cloud's history (no webhook) reads "Saved" instead of "Delivered", as on the iPhone
+  and the web app.
 - Every request to the Cloud carries `X-Wristcall-Client: watchos/0.6.0` (never a node or your own server).
 
 ### Changed
 
-- The complication, control or shortcut without an agent, and "New agent", keep using the first paired server; the Cloud
-  entry is the default only when there is no paired server.
+- The complication, control or shortcut without an agent keeps using the first paired server; the Cloud entry is the
+  default only when there is no paired server.
 - The watch app and the iPhone app carry bundle version 0.6.0 (build 8); the iPhone app's own release is 0.3.0 (Info
   key `WristcallClientVersion`).
 
@@ -48,8 +53,8 @@ version 0.6.0 (Apple requires it); this app's own release is 0.3.0 (Info key `Wr
 - Plan and usage in the app: Settings shows the month's call minutes used under the plan, and marks the current plan
   on the plan screen. From 80 % of the month's minutes Agents shows a warning (red when used up). If the node cannot
   be read it says "Usage unavailable right now." The warning is inside the app; there is no push for it yet.
-- Agent editor: a one-way agent on the Cloud may have no webhook ("None, save to History"); its calls read "Saved" in
-  History.
+- Agent editor: a one-way agent on the Cloud may have no webhook ("None, save to History", with the footer "The
+  transcript is saved to History."); its calls read "Saved" in History, and its row reads "One-shot · Wristcall Cloud".
 - The Cloud's texts for a failed route: "Wristcall Cloud is temporarily unavailable. Try again in a minute." when no
   Cloud node is registered (the "Voice notes" agent stays visible), "This account has no Wristcall Cloud plan." and
   the usual network messages.
@@ -67,19 +72,20 @@ version 0.6.0 (Apple requires it); this app's own release is 0.3.0 (Info key `Wr
 ## [web-0.4.0] - 2026-10-23
 
 For Cloud 0.6.1 with `WRISTCALL_CLOUD_CLOUD_ENTRY_CLIENTS` listing this version (`ios=0.3.0,watchos=0.6.0,web=0.4.0`),
-and servers 0.8.0 or later. Meant for the same servers as 0.3.0.
+and servers 0.8.0 or later.
 
 ### Added
 
-- The "Wristcall Cloud" entry: with a plan, the Cloud's section comes first in the agents list. Agents are managed
+- The "Wristcall Cloud" entry: with a plan, the Cloud's section ("Wristcall Cloud · Beta") comes first in the agents
+  list, read again after an invite is redeemed and when the agents list opens. Agents are managed
   through the Cloud's route to a node, with a fresh route for each request; when the node does not answer, the agents
   the account lists are shown with the reason ("Wristcall Cloud is temporarily unavailable. Try again in a minute."
   when no Cloud node is registered; "Voice notes" stays visible).
 - Settings > Plan shows the month's call minutes used ("Usage unavailable right now." when the node cannot be read);
   the agents list warns from 80 % of the month's minutes (red when used up). "Redeem invite" shows only with no plan
   and no Cloud entry.
-- Agent editor: a one-way agent on the Cloud may have no webhook ("None, save to History"); History reads "Saved" and
-  "Saved to History" for those calls.
+- Agent editor: a one-way agent on the Cloud may have no webhook ("None, save to History", with the note "The watch
+  records you and saves the transcript to History."); History reads "Saved" and "Saved to History" for those calls.
 - Every request to the Cloud (including the push relay) carries `X-Wristcall-Client: web/0.4.0`; nodes and your own
   servers never get it, so their CORS settings stay as they are.
 

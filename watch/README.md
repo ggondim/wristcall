@@ -266,11 +266,12 @@ The watch app's bundle id (and so its APNs topic) is now `<BUNDLE_ID_PREFIX>.wri
   (`POST /v1/route`, `purpose: "call"`) each time, after the call screen and audio are ready, and connects to that
   node; the result of a one-shot call is read from the node through the same route. Failures read as plain texts
   ("You've used this month's call minutes.", "Busy, try again in a minute.", "Can't reach Wristcall Cloud.", "Open
-  wristcall on your iPhone to sign in again."); with no Cloud node registered it says "Wristcall Cloud is temporarily
+  wristcall on your iPhone to sign in again.", "Agent not found."); with no Cloud node registered it says "Wristcall Cloud is temporarily
   unavailable. Try again in a minute." Only calls through the Cloud entry use these texts: a paired server's errors
   still read "Call failed (code).". Every request to the Cloud (not to a node or your own server) carries
-  `X-Wristcall-Client: watchos/0.6.0`. The complication, control and shortcut without an agent, and "New agent",
-  keep using the first paired server; the Cloud entry is the default only when there is no paired server.
+  `X-Wristcall-Client: watchos/0.6.0`. The complication, control and shortcut without an agent keep using the first
+  paired server; the Cloud entry is the default only when there is no paired server. A "Voice notes" call kept in
+  the Cloud's history (no webhook) reads "Saved" instead of "Delivered".
 - **Agent grid.** Home shows the agents of every server, two per row, in each server's order and each agent's color. Tap an agent to
   call it; long press opens its call options (end of turn, auto or manual, for conversations). The "…" button in
   the toolbar opens the same options: directly for the only callable agent, or a list of agents to pick from.
