@@ -322,7 +322,8 @@ beat takes nothing off, and its counts go in the next one (nothing is lost or co
 - `first_audio_ms`: in a conversation, the time from the end of the user's turn to the first audio of the answer.
 - `stt_ms` and `tts_ms`: per voice provider, the time of each transcription and the time to the first audio of each
   sentence; `provider_failures`: per provider, the errors and timeouts (each try of a one-way call counts).
-- `cloud_unreachable_s`: seconds (rounded up) from the first heartbeat the Cloud did not accept to the next accepted.
+- `cloud_unreachable_s`: the time without an accepted heartbeat, from the first one that failed (a network error or a
+  refused beat) to the next accepted one; approximate to the second.
 - `outbox_dropped`: writes for the Cloud the node gave up on (its queue was full, or the Cloud refused them).
 
 Times are histograms: counts per bucket, keyed by the bucket's upper bound in ms (`250`, `500`, `750`, `1000`,
