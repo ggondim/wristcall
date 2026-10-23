@@ -82,7 +82,7 @@ function StageSection({ form, stage }: { form: AgentFormModel; stage: Stage }) {
         <select name={stage} value={choice} onChange={(e) => form.update({ [stage]: e.currentTarget.value as Choice })}>
           {form.choices(stage).map((option) => (
             <option key={option} value={option}>
-              {form.label(option)}
+              {form.label(option, stage)}
             </option>
           ))}
         </select>

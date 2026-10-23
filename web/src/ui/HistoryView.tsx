@@ -9,7 +9,7 @@ import {
   statusLabel,
   statusTone,
 } from "../models/history"
-import type { ServersModel } from "../models/servers"
+import { CLOUD_ENTRY_ID, CLOUD_ENTRY_NAME, type ServersModel } from "../models/servers"
 import { relativeTime } from "./format"
 import { Link } from "./Link"
 import { historyPath } from "./route"
@@ -45,7 +45,11 @@ function HistoryRow({ item, showsServer }: { item: HistoryItem; showsServer: boo
 /** The History tab: the calls of every server in one list, with search, filters, export and "delete all". */
 export function HistoryView({ model, servers, serverId = null }: { model: HistoryModel; servers: ServersModel; serverId?: string | null }) {
   const { items, loading, loadingMore, more, loaded, error, notice, failures, filter, period, agents, exported } = useModel(model)
-  const { rows } = useModel(servers)
+  const { rows, cloud } = useModel(servers)
+  // The Wristcall Cloud entry first (when the agenda lists it), then the saved servers.
+  const sources = [...(cloud === null ? [] : [{ id: CLOUD_ENTRY_ID, name: CLOUD_ENTRY_NAME }]), ...rows.map((row) => ({ id: row.server.id, name: row.server.name }))]
+  const cloudId = cloud?.id ?? null
+  const shownCloud = useRef(cloudId)
   const [text, setText] = useState(filter.q)
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -59,6 +63,13 @@ export function HistoryView({ model, servers, serverId = null }: { model: Histor
     return () => model.discardExport()
   }, [model, serverId])
 
+  // The Cloud entry came or left after the list was read (the agenda is read later): the list follows.
+  useEffect(() => {
+    if (shownCloud.current === cloudId) return
+    shownCloud.current = cloudId
+    void model.load()
+  }, [model, cloudId])
+
   // Typing waits for a pause; any other change (server, agent, period) reads at once.
   useEffect(() => {
     if (text === searched.current) return
@@ -69,9 +80,9 @@ export function HistoryView({ model, servers, serverId = null }: { model: Histor
     return () => clearTimeout(timer)
   }, [model, text])
 
-  const chosen = rows.find((row) => row.server.id === filter.serverId)?.server ?? null
+  const chosen = sources.find((source) => source.id === filter.serverId) ?? null
   const serverName = chosen?.name ?? "the server"
-  const multiple = rows.length > 1
+  const multiple = sources.length > 1
   const empty = items.length === 0 && !loading && failures.length === 0
   const agentLabel = filter.agent === null ? null : (agents.find((agent) => agent.id === filter.agent || agent.slug === filter.agent)?.display_name ?? "this agent")
 
@@ -108,9 +119,9 @@ export function HistoryView({ model, servers, serverId = null }: { model: Histor
             <span>Server</span>
             <select value={filter.serverId ?? ""} onChange={(event) => void model.setFilter({ serverId: event.currentTarget.value || null })}>
               <option value="">All servers</option>
-              {rows.map((row) => (
-                <option key={row.server.id} value={row.server.id}>
-                  {row.server.name}
+              {sources.map((source) => (
+                <option key={source.id} value={source.id}>
+                  {source.name}
                 </option>
               ))}
             </select>
@@ -227,7 +238,7 @@ export function HistoryView({ model, servers, serverId = null }: { model: Histor
         </p>
       ) : null}
       {loading && items.length === 0 ? <p class="muted">Loading…</p> : null}
-      {empty && rows.length === 0 && servers.state.loaded ? (
+      {empty && sources.length === 0 && servers.state.loaded ? (
         <section class="empty">
           <h2>No servers</h2>
           <p>Add a server to see its calls here.</p>
@@ -236,13 +247,13 @@ export function HistoryView({ model, servers, serverId = null }: { model: Histor
           </Link>
         </section>
       ) : null}
-      {empty && rows.length > 0 && loaded && filterIsActive(filter) ? (
+      {empty && sources.length > 0 && loaded && filterIsActive(filter) ? (
         <section class="empty">
           <h2>No results</h2>
           <p>No calls match the search and filters.</p>
         </section>
       ) : null}
-      {empty && rows.length > 0 && loaded && !filterIsActive(filter) ? (
+      {empty && sources.length > 0 && loaded && !filterIsActive(filter) ? (
         <section class="empty">
           <h2>No history yet</h2>
           <p>Calls from servers will show up here.</p>

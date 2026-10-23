@@ -5,6 +5,7 @@ import {
   entryReason,
   type HistoryItem,
   type HistoryModel,
+  savedToHistory,
   statusLabel,
   statusTone,
   transcript,
@@ -158,16 +159,21 @@ function Ready({
       </dl>
 
       <h2 class="section-title">Delivery</h2>
-      <dl class="facts">
-        <dt>Attempts</dt>
-        <dd>{call.attempts ?? 0}</dd>
-        {typeof call.last_http_status === "number" ? (
-          <>
-            <dt>Last answer</dt>
-            <dd>HTTP {call.last_http_status}</dd>
-          </>
-        ) : null}
-      </dl>
+      {savedToHistory(call) ? (
+        // Nothing was sent anywhere: no attempts or answer to show.
+        <p>Saved to History</p>
+      ) : (
+        <dl class="facts">
+          <dt>Attempts</dt>
+          <dd>{call.attempts ?? 0}</dd>
+          {typeof call.last_http_status === "number" ? (
+            <>
+              <dt>Last answer</dt>
+              <dd>HTTP {call.last_http_status}</dd>
+            </>
+          ) : null}
+        </dl>
+      )}
 
       <h2 class="section-title">Transcript</h2>
       {entries.length === 0 && said !== "" ? <p class="said">{said}</p> : null}

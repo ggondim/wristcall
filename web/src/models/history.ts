@@ -1,9 +1,14 @@
 import { ApiError, userMessage } from "../lib/errors"
 import { saveFile, type SaveResult } from "../lib/saveFile"
 import type { AgentDetail, CallRecord, CallsPage, CallsQuery } from "../api/server"
-import type { SavedServer } from "../store/servers"
 import { BaseModel } from "../ui/useModel"
-import type { ServersModel } from "./servers"
+import { CLOUD_ENTRY_ID, CLOUD_ENTRY_NAME, type ServersModel } from "./servers"
+
+/** A server whose calls the list holds: a saved one, or the Wristcall Cloud entry. */
+interface Source {
+  id: string
+  name: string
+}
 
 export interface HistoryFilter {
   /** Search text, matched by the servers against what was said. */
@@ -125,10 +130,15 @@ export function reasonText(code: string): string {
   }
 }
 
+/** A call whose transcript the server kept in the history instead of sending it anywhere (a Wristcall Cloud Voice note). */
+export function savedToHistory(call: CallRecord): boolean {
+  return call.status === "delivered" && call.delivery === "history"
+}
+
 export function statusLabel(call: CallRecord): string {
   switch (call.status) {
     case "delivered":
-      return "Delivered"
+      return savedToHistory(call) ? "Saved" : "Delivered"
     case "failed":
       return typeof call.error === "string" && call.error !== "" ? `Failed, ${reasonText(call.error)}` : "Failed"
     case "processing":
@@ -250,6 +260,19 @@ export class HistoryModel extends BaseModel<HistoryState> {
     this.#pageSize = options.pageSize ?? PAGE_SIZE
     this.#save = options.save ?? saveFile
     this.#now = options.now ?? Date.now
+    // The Wristcall Cloud entry came, left or belongs to another account now: its old calls go, the next load reads it.
+    let cloudId = servers.state.cloud?.id ?? null
+    servers.subscribe(() => {
+      const now = servers.state.cloud?.id ?? null
+      if (now === cloudId) return
+      cloudId = now
+      this.#loadedAt = 0
+      if (!this.#records.has(CLOUD_ENTRY_ID) && !this.#cursors.has(CLOUD_ENTRY_ID)) return
+      this.#records.delete(CLOUD_ENTRY_ID)
+      this.#cursors.delete(CLOUD_ENTRY_ID)
+      this.#names.delete(CLOUD_ENTRY_ID)
+      this.#rebuild()
+    })
     // A server removed or renamed elsewhere changes what the list may show.
     servers.onChange((event) => {
       if (event.kind === "removed") {
@@ -462,7 +485,8 @@ export class HistoryModel extends BaseModel<HistoryState> {
     if (found !== undefined) return this.set({ detail: { status: "ready", item: found } })
     this.set({ detail: { status: "loading", item: null } })
     try {
-      const server = (await this.#knownServers()).find((row) => row.id === serverId)
+      // The Cloud entry's call opened directly (a reload) may come before the agenda read: its routed client works already.
+      const server = (await this.#knownServers()).find((row) => row.id === serverId) ?? (serverId === CLOUD_ENTRY_ID ? { name: CLOUD_ENTRY_NAME } : undefined)
       const client = await this.#servers.client(serverId)
       if (client === null || server === undefined) throw new ApiError(404, "not_found", SERVER_REMOVED)
       const call = await client.call(callId)
@@ -526,12 +550,14 @@ export class HistoryModel extends BaseModel<HistoryState> {
 
   // Plumbing
 
-  #serverRows(): SavedServer[] {
-    return this.#servers.state.rows.map((row) => row.server)
+  /** The Wristcall Cloud entry first (when the agenda lists it), then the saved servers. */
+  #serverRows(): Source[] {
+    const own: Source[] = this.#servers.state.rows.map((row) => ({ id: row.server.id, name: row.server.name }))
+    return this.#servers.state.cloud === null ? own : [{ id: CLOUD_ENTRY_ID, name: CLOUD_ENTRY_NAME }, ...own]
   }
 
   /** The saved servers; starts reading them when nobody has, without waiting for their health checks. */
-  async #knownServers(): Promise<SavedServer[]> {
+  async #knownServers(): Promise<Source[]> {
     if (!this.#servers.state.loaded) {
       await new Promise<void>((resolve) => {
         const off = this.#servers.subscribe(() => {
@@ -560,7 +586,7 @@ export class HistoryModel extends BaseModel<HistoryState> {
     return query
   }
 
-  async #fetch(server: SavedServer, query: CallsQuery): Promise<Fetched> {
+  async #fetch(server: Source, query: CallsQuery): Promise<Fetched> {
     try {
       const client = await this.#servers.client(server.id)
       if (client === null) return { ok: false, message: SERVER_REMOVED }

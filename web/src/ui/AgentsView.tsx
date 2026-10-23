@@ -2,7 +2,7 @@ import { useEffect, useState } from "preact/hooks"
 import type { AgentDetail } from "../api/server"
 import { AgentsModel } from "../models/agents"
 import { callTypeLabel } from "../models/agentForm"
-import type { ServersModel } from "../models/servers"
+import { CLOUD_ENTRY_ID, type ServersModel } from "../models/servers"
 import { resolvedColor, supportsAgentColor } from "./agentColor"
 import { AgentForm } from "./AgentForm"
 import { AgentIcon } from "./IconPicker"
@@ -43,7 +43,9 @@ export function AgentsScreen({
     }
   }, [servers, serverId, onAgentsChanged])
 
-  const back = `/servers/${encodeURIComponent(serverId)}`
+  // The Wristcall Cloud entry has no server screen (it is never saved here): its agents lead back to the Agents home.
+  const cloud = serverId === CLOUD_ENTRY_ID
+  const back = cloud ? "/agents" : `/servers/${encodeURIComponent(serverId)}`
   if (model === null) {
     return (
       <main class="screen">
@@ -60,13 +62,14 @@ export function AgentsScreen({
       </main>
     )
   }
-  if (target.screen === "list") return <AgentsView model={model} serverId={serverId} back={back} />
-  // The version comes from the server's health; unknown (not answered yet, or not at all) keeps color off.
-  const colorSupported = supportsAgentColor(rows.find((row) => row.server.id === serverId)?.health?.version)
+  if (target.screen === "list") return <AgentsView model={model} serverId={serverId} back={back} backLabel={cloud ? "Agents" : "Server"} />
+  // The version comes from the server's health; unknown (not answered yet, or not at all) keeps color off. The Cloud
+  // entry has no health check: its node always takes the color.
+  const colorSupported = cloud || supportsAgentColor(rows.find((row) => row.server.id === serverId)?.health?.version)
   return <AgentForm model={model} serverId={serverId} agentId={target.screen === "edit" ? target.agentId : null} colorSupported={colorSupported} />
 }
 
-export function AgentsView({ model, serverId, back }: { model: AgentsModel; serverId: string; back: string }) {
+export function AgentsView({ model, serverId, back, backLabel = "Server" }: { model: AgentsModel; serverId: string; back: string; backLabel?: string }) {
   const { agents, loaded, providersLoaded, error } = useModel(model)
   const [pending, setPending] = useState<AgentDetail | null>(null)
   const [busy, setBusy] = useState(false)
@@ -86,7 +89,7 @@ export function AgentsView({ model, serverId, back }: { model: AgentsModel; serv
   return (
     <main class="screen">
       <p>
-        <Link href={back}>Server</Link>
+        <Link href={back}>{backLabel}</Link>
       </p>
       <header class="screen-head">
         <h1>Agents</h1>

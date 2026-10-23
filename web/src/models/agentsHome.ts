@@ -1,9 +1,17 @@
-import type { CloudAgent } from "../api/cloud"
+import type { CloudAgent, CloudPlan, CloudServer } from "../api/cloud"
 import type { AgentDetail } from "../api/server"
 import { userMessage } from "../lib/errors"
 import { BaseModel } from "../ui/useModel"
 import { sorted } from "./agents"
-import type { ServersModel } from "./servers"
+import { CLOUD_ENTRY_ID, CLOUD_ENTRY_NAME, type ServersModel } from "./servers"
+
+/** A plan, but the Cloud has not added its entry to the agenda yet (the iPhone app says the same). */
+export const SETTING_UP = "Setting up Wristcall Cloud…"
+
+/** The line the Agents home shows in place of the Cloud section: only with a plan and no entry yet. */
+export function cloudNotice(plan: CloudPlan | null, cloud: CloudServer | null): string | null {
+  return plan !== null && cloud === null ? SETTING_UP : null
+}
 
 export interface AgentsSection {
   serverId: string
@@ -21,11 +29,19 @@ export interface AgentsHomeState {
   loaded: boolean
 }
 
-/** The agents of every saved server on one screen, then the account's servers not yet set up here (read only). */
+/**
+ * The agents of the Wristcall Cloud entry first, then of every saved server on one screen, then the account's servers
+ * not yet set up here (read only). The Cloud entry's agents come from its node; when the node cannot be reached, from the
+ * agenda, with the reason.
+ */
 export class AgentsHomeModel extends BaseModel<AgentsHomeState> {
   readonly #servers: ServersModel
   #loads = 0
   #local: AgentsSection[] = []
+  #cloud: AgentsSection | null = null
+  /** The Cloud entry the section was read for (its agenda id); a different one (or none) reads it again. */
+  #cloudFor: string | null = null
+  #cloudLoads = 0
 
   constructor(servers: ServersModel) {
     super({ sections: [], loaded: false })
@@ -37,15 +53,18 @@ export class AgentsHomeModel extends BaseModel<AgentsHomeState> {
     const load = ++this.#loads
     await this.#storedListRead()
     if (load !== this.#loads) return
+    // A section read for another Cloud entry (another account) is not shown while this one is read.
+    if (this.#servers.state.cloud?.id !== this.#cloudFor) this.#cloud = null
     const rows = this.#servers.state.rows
     const done = new Map<string, AgentsSection>()
     const publish = (loaded: boolean): void => {
       this.#local = rows.flatMap((row) => done.get(row.server.id) ?? [])
-      this.set({ sections: [...this.#local, ...this.#accountSections()], loaded })
+      this.set({ sections: this.#all(), loaded })
     }
     publish(false)
-    await Promise.all(
-      rows.map(async ({ server }) => {
+    await Promise.all([
+      this.#loadCloud(),
+      ...rows.map(async ({ server }) => {
         const section: AgentsSection = { serverId: server.id, serverName: server.name, agents: [], problem: null, setupHref: null }
         try {
           const client = await this.#servers.client(server.id)
@@ -58,7 +77,7 @@ export class AgentsHomeModel extends BaseModel<AgentsHomeState> {
         done.set(server.id, section)
         publish(false)
       }),
-    )
+    ])
     if (load === this.#loads) publish(true)
   }
 
@@ -79,9 +98,55 @@ export class AgentsHomeModel extends BaseModel<AgentsHomeState> {
     })
   }
 
-  /** The account's servers may arrive or change after `load` (the agenda is read later): follows them. */
+  /**
+   * The account's servers and the Cloud entry may arrive or change after `load` (the agenda is read later): follows
+   * them. A Cloud entry that came (or changed accounts) is read from its node.
+   */
   refreshAccount(): void {
-    this.set({ sections: [...this.#local, ...this.#accountSections()] })
+    const cloud = this.#servers.state.cloud
+    if (cloud === null) {
+      this.#cloudLoads++
+      this.#cloud = null
+      this.#cloudFor = null
+    } else if (cloud.id !== this.#cloudFor) {
+      void this.#loadCloud()
+    }
+    this.set({ sections: this.#all() })
+  }
+
+  #all(): AgentsSection[] {
+    return [...(this.#cloud === null ? [] : [this.#cloud]), ...this.#local, ...this.#accountSections()]
+  }
+
+  /**
+   * The Cloud entry's section, from its node. On a failure it shows the agenda's agents, never the ones shown before:
+   * after an account switch those would be another account's.
+   */
+  async #loadCloud(): Promise<void> {
+    const load = ++this.#cloudLoads
+    const entry = this.#servers.state.cloud
+    if (entry === null) {
+      this.#cloud = null
+      this.#cloudFor = null
+      return
+    }
+    this.#cloudFor = entry.id
+    const section: AgentsSection = { serverId: CLOUD_ENTRY_ID, serverName: CLOUD_ENTRY_NAME, agents: [], problem: null, setupHref: null }
+    try {
+      const client = await this.#servers.client(CLOUD_ENTRY_ID)
+      if (client === null) {
+        // Signed out meanwhile.
+        if (load === this.#cloudLoads) this.#cloud = null
+        return
+      }
+      section.agents = sorted(await client.agents())
+    } catch (e) {
+      section.agents = this.#servers.state.cloud?.agents ?? entry.agents
+      section.problem = userMessage(e)
+    }
+    if (load !== this.#cloudLoads || this.#servers.state.cloud === null) return
+    this.#cloud = section
+    this.set({ sections: this.#all() })
   }
 
   #accountSections(): AgentsSection[] {

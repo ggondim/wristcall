@@ -46,6 +46,9 @@ export type ServerChange = { kind: "added" | "updated" | "removed"; server: Save
 /** The id `client()` takes for the Wristcall Cloud entry (a saved server's id is a UUID). */
 export const CLOUD_ENTRY_ID = "cloud"
 
+/** What the screens call the Wristcall Cloud entry (its section, the history's server filter), whatever the agenda names it. */
+export const CLOUD_ENTRY_NAME = "Wristcall Cloud"
+
 /** The Cloud's own entry in the agenda (`kind: "cloud"`): the Cloud manages it, no app writes it. */
 export function isCloudEntry(server: CloudServer): boolean {
   return server.kind === "cloud"

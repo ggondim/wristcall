@@ -8,6 +8,7 @@ import { BaseModel } from "../ui/useModel"
 import { CloudDevicesModel } from "./cloudDevices"
 import { hasPendingLink } from "./link"
 import type { ServersModel } from "./servers"
+import type { UsageModel } from "./usage"
 
 export type AccountScreen = "unavailable" | "signedOut" | "signingIn" | "signedIn" | { failed: string }
 
@@ -74,6 +75,8 @@ export interface AccountOptions {
   servers?: Pick<ServersModel, "forgetAccount" | "unlinkAccounts"> | null
   /** Leaves the page for an address (the email sign-in page). */
   assign?: (url: string) => void
+  /** The month's call minutes of a Wristcall Cloud plan (the plan row, the Agents home); forgotten when the account leaves. */
+  usage?: UsageModel | null
 }
 
 const TAP_AGAIN = "Reaching wristcall Cloud. Tap again in a moment."
@@ -138,6 +141,8 @@ export class AccountModel extends BaseModel<AccountState> {
   readonly agenda: AgendaControl | null
   /** The devices of the account (Settings); null without a Cloud. */
   readonly devices: CloudDevicesModel | null
+  /** The month's call minutes of the Wristcall Cloud plan; null without a Cloud. */
+  readonly usage: UsageModel | null
   readonly #session: AccountSessionPort | null
   readonly #push: PushHooks | null
   readonly #cloud: AccountCloud | null
@@ -159,6 +164,7 @@ export class AccountModel extends BaseModel<AccountState> {
     this.#cloud = opts.cloud ?? null
     this.devices = session === null || this.#cloud === null ? null : new CloudDevicesModel(this.#cloud, session)
     this.#servers = opts.servers ?? null
+    this.usage = session === null ? null : (opts.usage ?? null)
     this.#assign = opts.assign ?? ((url) => globalThis.location.assign(url))
     session?.onSignedOut((reason) => void this.#sessionEnded(reason))
   }
@@ -368,6 +374,7 @@ export class AccountModel extends BaseModel<AccountState> {
     this.#profileGeneration += 1
     this.#profileLoading = null
     this.devices?.reset()
+    this.usage?.clear()
     this.set({ ...NO_PROFILE })
   }
 

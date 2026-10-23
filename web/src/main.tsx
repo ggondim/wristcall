@@ -8,6 +8,7 @@ import { RelayClient } from "./api/relay"
 import { loadConfig } from "./config"
 import { AccountModel } from "./models/account"
 import { SignInModel } from "./models/signIn"
+import { UsageModel } from "./models/usage"
 import { ApprovalsBadge, ApprovalsModel, refreshWhenServersChange } from "./models/approvals"
 import { defaultServerClient, openServerStorage, ServersModel } from "./models/servers"
 import { parseWorkerMessage } from "./push/payload"
@@ -91,7 +92,7 @@ async function start(): Promise<void> {
           },
           sync: push,
         })
-  const account = session === null ? null : new AccountModel(session, agenda, push, { cloud, servers })
+  const account = session === null ? null : new AccountModel(session, agenda, push, { cloud, servers, usage: new UsageModel(servers) })
   const signIn = cloud === null || account === null ? null : new SignInModel({ cloud, account })
   render(
     <App

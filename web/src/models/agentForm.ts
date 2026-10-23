@@ -86,6 +86,8 @@ export interface FormOptions {
   customEndpoints?: boolean
   /** Whether the server takes agent colors (see `supportsAgentColor`). */
   colorSupported?: boolean
+  /** Whether the server keeps a one-way agent without an action in the history (`history_only_one_way`, Wristcall Cloud). */
+  historyOnly?: boolean
   /** Runs after a successful save (the list is read again). */
   onSaved?: () => Promise<void> | void
 }
@@ -240,6 +242,8 @@ export class AgentFormModel extends BaseModel<FormState> {
   readonly existing: AgentDetail | null
   readonly providers: readonly Provider[]
   readonly customEndpoints: boolean
+  /** A one-way agent may have no action: its calls are saved to the history ("None, save to History"). */
+  readonly historyOnly: boolean
   readonly #client: ServerClient
   readonly #onSaved: FormOptions["onSaved"]
   /** Endpoints as the form builds them right after loading; what `fields` compares with. */
@@ -254,6 +258,7 @@ export class AgentFormModel extends BaseModel<FormState> {
     this.existing = existing
     this.providers = providers
     this.customEndpoints = options.customEndpoints ?? false
+    this.historyOnly = options.historyOnly ?? false
     this.#onSaved = options.onSaved
     this.#shownHeader = read(existing).shownHeader
     if (existing !== null) {
@@ -312,8 +317,11 @@ export class AgentFormModel extends BaseModel<FormState> {
   }
 
   /** Label of a step's picker option. */
-  label(choice: Choice): string {
-    if (choice === "none") return this.isEditing ? "Choose…" : "Server default"
+  label(choice: Choice, stage?: Stage): string {
+    if (choice === "none") {
+      if (this.isEditing && stage === "action" && this.#historyOnlyAction()) return "None, save to History"
+      return this.isEditing ? "Choose…" : "Server default"
+    }
     if (choice === "custom") return "Custom"
     return choice.slice("provider:".length)
   }
@@ -385,6 +393,11 @@ export class AgentFormModel extends BaseModel<FormState> {
 
   #providerNames(stage: Stage): string[] {
     return this.providers.filter((provider) => provider.kind === this.#kind(stage)).map((provider) => provider.name)
+  }
+
+  /** A one-way agent on a server that saves its calls to the history when it has no action. */
+  #historyOnlyAction(): boolean {
+    return this.isOneWay && this.historyOnly
   }
 
   /** The steps the current call type uses (a one-way agent has no voice). */
@@ -465,7 +478,10 @@ export class AgentFormModel extends BaseModel<FormState> {
     const s = this.state
     const selected = s[stage]
     const label = this.#label(stage)
-    if (selected === "none") return this.isEditing ? `Choose ${label}.` : null
+    if (selected === "none") {
+      if (stage === "action" && this.#historyOnlyAction()) return null
+      return this.isEditing ? `Choose ${label}.` : null
+    }
     // Untouched on an edit: the server already holds it, and it is not sent.
     if (this.#isUntouched(stage, this.#endpoint(stage))) return null
     if (selected !== "custom") {

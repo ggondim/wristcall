@@ -3,6 +3,8 @@ import type { CloudServer } from "../api/cloud"
 import { ServerClient } from "../api/server"
 import { openDb } from "../store/db"
 import { ServerStore, type SavedServer } from "../store/servers"
+import { ApiError } from "../lib/errors"
+import { attachCloudRoute, cloudAgent, cloudEntry, json, NODE, savedServer, serversWith } from "../test/fakeServers"
 import { mockFetch } from "../test/mockFetch"
 import { resolvedColor, AGENT_COLORS } from "../ui/agentColor"
 import { AgentsHomeModel } from "./agentsHome"
@@ -108,5 +110,53 @@ describe("AgentsHomeModel", () => {
     expect(section!.serverName).toBe("Office")
     expect(section!.agents.map((a) => a.display_name)).toEqual(["Xena"])
     expect(section!.setupHref).toBe("/settings/servers/add?url=https%3A%2F%2Foffice.example.com&name=Office")
+  })
+})
+
+describe("Wristcall Cloud section", () => {
+  test("cloud section comes first with node agents", async () => {
+    const { servers, fetchMock } = serversWith([savedServer({ id: "home", name: "home" })], {
+      "home.example.com": (path) => (path === "agents" ? json({ agents: [agent("h", "Kitchen")] }) : null),
+      [NODE]: (path) => (path === "agents" ? json({ agents: [agent("n2", "Notes", "teal"), { ...agent("n1", "Assistant"), position: -1 }] }) : null),
+    })
+    attachCloudRoute(servers, fetchMock)
+    servers.setCloud(cloudEntry({ agents: [cloudAgent("old", "From the agenda")] }))
+    const model = new AgentsHomeModel(servers)
+    await model.load()
+    expect(model.state.sections.map((s) => [s.serverId, s.serverName])).toEqual([
+      ["cloud", "Wristcall Cloud"],
+      ["home", "home"],
+    ])
+    const cloud = model.state.sections[0]!
+    // The node's own list, in its order: not the agenda's copy.
+    expect(cloud.agents.map((a) => a.display_name)).toEqual(["Assistant", "Notes"])
+    expect(cloud.problem).toBeNull()
+    expect(cloud.setupHref).toBeNull()
+    expect(model.state.loaded).toBe(true)
+    // The entry leaving the agenda (signed out, say) takes its section along.
+    servers.setCloud(null)
+    model.refreshAccount()
+    expect(model.state.sections.map((s) => s.serverId)).toEqual(["home"])
+  })
+
+  test("cloud section falls back to agenda agents when the route fails", async () => {
+    const { servers, fetchMock } = serversWith([], { [NODE]: (path) => (path === "agents" ? json({ agents: [agent("n1", "From the node")] }) : null) })
+    const route = attachCloudRoute(servers, fetchMock)
+    const model = new AgentsHomeModel(servers)
+    await model.load()
+    expect(model.state.sections).toEqual([])
+    // The entry arrives after the first load (the agenda is read later): its section follows.
+    servers.setCloud(cloudEntry({ agents: [cloudAgent("a1", "Old agenda agent")] }))
+    model.refreshAccount()
+    await vi.waitFor(() => expect(model.state.sections[0]?.agents.map((a) => a.display_name)).toEqual(["From the node"]))
+    // The node cannot be reached now: the agenda's agents, never the ones shown before (they may be another account's).
+    route.fail = new ApiError(503, "no_node_available", "No node can take this account right now.", 30)
+    servers.setCloud(cloudEntry({ agents: [cloudAgent("a2", "Agenda agent")] }))
+    await model.load()
+    const cloud = model.state.sections[0]!
+    expect(cloud.serverId).toBe("cloud")
+    expect(cloud.agents.map((a) => a.display_name)).toEqual(["Agenda agent"])
+    expect(cloud.problem).toBe("Wristcall Cloud is temporarily unavailable. Try again in a minute.")
+    expect(cloud.setupHref).toBeNull()
   })
 })
