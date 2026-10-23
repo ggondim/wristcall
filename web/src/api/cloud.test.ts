@@ -212,7 +212,7 @@ describe("client header", () => {
       return reply({ account: "a", device: "d", access_token: "at", refresh_token: "rt", expires_at: 1, status: "pending" })
     })
     const cloud = new CloudClient(BASE, f)
-    expect(CLIENT).toBe("web/0.4.0")
+    expect(CLIENT).toBe("web/0.4.1")
     await cloud.config()
     await cloud.account("at")
     await cloud.servers("at")
@@ -223,7 +223,7 @@ describe("client header", () => {
     await cloud.devices("at")
     await cloud.route("at", { purpose: "manage" })
     expect(f.calls).toHaveLength(9)
-    expect(f.calls.map((call) => clientHeader(call.init))).toEqual(Array(9).fill("web/0.4.0"))
+    expect(f.calls.map((call) => clientHeader(call.init))).toEqual(Array(9).fill("web/0.4.1"))
     // The client can be named (another build or a test), and the access token still goes as before.
     const other = mockFetch(() => reply({ servers: [] }))
     await new CloudClient(BASE, other, "web/9.9.9").servers("at")
@@ -250,7 +250,7 @@ describe("client header", () => {
     await relay.register({ endpoint: "https://push.example/abc", keys: { p256dh: "k", auth: "a" } }, "label", "tag")
     await relay.check("wc_push_x")
     await relay.unregister("wc_push_x")
-    expect(f.calls.map((call) => clientHeader(call.init))).toEqual(["web/0.4.0", "web/0.4.0", "web/0.4.0"])
+    expect(f.calls.map((call) => clientHeader(call.init))).toEqual(["web/0.4.1", "web/0.4.1", "web/0.4.1"])
   })
 })
 

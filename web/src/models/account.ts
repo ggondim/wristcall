@@ -81,9 +81,9 @@ export interface AccountOptions {
   refreshAgenda?: () => void
 }
 
-const TAP_AGAIN = "Reaching wristcall Cloud. Tap again in a moment."
+const TAP_AGAIN = "Reaching Wristcall Cloud. Tap again in a moment."
 const BAD_USER_CODE = "Enter the 8-character code the watch shows."
-const NOT_SET_UP = "wristcall Cloud isn't set up for this app."
+const NOT_SET_UP = "Wristcall Cloud isn't set up for this app."
 const INVALID_INVITE = "This invite isn't valid."
 const ALREADY_PLAN = "This account already has a plan."
 const DELETE_FAILED = "Can't delete the account now. "

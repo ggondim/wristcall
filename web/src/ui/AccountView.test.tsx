@@ -155,7 +155,7 @@ describe("Settings", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete account" }))
     const confirm = screen.getByRole("region", { name: "Delete account" })
     expect(confirm.textContent).toContain(
-      "Deletes your wristcall account: your sign-in and your server list in wristcall Cloud. Your servers and their data stay as they are.",
+      "Deletes your wristcall account: your sign-in and your server list in Wristcall Cloud. Your servers and their data stay as they are.",
     )
     expect(DELETE_EXPLANATION).toContain("Your servers and their data stay as they are.")
     expect(w.deleteAccount).not.toHaveBeenCalled()
@@ -484,7 +484,7 @@ describe("Plan usage", () => {
     // The node does not answer: the plan row says so, and nothing else changes.
     settings(full, true, new ApiError(503, "no_node_available", "No node can take this account right now.", 30))
     expect(await screen.findByText("Usage unavailable right now.")).toBeTruthy()
-    expect(screen.getByText("Wristcall Cloud")).toBeTruthy()
+    expect(screen.getByText("Wristcall Cloud", { selector: ".row-title" })).toBeTruthy()
     expect(screen.queryByRole("alert")).toBeNull()
     cleanup()
 

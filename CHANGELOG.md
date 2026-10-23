@@ -154,6 +154,14 @@ version 0.6.0 (Apple requires it); this app's own release is 0.3.0 (Info key `Wr
 - New agents default to your first server that answers, else the first of your servers, else the Cloud.
 - This app does not call through the Cloud entry; the watch does.
 
+## [web-0.4.1] - 2026-10-23
+
+Web app 0.4.1. Texts only; same Cloud and servers as 0.4.0.
+
+### Fixed
+
+- Every text that names the Cloud now says "Wristcall Cloud" with a capital W (sign-in, account, plan, agenda messages, Cloud error messages).
+
 ## [web-0.4.0] - 2026-10-23
 
 For Cloud 0.6.1 with `WRISTCALL_CLOUD_CLOUD_ENTRY_CLIENTS` listing this version (`ios=0.3.0,watchos=0.6.0,web=0.4.0`),

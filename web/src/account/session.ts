@@ -37,7 +37,7 @@ const LEASE_MS = 30_000
 /** A renewal may take up to 60 s: the lease is extended while it runs. */
 const LEASE_EXTEND_MS = 10_000
 const LEASE_POLL_MS = 50
-const NOT_CONFIGURED = "This wristcall Cloud doesn't accept sign-in from the web app yet."
+const NOT_CONFIGURED = "This Wristcall Cloud doesn't accept sign-in from the web app yet."
 const SIGNED_OUT = "You are signed out."
 /** The Cloud deleted the device: removed elsewhere, or a refresh token used twice (a lost answer to a rotation). */
 const REVOKED = "This browser was signed out. Sign in again."

@@ -212,12 +212,12 @@ describe("AgendaSync", () => {
     w.agenda.onNoticeChange((() => heard.push(w.agenda.notice)) as () => void)
     w.agenda.serverChanged(change("updated", saved()))
     await w.agenda.idle()
-    expect(w.agenda.notice).toBe("Can't update your servers in wristcall Cloud.")
+    expect(w.agenda.notice).toBe("Can't update your servers in Wristcall Cloud.")
     down = false
     w.agenda.serverChanged(change("updated", saved()))
     await w.agenda.idle()
     expect(w.agenda.notice).toBeNull()
-    expect(heard).toEqual(["Can't update your servers in wristcall Cloud.", null])
+    expect(heard).toEqual(["Can't update your servers in Wristcall Cloud.", null])
   })
 
   test("removing a server deletes its entry, found by URL when the id is unknown", async () => {
@@ -270,7 +270,7 @@ describe("AgendaSync", () => {
   test("fromAccount failure sets the read notice and shows nothing", async () => {
     const w = world([], () => json({ error: "x", message: "x" }, 503))
     expect(await w.agenda.fromAccount()).toEqual([])
-    expect(w.agenda.notice).toBe("Can't read your servers from wristcall Cloud.")
+    expect(w.agenda.notice).toBe("Can't read your servers from Wristcall Cloud.")
   })
 
   test("agenda sync never writes the cloud entry", async () => {

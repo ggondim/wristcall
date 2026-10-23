@@ -121,7 +121,7 @@ describe("SignInView", () => {
     const w = setup({ poll: async () => Promise.reject(new NetworkError()) })
     await settle()
     await w.fire()
-    expect(screen.getByText("Can't reach wristcall Cloud.")).toBeTruthy()
+    expect(screen.getByText("Can't reach Wristcall Cloud.")).toBeTruthy()
     fireEvent.click(screen.getByRole("button", { name: "Try again" }))
     expect(await screen.findByRole("img", { name: "Sign-in code" })).toBeTruthy()
   })

@@ -130,7 +130,7 @@ function canonicalOrSame(url: string): string {
 }
 
 /**
- * The wristcall Cloud API (`cloud/README.md`, "API"). `/v1/config` takes no token; every other route takes the
+ * The Wristcall Cloud API (`cloud/README.md`, "API"). `/v1/config` takes no token; every other route takes the
  * account's access token, passed per call and kept in no field. Every request names this app (`X-Wristcall-Client`).
  */
 export class CloudClient {
