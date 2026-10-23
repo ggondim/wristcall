@@ -19,6 +19,7 @@ struct CallFailureTextTests {
             ("no_node_available", nil, "Wristcall Cloud is temporarily unavailable. Try again in a minute."),
             ("route_unreachable", nil, "Can't reach Wristcall Cloud."),
             ("signed_out", nil, "Open wristcall on your iPhone to sign in again."),
+            ("agent_not_found", nil, "Agent not found."),
         ]
         for (code, reason, text) in table {
             #expect(CallFailureText.text(for: Self.error(code, reason: reason)) == text, "\(code) \(reason ?? "-")")

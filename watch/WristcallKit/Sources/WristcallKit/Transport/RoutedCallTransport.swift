@@ -191,8 +191,11 @@ public final class RoutedCallTransport: CallTransport, @unchecked Sendable {
             (code, message) = (.unknown(RouteFailure.noNodeAvailable), CallFailureText.noNodeAvailable)
         case APIError.network, is RouteTimeout:
             (code, message) = (.unknown(RouteFailure.unreachable), CallFailureText.unreachable)
-        case AccountError.signedOut, APIError.unauthorized, APIError.revoked:
+        case AccountError.signedOut, APIError.unauthorized, APIError.revoked, APIError.forbidden:
+            // `403 device_revoked`: this device no longer belongs to the account; signing in again on the iPhone fixes it.
             (code, message) = (.unknown(RouteFailure.signedOut), CallFailureText.signedOut)
+        case APIError.notFound:
+            (code, message) = (.unknown(RouteFailure.agentNotFound), CallFailureText.agentNotFound)
         case let error as APIError:
             (code, message) = (.unknown(RouteFailure.failed), error.message)
         default:

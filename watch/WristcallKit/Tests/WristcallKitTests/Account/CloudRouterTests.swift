@@ -31,6 +31,16 @@ struct CloudRouterTests {
         func set(_ value: TimeInterval) { time.withLock { $0 = value } }
     }
 
+    /// Waits for `semaphore` off the cooperative pool (the stub signals it from the URL loading thread).
+    static func wait(for semaphore: DispatchSemaphore) async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                semaphore.wait()
+                continuation.resume()
+            }
+        }
+    }
+
     func router(_ host: StubHost, clock: Clock = Clock(expiresAt - 300)) -> CloudRouter {
         let access = FakeAccess(cloudClient: CloudClient(cloud: host.url, session: .stubbed()))
         return CloudRouter(access: access, now: { clock.now })
@@ -113,14 +123,26 @@ struct CloudRouterTests {
     }
 
     @Test func invalidateDuringARequestKeepsItsResultOutOfTheCache() async throws {
+        // The first request blocks inside the stub until the test has called invalidate(): no timing involved.
+        let arrived = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let count = Mutex(0)
         let host = StubHost { _ in
-            Thread.sleep(forTimeInterval: 0.3)
+            let index = count.withLock { value in
+                defer { value += 1 }
+                return value
+            }
+            if index == 0 {
+                arrived.signal()
+                release.wait()
+            }
             return StubHost.Reply(200, Self.routeJSON())
         }
         let router = router(host)
         async let first = router.manage()
-        try await Task.sleep(for: .milliseconds(100))
+        await Self.wait(for: arrived)
         await router.invalidate()
+        release.signal()
         // The request in flight still answers its caller, but a later caller asks again.
         #expect(try await first.primary.nodeID == "home")
         _ = try await router.manage()

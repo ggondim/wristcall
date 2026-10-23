@@ -47,6 +47,24 @@ struct CallStatusTests {
         ))
     }
 
+    @Test func decodesAVoiceNoteSavedToHistory() throws {
+        let decoded = try status("""
+            {"id":"c_9","call_type":"one-shot","status":"delivered","error":null,"text":"buy milk",
+             "attempts":0,"last_http_status":null,"delivery":"history"}
+            """)
+        #expect(decoded == CallStatus(
+            id: "c_9", callType: .oneShot, state: .delivered, text: "buy milk", attempts: 0, delivery: "history"
+        ))
+        #expect(decoded.savedToHistory)
+        let webhook = try status(#"{"id":"c_8","call_type":"one-shot","status":"delivered","delivery":"webhook"}"#)
+        #expect(webhook.delivery == "webhook")
+        #expect(!webhook.savedToHistory)
+        // A server before cloud mode does not say.
+        let old = try status(#"{"id":"c_7","call_type":"one-shot","status":"delivered"}"#)
+        #expect(old.delivery == nil)
+        #expect(!old.savedToHistory)
+    }
+
     @Test func decodesAFailedDelivery() throws {
         let decoded = try status("""
             {"id":"c_1","call_type":"monologue","status":"failed","error":"delivery_failed",

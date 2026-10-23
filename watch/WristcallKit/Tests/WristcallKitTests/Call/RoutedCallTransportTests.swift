@@ -137,6 +137,22 @@ struct RoutedCallTransportTests {
         await #expect(throws: TransportError.notConnected) { try await transport.send(text: "late") }
     }
 
+    /// What the Cloud's route answers for a revoked device and an agent it does not have, as they reach the watch.
+    @Test func routeForbiddenAndNotFoundRepliesMapToTheirTexts() async throws {
+        let revoked = APIError.error(status: 403, data: Data(#"{"error":"device_revoked","message":"device revoked"}"#.utf8))
+        let missing = APIError.error(status: 404, data: Data(#"{"error":"not_found","message":"no such agent"}"#.utf8))
+        let expected = [
+            (revoked, "Open wristcall on your iPhone to sign in again."),
+            (missing, "Agent not found."),
+        ]
+        for (error, text) in expected {
+            let transport = RoutedCallTransport(agent: "ag_1", router: FakeRouter { throw error }, make: Maker([]).make)
+            let refusal = try #require(await Self.refusal(of: transport))
+            #expect(CallFailureText.text(for: refusal) == text)
+            #expect(refusal.message == text)
+        }
+    }
+
     @Test func planRequiredRouteMapsToPlanText() async throws {
         let transport = RoutedCallTransport(agent: "ag_1", router: FakeRouter { throw APIError.planRequired },
                                             make: Maker([]).make)
@@ -152,6 +168,8 @@ struct RoutedCallTransportTests {
         (AccountError.signedOut, "signed_out"),
         (APIError.unauthorized, "signed_out"),
         (APIError.revoked, "signed_out"),
+        (APIError.forbidden("device revoked"), "signed_out"),
+        (APIError.notFound, "agent_not_found"),
         (APIError.unexpectedStatus(500), "route_failed"),
     ])
     func routeErrorsMapToLocalCodes(error: any Error, code: String) async throws {
@@ -162,6 +180,11 @@ struct RoutedCallTransportTests {
         #expect(refusal.code == .unknown(code))
         #expect(refusal.fatal)
         #expect(refusal.reason == nil)
+        #expect(CallFailureText.text(for: refusal) == [
+            "route_unreachable": "Can't reach Wristcall Cloud.",
+            "signed_out": "Open wristcall on your iPhone to sign in again.",
+            "agent_not_found": "Agent not found.",
+        ][code])
         if code == "route_failed" {
             #expect(refusal.message == APIError.unexpectedStatus(500).message)
         }
