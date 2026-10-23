@@ -4,6 +4,34 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 
 ## [Unreleased]
 
+## [cloud-0.7.0] - 2026-10-23
+
+Cloud 0.7.0. Keeps an hourly summary of the nodes from the counters a node sends in its heartbeat (server 0.11.0)
+and from the call routes, and shows it with `admin nodes stats`. Same HTTP contract: heartbeats without `stats` (nodes
+before 0.11.0) are answered as before. A new collection, no schema change.
+
+### Added
+
+- Heartbeat `stats` (optional): the Cloud adds each accepted heartbeat to the node's hour in `node_stats` (one
+  document per node and UTC hour, kept 90 days by a TTL index): `beats`, `peak` and `capacity` by call type, and the
+  sums of `calls`, `busy`, `not_ready`, the time histograms (`first_audio_ms`, `stt_ms`, `tts_ms` per provider),
+  `provider_failures`, `cloud_unreachable_s` and `outbox_dropped`. See "Node stats" in `cloud/README.md`.
+- `POST /v1/route` counts the call routes it issues (`routes_call`) and the ones it refuses with
+  `503 no_node_available` (`no_node`), per hour.
+- `wristcall-cloud admin nodes stats [NODE] [--hours N]` (default 24, up to 2160): calls, `busy_pct`, peak,
+  first audio p50/p95, STT and TTS p95 per provider, provider failures, `cloud_unreachable_s`, `outbox_dropped`,
+  `hours_without_heartbeat_day` (hours between 07:00 and 23:00 in Brasília without a heartbeat), `days_at_peak`, and
+  the route's `routes_call` and `no_node_pct`. Without `NODE`, every enabled node; `n/a` where there is no sample.
+
+### Notes
+
+- Metrics never fail a heartbeat or a route: `stats` that break the contract (an unknown bucket, a negative count,
+  more than 8 providers, a provider name with `.` or `$`...) are ignored, the heartbeat still answers `204` and counts
+  in `beats` and `peak`, and the log says why (never the values); a failed write of the summary is logged and changes
+  no answer.
+- A heartbeat the Cloud stored but whose answer the node never got counts twice (the node sends the same counts again).
+- Going back to 0.6.1 needs no restore: it ignores `node_stats` and `stats`.
+
 ## [server-0.11.0] - 2026-10-23
 
 Server 0.11.0. In cloud mode each heartbeat carries the node's counters (`stats`). For Cloud 0.6.1 or later; Cloud

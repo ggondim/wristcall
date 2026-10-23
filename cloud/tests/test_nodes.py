@@ -1,5 +1,7 @@
 """The node registry and the `admin nodes` commands."""
 
+import time
+
 import pytest
 
 from wristcall_cloud import admin
@@ -242,3 +244,71 @@ async def test_cli_nodes_add_creates_the_indexes_first(mongo_db, capsys):
     code, out, err = await cli(mongo_db, capsys, *add[:2], "other", *add[3:])
     assert code == 2 and out == "" and "node already exists" in err
     assert await mongo_db["nodes"].count_documents({}) == 1
+
+
+STATS_KEYS = [
+    "node", "hours", "calls", "busy", "not_ready", "busy_pct", "peak", "first_audio_p50_ms", "first_audio_p95_ms",
+    "stt_p95_ms", "tts_p95_ms", "provider_failures", "cloud_unreachable_s", "outbox_dropped",
+    "hours_without_heartbeat_day", "days_at_peak",
+]  # fmt: skip
+ROUTE_KEYS = ["routes_call", "no_node", "no_node_pct"]
+
+
+async def test_admin_nodes_stats_prints_na_without_data(mongo_db, nodes, capsys):
+    await nodes.add("home", url="https://node.test", region="gru", kind="always_on", capabilities=[])
+    code, out, err = await cli(mongo_db, capsys, "nodes", "stats", "home")
+    assert code == 0 and err == ""
+    assert [line.split(": ")[0] for line in out.splitlines()] == STATS_KEYS + ROUTE_KEYS
+    shown = parsed(out)
+    assert shown["node"] == "home" and shown["hours"] == "24"
+    assert shown["first_audio_p95_ms"] == "n/a" and shown["busy_pct"] == "n/a" and shown["no_node_pct"] == "n/a"
+    assert shown["calls"] == "conversation=0 one_way=0" and shown["stt_p95_ms"] == "none"
+    assert shown["provider_failures"] == "none" and shown["hours_without_heartbeat_day"] == "0"
+
+
+async def test_admin_nodes_stats_sums_the_window(mongo_db, nodes, capsys):
+    from wristcall_cloud.node_stats import record_heartbeat, record_route
+
+    await add_home(nodes)  # registered long ago (T)
+    await nodes.add("away", url="https://away.test", region="gru", kind="always_on", capabilities=[], now=T)
+    await nodes.add("off", url="https://off.test", region="gru", kind="always_on", capabilities=[], now=T)
+    await nodes.set_enabled("off", False)
+    now = time.time()
+    snapshot = {
+        "calls": {"conversation": 3, "one_way": 0}, "busy": {"conversation": 1, "one_way": 0},
+        "first_audio_ms": {"1000": 9, "inf": 1}, "stt_ms": {"stt-default": {"500": 1}},
+        "provider_failures": {"user": 2}, "cloud_unreachable_s": 40,
+    }  # fmt: skip
+    collection = nodes.cloud.node_stats
+    await record_heartbeat(collection, "home", now, {"conversation": 2, "one_way": 0}, snapshot,
+                           capacity={"conversation": 2, "one_way": None})  # fmt: skip
+    await record_heartbeat(collection, "home", now - 3 * 3600, {"conversation": 0, "one_way": 0}, snapshot)
+    await record_heartbeat(collection, "home", now - 30 * 3600, {"conversation": 0, "one_way": 0}, snapshot)
+    for no_node in (True, False, False, False):
+        await record_route(collection, now, no_node=no_node)
+
+    code, out, err = await cli(mongo_db, capsys, "nodes", "stats", "home", "--hours", "4")
+    shown = parsed(out)
+    assert code == 0 and err == "" and shown["hours"] == "4"
+    assert shown["calls"] == "conversation=6 one_way=0" and shown["busy_pct"] == "25.0"
+    assert shown["first_audio_p50_ms"] == "1000" and shown["first_audio_p95_ms"] == ">15000"
+    assert shown["stt_p95_ms"] == "stt-default=500" and shown["provider_failures"] == "user=4"
+    assert shown["peak"] == "conversation=2 one_way=0" and shown["days_at_peak"] == "1"
+    assert shown["cloud_unreachable_s"] == "80"
+    assert shown["routes_call"] == "3" and shown["no_node"] == "1" and shown["no_node_pct"] == "25.0"
+
+    code, out, err = await cli(mongo_db, capsys, "nodes", "stats")  # every enabled node
+    assert code == 0 and [line for line in out.splitlines() if line.startswith("node: ")] == [
+        "node: away", "node: home",
+    ]  # fmt: skip
+    assert out.count("routes_call: ") == 1
+
+
+async def test_admin_nodes_stats_errors(mongo_db, nodes, capsys):
+    code, out, err = await cli(mongo_db, capsys, "nodes", "stats", "nope")
+    assert code == 1 and out == "" and "no such node" in err
+    for hours in ("0", "2161", "x"):
+        with pytest.raises(SystemExit) as e:
+            admin.build_parser().parse_args(["nodes", "stats", "--hours", hours])
+        assert e.value.code == 2
+    assert admin.build_parser().parse_args(["nodes", "stats", "--hours", "2160"]).hours == 2160

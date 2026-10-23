@@ -1,4 +1,5 @@
-"""MongoDB collections of the cloud mode: nodes, their agents, calls, history entries, push targets and usage.
+"""MongoDB collections of the cloud mode: nodes, their agents, calls, history entries, push targets, usage
+and the nodes' hourly stats.
 
 This module only owns the collection handles and their indexes. The Cloud never opens what a node sends (secrets,
 history): it keeps opaque envelopes and hashes. Secrets (node credentials) are stored as SHA-256 hex digests only.
@@ -34,6 +35,7 @@ class CloudModeStore:
         self.entries: AsyncCollection = db["cloud_call_entries"]
         self.push_targets: AsyncCollection = db["cloud_push_targets"]
         self.usage: AsyncCollection = db["usage"]
+        self.node_stats: AsyncCollection = db["node_stats"]
 
     async def ensure_indexes(self) -> None:
         await self.nodes.create_index([("url", ASCENDING)], unique=True, name="url")
@@ -65,6 +67,8 @@ class CloudModeStore:
         await self.entries.create_index([("purge_at", ASCENDING)], expireAfterSeconds=0, name="purge_at")
         await self.push_targets.create_index([("account", ASCENDING)], name="account")
         await self.usage.create_index([("account", ASCENDING)], name="account")
+        await self.node_stats.create_index([("node", ASCENDING), ("hour", ASCENDING)], name="node_hour")
+        await self.node_stats.create_index([("purge_at", ASCENDING)], expireAfterSeconds=0, name="purge_at")
 
     async def delete_account(self, account: str) -> None:
         """Deletes everything cloud mode keeps for `account`: agents, calls, history entries, push targets and usage

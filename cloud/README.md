@@ -531,7 +531,52 @@ call becomes `failed`, a conversation `ended`, with `error` `interrupted`, count
 before. A node that stays silent for 120 seconds (counted from its last heartbeat or the Cloud's own start, whichever is
 later, so a Cloud that was down does not blame the nodes) has all its open calls closed the same way by a sweeper
 that runs every 30 seconds. When the `boot_id` changes, or the node goes silent, its calls left `processing` become
-`failed` with `error` `interrupted`, because nothing is processing them any more.
+`failed` with `error` `interrupted`, because nothing is processing them any more. Since 0.7.0 a heartbeat may also
+carry the node's counters, `stats` (server 0.11.0 or later), which go into the hourly summary below.
+
+### Node stats
+
+Since 0.7.0 the Cloud keeps an hourly summary of each node in `node_stats`, like a shift log with one page per node and
+per hour (UTC): every heartbeat the Cloud accepts adds to the page of the hour it arrived in. A page holds `beats` (the
+heartbeats accepted), `peak` and `capacity` by call type (the most calls open at once, from `active_by_type` and
+`stats.peak`, and the most slots the node offered that hour; a `null` capacity, no limit, is left out), and the sum of
+the counts in `stats`. Pages are dropped 90 days after their hour (a TTL index on `purge_at`).
+
+`stats` is optional and has the counts of the node since the last heartbeat the Cloud accepted (see "Node metrics" in
+the [server README](../README.md)): `calls`, `busy` and `peak` by type (`conversation`, `one_way`), `not_ready`,
+`cloud_unreachable_s` and `outbox_dropped` (whole numbers), `first_audio_ms` (a histogram: counts per bucket, keyed by
+the bucket's upper bound in ms, `250` to `15000`, then `inf`), `stt_ms` and `tts_ms` (a histogram per provider) and
+`provider_failures` (a count per provider). Provider names are lowercase letters, digits, `-` and `_` (up to 32), at
+most 8 per map. A heartbeat without `stats` (a node before 0.11.0, or the heartbeat of a node that is draining) still
+counts in `beats` and `peak`. `stats` that do not follow these rules are ignored: the heartbeat is accepted as usual
+(`204`) and counts in `beats` and `peak`, and the log says why they were ignored, never what they held. A key the
+Cloud does not know is skipped, so a newer node does not lose the rest. Metrics never fail a heartbeat: a failed write
+of the summary is logged and the answer stays `204`.
+
+The node takes its counts off once a heartbeat is accepted, so nothing is lost or counted twice while the Cloud refuses
+heartbeats. One case does count twice, and that is accepted: a heartbeat the Cloud stored whose answer never reached the
+node (a dropped connection), because the node sends the same counts again.
+
+The route counts too, on pages of its own (`node: "_route"`): `routes_call`, the call routes issued, and `no_node`, the
+call routes refused with `503 no_node_available` (`purpose: manage` is not counted). A failed count changes no answer.
+
+`wristcall-cloud admin nodes stats [NODE] [--hours N]` (see [Admin CLI](#admin-cli)) reads the summary of the last
+`N` hours (24 by default, at most 2160, the current hour included), for one node or every enabled one:
+
+| Line | What it shows |
+|---|---|
+| `node`, `hours` | the node and the window |
+| `calls`, `busy` | calls taken and calls refused because every slot was taken, by type |
+| `not_ready` | calls refused because the node was not ready or was draining |
+| `busy_pct` | `busy` / (`calls` + `busy`), in %; `n/a` when both are 0 |
+| `peak` | the most calls open at once, by type |
+| `first_audio_p50_ms`, `first_audio_p95_ms` | the time to the first audio of an answer, median and 95th percentile: the upper bound of the bucket the percentile falls in (`>15000` past the last one); `n/a` without samples |
+| `stt_p95_ms`, `tts_p95_ms` | the 95th percentile per provider (`name=ms ...`, `none` without samples) |
+| `provider_failures` | per provider (`name=n ...`, `none` without failures) |
+| `cloud_unreachable_s`, `outbox_dropped` | sums |
+| `hours_without_heartbeat_day` | hours that have ended, start between 07:00 and 23:00 in Brasília (America/Sao_Paulo) and have no heartbeat; hours before the node was registered do not count |
+| `days_at_peak` | days (Brasília) with an hour where the conversations open reached the conversation slots the node offered that hour |
+| `routes_call`, `no_node`, `no_node_pct` | the route's counters over the window, once after the nodes (all nodes together); `no_node_pct` is `no_node` / (`routes_call` + `no_node`), in %, `n/a` when both are 0 |
 
 ## Routes and the Cloud entry
 
@@ -716,6 +761,7 @@ service configuration. Output is one `key: value` line per item on stdout; error
 | `admin nodes list` | one `node: <id> url=... region=... kind=... enabled=... last_seen_at=...` line per node, by priority (lower first), then id |
 | `admin nodes rotate <id> [--now]` | prints a new `secret`; the old one keeps working for 15 minutes (a node deploy is not atomic). `--now` cuts the old one at once (a leak). Exit `1` for an unknown node |
 | `admin nodes enable <id>` / `disable <id>` | prints `enabled: true` or `false`; a disabled node's secret is refused (`401`). Exit `1` for an unknown node |
+| `admin nodes stats [<id>] [--hours N]` | the hourly summary of the last `N` hours (default 24, up to 2160) for one node, or for every enabled node: one block of lines per node, then the route's counters (see [Node stats](#node-stats)). Exit `1` for an unknown node |
 
 Every `admin nodes` command creates the indexes first, so a repeated URL is refused even before the Cloud has started
 on 0.5.0.
@@ -756,6 +802,7 @@ Collections of the `wristcall_cloud` database (`WRISTCALL_CLOUD_DATABASE`):
 | `cloud_call_entries` | the history of a call, one per `(call, seq)`: sealed text and term hashes; `purge_at` (TTL index) |
 | `cloud_push_targets` | where an account's devices get notifications (`(account, device)` to a push registration's id, never its key) |
 | `usage` | one document per `(account, month)`: `total_s`, `seconds_by_type`, a `by_call` ledger, `warned_80` |
+| `node_stats` | the hourly summary of the nodes, one document per `(node, UTC hour)` (`_id` `<node>\|<YYYY-MM-DDTHH>`) and the route's counters (`node: "_route"`); `purge_at` (TTL index, 90 days after the hour). See [Node stats](#node-stats) |
 
 The push registrations keep their collection, unchanged. The Cloud never opens what the nodes send: the history text
 and the agents' `spec` are sealed by the node, and searching works on hashes the node computed.
@@ -775,6 +822,9 @@ the Cloud until 0.4.0 is back.
 no existing document changes. Dump the `wristcall_cloud` database before deploying all the same. **Going back to
 0.4.1** needs no restore: it ignores the new collections, and the accounts, devices, plans and agenda are as they were.
 Going forward again finds the cloud-mode data where it was.
+
+**0.7.0.** Adds the `node_stats` collection and its indexes, created at start; no existing document changes and the
+schema version stays 3. **Going back to 0.6.1** needs no restore: it ignores `node_stats` and the heartbeats' `stats`.
 
 ## Browsers (CORS)
 
