@@ -5,7 +5,12 @@ import type { CloudServer } from "../api/cloud"
 import { openDb } from "../store/db"
 import { ServerStore, type SavedServer } from "../store/servers"
 import { mockFetch } from "../test/mockFetch"
-import { openServerStorage, ServersModel, unavailableStorage } from "./servers"
+import { CloudRouter } from "../account/router"
+import { CloudClient } from "../api/cloud"
+import { RoutedServerClient } from "../api/routedServer"
+import { userMessage } from "../lib/errors"
+import { serversWith } from "../test/fakeServers"
+import { CLOUD_ENTRY_ID, isCloudEntry, openServerStorage, ServersModel, unavailableStorage } from "./servers"
 
 function server(over: Partial<SavedServer> = {}): SavedServer {
   return {
@@ -266,3 +271,148 @@ describe("ServersModel", () => {
   })
 })
 
+const CLOUD = "https://cloud.example.com"
+/** Epoch seconds of the test clock's start. */
+const START = 1_800_000_000
+
+function cloudEntry(over: Partial<CloudServer> = {}): CloudServer {
+  return { id: "srv_0123456789ab", name: "Wristcall Cloud", url: CLOUD, kind: "cloud", linked: true, agents: [], created_at: "", updated_at: "", ...over }
+}
+
+/** Route `n`: node `node-n.example.com` and token `tok-n`, valid for 300 s from `now` (ms). */
+function routeReply(n: number, now: number): Response {
+  return ok({ node: { id: `node-${n}`, url: `https://node-${n}.example.com`, region: "sao" }, token: `tok-${n}`, expires_at: Math.floor(now / 1000) + 300, fallback: null })
+}
+
+/** Servers with the Cloud entry: the Cloud answers the routes with `route(n)`, the nodes with `node(host, path)`. */
+function cloudWorld(
+  node: (host: string, path: string) => Response | null = () => ok({ agents: [] }),
+  route: (n: number, now: number) => Response = routeReply,
+) {
+  const clock = { now: START * 1000 }
+  let n = 0
+  const cloudFetch = mockFetch(() => route(++n, clock.now))
+  const router = new CloudRouter({ accessToken: async () => "access-token", cloudClient: new CloudClient(CLOUD, cloudFetch) }, () => clock.now)
+  const hosts = ["node-1.example.com", "node-2.example.com", "node-3.example.com"]
+  const { servers, fetchMock } = serversWith([], Object.fromEntries(hosts.map((host) => [host, (path: string) => node(host, path)])))
+  servers.attachRouter(router, fetchMock)
+  return { servers, router, cloudFetch, nodeFetch: fetchMock, clock }
+}
+
+const headersOf = (init: RequestInit) => init.headers as Record<string, string>
+
+describe("Wristcall Cloud entry", () => {
+  test("cloud entry is kept apart from pending servers", async () => {
+    const { servers, nodeFetch } = cloudWorld()
+    const office = cloud()
+    expect(isCloudEntry(cloudEntry())).toBe(true)
+    expect(isCloudEntry(office)).toBe(false)
+    servers.setFromAccount([office, cloudEntry()])
+    expect(servers.state.fromAccount).toEqual([office])
+    expect(servers.state.cloud).toBeNull()
+    servers.setCloud(cloudEntry())
+    expect(servers.state.cloud).toEqual(cloudEntry())
+    expect(servers.state.fromAccount).toEqual([office])
+    expect(servers.state.rows).toEqual([])
+    // A self-hosted entry is never taken for the Cloud entry.
+    servers.setCloud(office)
+    expect(servers.state.cloud).toBeNull()
+    // Reading the saved servers keeps the entry; no health check or token check runs for it.
+    servers.setCloud(cloudEntry())
+    await servers.load()
+    expect(servers.state.cloud).toEqual(cloudEntry())
+    expect(nodeFetch.calls).toHaveLength(0)
+  })
+
+  test("client('cloud') uses the route node and token", async () => {
+    const { servers, cloudFetch, nodeFetch } = cloudWorld()
+    // No entry in the agenda yet: no client.
+    expect(await servers.client(CLOUD_ENTRY_ID)).toBeNull()
+    servers.setCloud(cloudEntry())
+    const client = await servers.client(CLOUD_ENTRY_ID)
+    expect(client).toBeInstanceOf(RoutedServerClient)
+    expect(await client!.agents()).toEqual([])
+    expect(cloudFetch.calls).toHaveLength(1)
+    expect(JSON.parse(String(cloudFetch.lastInit().body))).toEqual({ purpose: "manage" })
+    expect(nodeFetch.lastUrl()).toBe("https://node-1.example.com/v1/agents")
+    expect(headersOf(nodeFetch.lastInit()).Authorization).toBe("Bearer tok-1")
+    // The node is not the Cloud: no client header goes there.
+    expect(headersOf(nodeFetch.lastInit())["X-Wristcall-Client"]).toBeUndefined()
+    // The export goes through the route as well.
+    const blobWorld = cloudWorld((_host, path) => (path === "calls/export" ? new Response("# calls", { status: 200, headers: { "content-disposition": 'attachment; filename="calls.md"' } }) : null))
+    blobWorld.servers.setCloud(cloudEntry())
+    const exported = await (await blobWorld.servers.client(CLOUD_ENTRY_ID))!.exportCalls("md", {})
+    expect(exported.filename).toBe("calls.md")
+    expect(blobWorld.nodeFetch.lastUrl()).toBe("https://node-1.example.com/v1/calls/export?format=md")
+    expect(headersOf(blobWorld.nodeFetch.lastInit()).Authorization).toBe("Bearer tok-1")
+    // Without a router (no account) there is no Cloud entry client.
+    const plain = serversWith([]).servers
+    plain.setCloud(cloudEntry())
+    expect(await plain.client(CLOUD_ENTRY_ID)).toBeNull()
+  })
+
+  test("client('cloud') never throws on creation; a 503 surfaces on the first request", async () => {
+    const unavailable = () => new Response(JSON.stringify({ error: "no_node_available", message: "no node" }), { status: 503, headers: { "Retry-After": "30" } })
+    const { servers, cloudFetch, nodeFetch } = cloudWorld(undefined, unavailable)
+    servers.setCloud(cloudEntry())
+    const client = await servers.client(CLOUD_ENTRY_ID)
+    expect(client).not.toBeNull()
+    expect(cloudFetch.calls).toHaveLength(0)
+    const error = await client!.agents().catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error).toMatchObject({ status: 503, code: "no_node_available" })
+    expect(userMessage(error)).toBe("Wristcall Cloud is temporarily unavailable. Try again in a minute.")
+    expect(nodeFetch.calls).toHaveLength(0)
+  })
+
+  test("a stored routed client keeps working after the route expires", async () => {
+    const { servers, cloudFetch, nodeFetch, clock } = cloudWorld()
+    servers.setCloud(cloudEntry())
+    const client = (await servers.client(CLOUD_ENTRY_ID))!
+    await client.agents()
+    clock.now += 200_000
+    await client.agents()
+    expect(cloudFetch.calls).toHaveLength(1)
+    expect(headersOf(nodeFetch.lastInit()).Authorization).toBe("Bearer tok-1")
+    // Less than 30 s left on the token: the same client asks for a new route.
+    clock.now += 71_000
+    await client.agents()
+    expect(cloudFetch.calls).toHaveLength(2)
+    expect(nodeFetch.lastUrl()).toBe("https://node-2.example.com/v1/agents")
+    expect(headersOf(nodeFetch.lastInit()).Authorization).toBe("Bearer tok-2")
+  })
+
+  test("retries once with a fresh route after a 401", async () => {
+    const refused = () => new Response(JSON.stringify({ error: "unauthorized", message: "expired" }), { status: 401 })
+    const w = cloudWorld((host) => (host === "node-1.example.com" ? refused() : ok({ id: "ag_1", slug: "x" })))
+    w.servers.setCloud(cloudEntry())
+    const client = (await w.servers.client(CLOUD_ENTRY_ID))!
+    expect(await client.createAgent({ slug: "x" })).toBeDefined()
+    expect(w.cloudFetch.calls).toHaveLength(2)
+    expect(w.nodeFetch.calls.map((call) => `${call.init.method} ${call.url}`)).toEqual([
+      "POST https://node-1.example.com/v1/agents",
+      "POST https://node-2.example.com/v1/agents",
+    ])
+    expect(headersOf(w.nodeFetch.lastInit()).Authorization).toBe("Bearer tok-2")
+    // Only once: a node that keeps refusing gives the 401 after the second try.
+    const always = cloudWorld(() => refused())
+    always.servers.setCloud(cloudEntry())
+    const stubborn = (await always.servers.client(CLOUD_ENTRY_ID))!
+    await expect(stubborn.agents()).rejects.toMatchObject({ status: 401 })
+    expect(always.cloudFetch.calls).toHaveLength(2)
+    expect(always.nodeFetch.calls).toHaveLength(2)
+  })
+
+  test("sign out invalidates the route and clears the cloud entry", async () => {
+    const { servers, router, cloudFetch } = cloudWorld()
+    servers.setCloud(cloudEntry())
+    await (await servers.client(CLOUD_ENTRY_ID))!.agents()
+    expect(cloudFetch.calls).toHaveLength(1)
+    await servers.forgetAccount()
+    expect(servers.state.cloud).toBeNull()
+    expect(await servers.client(CLOUD_ENTRY_ID)).toBeNull()
+    // The route of the account that left is gone: the next one is asked anew.
+    expect((await router.manage()).token).toBe("tok-2")
+    expect(cloudFetch.calls).toHaveLength(2)
+  })
+})

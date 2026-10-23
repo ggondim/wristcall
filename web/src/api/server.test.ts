@@ -189,4 +189,26 @@ describe("ServerClient", () => {
     expect([e.status, e.code, e.message]).toEqual([409, "not_failed", "Only failed calls."])
     expect(fetchMock.lastUrl()).toBe("https://s.example/v1/calls/c_1/redeliver")
   })
+
+  test("server: me reads plan and usage; providers default the cloud flags to false", async () => {
+    const usage = { month: "2026-10", used_s: 600, quota_s: 3600, remaining_s: 3000 }
+    const plan = { plan: "full", source: "invite", expires_at: null }
+    const fetchMock = mockFetch((url) =>
+      url.endsWith("/v1/me")
+        ? ok({ plan, usage })
+        : url.endsWith("/v1/providers")
+          ? ok({ providers: [], custom_endpoints: true })
+          : ok({ providers: [], custom_endpoints: false, public_only: true, history_only_one_way: true }),
+    )
+    const client = new ServerClient(BASE, "tok", fetchMock)
+    expect(await client.me()).toEqual({ plan, usage })
+    expect(fetchMock.lastUrl()).toBe("https://s.example/v1/me")
+    expect((fetchMock.lastInit().headers as Record<string, string>).Authorization).toBe("Bearer tok")
+    expect(await client.providers()).toEqual({ providers: [], custom_endpoints: true, public_only: false, history_only_one_way: false })
+    // A `me` without plan or usage reads as none.
+    const bare = new ServerClient(BASE, "tok", mockFetch(() => ok({})))
+    expect(await bare.me()).toEqual({ plan: null, usage: null })
+    const flags = new ServerClient(BASE, "tok", mockFetch(() => ok({ providers: [], custom_endpoints: false, public_only: true, history_only_one_way: true })))
+    expect(await flags.providers()).toEqual({ providers: [], custom_endpoints: false, public_only: true, history_only_one_way: true })
+  })
 })

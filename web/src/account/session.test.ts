@@ -658,6 +658,15 @@ describe("signOut", () => {
     await expect(w.session.accessToken()).rejects.toMatchObject({ kind: "signed_out" })
   })
 
+  test("sign out invalidates the attached router", async () => {
+    const w = await signedIn()
+    let invalidated = 0
+    w.session.attachRouter({ invalidate: () => (invalidated += 1) })
+    await w.session.signOut()
+    expect(invalidated).toBeGreaterThanOrEqual(1)
+    expect(w.session.state).toBe("signedOut")
+  })
+
   test("sign out renews a stale access token first", async () => {
     const w = await signedIn({ expiresIn: 0 })
     await w.session.signOut()

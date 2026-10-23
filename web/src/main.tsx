@@ -1,6 +1,7 @@
 import { render } from "preact"
 import "./ui/styles.css"
 import { AgendaSync } from "./account/agenda"
+import { CloudRouter } from "./account/router"
 import { AccountSession } from "./account/session"
 import { CloudClient } from "./api/cloud"
 import { RelayClient } from "./api/relay"
@@ -17,10 +18,16 @@ import { ServerStore } from "./store/servers"
 import { App } from "./ui/App"
 import { navigate } from "./ui/route"
 
-/** The agenda's servers this browser has no token for ("From your account"), read now and when the account or the page changes. */
+/**
+ * The agenda's servers this browser has no token for ("From your account") and the Wristcall Cloud entry, read now and
+ * when the account or the page changes. An agenda that cannot be read keeps the Cloud entry shown.
+ */
 function showAccountServers(agenda: AgendaSync, servers: ServersModel, session: AccountSession): void {
   const refresh = (): void => {
-    void agenda.fromAccount().then((entries) => servers.setFromAccount(entries))
+    void agenda.read().then(({ pending, cloud }) => {
+      servers.setFromAccount(pending)
+      if (cloud !== undefined) servers.setCloud(cloud)
+    })
   }
   refresh()
   session.onStateChange(refresh)
@@ -53,6 +60,10 @@ async function start(): Promise<void> {
   if (config.cloudUrl !== null && storage instanceof ServerStore) {
     cloud = new CloudClient(config.cloudUrl)
     session = new AccountSession(cloud, storage)
+    // The node of the Cloud entry: the session drops its route when the sign-in changes.
+    const router = new CloudRouter(session)
+    session.attachRouter(router)
+    servers.attachRouter(router)
     await session.load().catch(() => {}) // unreadable: signed out
   }
   // The agenda mirror: every change of the servers (and of an agents list) is queued for the account's agenda.

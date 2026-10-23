@@ -8,6 +8,8 @@ export interface RequestOptions {
   json?: unknown
   timeoutMs?: number
   accept?: string
+  /** More headers (the client header of a Cloud request). Accept, Authorization and Content-Type are set here. */
+  headers?: Record<string, string>
 }
 
 export const DEFAULT_TIMEOUT_MS = 15_000
@@ -20,7 +22,7 @@ async function run<T>(
   fetchImpl: typeof fetch | undefined,
   consume: (response: Response) => Promise<T>,
 ): Promise<T> {
-  const headers: Record<string, string> = { Accept: opts.accept ?? "application/json" }
+  const headers: Record<string, string> = { ...opts.headers, Accept: opts.accept ?? "application/json" }
   if (opts.bearer !== undefined) headers.Authorization = `Bearer ${opts.bearer}`
   // A reply that redirects is an error: a credential never follows a redirect (a server or the Cloud does not redirect an API call).
   const init: RequestInit = { method: opts.method ?? "GET", headers, cache: "no-store", credentials: "omit", redirect: "error" }

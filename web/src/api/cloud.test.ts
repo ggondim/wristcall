@@ -1,7 +1,9 @@
 import { describe, expect, test, vi } from "vitest"
 import { ApiError, TimeoutError } from "../lib/errors"
 import { mockFetch } from "../test/mockFetch"
-import { type CloudAgent, type CloudServer, CloudClient } from "./cloud"
+import { RelayClient } from "./relay"
+import { ServerClient } from "./server"
+import { type CloudAgent, type CloudServer, CLIENT, CloudClient } from "./cloud"
 
 const BASE = "https://cloud.example"
 const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } })
@@ -196,5 +198,82 @@ describe("CloudClient", () => {
     expect(e).toBeInstanceOf(ApiError)
     expect(e.status).toBe(403)
     expect(e.code).toBe("limit")
+  })
+})
+
+const clientHeader = (init: RequestInit) => (init.headers as Record<string, string>)["X-Wristcall-Client"]
+
+describe("client header", () => {
+  test("sends web/<version> on every Cloud request", async () => {
+    const f = mockFetch((url) => {
+      if (url.endsWith("/v1/route")) return reply({ node: { id: "n", url: "https://node.example", region: "sao" }, token: "t", expires_at: 1, fallback: null })
+      if (url.endsWith("/v1/servers")) return reply({ servers: [] })
+      if (url.endsWith("/v1/devices")) return reply({ devices: [] })
+      return reply({ account: "a", device: "d", access_token: "at", refresh_token: "rt", expires_at: 1, status: "pending" })
+    })
+    const cloud = new CloudClient(BASE, f)
+    expect(CLIENT).toBe("web/0.4.0")
+    await cloud.config()
+    await cloud.account("at")
+    await cloud.servers("at")
+    await cloud.refreshSession("rt")
+    await cloud.createWebSession("Browser")
+    await cloud.pollWebSession("ws1", "pk")
+    await cloud.exchangeSignIn("zat", "Browser")
+    await cloud.devices("at")
+    await cloud.route("at", { purpose: "manage" })
+    expect(f.calls).toHaveLength(9)
+    expect(f.calls.map((call) => clientHeader(call.init))).toEqual(Array(9).fill("web/0.4.0"))
+    // The client can be named (another build or a test), and the access token still goes as before.
+    const other = mockFetch(() => reply({ servers: [] }))
+    await new CloudClient(BASE, other, "web/9.9.9").servers("at")
+    expect(clientHeader(other.lastInit())).toBe("web/9.9.9")
+    expect(auth(other.lastInit())).toBe("Bearer at")
+  })
+
+  test("server requests carry no client header", async () => {
+    const f = mockFetch((url) =>
+      url.endsWith("/health") ? reply({ status: "ok", version: "1", protocol: 1, account: null, push: null }) : reply({ agents: [] }),
+    )
+    const server = new ServerClient(new URL("https://home.example"), "wc_pat_x", f)
+    await server.health()
+    await server.agents()
+    expect(f.calls).toHaveLength(2)
+    expect(f.calls.map((call) => clientHeader(call.init))).toEqual([undefined, undefined])
+  })
+
+  test("relay requests carry the client header", async () => {
+    const f = mockFetch((_url, init) =>
+      init.method === "POST" ? reply({ push_key: "wc_push_x", platform: "webpush", label: "l", tag: "t", events: [] }) : new Response(null, { status: 204 }),
+    )
+    const relay = new RelayClient(BASE, f)
+    await relay.register({ endpoint: "https://push.example/abc", keys: { p256dh: "k", auth: "a" } }, "label", "tag")
+    await relay.check("wc_push_x")
+    await relay.unregister("wc_push_x")
+    expect(f.calls.map((call) => clientHeader(call.init))).toEqual(["web/0.4.0", "web/0.4.0", "web/0.4.0"])
+  })
+})
+
+describe("route", () => {
+  test("route posts purpose and decodes fallback", async () => {
+    const node = (id: string) => ({ id, url: `https://${id}.example.com`, region: "sao" })
+    const answer = { node: node("home"), token: "tok-1", expires_at: 1792580000, fallback: { node: node("away"), token: "tok-2", expires_at: 1792580001 } }
+    const f = mockFetch(() => reply(answer))
+    const cloud = new CloudClient(BASE, f)
+    const route = await cloud.route("at", { purpose: "call", agent: "ag_0123456789ab", avoid: ["away"] })
+    expect(f.lastUrl()).toBe(`${BASE}/v1/route`)
+    expect(f.lastInit().method).toBe("POST")
+    expect(auth(f.lastInit())).toBe("Bearer at")
+    expect(JSON.parse(String(f.lastInit().body))).toEqual({ purpose: "call", agent: "ag_0123456789ab", avoid: ["away"] })
+    expect(route).toEqual(answer)
+    // `manage` sends only the purpose; a reply without `fallback` reads as none.
+    const g = mockFetch(() => reply({ node: node("home"), token: "tok-3", expires_at: 1792580000 }))
+    const managed = await new CloudClient(BASE, g).route("at", { purpose: "manage" })
+    expect(JSON.parse(String(g.lastInit().body))).toEqual({ purpose: "manage" })
+    expect(managed.fallback).toBeNull()
+    expect(managed.node.url).toBe("https://home.example.com")
+    // Errors stay `ApiError`s with the Cloud's code and Retry-After.
+    const busy = mockFetch(() => new Response(JSON.stringify({ error: "no_node_available", message: "x" }), { status: 503, headers: { "Retry-After": "30" } }))
+    await expect(new CloudClient(BASE, busy).route("at", { purpose: "manage" })).rejects.toMatchObject({ status: 503, code: "no_node_available", retryAfter: 30 })
   })
 })
