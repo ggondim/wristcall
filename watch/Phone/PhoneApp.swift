@@ -13,6 +13,7 @@ struct PhoneApp: App {
     @State private var state: AppState
     @State private var approvals: ApprovalsModel
     @State private var history: HistoryModel
+    @State private var usage: UsageModel
     @State private var account: AccountModel
     @State private var watchLink: WatchLink
     /// wristcall links (`onOpenURL`, the QR scanner): the sheets they open.
@@ -29,6 +30,7 @@ struct PhoneApp: App {
         let approvals = ApprovalsModel(state: state)
         _approvals = State(initialValue: approvals)
         _history = State(initialValue: HistoryModel(state: state))
+        _usage = State(initialValue: UsageModel(state: state))
         // The Cloud comes from the build only (never from a server); empty: no account at all.
         let cloud = AccountModel.cloudURL(fromInfoValue: Bundle.main.object(forInfoDictionaryKey: "WristcallCloudURL") as? String)
         // The device session is the account; the 0.3.x Zitadel tokens are only read to move them over (and by
@@ -77,6 +79,7 @@ struct PhoneApp: App {
                 .environment(state)
                 .environment(approvals)
                 .environment(history)
+                .environment(usage)
                 .environment(account)
                 .environment(watchLink)
                 .environment(router)

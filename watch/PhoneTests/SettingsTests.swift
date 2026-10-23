@@ -32,6 +32,28 @@ struct SettingsTests {
         #expect(SettingsContent.accountRows(webSignInReady: true) == [.useOnTheWeb, .devices])
     }
 
+    @Test func planRowShowsUsageSummary() {
+        let usage = CloudUsage(month: "2026-10", usedS: 125, quotaS: 36_000, remainingS: 35_875)
+        let row = SettingsContent.planRow(for: Plan(plan: .full, source: "beta"), usage: usage)
+        #expect(row.title == "Wristcall Cloud")
+        #expect(row.detail == "Beta · invite")
+        #expect(row.usage == "2 of 600 min used this month")
+        // Without a plan there is nothing to say about usage.
+        #expect(SettingsContent.planRow(for: nil, usage: usage).usage == nil)
+        #expect(SettingsContent.planRow(for: nil, usageUnavailable: true).usage == nil)
+    }
+
+    @Test func planRowSaysUsageUnavailable() {
+        let row = SettingsContent.planRow(for: Plan(plan: .full, source: "beta"), usageUnavailable: true)
+        #expect(row.usage == "Usage unavailable right now.")
+        // The last reading wins over the notice.
+        let usage = CloudUsage(month: "2026-10", usedS: 600, quotaS: 36_000, remainingS: 35_400)
+        #expect(SettingsContent.planRow(for: Plan(plan: .full, source: "beta"), usage: usage, usageUnavailable: true).usage
+            == "10 of 600 min used this month")
+        // Nothing read yet and nothing failed: no line.
+        #expect(SettingsContent.planRow(for: Plan(plan: .full, source: "beta")).usage == nil)
+    }
+
     @Test func planRowReadsTheAccountPlan() async {
         #expect(SettingsContent.planRow(for: Plan(plan: .full, source: "beta"))
             == .init(title: "Wristcall Cloud", detail: "Beta · invite"))

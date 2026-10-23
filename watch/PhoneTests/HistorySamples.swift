@@ -12,12 +12,13 @@ extension CallRecord {
         text: String? = "buy milk",
         attempts: Int = 1,
         agent: AgentRef? = AgentRef(id: "ag_notes", slug: "notes", displayName: "Notes"),
-        entries: [CallEntry] = []
+        entries: [CallEntry] = [],
+        delivery: String? = nil
     ) -> CallRecord {
         CallRecord(
             id: id, agentId: agent?.id, callType: callType, status: status, error: error, text: text,
             attempts: attempts, lastHttpStatus: status == "delivered" ? 200 : nil, createdAt: at,
-            agent: agent, entries: entries
+            agent: agent, entries: entries, delivery: delivery
         )
     }
 }

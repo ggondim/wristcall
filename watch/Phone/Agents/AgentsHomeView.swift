@@ -46,6 +46,7 @@ private struct AgentsHomeContent: View {
 
     @Environment(AppState.self) private var state
     @Environment(AccountModel.self) private var account
+    @Environment(UsageModel.self) private var usage
     @Environment(WatchLink.self) private var watchLink
     @Environment(\.scenePhase) private var scenePhase
     @State private var editor: EditorSession?
@@ -74,6 +75,8 @@ private struct AgentsHomeContent: View {
         }
         // D16: opening Agents reads the Cloud entry again (it comes and goes with the plan).
         .task { await account.refreshCloudEntry() }
+        // The month's call minutes: on opening, and when the Cloud entry comes or goes.
+        .task(id: state.cloudServer?.id) { await usage.load() }
         .task(id: state.allServers.map(\.id)) {
             await model.load()
             #if DEBUG
@@ -106,6 +109,9 @@ private struct AgentsHomeContent: View {
             if stripKind != .hidden {
                 Section { WatchStrip(kind: stripKind) }
             }
+            if let warning = usage.usage?.warning {
+                Section { usageBanner(warning) }
+            }
             if layout.cloudNotice == .settingUp {
                 Section {
                     settingUpRow
@@ -130,7 +136,17 @@ private struct AgentsHomeContent: View {
         .refreshable {
             await account.refreshCloudEntry()
             await model.load()
+            await usage.load()
         }
+    }
+
+    /// The 80 % warning (orange), or the month used up (red).
+    private func usageBanner(_ text: String) -> some View {
+        let color: Color = usage.usage?.level == .exhausted ? .red : .orange
+        return Label(text, systemImage: "exclamationmark.triangle.fill")
+            .font(.subheadline)
+            .foregroundStyle(color)
+            .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder

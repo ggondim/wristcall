@@ -580,4 +580,17 @@ extension HistoryModelTests {
         #expect(model.filter.agentID == nil)
         #expect(model.items.map(\.call.id) == ["a1", "b1", "a2"])
     }
+
+    @Test func savedToHistoryLabel() {
+        let saved = CallRecord.sample(delivery: "history")
+        #expect(saved.savedToHistory)
+        #expect(CallStatusStyle.savedDetail == "Saved to History")
+        #expect(CallStatusStyle.label(saved) == "Saved")
+        #expect(CallStatusStyle.color(saved.status) == .green)
+        // A webhook delivery, or a server that does not say, stays "Delivered".
+        #expect(CallStatusStyle.label(.sample(delivery: "webhook")) == "Delivered")
+        #expect(CallStatusStyle.label(.sample()) == "Delivered")
+        // Only a delivered call is "Saved".
+        #expect(CallStatusStyle.label(.sample(status: "failed", error: "delivery_failed", delivery: "history")) == "Failed, not delivered")
+    }
 }

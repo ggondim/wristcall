@@ -255,9 +255,12 @@ struct HistoryRow: View {
     }
 }
 
-/// Colors and words for a call status: delivered green, failed red, everything else (processing, empty,
+/// Colors and words for a call status: delivered (or saved to the history) green, failed red, everything else (processing, empty,
 /// ended, unknown) gray. The word is always shown, so the color is never the only cue.
 enum CallStatusStyle {
+    /// The delivery line of a call kept in the history only.
+    static let savedDetail = "Saved to History"
+
     static func color(_ status: String) -> Color {
         switch status {
         case "delivered": .green
@@ -268,7 +271,7 @@ enum CallStatusStyle {
 
     static func label(_ call: CallRecord) -> String {
         switch call.status {
-        case "delivered": "Delivered"
+        case "delivered": call.savedToHistory ? "Saved" : "Delivered"
         case "failed": call.error.map { "Failed, \(reason($0))" } ?? "Failed"
         case "processing": "Processing"
         case "recording": "Recording"
