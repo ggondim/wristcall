@@ -81,7 +81,7 @@ final class AccountLoginModel {
         static let expired = "The code expired. Try again."
         static let denied = "Sign-in was denied."
         static let notConfigured = "Account sign-in is not set up for this watch."
-        static let cloudUnreachable = "Can't reach wristcall Cloud."
+        static let cloudUnreachable = "Can't reach Wristcall Cloud."
         static let signInAgain = "Sign in again."
         static let agendaFailed = "Couldn't read your servers. Try again."
         static let incomplete = "The sign-in did not complete. Try again."

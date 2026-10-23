@@ -97,7 +97,8 @@ struct AgentEditorView: View {
         }
         // The Cloud entry has no health check: its node always takes the color.
         let version = target.isCloudEntry ? AgentFormModel.colorVersion : state.healths[target.id]?.version
-        let next = AgentFormModel(editing: editing, providers: providers, serverVersion: version)
+        let next = AgentFormModel(
+            editing: editing, providers: providers, serverVersion: version, cloud: target.isCloudEntry)
         if let previous {
             next.carryOver(from: previous)
         } else if editing == nil {

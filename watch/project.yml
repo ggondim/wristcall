@@ -25,8 +25,8 @@ settings:
     SWIFT_VERSION: "6.0"
     # The iPhone app, the watch app and the widget extension share these (Apple requires it for an embedded
     # watch app); each app's product version for the Cloud is WRISTCALL_CLIENT_VERSION.
-    MARKETING_VERSION: "0.6.0"
-    CURRENT_PROJECT_VERSION: "8"
+    MARKETING_VERSION: "0.6.1"
+    CURRENT_PROJECT_VERSION: "9"
 
 packages:
   WristcallKit:
@@ -103,7 +103,7 @@ targets:
         ENABLE_PREVIEWS: YES
         # The iPhone app's own product version (MARKETING_VERSION is the watch app's), sent to the Cloud as
         # `X-Wristcall-Client: ios/<version>` (Info.plist WristcallClientVersion).
-        WRISTCALL_CLIENT_VERSION: "0.3.0"
+        WRISTCALL_CLIENT_VERSION: "0.3.1"
       # The push build (approval notifications, decision R9). A target setting wins over the project's
       # xcconfig in XcodeGen, so these are set here, like the watch app's.
       configs:

@@ -169,6 +169,6 @@ struct CloudEntryAPITests {
     }
 
     @Test func bundleSendsIOSClientHeader() {
-        #expect(ClientIdentity.fromBundle(.main, platform: .ios)?.header == "ios/0.3.0")
+        #expect(ClientIdentity.fromBundle(.main, platform: .ios)?.header == "ios/0.3.1")
     }
 }

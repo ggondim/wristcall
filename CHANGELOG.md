@@ -63,6 +63,32 @@ Server 0.11.0. In cloud mode each heartbeat carries the node's counters (`stats`
   name that is not safe to send or any past the first six (at most 8 names per map).
 - A Cloud before 0.7.0 ignores `stats`.
 
+## [watch-0.6.1] - 2026-10-23
+
+Watch app 0.6.1 (build 9), embedded in iPhone app 0.3.1. Texts only; same Cloud and server versions as 0.6.0.
+
+### Fixed
+
+- Every text that named the Cloud now says "Wristcall Cloud" with a capital W (sign-in, the account and agenda
+  messages, the pairing errors).
+- A one-shot call the server heard nothing in reads "Nothing said." (it said "Nothing recorded."), like History on the
+  iPhone and the web app.
+
+## [ios-0.3.1] - 2026-10-23
+
+For the same Cloud and server versions as 0.3.0. Carries watch app 0.6.1 (build 9). The iPhone and the embedded watch
+app share bundle version 0.6.1 (Apple requires it); this app's own release is 0.3.1 (Info key `WristcallClientVersion`).
+
+### Fixed
+
+- Every text that named the Cloud now says "Wristcall Cloud" with a capital W (account, plan, sign-in and agenda
+  messages).
+- Agent editor, Wristcall Cloud agents: the footer under the endpoint says "Wristcall Cloud sends the transcript to
+  this webhook." and, for a conversation, "Wristcall Cloud turns your voice into text, sends it to this endpoint and
+  speaks the answer." (both said "Your server"). Agents of your own servers keep "Your server".
+- The row of a Cloud agent without a webhook reads "One-shot · Wristcall Cloud" (checked; the 0.3.0 capture was taken
+  before that fix).
+
 ## [watch-0.6.0] - 2026-10-23
 
 Watch app 0.6.0 (build 8), embedded in iPhone app 0.3.0. For Cloud 0.6.1 with `WRISTCALL_CLOUD_CLOUD_ENTRY_CLIENTS`

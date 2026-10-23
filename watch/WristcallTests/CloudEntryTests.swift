@@ -155,6 +155,6 @@ struct CloudEntryTests {
 
     /// The test bundle is hosted by the watch app: `Bundle.main` is `Wristcall.app`.
     @Test func bundleSendsWatchClientHeader() {
-        #expect(ClientIdentity.fromBundle(.main, platform: .watchos)?.header == "watchos/0.6.0")
+        #expect(ClientIdentity.fromBundle(.main, platform: .watchos)?.header == "watchos/0.6.1")
     }
 }

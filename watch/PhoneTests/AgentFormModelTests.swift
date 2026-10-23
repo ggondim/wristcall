@@ -601,6 +601,19 @@ struct AgentFormModelTests {
         #expect(chat.endpointFooter == "Your server turns your voice into text, sends it to this endpoint and speaks the answer.")
     }
 
+    @Test func endpointFooterForCloudWebhookNamesWristcallCloud() {
+        let model = AgentFormModel(
+            editing: .sample(callType: "one-shot", action: .object(["type": .string("webhook"), "url": .string("https://h.test")])),
+            providers: .sample, cloud: true)
+        #expect(model.endpointFooter == "Wristcall Cloud sends the transcript to this webhook.")
+    }
+
+    @Test func endpointFooterForCloudConversation() {
+        let chat = AgentFormModel(editing: .sample(callType: "conversation", action: .null), providers: .sample, cloud: true)
+        #expect(chat.endpointFooter == "Wristcall Cloud turns your voice into text, sends it to this endpoint and speaks the answer.")
+        #expect(!chat.endpointFooter.contains("Your server"))
+    }
+
     @Test func historyOnlyDoesNotApplyToConversations() {
         let model = AgentFormModel(editing: .sample(callType: "conversation", action: .null), providers: historyOnly)
         #expect(model.validationMessage == "Choose Responder.")

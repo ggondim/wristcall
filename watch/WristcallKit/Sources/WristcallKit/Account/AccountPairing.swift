@@ -30,7 +30,7 @@ public struct AccountPairing: Sendable {
         public static let accountUnavailable = "account service unavailable"
         public static let unreachable = "can't reach it"
         public static let signedOut = "sign in again"
-        public static let noToken = "wristcall Cloud gave no token"
+        public static let noToken = "Wristcall Cloud gave no token"
         public static let unexpected = "unexpected reply"
     }
 

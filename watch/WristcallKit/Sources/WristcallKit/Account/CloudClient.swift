@@ -1,6 +1,6 @@
 import Foundation
 
-/// Client of the wristcall Cloud API: `/v1/config`, the account, its agenda (servers and their agents) and
+/// Client of the Wristcall Cloud API: `/v1/config`, the account, its agenda (servers and their agents) and
 /// per-server tokens. Every route but `/v1/config` takes the account's access token. Errors are `APIError`.
 public struct CloudClient: Sendable {
     public let cloud: URL

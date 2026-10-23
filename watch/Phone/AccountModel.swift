@@ -948,7 +948,7 @@ final class AccountModel {
         case AccountError.signedOut:
             return "Sign in again."
         case AccountError.notConfigured:
-            return "wristcall Cloud is not set up for this app."
+            return "Wristcall Cloud is not set up for this app."
         case LinkError.badCode:
             return "Enter the 8-digit code."
         case LinkError.notSaved:
@@ -983,7 +983,7 @@ final class AccountModel {
         case OIDCError.authorizationFailed:
             "The sign-in was refused."
         case let failure as APIError:
-            if case .network = failure { "Can't reach wristcall Cloud." } else { "wristcall Cloud refused the sign-in." }
+            if case .network = failure { "Can't reach Wristcall Cloud." } else { "Wristcall Cloud refused the sign-in." }
         case AccountError.notConfigured:
             message(for: error)
         case is WebAuthenticatorError:

@@ -100,6 +100,15 @@ struct CallResultModelTests {
         #expect(finishes.all == [false])
     }
 
+    @Test func emptyResultSaysNothingSaid() async throws {
+        pairing.callStatusResults = [.success(status(.empty))]
+        let result = makeResult()
+
+        await run(result)
+
+        #expect(result.headline == "Nothing said.")
+    }
+
     /// The network failing on the way does not stop the queries.
     @Test func networkErrorsKeepAsking() async throws {
         pairing.callStatusResults = [.failure(.network(.notConnectedToInternet)), .success(status(.delivered))]
