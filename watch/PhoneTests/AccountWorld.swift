@@ -554,6 +554,7 @@ struct AccountRig {
         web: any WebAuthenticator = FakeWeb.approving(),
         cloudURL: URL? = nil,
         router: (any CloudRouting)? = nil,
+        makeRouter: (@MainActor (DeviceSession) -> any CloudRouting)? = nil,
         configure: (AppState) -> Void = { _ in }
     ) {
         sessions = InMemoryDeviceSessionStore(session)
@@ -572,10 +573,13 @@ struct AccountRig {
                                     client: client)
         let state = AppState(store: InMemoryManagedServerStore(servers), makeAPI: makeAPI)
         configure(state)
+        // A single `router` serves every account (tests that count its invalidations).
+        var routers = makeRouter
+        if routers == nil, let router { routers = { _ in router } }
         model = AccountModel(
             cloudURL: cloud, session: device, keys: self.keys, legacy: legacy, web: web, state: state,
             device: CloudDeviceInfo(name: "Test iPhone", platform: .ios), defaults: defaults, sleep: sleeps.sleep,
-            router: router
+            makeRouter: routers
         )
         sleeps.model = model
     }

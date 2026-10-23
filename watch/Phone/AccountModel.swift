@@ -81,9 +81,11 @@ final class AccountModel {
     @ObservationIgnored private(set) var watchPairing: Task<WatchLink.SendResult, Never>?
 
     @ObservationIgnored private let session: DeviceSession?
-    /// The Cloud route of this account (`nil` when `.unavailable`): the Wristcall Cloud entry's requests go to the
-    /// node it names. Dropped whenever the account goes.
-    @ObservationIgnored private let router: (any CloudRouting)?
+    /// The Cloud route of the account this iPhone is in (`nil` before it is ready, and when `.unavailable`): the
+    /// Wristcall Cloud entry's requests go to the node it names. Dropped whenever the account goes; the next
+    /// account gets a new one (`makeRouter`), never this one.
+    @ObservationIgnored private var router: (any CloudRouting)?
+    @ObservationIgnored private let makeRouter: @MainActor (DeviceSession) -> any CloudRouting
     @ObservationIgnored private let keys: any AccountKeyStore
     /// The 0.3.x Zitadel sign-in: read to move it over, and the email restore's login. Nothing else uses it.
     @ObservationIgnored private let legacy: AccountSession?
@@ -152,14 +154,12 @@ final class AccountModel {
         device: CloudDeviceInfo,
         defaults: UserDefaults = .standard,
         sleep: @escaping @Sendable (TimeInterval) async -> Void = { try? await Task.sleep(for: .seconds($0)) },
-        router: (any CloudRouting)? = nil
+        makeRouter: (@MainActor (DeviceSession) -> any CloudRouting)? = nil
     ) {
         let session = cloudURL == nil ? nil : session
         self.cloudURL = session == nil ? nil : cloudURL
         self.session = session
-        let router = session.map { router ?? CloudRouter(access: $0) }
-        self.router = router
-        appState.cloudAPI = router.map { RoutedServerAPI(router: $0, make: appState.serverAPIFactory) }
+        self.makeRouter = makeRouter ?? { CloudRouter(access: $0) }
         self.keys = keys
         self.legacy = session == nil ? nil : legacy
         self.web = web
@@ -330,6 +330,7 @@ final class AccountModel {
         // A start on the way back to the foreground finds the account it was in: no new full mirror.
         var mirror = state != .ready
         if enteredAccount(account) { mirror = true }
+        installCloudRoute(session)
         state = .ready
         let read = await readAccount()
         guard state == .ready else { return }
@@ -338,6 +339,7 @@ final class AccountModel {
             guard let account = await session.accountID else { return }
             adoptAccountID(account)
             _ = enteredAccount(account)
+            installCloudRoute(session)
             mirror = true
             await refreshAccount()
             guard state == .ready else { return }
@@ -423,7 +425,6 @@ final class AccountModel {
     private func sessionEnded() {
         guard session != nil, state == .ready else { return }
         agenda?.suspend()
-        appState.setCloudEntry(nil)
         dropCloudRouteInBackground()
         info = nil
         hasLocalKey = false
@@ -548,8 +549,7 @@ final class AccountModel {
         agenda?.suspend()
         try await session.start(tokens)
         // Another account now: neither the Cloud entry nor the route of the one before stays.
-        appState.setCloudEntry(nil)
-        await router?.invalidate()
+        await dropCloudRoute()
         await legacy.signOut()
         info = nil
         hasLocalKey = false
@@ -609,8 +609,7 @@ final class AccountModel {
         didMigrate = false
         watchCode = nil
         adoptAccountID(nil)
-        appState.setCloudEntry(nil)
-        await router?.invalidate()
+        await dropCloudRoute()
         state = .starting
         await accountDeleted?()
         for server in appState.servers {
@@ -1013,11 +1012,32 @@ final class AccountModel {
 
     // MARK: - Plumbing
 
-    /// No route of an account survives it (the session ended, another account came in): the next Cloud entry
-    /// request asks for a new one.
+    /// The Cloud entry's route for the account just entered: a new router unless this account has one already.
+    private func installCloudRoute(_ session: DeviceSession) {
+        guard router == nil else { return }
+        let router = makeRouter(session)
+        self.router = router
+        appState.cloudAPI = RoutedServerAPI(router: router, make: appState.serverAPIFactory)
+    }
+
+    /// No route of an account survives it (the session ended, another account came in, it was deleted): the Cloud
+    /// entry and its API go at once, the router is dropped (the next account makes its own) and its cached route is
+    /// invalidated in the background.
     private func dropCloudRouteInBackground() {
-        guard let router else { return }
+        guard let router = takeCloudRoute() else { return }
         Task { await router.invalidate() }
+    }
+
+    /// `dropCloudRouteInBackground()`, waiting for the invalidation.
+    private func dropCloudRoute() async {
+        await takeCloudRoute()?.invalidate()
+    }
+
+    private func takeCloudRoute() -> (any CloudRouting)? {
+        appState.setCloudEntry(nil)
+        appState.cloudAPI = nil
+        defer { router = nil }
+        return router
     }
 
     private func configuredSession() throws -> DeviceSession {

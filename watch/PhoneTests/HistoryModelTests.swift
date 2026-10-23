@@ -44,6 +44,28 @@ struct HistoryModelTests {
         #expect(!model.canLoadMore)
     }
 
+    @Test func historyIncludesCloudEntry() async {
+        let (a, _) = twoServers()
+        let cloud = FakeServerAPI(pages: [CallPage(calls: [.sample(id: "c1", at: 250)], nextBefore: nil)])
+        let state = await loadedState([(home, a)])
+        state.setCloudEntry(CloudServer(
+            id: "cs-9", name: "Wristcall Cloud", url: "https://cloud.wristcall.test", kind: "cloud", linked: true,
+            agents: []))
+        state.cloudAPI = cloud
+        let model = HistoryModel(state: state)
+
+        await model.reload()
+
+        #expect(model.items.map(\.call.id) == ["a1", "c1", "a2"])
+        #expect(model.items.map(\.serverName) == ["Home", "Wristcall Cloud", "Home"])
+        #expect(cloud.queries.count == 1)
+        // The filter can choose it, alone.
+        model.selectServer(ManagedServer.cloudEntryID)
+        await model.reload()
+        #expect(model.filter.serverID == ManagedServer.cloudEntryID)
+        #expect(model.items.map(\.call.id) == ["c1"])
+    }
+
     @Test func sameIDOnTwoServersStaysTwoItems() async {
         let a = FakeServerAPI(pages: [CallPage(calls: [.sample(id: "x", at: 10)])])
         let b = FakeServerAPI(pages: [CallPage(calls: [.sample(id: "x", at: 10)])])

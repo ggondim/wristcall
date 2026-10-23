@@ -165,10 +165,11 @@ struct AgentEditorView: View {
                 Text("CALL")
             }
             if form.showsEndpoint { endpointSection(form) }
-            if !form.isEditing && state.servers.count > 1 {
+            // The Wristcall Cloud entry is one of them (first).
+            if !form.isEditing && state.allServers.count > 1 {
                 Section {
                     Picker("Server", selection: Binding(get: { server.id }, set: { switchServer(to: $0, from: form) })) {
-                        ForEach(state.servers) { Text($0.name).tag($0.id) }
+                        ForEach(state.allServers) { Text($0.name).tag($0.id) }
                     }
                 }
             }
@@ -206,7 +207,7 @@ struct AgentEditorView: View {
     }
 
     private func switchServer(to id: String, from previous: AgentFormModel) {
-        guard id != server.id, let target = state.servers.first(where: { $0.id == id }) else { return }
+        guard id != server.id, let target = state.allServers.first(where: { $0.id == id }) else { return }
         Task { await load(target, carrying: previous) }
     }
 

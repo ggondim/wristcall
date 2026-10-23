@@ -109,7 +109,7 @@ final class HistoryModel {
         defer { if generation == mine { isLoading = false } }
 
         // A server that was removed cannot stay chosen.
-        if let chosen = filter.serverID, !state.servers.contains(where: { $0.id == chosen }) { selectServer(nil) }
+        if let chosen = filter.serverID, !state.allServers.contains(where: { $0.id == chosen }) { selectServer(nil) }
         let filter = filter
         let servers = servers(for: filter)
         let results = await Self.fetch(servers.map { ($0.id, state.api(for: $0), query(filter, before: nil)) })
@@ -150,7 +150,7 @@ final class HistoryModel {
         let mine = generation
         let ids = cursors.keys.sorted()
         let jobs = ids.compactMap { id -> (String, any ServerAPI, HistoryQuery)? in
-            guard let server = state.servers.first(where: { $0.id == id }), let before = cursors[id] else { return nil }
+            guard let server = state.allServers.first(where: { $0.id == id }), let before = cursors[id] else { return nil }
             return (id, state.api(for: server), query(loaded, before: before))
         }
         guard !jobs.isEmpty else { return }
@@ -189,7 +189,7 @@ final class HistoryModel {
 
     /// Reads the agents of the chosen server for the filter menu.
     func loadAgents() async {
-        guard let id = filter.serverID, let server = state.servers.first(where: { $0.id == id }) else {
+        guard let id = filter.serverID, let server = state.allServers.first(where: { $0.id == id }) else {
             agents = []
             return
         }
@@ -229,7 +229,7 @@ final class HistoryModel {
     func deleteAll() async {
         error = nil
         notice = nil
-        guard let id = filter.serverID, let server = state.servers.first(where: { $0.id == id }) else { return }
+        guard let id = filter.serverID, let server = state.allServers.first(where: { $0.id == id }) else { return }
         var agent: String?
         if let chosen = filter.agentID {
             agent = chosen.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -278,7 +278,7 @@ final class HistoryModel {
     /// The server's own file for the chosen server, agent and period (the search text does not reach the
     /// export), written to a private folder of the temporary directory. Needs a server.
     func export(_ format: ExportFormat) async throws -> URL {
-        guard let id = filter.serverID, let server = state.servers.first(where: { $0.id == id }) else {
+        guard let id = filter.serverID, let server = state.allServers.first(where: { $0.id == id }) else {
             throw ExportError.chooseServer
         }
         let file: HistoryExport
@@ -313,11 +313,11 @@ final class HistoryModel {
     // MARK: Plumbing
 
     private func servers(for filter: Filter) -> [ManagedServer] {
-        state.servers.filter { filter.serverID == nil || $0.id == filter.serverID }
+        state.allServers.filter { filter.serverID == nil || $0.id == filter.serverID }
     }
 
     private func api(for item: Item) -> (any ServerAPI)? {
-        guard let server = state.servers.first(where: { $0.id == item.serverID }) else {
+        guard let server = state.allServers.first(where: { $0.id == item.serverID }) else {
             error = "That server was removed."
             return nil
         }

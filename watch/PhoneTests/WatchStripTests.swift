@@ -44,6 +44,19 @@ struct WatchStripTests {
             == .synced(agents: 7, at: at))
     }
 
+    @Test func watchStripIgnoresCloudEntry() {
+        let cloud = ManagedServer.cloudEntry(CloudServer(
+            id: "cs-9", name: "Wristcall Cloud", url: "https://cloud.wristcall.test", kind: "cloud", linked: true,
+            agents: []))
+        let at = Date(timeIntervalSince1970: 100)
+        // Only the Cloud entry: no own server for the watch to miss, so nothing to open on the watch.
+        #expect(kind(watch: [], sections: [section(cloud, agents: 2)]) == .ready)
+        // Its agents never count, even if the watch named its address.
+        let watch: Set<String> = [homeCanonical, ServerAddress.canonical(cloud.url)]
+        #expect(kind(watch: watch, sections: [section(cloud, agents: 5), section(home, agents: 2)], at: at)
+            == .synced(agents: 2, at: at))
+    }
+
     @Test func readyWithoutAgents() {
         // No server on the iPhone yet.
         #expect(kind(watch: [], sections: []) == .ready)
