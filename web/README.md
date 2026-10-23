@@ -4,9 +4,9 @@ A browser app to manage your wristcall servers from any device: add a server, cr
 watches that wait to pair, make pairing codes and read the call history. It is the web counterpart of the iPhone
 app. It does not make calls; the watch does.
 
-It is a static site (TypeScript, Vite, Preact) that talks to your servers and, optionally, to the wristcall Cloud
+It is a static site (TypeScript, Vite, Preact) that talks to your servers and, optionally, to the Wristcall Cloud
 straight from the browser. There is no backend of its own: the site stores your server list and credentials in the
-browser and sends them only to the servers you added. Version 0.4.0, published as the image
+browser and sends them only to the servers you added. Version 0.4.1, published as the image
 `ghcr.io/ggondim/wristcall-web` by the `web-vX.Y.Z` tag. It is meant for servers 0.7.0 or later (older ones send no
 CORS headers, so a browser cannot call them) and, for the account features, Cloud 0.4.1 (account sessions). Server
 links (`/link`) and link codes need server 0.8.0; agent colors need server 0.8.1.
@@ -23,7 +23,7 @@ What it does:
   from 80 % of the month's call minutes. A one-way agent there may have no webhook: "None, save to History".
 - History: the calls of every server (and of Wristcall Cloud) in one list, with search, filters, export and
   redelivery; a Voice note kept in the history reads "Saved".
-- Every request to the Cloud carries `X-Wristcall-Client: web/0.4.0`, which the Cloud checks against
+- Every request to the Cloud carries `X-Wristcall-Client: web/0.4.1`, which the Cloud checks against
   `WRISTCALL_CLOUD_CLOUD_ENTRY_CLIENTS` before it shows the Cloud entry; servers and nodes never get it. The app does
   not call through the entry (the watch does).
 - Settings: the account's plan with the month's call minutes, "Redeem invite" while there is no plan, the devices
@@ -55,11 +55,11 @@ The app sends no Zitadel token to any other Cloud route, so the Cloud may run wi
 ## Run it
 
 ```sh
-docker run -p 8080:8080 -e WRISTCALL_WEB_CLOUD_URL=https://cloud.example.com ghcr.io/ggondim/wristcall-web:0.4.0
+docker run -p 8080:8080 -e WRISTCALL_WEB_CLOUD_URL=https://cloud.example.com ghcr.io/ggondim/wristcall-web:0.4.1
 ```
 
 The image is nginx without root and serves the site on port 8080. Put TLS in front of it: a PWA, its service worker and
-Web Push need `https` (only `localhost` is exempt). `WRISTCALL_WEB_CLOUD_URL` is the address of your wristcall Cloud:
+Web Push need `https` (only `localhost` is exempt). `WRISTCALL_WEB_CLOUD_URL` is the address of your Wristcall Cloud:
 empty (the default) hides everything that needs an account, `https://host[:port]`, `http://localhost[:port]` or `http://127.0.0.1[:port]` for development. Anything else stops the container at start. The container writes the address to `/config.json`, which the
 page reads when it opens, so one image fits any deployment. The Cloud address is the site operator's decision: not the
 user's and not a server's.

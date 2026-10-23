@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs"
 export interface E2eEnv {
   /** Local wristcall server, `http://127.0.0.1:8765`. */
   server: string
-  /** Local wristcall Cloud, `http://127.0.0.1:8090`. */
+  /** Local Wristcall Cloud, `http://127.0.0.1:8090`. */
   cloud: string
   /** Personal token of the local user. */
   pat: string

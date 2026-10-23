@@ -90,7 +90,7 @@ struct CallResultModelTests {
         #expect(finishes.all == [false])
     }
 
-    @Test func nothingRecordedFinishesWithoutSuccess() async throws {
+    @Test func nothingSaidFinishesWithoutSuccess() async throws {
         pairing.callStatusResults = [.success(status(.empty))]
         let result = makeResult()
 

@@ -21,7 +21,7 @@ const ACCOUNT_FILE = (process.env.WRISTCALL_E2E_CLOUD_ACCOUNT_FILE ?? "").trim()
 const SHOTS = (process.env.WRISTCALL_E2E_SHOTS ?? "").trim()
 const SAVED_CALL = process.env.WRISTCALL_E2E_CLOUD_SAVED_CALL === "1"
 
-const WEB_CLIENT = "web/0.4.0"
+const WEB_CLIENT = "web/0.4.1"
 const ENTRY = "Wristcall Cloud"
 const NO_NODE = "Wristcall Cloud is temporarily unavailable. Try again in a minute."
 
