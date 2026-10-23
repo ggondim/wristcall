@@ -1,4 +1,4 @@
-"""The registry of wristcall Cloud nodes: the servers the Cloud itself vouches for.
+"""The registry of Wristcall Cloud nodes: the servers the Cloud itself vouches for.
 
 A node authenticates with a secret (`wc_node_...`) the operator receives once, at `add` or `rotate`; only its
 SHA-256 digest is stored. Rotation keeps the previous secret for a grace period, since a node deploy is not atomic.

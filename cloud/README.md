@@ -324,29 +324,7 @@ Secrets are stored only as SHA-256 digests, and never reach a log, an error resp
   `macos`, the watch client for `watchos`, the PWA client for `web` (`403 forbidden` otherwise). On the 0.3.x routes a
   Zitadel token from a client the Cloud does not know counts as the watch.
 
-### Node alert
-
-Since 0.7.0 the Cloud can tell you when an always-on node stops sending heartbeats, like a night watchman who rings
-the bell only in working hours. Set `WRISTCALL_CLOUD_ALERT_URL` to an ntfy topic URL (`https` only; the topic name is
-the password, so give it as a secret, or with `_FILE`). Without it nothing runs.
-
-Once a minute the Cloud looks at the registered nodes. A node raises the alert when it is enabled, `always_on`, and has
-sent no heartbeat for more than `WRISTCALL_CLOUD_ALERT_AFTER_S` (default 900; a node never heard from counts from the
-Cloud's own start), between 07:00 and 23:00 in Brasília, while at least one account has a plan in force (the same
-filter as `admin stats`). Nothing is sent for `on_demand` or disabled nodes. The message is a plain text POST with
-the ntfy headers `Title: wristcall-node`, `Priority: high` and `Tags: warning`:
-
-```
-wristcall node home: no heartbeat for 15 min
-```
-
-When the node beats again (at any hour) one more message goes out, `Priority: default`, `Tags: white_check_mark`:
-`wristcall node home: heartbeat back`. One message per outage, not one per minute. A node counts as down only after
-ntfy answered `2xx`; a refused or lost message is sent again by the next round. The set of nodes known to be down is
-kept in memory (one Cloud replica): after a restart a node that is still silent is announced once more. Failures are
-logged by exception type or status only, never the URL.
-
-## Routes
+### Routes
 
 A device in a request body is `{"name": 1 to 64 characters, with no control or format characters (newlines, bidi
 overrides, zero-width characters: `422 invalid`), "platform", "public_key"?: up to 1024 characters,
@@ -598,9 +576,33 @@ call routes refused with `503 no_node_available` (`purpose: manage` is not count
 | `stt_p95_ms`, `tts_p95_ms` | the 95th percentile per provider (`name=ms ...`, `none` without samples) |
 | `provider_failures` | per provider (`name=n ...`, `none` without failures) |
 | `cloud_unreachable_s`, `outbox_dropped` | sums |
-| `hours_without_heartbeat_day` | hours that have ended, start between 07:00 and 23:00 in Brasília (America/Sao_Paulo) and have no heartbeat; hours before the node was registered do not count |
+| `hours_without_heartbeat_day` | hours that have ended, start between 07:00 and 23:00 in Brasília (America/Sao_Paulo) and have no heartbeat; hours before the node was registered do not count; `n/a` for a node that is not `always_on` |
 | `days_at_peak` | days (Brasília) with an hour where the conversations open reached the conversation slots the node offered that hour |
 | `routes_call`, `no_node`, `no_node_pct` | the route's counters over the window, once after the nodes (all nodes together); `no_node_pct` is `no_node` / (`routes_call` + `no_node`), in %, `n/a` when both are 0 |
+
+### Node alert
+
+Since 0.7.0 the Cloud can tell you when an always-on node stops sending heartbeats, like a night watchman who rings
+the bell only in working hours. Set `WRISTCALL_CLOUD_ALERT_URL` to an ntfy topic URL (`https` only; the topic name is
+the password, so give it as a secret, or with `_FILE`). Without it nothing runs.
+
+Once a minute the Cloud looks at the registered nodes. A node raises the alert when it is enabled, `always_on`, and has
+sent no heartbeat for more than `WRISTCALL_CLOUD_ALERT_AFTER_S` (default 900; a node never heard from counts from the
+Cloud's own start), between 07:00 and 23:00 in Brasília, while at least one account has a plan in force (the same
+filter as `admin stats`). Nothing is sent for `on_demand` or disabled nodes. The message is a plain text POST with
+the ntfy headers `Title: wristcall-node`, `Priority: high` and `Tags: warning`:
+
+```
+wristcall node home: no heartbeat for 16 min
+```
+
+The number is how long the node has been silent, in whole minutes (never less than the threshold's).
+
+When the node beats again (at any hour) one more message goes out, `Priority: default`, `Tags: white_check_mark`:
+`wristcall node home: heartbeat back`. One message per outage, not one per minute. A node counts as down only after
+ntfy answered `2xx`; a refused or lost message is sent again by the next round. The set of nodes known to be down is
+kept in memory (one Cloud replica): after a restart a node that is still silent is announced once more. Failures are
+logged by exception type or status only, never the URL.
 
 ## Routes and the Cloud entry
 

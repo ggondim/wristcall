@@ -142,7 +142,7 @@ async def test_alert_once_then_back(world):
         await put_node(world, last_seen_at=DAYTIME - 16 * MIN)
         await alert_round(world, http, down, now=DAYTIME)
         assert ntfy.sent == [
-            ("wristcall node home: no heartbeat for 15 min", "wristcall-node", "high", "warning", URL)
+            ("wristcall node home: no heartbeat for 16 min", "wristcall-node", "high", "warning", URL)
         ]
         assert down == {"home"}
         await alert_round(world, http, down, now=DAYTIME + MIN)  # the second round does not repeat it
@@ -157,13 +157,21 @@ async def test_alert_once_then_back(world):
         assert len(ntfy.requests) == 2
 
 
-async def test_alert_after_s_sets_the_minutes_in_the_message(world):
+async def test_message_has_the_real_silence_in_minutes(world):
     world.config = replace(world.config, alert_after_s=1200)
     ntfy = Ntfy()
     async with ntfy.client() as http:
-        await put_node(world, last_seen_at=DAYTIME - 21 * MIN)
+        await put_node(world, last_seen_at=DAYTIME - 21 * MIN - 30)
         await alert_round(world, http, set(), now=DAYTIME)
-    assert ntfy.sent[0][0] == "wristcall node home: no heartbeat for 20 min"
+    assert ntfy.sent[0][0] == "wristcall node home: no heartbeat for 21 min"
+
+
+async def test_message_of_a_node_never_heard_from_counts_from_the_cloud_start(world):
+    ntfy = Ntfy()
+    async with ntfy.client() as http:
+        await put_node(world, last_seen_at=None)  # the Cloud started an hour before
+        await alert_round(world, http, set(), now=DAYTIME)
+    assert ntfy.sent[0][0] == "wristcall node home: no heartbeat for 60 min"
 
 
 async def test_round_ignores_nodes_that_are_not_due(world):

@@ -56,12 +56,18 @@ def test_parse_stats_accepts_the_node_snapshot_and_partial_or_newer_ones():
     assert parse_stats(stats()) == stats()
     assert parse_stats({}) == {}
     assert parse_stats({"calls": {"one_way": 1}, "later": [1]}) == {"calls": {"one_way": 1}}
+    # A call type it does not know is left out, like an unknown key; the known ones still count.
+    assert parse_stats({"calls": {"one_way": 1, "video": 9}, "peak": {"video": 2}}) == {
+        "calls": {"one_way": 1}, "peak": {},
+    }
+    with pytest.raises(InvalidStats):
+        parse_stats({"calls": {"one_way": -1, "video": 9}})
 
 
 @pytest.mark.parametrize(
     "bad",
     [
-        [], "x", {"calls": [1]}, {"calls": {"video": 1}}, {"calls": {"conversation": -1}},
+        [], "x", {"calls": [1]}, {"calls": {"conversation": -1}},
         {"busy": {"one_way": True}}, {"peak": {"one_way": 1.5}}, {"not_ready": -1}, {"outbox_dropped": "1"},
         {"cloud_unreachable_s": 10**10}, {"first_audio_ms": {"123": 1}}, {"first_audio_ms": {"500": -2}},
         {"stt_ms": {"a.b": {"500": 1}}}, {"tts_ms": {"$x": {"500": 1}}}, {"stt_ms": {"ok": {"501": 1}}},
@@ -106,6 +112,12 @@ def test_summarize_adds_up_the_hours():
     assert summary["provider_failures"] == {"a": 3, "b": 1}
     assert summary["cloud_unreachable_s"] == 5 and summary["outbox_dropped"] == 1
     assert summary["hours_without_heartbeat_day"] == 0
+
+
+def test_hours_without_heartbeat_is_none_for_a_node_that_does_not_beat():
+    now = (H10 + timedelta(hours=3)).timestamp()
+    assert summarize([], start=H10, now=now, node_kind="on_demand")["hours_without_heartbeat_day"] is None
+    assert summarize([], start=H10, now=now, node_kind="always_on")["hours_without_heartbeat_day"] == 3
 
 
 def test_hours_without_heartbeat_counts_only_day_hours_brt():

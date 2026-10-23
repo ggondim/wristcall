@@ -64,9 +64,11 @@ def due_alerts(
     return fell, back
 
 
-def _fell_message(node_id: str, after_s: int) -> tuple[str, dict[str, str]]:
+def _fell_message(node_id: str, silent_s: float, after_s: int) -> tuple[str, dict[str, str]]:
+    """The minutes are the real silence in whole minutes, never fewer than the threshold's."""
     headers = {"Title": TITLE, "Priority": "high", "Tags": "warning"}
-    return f"wristcall node {node_id}: no heartbeat for {after_s // 60} min", headers
+    minutes = max(int(silent_s // 60), after_s // 60)
+    return f"wristcall node {node_id}: no heartbeat for {minutes} min", headers
 
 
 def _back_message(node_id: str) -> tuple[str, dict[str, str]]:
@@ -102,8 +104,11 @@ async def alert_round(state: State, http: httpx.AsyncClient, down: set[str], *, 
         after_s=config.alert_after_s,
         down=down,
     )
+    last_seen = {node["_id"]: node.get("last_seen_at") for node in nodes}
     for node_id in fell:
-        if await _send(http, config.alert_url, _fell_message(node_id, config.alert_after_s)):
+        seen = last_seen[node_id]
+        silent_s = now - (state.started_at if seen is None else seen)
+        if await _send(http, config.alert_url, _fell_message(node_id, silent_s, config.alert_after_s)):
             down.add(node_id)
     for node_id in back:
         if await _send(http, config.alert_url, _back_message(node_id)):

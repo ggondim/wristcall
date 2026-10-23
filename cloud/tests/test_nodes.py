@@ -304,6 +304,12 @@ async def test_admin_nodes_stats_sums_the_window(mongo_db, nodes, capsys):
     assert out.count("routes_call: ") == 1
 
 
+async def test_admin_nodes_stats_is_na_without_heartbeat_hours_for_on_demand(mongo_db, nodes, capsys):
+    await nodes.add("lazy", url="https://lazy.test", region="gru", kind="on_demand", capabilities=[])
+    code, out, err = await cli(mongo_db, capsys, "nodes", "stats", "lazy")
+    assert code == 0 and err == "" and parsed(out)["hours_without_heartbeat_day"] == "n/a"
+
+
 async def test_admin_nodes_stats_errors(mongo_db, nodes, capsys):
     code, out, err = await cli(mongo_db, capsys, "nodes", "stats", "nope")
     assert code == 1 and out == "" and "no such node" in err

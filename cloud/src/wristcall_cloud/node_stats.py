@@ -52,10 +52,9 @@ def _object(value: Any, name: str) -> dict[str, Any]:
 
 
 def _by_kind(value: Any, name: str) -> dict[str, int]:
+    """A call type it does not know is left out (a newer node may count more), like an unknown top-level key."""
     counts = _object(value, name)
-    if any(kind not in KINDS for kind in counts):
-        raise InvalidStats(f"{name} keys must be {' or '.join(KINDS)}")
-    return {kind: _count(n, name) for kind, n in counts.items()}
+    return {kind: _count(n, name) for kind, n in counts.items() if kind in KINDS}
 
 
 def _histogram(value: Any, name: str) -> dict[str, int]:
@@ -179,12 +178,13 @@ def percentile(counts: dict[str, int], pct: int) -> int | float | None:
         return None
     rank = -(-pct * total // 100)  # ceil(pct% of total), in integers
     seen = 0
-    for key in sorted(counts, key=_bound):
+    key = ""
+    for key in sorted(counts, key=_bound):  # total > 0, so the last bucket always reaches the rank
         seen += counts[key]
         if seen >= rank:
-            bound = _bound(key)
-            return bound if bound == math.inf else int(bound)
-    return None  # not reached
+            break
+    bound = _bound(key)
+    return bound if bound == math.inf else int(bound)
 
 
 def _merge(into: dict[str, int], counts: dict[str, Any] | None) -> None:
@@ -208,9 +208,12 @@ def finished_day_hours(start: datetime, now: float) -> list[datetime]:
     return hours
 
 
-def summarize(docs: list[dict[str, Any]], *, start: datetime, now: float) -> dict[str, Any]:
+def summarize(
+    docs: list[dict[str, Any]], *, start: datetime, now: float, node_kind: str = "always_on"
+) -> dict[str, Any]:
     """The summary of one node's hours from `start` (a UTC hour) to `now` (pure). Percentiles are None without
-    samples, percentages None when nothing was counted."""
+    samples, percentages None when nothing was counted, and `hours_without_heartbeat_day` None for a node that is not
+    `always_on` (an on-demand node does not beat)."""
     calls = dict.fromkeys(KINDS, 0)
     busy = dict.fromkeys(KINDS, 0)
     peak = dict.fromkeys(KINDS, 0)
@@ -254,7 +257,9 @@ def summarize(docs: list[dict[str, Any]], *, start: datetime, now: float) -> dic
         "provider_failures": dict(sorted(failures.items())),
         "cloud_unreachable_s": totals["cloud_unreachable_s"],
         "outbox_dropped": totals["outbox_dropped"],
-        "hours_without_heartbeat_day": sum(1 for h in finished_day_hours(start, now) if h not in beaten),
+        "hours_without_heartbeat_day": (
+            sum(1 for h in finished_day_hours(start, now) if h not in beaten) if node_kind == "always_on" else None
+        ),
         "days_at_peak": len(peak_days),
     }
 

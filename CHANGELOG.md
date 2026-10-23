@@ -8,7 +8,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 
 Cloud 0.7.0. Keeps an hourly summary of the nodes from the counters a node sends in its heartbeat (server 0.11.0)
 and from the call routes, and shows it with `admin nodes stats`. Same HTTP contract: heartbeats without `stats` (nodes
-before 0.11.0) are answered as before. A new collection, no schema change.
+before 0.11.0) are answered as before. A new collection: `meta.version` stays 3; `node_stats` and its indexes are
+created at startup.
 
 ### Added
 
@@ -20,7 +21,8 @@ before 0.11.0) are answered as before. A new collection, no schema change.
   `503 no_node_available` (`no_node`), per hour.
 - `wristcall-cloud admin nodes stats [NODE] [--hours N]` (default 24, up to 2160): calls, `busy_pct`, peak,
   first audio p50/p95, STT and TTS p95 per provider, provider failures, `cloud_unreachable_s`, `outbox_dropped`,
-  `hours_without_heartbeat_day` (hours between 07:00 and 23:00 in Brasília without a heartbeat), `days_at_peak`, and
+  `hours_without_heartbeat_day` (hours between 07:00 and 23:00 in Brasília without a heartbeat; `n/a` for a node that
+  is not `always_on`), `days_at_peak`, and
   the route's `routes_call` and `no_node_pct`. Without `NODE`, every enabled node; `n/a` where there is no sample.
 - ntfy alert for an always-on node that stops sending heartbeats (`WRISTCALL_CLOUD_ALERT_URL` or `_FILE`, https only;
   `WRISTCALL_CLOUD_ALERT_AFTER_S`, default 900): one message when it falls silent and one when it is back, only
@@ -55,13 +57,15 @@ Server 0.11.0. In cloud mode each heartbeat carries the node's counters (`stats`
   `cloud_unreachable_s` and `outbox_dropped`. Times are histograms over fixed buckets (250 ms to 15 s, then `inf`).
   See "Node metrics" in the README.
 - A heartbeat the Cloud refuses takes nothing off the counters: they add up until one is accepted, with the time the
-  Cloud was not reached.
+  Cloud was not reached (`cloud_unreachable_s` is the time without an accepted heartbeat, from network errors and
+  refused beats, approximate to the second).
 
 ### Notes
 
 - Provider names in the counters: the operator's YAML name, `user` for the user's own endpoint, and `other` for a
   name that is not safe to send or any past the first six (at most 8 names per map).
 - A Cloud before 0.7.0 ignores `stats`.
+- A bug in the counters never stops a heartbeat: the beat then goes without `stats` and the node still becomes ready.
 
 ## [watch-0.6.1] - 2026-10-23
 

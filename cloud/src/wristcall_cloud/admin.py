@@ -188,9 +188,9 @@ def _value(value: Any) -> str:
 
 async def _nodes_stats(args: argparse.Namespace, cloud: CloudModeStore, now: float) -> int:
     if args.node is None:
-        chosen = await cloud.nodes.find({"enabled": True}, {"created_at": 1}).sort("_id", 1).to_list(None)
+        chosen = await cloud.nodes.find({"enabled": True}, {"created_at": 1, "kind": 1}).sort("_id", 1).to_list(None)
     else:
-        node = await cloud.nodes.find_one({"_id": args.node}, {"created_at": 1})
+        node = await cloud.nodes.find_one({"_id": args.node}, {"created_at": 1, "kind": 1})
         if node is None:
             return _no_such_node()
         chosen = [node]
@@ -199,7 +199,8 @@ async def _nodes_stats(args: argparse.Namespace, cloud: CloudModeStore, now: flo
         # Hours before the node was registered are not hours without its heartbeat.
         created = node.get("created_at")
         start = max(window, hour_of(created)) if created is not None else window
-        summary = summarize(await hours_of(cloud.node_stats, node["_id"], window), start=start, now=now)
+        hours = await hours_of(cloud.node_stats, node["_id"], window)
+        summary = summarize(hours, start=start, now=now, node_kind=node.get("kind", ""))
         _line("node", node["_id"])
         _line("hours", args.hours)
         for key, value in summary.items():
