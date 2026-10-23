@@ -3,7 +3,7 @@ import Foundation
 import Testing
 import WristcallKit
 
-/// The account flows end to end: a local wristcall Cloud, a local server whose central account is that Cloud,
+/// The account flows end to end: a local Wristcall Cloud, a local server whose central account is that Cloud,
 /// and the real Zitadel behind it, where a human test user signs in through a browser driven by Playwright
 /// (`tools/e2e/zitadel_browser.py`). Skipped unless `WRISTCALL_TEST_CLOUD` is set; the dev repo's E7 `e2e.sh`
 /// starts everything and sets:

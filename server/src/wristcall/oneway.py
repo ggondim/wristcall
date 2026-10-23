@@ -14,6 +14,7 @@ from typing import Any
 
 from .agents import Agent, OneWayProviders
 from .audio import FRAME_BYTES_IN, FRAME_MS, SAMPLE_RATE_IN, FrameAssembler, pcm16_to_wav
+from .cloud_node.stats import note_failure
 from .delivery import DeliveryPolicy, deliver, payload
 from .history import CallLog, new_call_id
 from .providers import ProviderError
@@ -118,6 +119,7 @@ class OneWayCall:
                     )
                 except (ProviderError, TimeoutError) as e:
                     log.warning("call %s: STT attempt %d failed: %s", self.record.id, attempt, e)
+                    note_failure(self._providers.stt)
         return None
 
     # ---------- after hang-up (background) ----------

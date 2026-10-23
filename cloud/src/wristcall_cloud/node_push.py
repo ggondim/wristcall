@@ -23,7 +23,7 @@ log = logging.getLogger("wristcall_cloud.node_push")
 
 router = APIRouter(prefix="/v1/node")
 
-QUOTA_WARNING_TITLE = "wristcall Cloud"
+QUOTA_WARNING_TITLE = "Wristcall Cloud"
 QUOTA_WARNING_BODY = "You have used 80% of this month's minutes."
 
 

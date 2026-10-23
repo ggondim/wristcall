@@ -130,16 +130,19 @@ final class AgentFormModel {
     let providers: ProviderList
     /// `version` of the server's `/v1/health`; `nil` while unknown.
     let serverVersion: String?
+    /// The agent lives in the Wristcall Cloud entry: the footers name Wristcall Cloud, not "your server".
+    let cloud: Bool
 
     /// Endpoints as the form builds them right after loading; what `fields()` compares with.
     @ObservationIgnored private var initialEndpoints: [Stage: JSONValue] = [:]
     /// The one header the form shows when the stored webhook has several.
     @ObservationIgnored private var shownHeaderName = ""
 
-    init(editing agent: AgentDetail?, providers: ProviderList, serverVersion: String? = nil) {
+    init(editing agent: AgentDetail?, providers: ProviderList, serverVersion: String? = nil, cloud: Bool = false) {
         self.editing = agent
         self.providers = providers
         self.serverVersion = serverVersion
+        self.cloud = cloud
         guard let agent else { return }
         slug = agent.slug
         displayName = agent.displayName
@@ -271,11 +274,12 @@ final class AgentFormModel {
 
     /// The text under the endpoint section: where the transcript (or the voice) goes.
     var endpointFooter: String {
+        let owner = cloud ? "Wristcall Cloud" : "Your server"
         guard isOneWay else {
-            return "Your server turns your voice into text, sends it to this endpoint and speaks the answer."
+            return "\(owner) turns your voice into text, sends it to this endpoint and speaks the answer."
         }
         if action == .none, allowsHistoryOnly { return "The transcript is saved to History." }
-        return "Your server sends the transcript to this webhook."
+        return "\(owner) sends the transcript to this webhook."
     }
 
     /// What "no endpoint" is called in the picker of a stage.

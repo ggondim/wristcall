@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wristcall"
-version = "0.10.1"
+version = "0.11.0"
 description = "wristcall server: voice calls from the Apple Watch with pluggable providers"
 license = "Apache-2.0"
 requires-python = ">=3.12"

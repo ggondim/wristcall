@@ -223,13 +223,33 @@ async def test_admin_stats(store, capsys):
     assert code == 0
     assert list(stats) == [
         "accounts", "anonymous_24h", "devices", "identities", "entitlements",
-        "schema", "nodes", "nodes_enabled", "cloud_calls_open", "usage_month_s",
+        "entitlements_by_country", "schema", "nodes", "nodes_enabled", "cloud_calls_open", "usage_month_s",
     ]  # fmt: skip
     assert stats["accounts"] == "2" and stats["devices"] == "1"
     assert stats["identities"] == "1" and stats["entitlements"] == "1"
+    assert stats["entitlements_by_country"] == "unknown=1"  # `grant` has no caller to ask
     assert (stats["nodes"], stats["nodes_enabled"], stats["cloud_calls_open"], stats["usage_month_s"]) == (
         "0", "0", "0", "0"
     )
+
+
+async def test_admin_stats_entitlements_by_country(store, capsys):
+    now = time.time()
+    code, out, _ = await cli(store, capsys, "stats")
+    assert code == 0 and parsed(out)["entitlements_by_country"] == "none"
+    accounts = [await anonymous(store, name, seen=now) for name in "abcdef"]
+    for account, country in zip(accounts[:3], ("BR", "US", "BR")):
+        codes = await store.create_invites("full", 1, days=30)
+        await store.redeem_invite(codes[0], account, country=country)
+    await store.grant(accounts[3], "full", days=None)  # CLI: no country
+    codes = await store.create_invites("full", 1, days=30)
+    await store.redeem_invite(codes[0], accounts[4])  # redeemed without a known country
+    await store.grant(accounts[5], "full", days=1, now=now - 2 * DAY)  # expired: not counted
+    await store.entitlements.update_one({"_id": accounts[5]}, {"$set": {"country": "AR"}})
+    code, out, _ = await cli(store, capsys, "stats")
+    stats = parsed(out)
+    assert code == 0 and stats["entitlements"] == "5"
+    assert stats["entitlements_by_country"] == "BR=2,US=1,unknown=2"
 
 
 async def test_admin_stats_and_show_count_cloud_mode(store, mongo_db, capsys):

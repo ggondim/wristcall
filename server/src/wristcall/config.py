@@ -274,10 +274,10 @@ def _check_base_url(value: str, what: str) -> str:
 
 
 class CentralAccountConfig(BaseModel):
-    """Optional link to the wristcall cloud account (OIDC). Without it the server works on its own."""
+    """Optional link to the Wristcall Cloud account (OIDC). Without it the server works on its own."""
 
     model_config = ConfigDict(extra="forbid")
-    # The wristcall Cloud URL: it signs the per-server tokens. https://...; http only for localhost/127.0.0.1;
+    # The Wristcall Cloud URL: it signs the per-server tokens. https://...; http only for localhost/127.0.0.1;
     # kept in canonical form (scheme and host lowercased, default port and trailing slash dropped).
     issuer: str
     # The server's URL(s), exactly as apps reach it: a token is accepted only if it was made for one of them.
@@ -309,7 +309,7 @@ class CentralAccountConfig(BaseModel):
 
 
 class PushConfig(BaseModel):
-    """Push through the wristcall Cloud relay (E6). Devices and apps register their own relay key; nothing else here."""
+    """Push through the Wristcall Cloud relay (E6). Devices and apps register their own relay key; nothing else here."""
 
     model_config = ConfigDict(extra="forbid")
     # The Cloud URL: https://...; http only for localhost/127.0.0.1; the trailing slash is dropped.

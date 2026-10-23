@@ -77,13 +77,13 @@ export function userMessage(e: unknown): string {
   return "Something went wrong."
 }
 
-/** Short text for a failed wristcall Cloud call. Never the error's own text: it could carry what was sent. */
+/** Short text for a failed Wristcall Cloud call. Never the error's own text: it could carry what was sent. */
 export function cloudMessage(error: unknown): string {
-  if (error instanceof NetworkError || error instanceof TimeoutError) return "Can't reach wristcall Cloud."
+  if (error instanceof NetworkError || error instanceof TimeoutError) return "Can't reach Wristcall Cloud."
   if (error instanceof ApiError) {
     const refusal = cloudRefusal(error)
     if (refusal !== null) return refusal
-    return error.status === 503 || error.status === 502 ? "wristcall Cloud is busy. Try again in a moment." : "wristcall Cloud refused the request."
+    return error.status === 503 || error.status === 502 ? "Wristcall Cloud is busy. Try again in a moment." : "Wristcall Cloud refused the request."
   }
   return "Something went wrong. Try again."
 }

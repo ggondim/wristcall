@@ -90,7 +90,7 @@ struct CallResultModelTests {
         #expect(finishes.all == [false])
     }
 
-    @Test func nothingRecordedFinishesWithoutSuccess() async throws {
+    @Test func nothingSaidFinishesWithoutSuccess() async throws {
         pairing.callStatusResults = [.success(status(.empty))]
         let result = makeResult()
 
@@ -98,6 +98,15 @@ struct CallResultModelTests {
 
         #expect(result.state == .finished(status(.empty)))
         #expect(finishes.all == [false])
+    }
+
+    @Test func emptyResultSaysNothingSaid() async throws {
+        pairing.callStatusResults = [.success(status(.empty))]
+        let result = makeResult()
+
+        await run(result)
+
+        #expect(result.headline == "Nothing said.")
     }
 
     /// The network failing on the way does not stop the queries.

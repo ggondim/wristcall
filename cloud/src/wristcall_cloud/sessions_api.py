@@ -475,8 +475,10 @@ async def redeem_invite(request: Request, caller: Caller = Depends(current_devic
     check_ip_limit(request, request.app.state.attempt_limiter)
     body = await json_object(request)
     code = _code(body.get("code"))
+    country = client_country(request, _config(request).client_country_header)
     try:
-        doc = None if len(code) > MAX_CODE else await _accounts(request).redeem_invite(code, caller.key)
+        accounts = _accounts(request)
+        doc = None if len(code) > MAX_CODE else await accounts.redeem_invite(code, caller.key, country=country)
     except AlreadyEntitled:
         raise ApiError("already_entitled", "this account already has a plan", 409) from None
     if doc is None:

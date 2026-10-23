@@ -7,8 +7,8 @@ import { AccountModel } from "./account"
 import { appApproveLink, approveLink, parseApproveFragment, SignInModel, type SignInPhase } from "./signIn"
 
 const MAC_SAFARI = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
-const CLOUD_DOWN = "Can't reach wristcall Cloud."
-const NOT_WEB = "This wristcall Cloud doesn't accept sign-in from the web app yet."
+const CLOUD_DOWN = "Can't reach Wristcall Cloud."
+const NOT_WEB = "This Wristcall Cloud doesn't accept sign-in from the web app yet."
 const STORAGE_KEY = "wristcall.webSession"
 const T0 = 1_800_000_000_000
 

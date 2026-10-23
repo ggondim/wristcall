@@ -3,7 +3,7 @@ import Observation
 import WristcallKit
 
 /// Mirrors the servers of this iPhone (name, canonical URL, `linked`) and their agents to the account's
-/// agenda in wristcall Cloud, which the watch reads when it signs in with the account and other apps show.
+/// agenda in Wristcall Cloud, which the watch reads when it signs in with the account and other apps show.
 ///
 /// Best effort and in the background: every change only queues a job and returns at once, so a slow or
 /// hung Cloud never holds up managing servers or agents. Jobs run one after another; each reads the latest
@@ -181,7 +181,7 @@ final class AgendaSync {
         } catch AccountError.signedOut {
             await signedOut()
         } catch {
-            notice = "Can't read your servers from wristcall Cloud."
+            notice = "Can't read your servers from Wristcall Cloud."
         }
         return []
     }
@@ -209,7 +209,7 @@ final class AgendaSync {
 
     // MARK: - Plumbing
 
-    private static let writeNotice = "Can't update your servers in wristcall Cloud."
+    private static let writeNotice = "Can't update your servers in Wristcall Cloud."
 
     private func enqueue(_ work: @escaping @MainActor (Int) async -> Void) {
         let generation = generation

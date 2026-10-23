@@ -134,9 +134,9 @@ final class PlanModel {
         switch state {
         case .ready: nil
         case .starting: settingUpMessage
-        case .waiting: "Can't reach wristcall Cloud. Trying again soon."
+        case .waiting: "Can't reach Wristcall Cloud. Trying again soon."
         case .needsSignIn: "Sign in to your account first."
-        case .unavailable: "wristcall Cloud is not set up for this app."
+        case .unavailable: "Wristcall Cloud is not set up for this app."
         case .failed(let message): message
         }
     }

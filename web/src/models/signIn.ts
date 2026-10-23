@@ -13,8 +13,8 @@ const CODE_LIFETIME_MS = 300_000
 /** Where a live code waits out a reload of the tab. */
 const STORAGE_KEY = "wristcall.webSession"
 
-const CLOUD_DOWN = "Can't reach wristcall Cloud."
-const NOT_WEB = "This wristcall Cloud doesn't accept sign-in from the web app yet."
+const CLOUD_DOWN = "Can't reach Wristcall Cloud."
+const NOT_WEB = "This Wristcall Cloud doesn't accept sign-in from the web app yet."
 const ADOPT_FAILED = "Something went wrong. Try again."
 
 /** The page the QR code opens: the iPhone app takes it over (`/approve` on the host the Kit accepts). */

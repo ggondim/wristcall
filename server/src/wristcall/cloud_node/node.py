@@ -17,9 +17,10 @@ import httpx
 
 from .. import __version__
 from ..admission import CallSlots
-from ..agents import AgentError, AgentSpec, ProviderRef
+from ..agents import AgentError, AgentSpec, Endpoint, OneWayProviders, ProviderRef
 from ..config import AppConfig
 from ..oidc import OidcVerifier
+from ..providers import ProviderSet
 from ..storage.cloud import CloudStorage
 from ..storage.models import AgentRecord, CloudUnavailable, PlanRequired
 from .auth import CloudAuthenticator
@@ -28,6 +29,7 @@ from .heartbeat import Heartbeat
 from .outbox import CallRegistry, Outbox
 from .proof import UserProof, require_proof
 from .seal import SealCodec
+from .stats import NodeStats, TimedSpeechToText, TimedTextToSpeech
 
 log = logging.getLogger("wristcall.cloud_node.node")
 
@@ -57,6 +59,7 @@ class CloudNode:
         self.registry = registry
         self.outbox = outbox
         self.heartbeat = heartbeat
+        self.stats: NodeStats = heartbeat.stats  # the counters each heartbeat carries
         self.seal = seal
         self.ready = asyncio.Event()  # set at the first heartbeat the Cloud accepts
         self.draining = False  # set when the node stops taking calls before exiting (Task 8b)
@@ -85,16 +88,17 @@ class CloudNode:
         client = CloudClient(node_config.cloud_url, node_config.node_secret.get_secret_value(), http)
         seal = SealCodec(node_config.seal())
         registry = CallRegistry()
+        stats = NodeStats()
         verifier = OidcVerifier(central.issuer, list(central.audience), http, typ=SERVER_TOKEN_TYPE)
         return cls(
             client=client,
             storage=CloudStorage(client, seal),
             auth=CloudAuthenticator(verifier),
             registry=registry,
-            outbox=Outbox(client, registry, max_delay_s=outbox_max_delay_s),
+            outbox=Outbox(client, registry, max_delay_s=outbox_max_delay_s, stats=stats),
             heartbeat=Heartbeat(
                 client, registry, slots, config.limits.max_concurrent_calls,
-                version=__version__, every_s=node_config.heartbeat_s,
+                version=__version__, every_s=node_config.heartbeat_s, stats=stats,
             ),
             seal=seal,
             clock=clock,
@@ -104,6 +108,19 @@ class CloudNode:
     def accepting(self) -> bool:
         """Takes new calls: the Cloud accepted a heartbeat and the node is not draining."""
         return self.ready.is_set() and not self.draining
+
+    def timed(self, spec: AgentSpec, providers: OneWayProviders | ProviderSet) -> OneWayProviders | ProviderSet:
+        """The call's providers with their voice stages counted in `stats` (STT time, TTS time to the first audio),
+        under the operator's provider name or `user` for the user's own endpoint."""
+
+        def key(endpoint: Endpoint | None) -> str:
+            return self.stats.key_for(endpoint.provider if isinstance(endpoint, ProviderRef) else None)
+
+        stt = TimedSpeechToText(providers.stt, self.stats, key(spec.stt))
+        if isinstance(providers, OneWayProviders):
+            return OneWayProviders(stt=stt, webhook=providers.webhook)  # type: ignore[arg-type]
+        tts = TimedTextToSpeech(providers.tts, self.stats, key(spec.tts))
+        return ProviderSet(stt=stt, responder=providers.responder, tts=tts)  # type: ignore[arg-type]
 
     async def start(self) -> None:
         """Starts the outbox worker and the heartbeat (in the running loop)."""

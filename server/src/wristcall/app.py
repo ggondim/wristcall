@@ -557,9 +557,11 @@ def create_app(
             else:
                 await transport.send_json(protocol.call_captured(call_id, "limit"))
 
-    def became_ready(call_log: CallLog | CloudCallLog) -> None:
+    def became_ready(call_log: CallLog | CloudCallLog, agent: Agent) -> None:
         if isinstance(call_log, CloudCallLog):  # the Cloud bills from session.ready (P12)
             call_log.mark_ready(time.time())
+            if node is not None:  # a call the Cloud opened and the client was told is ready
+                node.stats.call_admitted(call_kind(agent.call_type))
 
     async def refuse(ws: WebSocket, e: CallRefused) -> None:
         if e.code == "unauthorized":  # the device was removed from the account
@@ -622,7 +624,7 @@ def create_app(
                     secrets.token_hex(8), agent_summary(agent), "manual",
                     protocol.AudioFormat(sample_rate=protocol.INPUT_SAMPLE_RATE), call_id=record.id,
                 ))
-                became_ready(call_log)
+                became_ready(call_log, agent)
                 log.info("call %s started: device=%s agent=%s (%s) type=%s", record.id, device_id, agent.id, agent.slug, agent.call_type)
                 warming = asyncio.create_task(warm_all(call_targets)) if call_targets else None
                 if await pump_until(ws, transport, on_audio, on_mute, cut) and cut is not None:
@@ -656,6 +658,7 @@ def create_app(
             try:
                 session = CallSession(
                     agent.spec, provider_set, vad, transport, turn_end=turn_end, record=call_log.add,
+                    on_first_audio=node.stats.first_audio if node is not None else None,
                 )
             except BaseException:
                 await abandon(call_log)
@@ -674,7 +677,7 @@ def create_app(
                         protocol.AudioFormat(sample_rate=provider_set.tts.sample_rate), call_id=record.id,
                     )
                 )
-                became_ready(call_log)
+                became_ready(call_log, agent)
                 log.info(
                     "call %s started: device=%s agent=%s (%s) turn_end=%s",
                     record.id, device_id, agent.id, agent.slug, turn_end,
@@ -732,6 +735,8 @@ def create_app(
                 )
             else:
                 providers = build_agent_providers(config, agent.spec, http_client, user_http=user_http)
+            if node is not None:  # cloud mode: the voice providers' times go in the heartbeat
+                providers = node.timed(agent.spec, providers)
         except ProviderError as e:
             log.warning("agent %s unavailable: %s", agent.id, e)
             raise protocol.ProtocolError(
@@ -757,7 +762,11 @@ def create_app(
         slot = slots.try_acquire(kind)
         if slot is None:
             log.warning("call refused: %s calls at the limit", kind)
+            if node is not None:
+                node.stats.busy(kind)
             raise protocol.ProtocolError(protocol.ErrorCode.BUSY, BUSY)
+        if node is not None:
+            node.stats.active(slots.active())
         return providers, slot
 
     async def run_call(
@@ -790,6 +799,7 @@ def create_app(
             return
         try:
             if not cloud.accepting:  # before the first heartbeat the Cloud accepts, or draining
+                cloud.stats.not_ready()
                 raise protocol.ProtocolError(protocol.ErrorCode.BUSY, BUSY)
             if found is None or keys_down:
                 raise _cloud_unreachable()

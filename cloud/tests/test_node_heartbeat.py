@@ -353,3 +353,91 @@ def test_lone_surrogate_is_422(world, over):
     fine = body(boot_id="b\u00f3ot-\U0001f600", active_call_ids=["c_caf\u00e9"])
     r = world.client.post("/v1/node/heartbeat", headers=headers, content=json.dumps(fine).encode())
     assert r.status_code == 204, r.text
+
+
+# ---------- the hourly summary (`node_stats`) ----------
+
+
+def stats_docs(world: World, node: str = "home") -> list[dict]:
+    with db(world.mongo_db) as d:
+        return list(d["node_stats"].find({"node": node}))
+
+
+def node_stats_body(**over) -> dict:
+    return {
+        "calls": {"conversation": 0, "one_way": 1}, "busy": {"conversation": 0, "one_way": 1}, "not_ready": 1,
+        "peak": {"conversation": 0, "one_way": 1}, "first_audio_ms": {"500": 2}, "stt_ms": {"stt-default": {"1000": 1}},
+        "tts_ms": {}, "provider_failures": {"user": 1}, "cloud_unreachable_s": 0, "outbox_dropped": 0, **over,
+    }  # fmt: skip
+
+
+def test_heartbeat_without_stats_still_204_and_counts_beat(world):
+    """A 0.10.1 node sends no `stats`: answered as before, and its hour counts the beat and the calls it holds."""
+    r = beat(world, version="0.10.1", active_by_type={"conversation": 1, "one_way": 0})
+    assert r.status_code == 204
+    [doc] = stats_docs(world)
+    assert doc["beats"] == 1 and doc["peak"] == {"conversation": 1, "one_way": 0}
+    assert doc["capacity"] == {"one_way": 2}  # a null capacity is no limit
+    assert set(doc) == {"_id", "node", "hour", "purge_at", "beats", "peak", "capacity"}
+
+
+def test_heartbeat_stats_accumulate_in_the_hour(world):
+    for _ in range(2):
+        assert beat(world, stats=node_stats_body()).status_code == 204
+    [doc] = stats_docs(world)
+    assert doc["beats"] == 2 and doc["busy"] == {"one_way": 2} and doc["calls"] == {"one_way": 2}
+    assert doc["first_audio_ms"] == {"500": 4} and doc["stt_ms"] == {"stt-default": {"1000": 2}}
+    assert doc["not_ready"] == 2 and doc["provider_failures"] == {"user": 2}
+    assert doc["peak"] == {"conversation": 0, "one_way": 1}  # from `stats.peak`, above `active_by_type`
+    assert "stats" not in node_doc(world)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"first_audio_ms": {"123": 1}}, {"busy": {"conversation": -1, "one_way": 0}},
+        {"provider_failures": {f"p{n}": 1 for n in range(9)}}, {"stt_ms": {"a.b": {"500": 1}}},
+        {"tts_ms": {"$where": {"500": 1}}},
+    ],
+)
+def test_heartbeat_bad_stats_ignored_still_204(world, bad, caplog):
+    set_node(world, last_seen_at=1.0)
+    with caplog.at_level("WARNING", logger="wristcall_cloud.node_heartbeat"):
+        r = beat(world, active_by_type={"conversation": 0, "one_way": 1}, stats=node_stats_body(**bad))
+    assert r.status_code == 204
+    assert node_doc(world)["last_seen_at"] > 1.0
+    [doc] = stats_docs(world)
+    assert set(doc) == {"_id", "node", "hour", "purge_at", "beats", "peak", "capacity"} and doc["beats"] == 1
+    assert doc["peak"] == {"conversation": 0, "one_way": 1}
+    assert "ignoring the stats of node home" in caplog.text
+    for value in ("123", "a.b", "$where", "p8"):
+        assert value not in caplog.text
+
+
+@pytest.mark.parametrize("bad", [[1], "stats", 3])
+def test_heartbeat_stats_not_an_object_are_ignored(world, bad):
+    assert beat(world, stats=bad).status_code == 204
+    assert stats_docs(world)[0]["beats"] == 1
+
+
+def test_refused_heartbeat_writes_no_stats(world):
+    assert beat(world, active_by_type=None, stats=node_stats_body()).status_code == 422
+    assert stats_docs(world) == []
+
+
+def test_heartbeat_survives_a_failed_stats_write(world, caplog):
+    class Broken:
+        async def update_one(self, *args, **kwargs):
+            from pymongo.errors import PyMongoError
+
+            raise PyMongoError("down")
+
+    cloud = world.app.state.cloud
+    healthy = cloud.node_stats
+    cloud.node_stats = Broken()
+    try:
+        assert beat(world, stats=node_stats_body()).status_code == 204
+    finally:
+        cloud.node_stats = healthy
+    assert node_doc(world)["last_seen_at"] is not None
+    assert "recording the stats of node home failed (PyMongoError)" in caplog.text

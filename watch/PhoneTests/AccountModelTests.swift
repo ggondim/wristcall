@@ -493,7 +493,7 @@ struct AccountModelTests {
         #expect(try routes.first?.json()["purpose"] as? String == "manage")
         #expect(!requests("GET", "/v1/servers").isEmpty)
         #expect(!world.cloud.requests.isEmpty)
-        #expect(world.cloud.requests.allSatisfy { $0.headers[ClientIdentity.headerName] == "ios/0.3.0" })
+        #expect(world.cloud.requests.allSatisfy { $0.headers[ClientIdentity.headerName] == "ios/0.3.1" })
     }
 
     @Test func emailRestoreIntoAnotherAccountGetsANewCloudRoute() async throws {

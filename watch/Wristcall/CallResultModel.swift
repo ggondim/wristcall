@@ -83,7 +83,7 @@ final class CallResultModel {
             switch status.state {
             case .delivered: status.savedToHistory ? "Saved" : "Delivered"
             case .failed: "Not delivered"
-            case .empty: "Nothing recorded."
+            case .empty: "Nothing said."
             default: "Result unavailable."
             }
         case .timedOut: "Still processing. Check again later."

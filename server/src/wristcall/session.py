@@ -8,6 +8,7 @@ from typing import Any, Protocol
 
 from . import protocol
 from .audio import FRAME_BYTES_IN, SAMPLE_RATE_IN, FrameAssembler, duration_ms, frame_bytes, pcm16_to_wav
+from .cloud_node.stats import note_failure
 from .config import Timeouts, VadConfig
 from .providers import ProviderError, ProviderSet
 from .sentences import SentenceSplitter
@@ -65,6 +66,7 @@ class CallSession:
         clock: Callable[[], float] = time.monotonic,
         turn_end: protocol.TurnEnd = "auto",
         record: Recorder = _no_record,
+        on_first_audio: Callable[[float], None] | None = None,
     ) -> None:
         self.profile = profile
         self._record = record
@@ -83,6 +85,9 @@ class CallSession:
         self._margin_s = playback_margin_ms / 1000
         self._sleep = sleep
         self._clock = clock
+        # Cloud mode: told the ms from the end of the user's turn to the first audio of each answer.
+        self._on_first_audio = on_first_audio
+        self._turn_ended = 0.0
         self._task: asyncio.Task[None] | None = None
 
     # ---------- input ----------
@@ -141,6 +146,7 @@ class CallSession:
 
     async def _run_pipeline(self, audio: bytes) -> None:
         timeouts = self.profile.timeouts
+        self._turn_ended = self._clock()
         try:
             text = await asyncio.wait_for(
                 self.providers.stt.transcribe(pcm16_to_wav(audio, SAMPLE_RATE_IN), self.profile.language),
@@ -148,6 +154,7 @@ class CallSession:
             )
         except (ProviderError, TimeoutError) as e:
             log.warning("STT failed: %s", e)
+            note_failure(self.providers.stt)
             # Error first, then back to listening: frames accepted while sending would be wiped by on_agent_done.
             await self.transport.send_json(protocol.error(protocol.ErrorCode.STT_FAILED, "I could not understand the audio.", False))
             self.machine.on_transcript("")
@@ -228,13 +235,16 @@ class _Speaker:
         self.sentences_said: list[str] = []
 
     async def _send(self, frame: bytes) -> None:
-        if not self._started:
+        first = not self._started
+        if first:
             self._started = True
             self._s.machine.on_agent_start()
             await self._s.transport.send_json(protocol.agent_start())
         await self._s.transport.send_bytes(frame)
         # If the frame arrives after the watch has already played everything (gap between sentences), it plays starting now.
         now = self._s._clock()
+        if first and self._s._on_first_audio is not None:
+            self._s._on_first_audio((now - self._s._turn_ended) * 1000)
         self._play_end = max(self._play_end, now) + duration_ms(frame, self._rate) / 1000
 
     async def say(self, sentence: str) -> None:
@@ -247,6 +257,7 @@ class _Speaker:
                         await self._send(frame)
         except (ProviderError, TimeoutError) as e:
             log.warning("TTS failed: %s", e)
+            note_failure(self._s.providers.tts)
             self.tts_failed = True
             await self._s.transport.send_json(protocol.error(protocol.ErrorCode.TTS_FAILED, "Failed to generate the voice.", False))
             return

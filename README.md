@@ -309,6 +309,30 @@ cloud_node:
 
 Protocol differences (token claims, errors, routes): [docs/protocol.md](docs/protocol.md#cloud-mode).
 
+### Node metrics
+
+Since 0.11.0 each heartbeat also carries the node's counters (`stats`), so the operator sees how the node is doing
+without reading its logs. The values are those of the interval since the last heartbeat the Cloud accepted: a refused
+beat takes nothing off, and its counts go in the next one (nothing is lost or counted twice by the node).
+
+- `calls`: calls the Cloud opened and the client was told are ready, by type (`conversation`, `one_way`).
+- `busy`: calls refused because every slot of that type was taken; `not_ready`: calls refused because the node was
+  not ready yet (no heartbeat accepted) or was draining.
+- `peak`: the most calls open at once, by type.
+- `first_audio_ms`: in a conversation, the time from the end of the user's turn to the first audio of the answer.
+- `stt_ms` and `tts_ms`: per voice provider, the time of each transcription and the time to the first audio of each
+  sentence; `provider_failures`: per provider, the errors and timeouts (each try of a one-way call counts).
+- `cloud_unreachable_s`: the time without an accepted heartbeat, from the first one that failed (a network error or a
+  refused beat) to the next accepted one; approximate to the second.
+- `outbox_dropped`: writes for the Cloud the node gave up on (its queue was full, or the Cloud refused them).
+
+Times are histograms: counts per bucket, keyed by the bucket's upper bound in ms (`250`, `500`, `750`, `1000`,
+`1500`, `2000`, `2500`, `3000`, `4000`, `5000`, `7500`, `10000`, `15000`, then `inf`); only buckets with a count are
+sent. A provider is named by its name in the YAML; the user's own endpoint counts as `user`, and a name that is not
+lowercase letters, digits, `-` and `_` (up to 32), or any past the first six, counts as `other` (at most 8 names per
+map). No text, address or account ever goes in the counters. A Cloud before 0.7.0 ignores them; Cloud 0.7.0 keeps an
+hourly summary.
+
 ## Upgrading from 0.5.0
 
 1. Back up `data_dir` first: stop the server and copy it, or run `sqlite3 <db> ".backup <file>"`. The database

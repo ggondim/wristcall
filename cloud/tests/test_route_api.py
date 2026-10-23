@@ -333,3 +333,39 @@ def test_route_orders_by_the_client_country(node_config, mongo_db, fake_verifier
         r = route(c, headers, purpose="manage")
         assert r.status_code == 200, r.text
         assert r.json()["node"]["id"] == first
+
+
+def route_counts(mongo_db) -> dict:
+    with db(mongo_db) as d:
+        docs = list(d["node_stats"].find({"node": "_route"}))
+    return {key: sum(doc.get(key, 0) for doc in docs) for key in ("routes_call", "no_node")}
+
+
+def test_route_counts_no_node(node_client, nodes, mongo_db):
+    """Call routes are counted in the hourly summary: refused for want of a node, then issued; `manage` is not."""
+    owner, _, headers = account(node_client, mongo_db, "full")
+    agent = add_agent(mongo_db, owner)
+    r = route(node_client, headers, purpose="call", agent=agent)  # registered, never heard from
+    assert r.status_code == 503 and r.json()["error"] == "no_node_available"
+    assert route(node_client, headers, purpose="manage").status_code == 503
+    assert route_counts(mongo_db) == {"routes_call": 0, "no_node": 1}
+    all_healthy(mongo_db)
+    assert route(node_client, headers, purpose="call", agent=agent).status_code == 200
+    assert route(node_client, headers, purpose="manage").status_code == 200
+    assert route_counts(mongo_db) == {"routes_call": 1, "no_node": 1}
+
+
+def test_route_answers_the_same_when_counting_fails(node_client, nodes, mongo_db, caplog):
+    class Broken:
+        async def update_one(self, *args, **kwargs):
+            raise RuntimeError("down")
+
+    owner, _, headers = account(node_client, mongo_db, "full")
+    agent = add_agent(mongo_db, owner)
+    node_client.app.state.cloud.node_stats = Broken()
+    r = route(node_client, headers, purpose="call", agent=agent)
+    assert r.status_code == 503 and r.json()["error"] == "no_node_available" and r.headers["Retry-After"] == "30"
+    all_healthy(mongo_db)
+    r = route(node_client, headers, purpose="call", agent=agent)
+    assert r.status_code == 200 and r.json()["node"]["id"] in ("home", "away")
+    assert caplog.text.count("recording a route failed (RuntimeError)") == 2

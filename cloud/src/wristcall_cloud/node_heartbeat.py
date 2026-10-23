@@ -1,6 +1,8 @@
 """`POST /v1/node/heartbeat` and the orphan calls: a node tells the Cloud it is alive and which calls it holds; calls
 the Cloud has open for it that it does not hold are closed (`close_call`, `closed_by="cloud"`), and a periodic
-sweeper does the same for a node that went silent.
+sweeper does the same for a node that went silent. Each accepted heartbeat also goes into the node's hourly summary
+(`node_stats`), with its optional counters (`stats`): `stats` that do not follow the contract are ignored, and neither
+they nor a failed summary write ever fail the heartbeat.
 
 A restarted Cloud has no heartbeats to show for the time it was down, so the sweeper counts a node's silence from the
 later of its last heartbeat and the Cloud's own start (`state.started_at`). The `processing` calls of a node that came
@@ -27,6 +29,7 @@ from .node_auth import current_node
 from .node_calls import _integer
 from .node_core import close_call
 from .node_push import send_quota_warning
+from .node_stats import InvalidStats, parse_stats, record_heartbeat
 
 log = logging.getLogger("wristcall_cloud.node_heartbeat")
 
@@ -63,14 +66,27 @@ def _counts(value: Any, name: str, *, nullable: bool) -> dict[str, int | None]:
     return out
 
 
+def _stats(value: Any) -> tuple[dict[str, Any] | None, str | None]:
+    """(parsed `stats` or None, why they were ignored or None): absent `stats` (a node before 0.11.0, a drain
+    heartbeat) are no problem; bad ones are ignored, never refused."""
+    if value is None:
+        return None, None
+    try:
+        return parse_stats(value), None
+    except InvalidStats as e:
+        return None, str(e)
+
+
 def parse_heartbeat(body: dict[str, Any]) -> dict[str, Any]:
+    """The heartbeat's fields (422 `invalid` for a bad one), plus `stats` (None when absent or ignored) and
+    `stats_problem` (why they were ignored, or None)."""
     active = body.get("active_call_ids")
     if not isinstance(active, list) or len(active) > MAX_ACTIVE_CALLS:
         raise _invalid(f"active_call_ids must list at most {MAX_ACTIVE_CALLS} ids")
     providers_ok = body.get("providers_ok")
     if not isinstance(providers_ok, bool):
         raise _invalid("providers_ok must be true or false")
-    return {
+    beat: dict[str, Any] = {
         "boot_id": _text(body.get("boot_id"), "boot_id", MAX_BOOT_ID),
         "version": _text(body.get("version"), "version", MAX_VERSION),
         "active_call_ids": [_text(call_id, "active_call_ids items", MAX_ID_LENGTH) for call_id in active],
@@ -78,6 +94,8 @@ def parse_heartbeat(body: dict[str, Any]) -> dict[str, Any]:
         "capacity": _counts(body.get("capacity"), "capacity", nullable=True),
         "providers_ok": providers_ok,
     }
+    beat["stats"], beat["stats_problem"] = _stats(body.get("stats"))
+    return beat
 
 
 async def _close_orphan(state: State, call: dict[str, Any], seconds: float, now: float) -> bool:
@@ -140,6 +158,12 @@ async def heartbeat(request: Request, node: dict[str, Any] = Depends(current_nod
         # After the orphans, as the sweeper does: a call a crashed `finish` left open as `processing` is freed above
         # and failed here.
         await _fail_processing(cloud, node["_id"], now)
+    # Last, once the heartbeat is accepted: a heartbeat that fails above is sent again with the same counts.
+    if beat["stats_problem"] is not None:
+        log.warning("ignoring the stats of node %s (%s)", node["_id"], beat["stats_problem"])
+    await record_heartbeat(
+        cloud.node_stats, node["_id"], now, beat["active_by_type"], beat["stats"], capacity=beat["capacity"]
+    )
     return Response(status_code=204)
 
 

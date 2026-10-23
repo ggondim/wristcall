@@ -17,8 +17,8 @@ export type AgendaServers = Pick<ServersModel, "client">
 /** What the mirror needs from the store: it reads the latest saved servers and keeps the agenda id. */
 export type AgendaStore = Pick<ServerStorage, "list" | "get" | "update">
 
-const WRITE_NOTICE = "Can't update your servers in wristcall Cloud."
-const READ_NOTICE = "Can't read your servers from wristcall Cloud."
+const WRITE_NOTICE = "Can't update your servers in Wristcall Cloud."
+const READ_NOTICE = "Can't read your servers from Wristcall Cloud."
 const ID_SHAPE = /^[A-Za-z0-9_-]+$/
 const ICON_SHAPE = /^[a-z0-9.]+$/
 const CALL_TYPES = new Set(["conversation", "one-shot", "monologue"])

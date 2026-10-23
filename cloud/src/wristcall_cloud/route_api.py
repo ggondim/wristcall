@@ -4,7 +4,8 @@ node with its own token.
 
 The node list is read from Mongo on every request (a handful of documents; the admin CLI writes it from another
 process). Failure reports (`avoid`) live in `app.state.node_reports`. Logs name the node id and the purpose only:
-never a node URL nor a token.
+never a node URL nor a token. Call routes are counted in the hourly summary (`node_stats`, issued or refused for want
+of a node); a failed count changes no answer.
 """
 
 import logging
@@ -18,6 +19,7 @@ from .api_common import ApiError, json_object
 from .auth import Caller, current_device
 from .cloud_store import CloudModeStore
 from .config import CloudConfig, provision_settings
+from .node_stats import record_route
 from .nodes import NodeStore, parse_node_id
 from .provision import cloud_entry, provision, voice_notes_language
 from .routing import NodeReports, RouteNeed, call_kind, choose_nodes
@@ -93,7 +95,7 @@ def _issue(
 
 
 def _plan_required() -> ApiError:
-    return ApiError("plan_required", "this account has no plan for the wristcall Cloud", 402)
+    return ApiError("plan_required", "this account has no plan for the Wristcall Cloud", 402)
 
 
 @router.post("/v1/route")
@@ -144,13 +146,17 @@ async def issue_route(request: Request, authorization: str | None = Header(defau
     chosen = choose_nodes(nodes, need, config=config, reports=reports, started_at=state.started_at, now=now)
     if not chosen:
         log.info("no node available (purpose %s)", purpose)
+        if purpose == "call":
+            await record_route(cloud.node_stats, now, no_node=True)
         raise ApiError(
             "no_node_available",
-            "no wristcall Cloud node can take this now; try again later",
+            "no Wristcall Cloud node can take this now; try again later",
             503,
             retry_after=config.route_retry_after_s,
         )
     response = _issue(key, config, chosen[0], caller, device, now)
     response["fallback"] = _issue(key, config, chosen[1], caller, device, now) if len(chosen) > 1 else None
     log.info("route issued (node %s, purpose %s)", chosen[0]["_id"], purpose)
+    if purpose == "call":
+        await record_route(cloud.node_stats, now, no_node=False)
     return response

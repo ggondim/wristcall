@@ -127,13 +127,13 @@ describe("sign in", () => {
 
   test("signIn: a failure shows its text and stays on the page", async () => {
     const w = await world({ state: "signedOut" })
-    w.session.beginError = new OidcError("invalid", "This wristcall Cloud doesn't accept sign-in from the web app yet.")
+    w.session.beginError = new OidcError("invalid", "This Wristcall Cloud doesn't accept sign-in from the web app yet.")
     await w.model.signIn()
-    expect(w.model.state.screen).toEqual({ failed: "This wristcall Cloud doesn't accept sign-in from the web app yet." })
+    expect(w.model.state.screen).toEqual({ failed: "This Wristcall Cloud doesn't accept sign-in from the web app yet." })
     expect(w.assigned).toEqual([])
     w.session.beginError = new NetworkError()
     await w.model.signIn()
-    expect(w.model.state.screen).toEqual({ failed: "Can't reach wristcall Cloud." })
+    expect(w.model.state.screen).toEqual({ failed: "Can't reach Wristcall Cloud." })
     w.session.beginError = new Error("boom with wc_pat_secret")
     await w.model.signIn()
     expect(JSON.stringify(w.model.state)).not.toContain("wc_pat_secret")
@@ -305,7 +305,7 @@ describe("delete account", () => {
       },
     })
     await w.model.deleteAccount()
-    expect(w.model.state.error).toBe("Can't delete the account now. Can't reach wristcall Cloud.")
+    expect(w.model.state.error).toBe("Can't delete the account now. Can't reach Wristcall Cloud.")
   })
 
   test("deleteAccountDropsPushKeysAndSignsOut", async () => {
@@ -419,7 +419,7 @@ describe("watch sign-in", () => {
     expect(w.model.state.issuerReady).toBe(false)
     w.model.approveWatchSignIn("ABCD-EFGH")
     expect(open).not.toHaveBeenCalled()
-    expect(w.model.state.watch).toEqual({ failed: "Reaching wristcall Cloud. Tap again in a moment." })
+    expect(w.model.state.watch).toEqual({ failed: "Reaching Wristcall Cloud. Tap again in a moment." })
     await vi.waitFor(() => expect(w.model.state.issuerReady).toBe(true))
     await w.model.loadIssuer()
     expect(open).not.toHaveBeenCalled()
@@ -444,7 +444,7 @@ describe("watch sign-in", () => {
     await w.model.loadIssuer()
     w.model.approveWatchSignIn("ABCD-EFGH")
     expect(open).not.toHaveBeenCalled()
-    expect(w.model.state.watch).toEqual({ failed: "wristcall Cloud isn't set up for this app." })
+    expect(w.model.state.watch).toEqual({ failed: "Wristcall Cloud isn't set up for this app." })
   })
 
   test("approveWatchSignIn: the Cloud not answering shows a message, and a retry works", async () => {
@@ -452,7 +452,7 @@ describe("watch sign-in", () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null)
     w.session.configError = new NetworkError()
     await w.model.loadIssuer()
-    expect(w.model.state).toMatchObject({ issuerError: "Can't reach wristcall Cloud.", issuerReady: false })
+    expect(w.model.state).toMatchObject({ issuerError: "Can't reach Wristcall Cloud.", issuerReady: false })
     w.session.configError = null
     await w.model.loadIssuer()
     expect(w.model.state).toMatchObject({ issuerError: null, issuerReady: true })
@@ -485,7 +485,7 @@ describe("plan and identities", () => {
     const w = await world()
     w.cloud.account.mockRejectedValueOnce(new NetworkError())
     await w.model.loadProfile()
-    expect(w.model.state).toMatchObject({ identities: null, profileError: "Can't reach wristcall Cloud." })
+    expect(w.model.state).toMatchObject({ identities: null, profileError: "Can't reach Wristcall Cloud." })
     await w.model.loadProfile()
     expect(w.model.state).toMatchObject({ plan: null, identities: ["zitadel"], profileError: null })
   })
@@ -542,7 +542,7 @@ describe("plan and identities", () => {
     [404, "This invite isn't valid."],
     [422, "This invite isn't valid."],
     [409, "This account already has a plan."],
-    [429, "wristcall Cloud refused the request."],
+    [429, "Wristcall Cloud refused the request."],
   ])("redeemInvite: %i", async (status, text) => {
     const w = await world()
     w.cloud.redeemInvite.mockRejectedValueOnce(new ApiError(status, "x", "raw"))
@@ -555,7 +555,7 @@ describe("plan and identities", () => {
     const w = await world()
     w.cloud.redeemInvite.mockRejectedValueOnce(new NetworkError())
     await w.model.redeemInvite("c")
-    expect(w.model.state.redeem).toEqual({ failed: "Can't reach wristcall Cloud." })
+    expect(w.model.state.redeem).toEqual({ failed: "Can't reach Wristcall Cloud." })
   })
 
   test("a 401 in Settings forces a renewal", async () => {

@@ -42,6 +42,8 @@ from .config import (
 )
 from .identity import IdentityUnavailable, ZitadelUsers
 from .limits import AccountCreationLimiter, AttemptLimiter, PollLimiter
+from .node_alerts import TIMEOUT_S as ALERT_TIMEOUT_S
+from .node_alerts import alert_loop
 from .node_auth import NodeLimiter
 from .node_agents import router as node_agents_router
 from .node_calls import router as node_calls_router
@@ -246,7 +248,7 @@ async def _check_editable(request: Request, caller: Caller, server_id: str) -> N
         return
     if not _sees_cloud(request, caller):
         raise _not_found()
-    raise ApiError("managed_by_cloud", "this server is managed by the wristcall Cloud", 409)
+    raise ApiError("managed_by_cloud", "this server is managed by the Wristcall Cloud", 409)
 
 
 @router.get("/v1/account")
@@ -394,7 +396,7 @@ async def issue_server_token(request: Request, authorization: str | None = Heade
     audience = parse_audience(await json_object(request), config)
     # A token for a Cloud node would be a per-server credential where the node expects its own grants.
     if await NodeStore(get_cloud(request)).is_node_url(audience):
-        raise ApiError("invalid", "audience must be a server, not a wristcall Cloud node", 422)
+        raise ApiError("invalid", "audience must be a server, not a Wristcall Cloud node", 422)
     claims = server_token_claims(
         issuer=config.public_url,
         account=caller.key,
@@ -528,6 +530,11 @@ def create_app(
             app.state.started_at = time.time()
             sweeper = asyncio.create_task(orphan_sweep_loop(app.state, every_s=config.orphan_sweep_every_s))
             stack.push_async_callback(_stop, sweeper)
+            if config.alert_url is not None:  # without the topic URL there is nobody to tell: no loop at all
+                alert_http = httpx.AsyncClient(timeout=ALERT_TIMEOUT_S, follow_redirects=False)
+                stack.push_async_callback(alert_http.aclose)
+                alerter = asyncio.create_task(alert_loop(app.state, alert_http))
+                stack.push_async_callback(_stop, alerter)
             yield
 
     app = FastAPI(title="wristcall-cloud", version=__version__, lifespan=lifespan)

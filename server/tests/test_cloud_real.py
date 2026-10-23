@@ -429,3 +429,38 @@ def test_real_cloud_end_to_end(real_cloud: RealCloud, node: Node, fixtures_dir):
     own_notes = cloud.db["cloud_agents"].find_one({"account": other["account"], "slug": "voice-notes"})
     r = route(cloud, other, purpose="call", agent=own_notes["_id"])
     assert r.status_code == 402 and r.json()["error"] == "plan_required"
+
+
+def test_real_cloud_takes_a_heartbeat_with_stats(real_cloud: RealCloud, node: Node):
+    """The node's counters (`stats`, server 0.11.0) ride in its heartbeat: the real Cloud takes the beat with them,
+    and the node then takes what it sent off its counters."""
+    c = node.client
+    wait_for(lambda: c.get("/v1/health").status_code == 200, what="node ready")
+    stats = c.app.state.cloud_node.stats
+    seen_before = real_cloud.db["nodes"].find_one({"_id": NODE_ID})["last_seen_at"]
+
+    def count() -> None:  # on the app's own loop, like the calls that count
+        stats.busy("one_way")
+        stats.first_audio(480)
+        stats.provider_time("stt", "stt-default", 900)
+        stats.provider_time("tts", "user", 300)
+        stats.provider_failed("tts")
+        stats.outbox_dropped()
+
+    c.portal.call(count)
+    beat = wait_for(
+        lambda: next((b for b in node.beats if b.get("stats", {}).get("busy", {}).get("one_way", 0) >= 1), None),
+        what="a heartbeat with the counters",
+    )
+    sent = beat["stats"]
+    assert set(sent) == {
+        "calls", "busy", "not_ready", "peak", "first_audio_ms", "stt_ms", "tts_ms", "provider_failures",
+        "cloud_unreachable_s", "outbox_dropped",
+    }
+    assert sent["first_audio_ms"]["500"] >= 1 and sent["stt_ms"]["stt-default"]["1000"] >= 1
+    assert sent["tts_ms"]["user"]["500"] >= 1 and sent["provider_failures"]["tts"] >= 1 and sent["outbox_dropped"] >= 1
+    # Accepted: the node took the counters off, and the Cloud saw the node again.
+    wait_for(lambda: c.portal.call(stats.snapshot)["busy"]["one_way"] == 0, what="counters taken off")
+    wait_for(
+        lambda: real_cloud.db["nodes"].find_one({"_id": NODE_ID})["last_seen_at"] > seen_before, what="node seen again"
+    )

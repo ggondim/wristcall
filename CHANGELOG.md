@@ -4,6 +4,95 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Each c
 
 ## [Unreleased]
 
+## [cloud-0.7.0] - 2026-10-23
+
+Cloud 0.7.0. Keeps an hourly summary of the nodes from the counters a node sends in its heartbeat (server 0.11.0)
+and from the call routes, and shows it with `admin nodes stats`. Same HTTP contract: heartbeats without `stats` (nodes
+before 0.11.0) are answered as before. A new collection: `meta.version` stays 3; `node_stats` and its indexes are
+created at startup.
+
+### Added
+
+- Heartbeat `stats` (optional): the Cloud adds each accepted heartbeat to the node's hour in `node_stats` (one
+  document per node and UTC hour, kept 90 days by a TTL index): `beats`, `peak` and `capacity` by call type, and the
+  sums of `calls`, `busy`, `not_ready`, the time histograms (`first_audio_ms`, `stt_ms`, `tts_ms` per provider),
+  `provider_failures`, `cloud_unreachable_s` and `outbox_dropped`. See "Node stats" in `cloud/README.md`.
+- `POST /v1/route` counts the call routes it issues (`routes_call`) and the ones it refuses with
+  `503 no_node_available` (`no_node`), per hour.
+- `wristcall-cloud admin nodes stats [NODE] [--hours N]` (default 24, up to 2160): calls, `busy_pct`, peak,
+  first audio p50/p95, STT and TTS p95 per provider, provider failures, `cloud_unreachable_s`, `outbox_dropped`,
+  `hours_without_heartbeat_day` (hours between 07:00 and 23:00 in Brasília without a heartbeat; `n/a` for a node that
+  is not `always_on`), `days_at_peak`, and
+  the route's `routes_call` and `no_node_pct`. Without `NODE`, every enabled node; `n/a` where there is no sample.
+- ntfy alert for an always-on node that stops sending heartbeats (`WRISTCALL_CLOUD_ALERT_URL` or `_FILE`, https only;
+  `WRISTCALL_CLOUD_ALERT_AFTER_S`, default 900): one message when it falls silent and one when it is back, only
+  between 07:00 and 23:00 in Brasília and while some account has a plan. Without the URL there is no loop. See "Node
+  alert" in `cloud/README.md`.
+- The payers' country: redeeming an invite records `country` (from `WRISTCALL_CLOUD_CLIENT_COUNTRY_HEADER`) on the
+  entitlement, and `wristcall-cloud admin stats` prints `entitlements_by_country` (`BR=1,unknown=2`).
+
+### Changed
+
+- The Cloud's own messages say "Wristcall Cloud" with a capital W.
+
+### Notes
+
+- Metrics never fail a heartbeat or a route: `stats` that break the contract (an unknown bucket, a negative count,
+  more than 8 providers, a provider name with `.` or `$`...) are ignored, the heartbeat still answers `204` and counts
+  in `beats` and `peak`, and the log says why (never the values); a failed write of the summary is logged and changes
+  no answer.
+- A heartbeat the Cloud stored but whose answer the node never got counts twice (the node sends the same counts again).
+- Going back to 0.6.1 needs no restore: it ignores `node_stats` and `stats`.
+
+## [server-0.11.0] - 2026-10-23
+
+Server 0.11.0. In cloud mode each heartbeat carries the node's counters (`stats`). For Cloud 0.6.1 or later; Cloud
+0.7.0 keeps the hourly summary. Self-hosted servers are unchanged.
+
+### Added
+
+- Heartbeat `stats` (cloud mode), the values of the interval since the last accepted heartbeat: `calls`, `busy` and
+  `peak` by call type, `not_ready`, `first_audio_ms` (end of the user's turn to the first audio of the answer),
+  `stt_ms` and `tts_ms` per provider (TTS: time to the first audio of each sentence), `provider_failures`,
+  `cloud_unreachable_s` and `outbox_dropped`. Times are histograms over fixed buckets (250 ms to 15 s, then `inf`).
+  See "Node metrics" in the README.
+- A heartbeat the Cloud refuses takes nothing off the counters: they add up until one is accepted, with the time the
+  Cloud was not reached (`cloud_unreachable_s` is the time without an accepted heartbeat, from network errors and
+  refused beats, approximate to the second).
+
+### Notes
+
+- Provider names in the counters: the operator's YAML name, `user` for the user's own endpoint, and `other` for a
+  name that is not safe to send or any past the first six (at most 8 names per map).
+- A Cloud before 0.7.0 ignores `stats`.
+- A bug in the counters never stops a heartbeat: the beat then goes without `stats` and the node still becomes ready.
+
+## [watch-0.6.1] - 2026-10-23
+
+Watch app 0.6.1 (build 9), embedded in iPhone app 0.3.1. Texts only; same Cloud and server versions as 0.6.0.
+
+### Fixed
+
+- Every text that named the Cloud now says "Wristcall Cloud" with a capital W (sign-in, the account and agenda
+  messages, the pairing errors).
+- A one-shot call the server heard nothing in reads "Nothing said." (it said "Nothing recorded."), like History on the
+  iPhone and the web app.
+
+## [ios-0.3.1] - 2026-10-23
+
+For the same Cloud and server versions as 0.3.0. Carries watch app 0.6.1 (build 9). The iPhone and the embedded watch
+app share bundle version 0.6.1 (Apple requires it); this app's own release is 0.3.1 (Info key `WristcallClientVersion`).
+
+### Fixed
+
+- Every text that named the Cloud now says "Wristcall Cloud" with a capital W (account, plan, sign-in and agenda
+  messages).
+- Agent editor, Wristcall Cloud agents: the footer under the endpoint says "Wristcall Cloud sends the transcript to
+  this webhook." and, for a conversation, "Wristcall Cloud turns your voice into text, sends it to this endpoint and
+  speaks the answer." (both said "Your server"). Agents of your own servers keep "Your server".
+- The row of a Cloud agent without a webhook reads "One-shot · Wristcall Cloud" (checked; the 0.3.0 capture was taken
+  before that fix).
+
 ## [watch-0.6.0] - 2026-10-23
 
 Watch app 0.6.0 (build 8), embedded in iPhone app 0.3.0. For Cloud 0.6.1 with `WRISTCALL_CLOUD_CLOUD_ENTRY_CLIENTS`
@@ -68,6 +157,14 @@ version 0.6.0 (Apple requires it); this app's own release is 0.3.0 (Info key `Wr
   Agents opens (it was read only on the Servers screen).
 - New agents default to your first server that answers, else the first of your servers, else the Cloud.
 - This app does not call through the Cloud entry; the watch does.
+
+## [web-0.4.1] - 2026-10-23
+
+Web app 0.4.1. Texts only; same Cloud and servers as 0.4.0.
+
+### Fixed
+
+- Every text that names the Cloud now says "Wristcall Cloud" with a capital W (sign-in, account, plan, agenda messages, Cloud error messages).
 
 ## [web-0.4.0] - 2026-10-23
 

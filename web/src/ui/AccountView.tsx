@@ -10,7 +10,7 @@ import { useModel, type Model } from "./useModel"
 
 /** Said by the iPhone app too: what deleting does and does not touch. */
 export const DELETE_EXPLANATION =
-  "Deletes your wristcall account: your sign-in and your server list in wristcall Cloud. Your servers and their data stay as they are."
+  "Deletes your wristcall account: your sign-in and your server list in Wristcall Cloud. Your servers and their data stay as they are."
 
 type Action = "signOut" | "delete"
 
@@ -193,7 +193,7 @@ export function AccountSection({ model, servers = NO_ENTRY }: { model: AccountMo
       {screen === "signedIn" ? (
         <>
           <dl class="facts">
-            <dt>wristcall Cloud</dt>
+            <dt>Wristcall Cloud</dt>
             <dd>Signed in</dd>
           </dl>
           {notice !== null ? <p class="problem">{notice}</p> : null}

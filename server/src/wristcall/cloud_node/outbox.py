@@ -31,6 +31,7 @@ from typing import Literal
 
 from ..storage.models import CloudUnavailable
 from .client import CloudClient
+from .stats import NodeStats
 
 log = logging.getLogger("wristcall.cloud_node.outbox")
 
@@ -101,6 +102,7 @@ class Outbox:
         max_delay_s: float = 60.0,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] = time.monotonic,
+        stats: NodeStats | None = None,
     ) -> None:
         self._client = client
         self._registry = registry
@@ -119,6 +121,7 @@ class Outbox:
         self._gave_up = False  # the last `_send` returned False for repeated unexpected errors, not a refusal
         self._unauthorized_since: float | None = None  # first of an unbroken run of 401 answers
         self.dropped = 0
+        self._stats = stats  # the heartbeat's counters (`outbox_dropped`)
 
     def __len__(self) -> int:
         return len(self._items)
@@ -157,6 +160,8 @@ class Outbox:
 
     def _drop(self, item: OutboxItem, why: str) -> None:
         self.dropped += 1
+        if self._stats is not None:
+            self._stats.outbox_dropped()
         log.warning("outbox: dropped %s of call %s: %s", item.kind, item.call_id, why)
         self._settled(item)
 

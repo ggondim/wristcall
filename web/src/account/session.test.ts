@@ -215,7 +215,7 @@ describe("email sign-in", () => {
   test("noPwaClientHidesSignIn", async () => {
     const w = await world()
     w.config = { ...w.config, clients: { ios: "i" } }
-    await expect(w.session.beginSignIn()).rejects.toThrow("This wristcall Cloud doesn't accept sign-in from the web app yet.")
+    await expect(w.session.beginSignIn()).rejects.toThrow("This Wristcall Cloud doesn't accept sign-in from the web app yet.")
     expect(await w.store.getKV("oidc.pending")).toBeNull()
   })
 

@@ -56,7 +56,7 @@ A plain `swift test` in `WristcallKit/` skips the integration suites when `WRIST
 is not set; `make -C watch test-integration` requires it and stops with an error without it.
 
 `AccountIntegrationTests` (the central account end to end: iPhone login with PKCE, the agenda, the watch's
-device-code login with approval, the approval push) needs a local wristcall Cloud, a server whose
+device-code login with approval, the approval push) needs a local Wristcall Cloud, a server whose
 `central_account` is that Cloud, and a real OIDC provider with a human test user. A browser helper,
 `tools/e2e/zitadel_browser.py` (Playwright for Python; usage in its docstring), signs that user in. A script
 starts everything and runs `make -C watch test-account`; without `WRISTCALL_TEST_CLOUD` the suite is skipped.
@@ -130,9 +130,9 @@ show no agent color.
 
 ## iPhone app
 
-`Phone/` is the iPhone app (tag `ios-vX.Y.Z`; version 0.3.0). Its bundle id is `<BUNDLE_ID_PREFIX>.wristcall` and
+`Phone/` is the iPhone app (tag `ios-vX.Y.Z`; version 0.3.1). Its bundle id is `<BUNDLE_ID_PREFIX>.wristcall` and
 it embeds the watch app (`Wristcall.app/Watch/`). Apple refuses an embedded watch app whose version differs from the
-iPhone app's, so both bundles carry the same version (0.6.0, build 8), even though the iPhone app's own release is 0.3.0 (kept in
+iPhone app's, so both bundles carry the same version (0.6.1, build 9), even though the iPhone app's own release is 0.3.1 (kept in
 the Info key `WristcallClientVersion`, which is also what the app sends to the Cloud).
 
 **No sign-up.** The first launch shows a welcome screen and a plan screen, no sign-in. The app makes a silent
@@ -171,7 +171,7 @@ What it does (it makes no calls; the watch does):
 account keeps working and nothing is lost. If this iPhone cannot reach the account (a new iPhone, or iCloud Keychain
 off), a screen asks you to "Sign in with email" once to bring it here, or to start over with a new account (the old one
 stays on the Cloud). The watch still signs in on its own with the email provider's device code, which the iPhone asks
-you to approve; the watch 0.6.0 (build 8) also sets itself up (see [First open](#first-open-of-the-watch-app)).
+you to approve; the watch 0.6.1 (build 9) also sets itself up (see [First open](#first-open-of-the-watch-app)).
 
 The default build uses the project's Cloud (`WRISTCALL_CLOUD_URL` = `https://wristcall-cloud.trigram.com.br`, in
 `Config/Base.xcconfig`); set it empty in `Config/Local.xcconfig` and no account features show and nothing talks to a
@@ -269,7 +269,7 @@ The watch app's bundle id (and so its APNs topic) is now `<BUNDLE_ID_PREFIX>.wri
   wristcall on your iPhone to sign in again.", "Agent not found."); with no Cloud node registered it says "Wristcall Cloud is temporarily
   unavailable. Try again in a minute." Only calls through the Cloud entry use these texts: a paired server's errors
   still read "Call failed (code).". Every request to the Cloud (not to a node or your own server) carries
-  `X-Wristcall-Client: watchos/0.6.0`. The complication, control and shortcut without an agent keep using the first
+  `X-Wristcall-Client: watchos/0.6.1`. The complication, control and shortcut without an agent keep using the first
   paired server; the Cloud entry is the default only when there is no paired server. A "Voice notes" call kept in
   the Cloud's history (no webhook) reads "Saved" instead of "Delivered".
 - **Agent grid.** Home shows the agents of every server, two per row, in each server's order and each agent's color. Tap an agent to
@@ -297,7 +297,7 @@ The watch app's bundle id (and so its APNs topic) is now `<BUNDLE_ID_PREFIX>.wri
 Push needs the `aps-environment` entitlement, which a free Apple ID (Personal Team) cannot sign. So the push code is
 built only in the `DebugPush` configuration (`WRISTCALL_PUSH`, `Config/Push.xcconfig`,
 `Wristcall/Wristcall-Push.entitlements`); Debug and Release are as before and never ask for notifications. On a real
-watch the push build needs a paid Apple Developer account, and the relay (the wristcall Cloud) needs that account's
+watch the push build needs a paid Apple Developer account, and the relay (the Wristcall Cloud) needs that account's
 APNs key; until then it is a simulator build. Servers need 0.6.0 with `push` configured: with servers 0.5.0 and older
 the watch polls the result as before.
 
