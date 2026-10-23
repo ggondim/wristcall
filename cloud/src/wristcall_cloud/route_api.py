@@ -95,7 +95,7 @@ def _issue(
 
 
 def _plan_required() -> ApiError:
-    return ApiError("plan_required", "this account has no plan for the wristcall Cloud", 402)
+    return ApiError("plan_required", "this account has no plan for the Wristcall Cloud", 402)
 
 
 @router.post("/v1/route")
@@ -150,7 +150,7 @@ async def issue_route(request: Request, authorization: str | None = Header(defau
             await record_route(cloud.node_stats, now, no_node=True)
         raise ApiError(
             "no_node_available",
-            "no wristcall Cloud node can take this now; try again later",
+            "no Wristcall Cloud node can take this now; try again later",
             503,
             retry_after=config.route_retry_after_s,
         )

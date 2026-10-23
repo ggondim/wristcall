@@ -82,7 +82,7 @@ def parse_new_server(body: dict[str, Any]) -> dict[str, Any]:
     kind = body.get("kind", "self-hosted")
     if kind == "cloud":
         # The Cloud entry is made by the Cloud alone (provision.py); apps add self-hosted servers.
-        raise AgendaError("kind cloud is managed by the wristcall Cloud")
+        raise AgendaError("kind cloud is managed by the Wristcall Cloud")
     if kind not in SERVER_KINDS:
         raise AgendaError("kind must be self-hosted")
     return {

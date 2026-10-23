@@ -88,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--count", type=_count, default=1)
     create.add_argument("--days", type=_positive, default=30, help="how long the codes can be redeemed")
     commands.add_parser("stats", help="counts")
-    nodes = commands.add_parser("nodes", help="wristcall Cloud nodes")
+    nodes = commands.add_parser("nodes", help="Wristcall Cloud nodes")
     nodes_commands = nodes.add_subparsers(dest="nodes_command", required=True, parser_class=_Parser)
     add = nodes_commands.add_parser("add", help="registers a node; prints its secret (the only time it shows)")
     add.add_argument("node")
@@ -142,6 +142,16 @@ async def _ensure_provision_indexes(store: AccountStore) -> None:
     # The unique `account_url` and `account_slug` indexes decide races, even before the Cloud's first start.
     await Store(store.db).ensure_indexes()
     await CloudModeStore(store.db).ensure_indexes()
+
+
+async def _entitlements_by_country(store: AccountStore, entitled: dict[str, Any]) -> str:
+    """`BR=1,unknown=2`: the payers per country, sorted by key (`unknown` for none recorded); `none` without any."""
+    groups = [{"$match": entitled}, {"$group": {"_id": "$country", "n": {"$sum": 1}}}]
+    counts: dict[str, int] = {}
+    for group in await (await store.entitlements.aggregate(groups)).to_list(None):
+        key = group["_id"] or "unknown"
+        counts[key] = counts.get(key, 0) + group["n"]
+    return ",".join(f"{key}={counts[key]}" for key in sorted(counts)) or "none"
 
 
 async def _provision_all(store: AccountStore, settings: ProvisionSettings, language: str | None, now: float) -> int:
@@ -268,6 +278,7 @@ async def run(args: argparse.Namespace, store: AccountStore, *, settings: Provis
         _line("devices", await store.devices.count_documents({}))
         _line("identities", await store.identities.count_documents({}))
         _line("entitlements", await store.entitlements.count_documents(entitled))
+        _line("entitlements_by_country", await _entitlements_by_country(store, entitled))
         schema = await store.meta.find_one({"_id": "schema"})
         _line("schema", "none" if schema is None else schema.get("version"))
         _line("nodes", await cloud.nodes.count_documents({}))

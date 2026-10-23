@@ -578,9 +578,12 @@ class AccountStore:
         )
         return codes
 
-    async def redeem_invite(self, code: str, account: str, *, now: float | None = None) -> dict[str, Any] | None:
+    async def redeem_invite(
+        self, code: str, account: str, *, country: str | None = None, now: float | None = None
+    ) -> dict[str, Any] | None:
         """Spends an unused, unexpired invite on `account`; returns the entitlement it grants (None: no such
-        invite). Raises AlreadyEntitled, spending nothing, when the account has an unexpired entitlement."""
+        invite). `country` (the caller's, None when unknown) is kept on the entitlement for the admin's numbers.
+        Raises AlreadyEntitled, spending nothing, when the account has an unexpired entitlement."""
         now = time.time() if now is None else now
         # Two concurrent redeems by one account may both pass this check and spend two invites (accepted: the
         # later entitlement replaces the other; invites come from the admin).
@@ -598,6 +601,7 @@ class AccountStore:
             "plan": invite["plan"],
             "source": "beta",
             "invite": invite["_id"],
+            "country": country,
             "granted_at": now,
             "expires_at": None,
         }
@@ -614,11 +618,18 @@ class AccountStore:
             "_id": account,
             "plan": plan,
             "source": source,
+            "country": None,  # the CLI has no caller
             "granted_at": now,
             "expires_at": None if days is None else now + days * 86400,
         }
         await self.entitlements.replace_one({"_id": account}, doc, upsert=True)
         return doc
+
+    async def any_entitled(self, *, now: float | None = None) -> bool:
+        """Whether any account has an unexpired entitlement (the filter of `admin stats`)."""
+        now = time.time() if now is None else now
+        entitled = {"$or": [{"expires_at": None}, {"expires_at": {"$gt": now}}]}
+        return await self.entitlements.find_one(entitled, projection={"_id": 1}) is not None
 
     async def revoke_entitlement(self, account: str) -> bool:
         result = await self.entitlements.delete_one({"_id": account})

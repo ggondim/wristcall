@@ -22,6 +22,16 @@ before 0.11.0) are answered as before. A new collection, no schema change.
   first audio p50/p95, STT and TTS p95 per provider, provider failures, `cloud_unreachable_s`, `outbox_dropped`,
   `hours_without_heartbeat_day` (hours between 07:00 and 23:00 in Brasília without a heartbeat), `days_at_peak`, and
   the route's `routes_call` and `no_node_pct`. Without `NODE`, every enabled node; `n/a` where there is no sample.
+- ntfy alert for an always-on node that stops sending heartbeats (`WRISTCALL_CLOUD_ALERT_URL` or `_FILE`, https only;
+  `WRISTCALL_CLOUD_ALERT_AFTER_S`, default 900): one message when it falls silent and one when it is back, only
+  between 07:00 and 23:00 in Brasília and while some account has a plan. Without the URL there is no loop. See "Node
+  alert" in `cloud/README.md`.
+- The payers' country: redeeming an invite records `country` (from `WRISTCALL_CLOUD_CLIENT_COUNTRY_HEADER`) on the
+  entitlement, and `wristcall-cloud admin stats` prints `entitlements_by_country` (`BR=1,unknown=2`).
+
+### Changed
+
+- The Cloud's own messages say "Wristcall Cloud" with a capital W.
 
 ### Notes
 

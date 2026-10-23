@@ -120,6 +120,10 @@ class CloudConfig:
     node_reports_window_s: int = 300  # on-demand nodes: failure reports count for this long
     node_reports_accounts: int = 3  # ... and the node is down once this many accounts reported it
     route_retry_after_s: int = 30  # Retry-After of 503 no_node_available
+    # ntfy topic URL (a secret: the topic name is the password) that hears of an always-on node gone silent; None: no
+    # alerts, and no loop.
+    alert_url: str | None = field(default=None, repr=False)
+    alert_after_s: int = 900  # an always-on node silent for this long raises the alert
 
     def retention_days(self, agent_days: int | str | None) -> int:
         """How long an agent's history is kept: absent -> the default, "forever" -> the ceiling, else capped."""
@@ -225,6 +229,23 @@ def _secret(env: Mapping[str, str], name: str) -> bytes | None:
     if not data.strip():
         raise ConfigError(f"{file_name} is empty")
     return data
+
+
+def _alert_url(env: Mapping[str, str]) -> str | None:
+    """The ntfy topic URL, inline or from a file (the topic is the secret); https only. None: no alerts."""
+    name = "WRISTCALL_CLOUD_ALERT_URL"
+    data = _secret(env, name)
+    if data is None:
+        return None
+    try:
+        raw = data.decode().strip()
+        parts = urlsplit(raw)
+        host = parts.hostname
+    except (UnicodeDecodeError, ValueError):
+        raise ConfigError(f"{name} must be an https URL") from None
+    if parts.scheme != "https" or not host or parts.username or parts.password or parts.fragment:
+        raise ConfigError(f"{name} must be an https URL")
+    return raw
 
 
 def _mongo_url(env: Mapping[str, str]) -> str:
@@ -577,4 +598,6 @@ def config_from_env(env: Mapping[str, str]) -> CloudConfig:
         cloud_entry_clients=_cloud_entry_clients(env),
         voice_notes_language=voice_notes_language,
         voice_notes_stt=voice_notes_stt,
+        alert_url=_alert_url(env),
+        alert_after_s=_positive_int(env, "WRISTCALL_CLOUD_ALERT_AFTER_S", CloudConfig.alert_after_s),
     )

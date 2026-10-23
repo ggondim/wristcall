@@ -141,7 +141,7 @@ def test_cloud_entry_is_managed_by_cloud(agenda, mongo_db):
             assert r.status_code == status, r.text
             assert r.json()["error"] == code
             if status == 409:
-                assert r.json()["message"] == "this server is managed by the wristcall Cloud"
+                assert r.json()["message"] == "this server is managed by the Wristcall Cloud"
         assert server_doc(mongo_db, cloud_id) == before
 
     # The self-hosted server, as before (with and without the header).
@@ -160,7 +160,7 @@ def test_apps_cannot_create_cloud_entries(agenda):
     for h in (headers, headers | NEW):
         r = c.post("/v1/servers", json={"name": "n", "url": "https://x.test", "kind": "cloud"}, headers=h)
         assert r.status_code == 422, r.text
-        assert r.json() == {"error": "invalid", "message": "kind cloud is managed by the wristcall Cloud"}
+        assert r.json() == {"error": "invalid", "message": "kind cloud is managed by the Wristcall Cloud"}
     r = c.post("/v1/servers", json={"name": "n", "url": "https://x.test", "kind": "self-hosted"}, headers=headers)
     assert r.status_code == 201 and r.json()["kind"] == "self-hosted"
     r = c.post("/v1/servers", json={"name": "n", "url": "https://y.test"}, headers=headers)

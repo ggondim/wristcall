@@ -259,7 +259,7 @@ def test_quota_warning_once_per_month(pw):
     assert sorted(token for token, _ in sent) == ["01", "02"]  # every target of the account, nobody else
     message = sent[0][1]
     month = datetime.now(UTC).strftime("%Y-%m")
-    assert (message.title, message.body) == ("wristcall Cloud", "You have used 80% of this month's minutes.")
+    assert (message.title, message.body) == ("Wristcall Cloud", "You have used 80% of this month's minutes.")
     assert message.data == {"month": month, "used_s": 28800, "quota_s": 36000}
     assert isinstance(pw.usage()["warned_80"], float)
     finish_with(pw, 500)

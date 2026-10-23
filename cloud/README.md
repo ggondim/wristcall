@@ -47,7 +47,7 @@ the access tokens, and without them `sessions.enabled` in `/v1/config` is `false
 | `WRISTCALL_CLOUD_MAX_DEVICES` | `10` | devices per account |
 | `WRISTCALL_CLOUD_MAX_ENROLL_CODES` | `5` | open enroll codes per account |
 | `WRISTCALL_CLOUD_ACCOUNT_IDLE_DAYS` | `90` | an anonymous account (no identity, no plan) unused for this long is deleted (checked every 6 hours); a device unused for this long cannot refresh its session |
-| `WRISTCALL_CLOUD_CLIENT_COUNTRY_HEADER` | | header the reverse proxy puts the client's country in (`CF-IPCountry` behind Cloudflare). It is recorded on web sessions, so the iPhone can show it before approving. Without it the country is `null`; nothing breaks |
+| `WRISTCALL_CLOUD_CLIENT_COUNTRY_HEADER` | | header the reverse proxy puts the client's country in (`CF-IPCountry` behind Cloudflare). It is recorded on web sessions, so the iPhone can show it before approving, and (since 0.7.0) on the entitlement an invite creates. Without it the country is `null`; nothing breaks |
 
 Cloud nodes (all optional; the node routes need the two per-server token variables above, and answer
 `404 not_configured` without them, except `POST /v1/node/heartbeat`). A value that is not a positive whole number stops the start, naming the variable:
@@ -73,6 +73,8 @@ does not parse stops the start, naming the variable:
 | `WRISTCALL_CLOUD_ROUTE_REGIONS` | `BR=sao,gru;US=iad;CA=iad;MX=iad;*=iad` | country to regions, best first: `COUNTRY=region,region;...`, a country is two capital letters or `*`, a region three lowercase letters. The `*` row is required and serves every other country (and a missing one) |
 | `WRISTCALL_CLOUD_CLOUD_ENTRY_CLIENTS` | | minimum app version that sees the Cloud entry, per platform. Recommended: `ios=0.3.0,watchos=0.6.0,web=0.4.0`, the first app versions that handle the Cloud entry (platforms `ios`, `ipados`, `macos`, `watchos`, `web`, each once). Empty: nobody sees it |
 | `WRISTCALL_CLOUD_VOICE_NOTES_LANGUAGE` | `en` | language of the "Voice notes" agent for an account whose country is not Portuguese-speaking (a code such as `en` or `pt-BR`) |
+| `WRISTCALL_CLOUD_ALERT_URL` (or `_FILE`) | | since 0.7.0, the [ntfy](https://ntfy.sh) topic URL that hears of an always-on node gone silent. A secret (the topic name is the password): never logged. Must be `https`. Without it there are no alerts and no loop. See [Node alert](#node-alert) |
+| `WRISTCALL_CLOUD_ALERT_AFTER_S` | `900` | seconds without a heartbeat before an always-on node raises the alert |
 | `WRISTCALL_CLOUD_VOICE_NOTES_STT` | `stt-default` | name of the operator's speech to text provider on the nodes, written in "Voice notes" |
 
 Five more values are not configurable: an always-on node is fresh for 45 seconds after its last heartbeat (and for 60
@@ -322,7 +324,29 @@ Secrets are stored only as SHA-256 digests, and never reach a log, an error resp
   `macos`, the watch client for `watchos`, the PWA client for `web` (`403 forbidden` otherwise). On the 0.3.x routes a
   Zitadel token from a client the Cloud does not know counts as the watch.
 
-### Routes
+### Node alert
+
+Since 0.7.0 the Cloud can tell you when an always-on node stops sending heartbeats, like a night watchman who rings
+the bell only in working hours. Set `WRISTCALL_CLOUD_ALERT_URL` to an ntfy topic URL (`https` only; the topic name is
+the password, so give it as a secret, or with `_FILE`). Without it nothing runs.
+
+Once a minute the Cloud looks at the registered nodes. A node raises the alert when it is enabled, `always_on`, and has
+sent no heartbeat for more than `WRISTCALL_CLOUD_ALERT_AFTER_S` (default 900; a node never heard from counts from the
+Cloud's own start), between 07:00 and 23:00 in Brasília, while at least one account has a plan in force (the same
+filter as `admin stats`). Nothing is sent for `on_demand` or disabled nodes. The message is a plain text POST with
+the ntfy headers `Title: wristcall-node`, `Priority: high` and `Tags: warning`:
+
+```
+wristcall node home: no heartbeat for 15 min
+```
+
+When the node beats again (at any hour) one more message goes out, `Priority: default`, `Tags: white_check_mark`:
+`wristcall node home: heartbeat back`. One message per outage, not one per minute. A node counts as down only after
+ntfy answered `2xx`; a refused or lost message is sent again by the next round. The set of nodes known to be down is
+kept in memory (one Cloud replica): after a restart a node that is still silent is announced once more. Failures are
+logged by exception type or status only, never the URL.
+
+## Routes
 
 A device in a request body is `{"name": 1 to 64 characters, with no control or format characters (newlines, bidi
 overrides, zero-width characters: `422 invalid`), "platform", "public_key"?: up to 1024 characters,
@@ -756,7 +780,7 @@ service configuration. Output is one `key: value` line per item on stdout; error
 | `admin provision --all [--language L]` | the same for every account with a plan that has not ended; prints `accounts`, `entries_created` and `voice_notes_created` |
 | `admin revoke <account>` | takes the plan away (`revoked: true` or `false`) |
 | `admin invites create --plan full\|custom [--count N] [--days N]` | prints `N` new single-use codes (1 to 1000, default 1) that can be redeemed for `--days` days (default 30). This is the only time the codes exist in clear |
-| `admin stats` | counts: accounts, anonymous_24h, devices, identities, entitlements, then schema (the database's `meta` version, `none` before the first start), nodes, nodes_enabled, cloud_calls_open (calls open right now) and usage_month_s (call seconds this month, all accounts) |
+| `admin stats` | counts: accounts, anonymous_24h, devices, identities, entitlements, entitlements_by_country (since 0.7.0: the plans in force per country, sorted, `BR=1,unknown=2`; `unknown` for those with no country recorded, `none` without any plan), then schema (the database's `meta` version, `none` before the first start), nodes, nodes_enabled, cloud_calls_open (calls open right now) and usage_month_s (call seconds this month, all accounts) |
 | `admin nodes add <id> --url URL --region xxx --kind always_on\|on_demand [--capability operator_stt] [--capability operator_tts] [--priority N] [--allow-loopback]` | registers a node and prints `node`, `url` and `secret`. The secret (`wc_node_` and 43 characters) is the only time it exists in clear: the database keeps its SHA-256. Exit `2` for a bad id, URL, region or kind, a loopback URL without `--allow-loopback`, or an id or URL already registered |
 | `admin nodes list` | one `node: <id> url=... region=... kind=... enabled=... last_seen_at=...` line per node, by priority (lower first), then id |
 | `admin nodes rotate <id> [--now]` | prints a new `secret`; the old one keeps working for 15 minutes (a node deploy is not atomic). `--now` cuts the old one at once (a leak). Exit `1` for an unknown node |
@@ -794,7 +818,7 @@ Collections of the `wristcall_cloud` database (`WRISTCALL_CLOUD_DATABASE`):
 | `identities` | `(kind, issuer, subject)` to account, unique |
 | `devices` | one per session: account, name, platform, refresh token digests, `last_seen_at` |
 | `enroll_codes`, `web_sessions`, `invites` | digests of the secrets. Expired enroll codes and web sessions are dropped by TTL indexes (an hour after they expire); invites are kept, an expired one just cannot be redeemed |
-| `entitlements` | the plan, one per account (`_id` is the account) |
+| `entitlements` | the plan, one per account (`_id` is the account); `country` (since 0.7.0) is the caller's country when an invite was redeemed, `null` for `admin grant` and before 0.7.0 |
 | `meta` | `_id: "schema"`, `version: 3`, `migrated_at` |
 | `nodes` | the registered nodes: `_id`, `url` (unique), `region`, `kind`, `capabilities`, `priority`, `enabled`, `secret_hash` (unique; SHA-256 of the secret), the previous secret's hash and its end while a rotation is in grace, and what the last heartbeat said |
 | `cloud_agents` | the cloud-mode agents: `_id` (the id the node generated), `account`, `slug` (unique per account), `position`, `spec` |

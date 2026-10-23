@@ -109,3 +109,38 @@ def test_provision_settings_from_config():
     assert provision_settings(CloudConfig(mongo_url="mongodb://x")) is None
     config = CloudConfig(mongo_url="mongodb://x", public_url="https://cloud.test", voice_notes_language="pt")
     assert provision_settings(config) == ProvisionSettings("https://cloud.test", "pt", "stt-default")
+
+
+ALERT_URL = "WRISTCALL_CLOUD_ALERT_URL"
+ALERT_AFTER = "WRISTCALL_CLOUD_ALERT_AFTER_S"
+
+
+def test_alert_settings(tmp_path):
+    config = config_from_env(BASE_ENV)
+    assert (config.alert_url, config.alert_after_s) == (None, 900)
+    config = config_from_env({**BASE_ENV, ALERT_URL: " https://ntfy.test/topic-1 ", ALERT_AFTER: "600"})
+    assert (config.alert_url, config.alert_after_s) == ("https://ntfy.test/topic-1", 600)
+    assert "topic-1" not in repr(config)
+    path = tmp_path / "alert-url"
+    path.write_text("https://ntfy.test/from-file\n")
+    assert config_from_env({**BASE_ENV, ALERT_URL + "_FILE": str(path)}).alert_url == "https://ntfy.test/from-file"
+    with pytest.raises(ConfigError) as caught:
+        config_from_env({**BASE_ENV, ALERT_URL: "https://ntfy.test/x", ALERT_URL + "_FILE": str(path)})
+    assert ALERT_URL in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["http://ntfy.test/topic-secret", "ntfy.test/topic-secret", "https:///topic-secret", "ftp://ntfy.test/x-secret"],
+)
+def test_alert_url_must_be_https(raw):
+    with pytest.raises(ConfigError) as caught:
+        config_from_env({**BASE_ENV, ALERT_URL: raw})
+    assert ALERT_URL in str(caught.value) and "topic-secret" not in str(caught.value)
+
+
+@pytest.mark.parametrize("raw", ["0", "-1", "ten", "1.5"])
+def test_alert_after_must_be_a_positive_integer(raw):
+    with pytest.raises(ConfigError) as caught:
+        config_from_env({**BASE_ENV, ALERT_AFTER: raw})
+    assert ALERT_AFTER in str(caught.value)

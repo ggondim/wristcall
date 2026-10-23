@@ -322,6 +322,19 @@ def test_redeem_invite_sets_the_plan(client):
     }
 
 
+def test_redeem_records_country(config, mongo_db, fake_verifier, signing_key):
+    for c in served(replace(config, client_country_header="CF-IPCountry"), mongo_db, fake_verifier, signing_key):
+        for sent, kept in (({"CF-IPCountry": "BR"}, "BR"), ({"CF-IPCountry": "XX"}, None), ({}, None)):
+            phone = create_account(c)
+            headers = {**bearer(phone["access_token"]), **sent}
+            r = c.post("/v1/entitlements/redeem", json={"code": invite(c)}, headers=headers)
+            assert r.status_code == 200, r.text
+            assert r.json() == {"plan": "full", "source": "beta", "expires_at": None}  # the country stays inside
+            find = c.app.state.accounts.entitlements.find_one
+            doc = c.portal.call(functools.partial(find, {"_id": phone["account"]}))
+            assert doc["country"] == kept, sent
+
+
 def test_redeem_twice_is_404(client):
     code = invite(client)
     first = bearer(create_account(client)["access_token"])
