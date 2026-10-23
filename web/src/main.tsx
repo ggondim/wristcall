@@ -63,7 +63,8 @@ async function start(): Promise<void> {
     // The node of the Cloud entry: the session drops its route when the sign-in changes.
     const router = new CloudRouter(session)
     session.attachRouter(router)
-    servers.attachRouter(router)
+    const signedInSession = session
+    servers.attachRouter(router, { signedIn: () => signedInSession.state === "signedIn" })
     await session.load().catch(() => {}) // unreadable: signed out
   }
   // The agenda mirror: every change of the servers (and of an agents list) is queued for the account's agenda.

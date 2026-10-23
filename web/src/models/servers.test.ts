@@ -295,8 +295,9 @@ function cloudWorld(
   const router = new CloudRouter({ accessToken: async () => "access-token", cloudClient: new CloudClient(CLOUD, cloudFetch) }, () => clock.now)
   const hosts = ["node-1.example.com", "node-2.example.com", "node-3.example.com"]
   const { servers, fetchMock } = serversWith([], Object.fromEntries(hosts.map((host) => [host, (path: string) => node(host, path)])))
-  servers.attachRouter(router, fetchMock)
-  return { servers, router, cloudFetch, nodeFetch: fetchMock, clock }
+  const account = { signedIn: true }
+  servers.attachRouter(router, { signedIn: () => account.signedIn, fetchImpl: fetchMock })
+  return { servers, router, cloudFetch, nodeFetch: fetchMock, clock, account }
 }
 
 const headersOf = (init: RequestInit) => init.headers as Record<string, string>
@@ -326,8 +327,6 @@ describe("Wristcall Cloud entry", () => {
 
   test("client('cloud') uses the route node and token", async () => {
     const { servers, cloudFetch, nodeFetch } = cloudWorld()
-    // No entry in the agenda yet: no client.
-    expect(await servers.client(CLOUD_ENTRY_ID)).toBeNull()
     servers.setCloud(cloudEntry())
     const client = await servers.client(CLOUD_ENTRY_ID)
     expect(client).toBeInstanceOf(RoutedServerClient)
@@ -403,11 +402,32 @@ describe("Wristcall Cloud entry", () => {
     expect(always.nodeFetch.calls).toHaveLength(2)
   })
 
+  test("client('cloud') works before the agenda is read: the first request goes through the route", async () => {
+    // A reload on /servers/cloud/agents asks for the client before the agenda read sets `state.cloud`.
+    const { servers, cloudFetch, nodeFetch } = cloudWorld()
+    expect(servers.state.cloud).toBeNull()
+    const client = await servers.client(CLOUD_ENTRY_ID)
+    expect(client).toBeInstanceOf(RoutedServerClient)
+    expect(cloudFetch.calls).toHaveLength(0)
+    expect(await client!.agents()).toEqual([])
+    expect(cloudFetch.calls).toHaveLength(1)
+    expect(nodeFetch.lastUrl()).toBe("https://node-1.example.com/v1/agents")
+    // A refusal of the route reaches the screen with its own text.
+    const noPlan = cloudWorld(undefined, () => new Response(JSON.stringify({ error: "plan_required", message: "no plan" }), { status: 402 }))
+    const refused = await (await noPlan.servers.client(CLOUD_ENTRY_ID))!.agents().catch((e: unknown) => e)
+    expect(userMessage(refused)).toBe("This account has no Wristcall Cloud plan.")
+    // Signed out: no client.
+    const out = cloudWorld()
+    out.account.signedIn = false
+    expect(await out.servers.client(CLOUD_ENTRY_ID)).toBeNull()
+  })
+
   test("sign out invalidates the route and clears the cloud entry", async () => {
-    const { servers, router, cloudFetch } = cloudWorld()
+    const { servers, router, cloudFetch, account } = cloudWorld()
     servers.setCloud(cloudEntry())
     await (await servers.client(CLOUD_ENTRY_ID))!.agents()
     expect(cloudFetch.calls).toHaveLength(1)
+    account.signedIn = false
     await servers.forgetAccount()
     expect(servers.state.cloud).toBeNull()
     expect(await servers.client(CLOUD_ENTRY_ID)).toBeNull()

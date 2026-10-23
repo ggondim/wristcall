@@ -147,6 +147,7 @@ export class ServersModel extends BaseModel<ServersState> {
   #account: CloudServer[] = []
   #router: ManageRouter | null = null
   #routedFetch: typeof fetch | undefined
+  #signedIn: () => boolean = () => true
   #beforeRemove: (server: SavedServer) => Promise<void> = async () => {}
   #generation = 0
   readonly #cleanups = new Set<Promise<void>>()
@@ -196,12 +197,13 @@ export class ServersModel extends BaseModel<ServersState> {
 
   /**
    * The management client of a saved server, or null when it is not (any longer) saved. For `CLOUD_ENTRY_ID`, the routed
-   * client of the Wristcall Cloud entry while the agenda has one (and the account a router): made without reaching the
-   * Cloud, it asks for the route on every request.
+   * client of the Wristcall Cloud entry while the account is signed in (and has a router), even before the agenda read
+   * finished (a reload on the entry's screens): made without reaching the Cloud, it asks for the route on every request,
+   * so a missing plan or node surfaces on the first one (`402`, `404`, `503`) with its own text.
    */
   async client(id: string): Promise<ServerClient | null> {
     if (id === CLOUD_ENTRY_ID) {
-      return this.#router === null || this.state.cloud === null ? null : new RoutedServerClient(this.#router, this.#routedFetch)
+      return this.#router === null || !this.#signedIn() ? null : new RoutedServerClient(this.#router, this.#routedFetch)
     }
     const server = await this.#store.get(id)
     return server === null ? null : this.#clientFor(server)
@@ -355,10 +357,14 @@ export class ServersModel extends BaseModel<ServersState> {
     this.set({ cloud: entry !== null && isCloudEntry(entry) ? entry : null })
   }
 
-  /** The account's router: the Cloud entry's client asks it for the node on every request. `fetchImpl` is for tests. */
-  attachRouter(router: ManageRouter, fetchImpl?: typeof fetch): void {
+  /**
+   * The account's router: the Cloud entry's client asks it for the node on every request. `signedIn` tells whether the
+   * account is signed in (no client otherwise); `fetchImpl` is for tests.
+   */
+  attachRouter(router: ManageRouter, opts: { signedIn?: () => boolean; fetchImpl?: typeof fetch } = {}): void {
     this.#router = router
-    this.#routedFetch = fetchImpl
+    this.#signedIn = opts.signedIn ?? (() => true)
+    this.#routedFetch = opts.fetchImpl
   }
 
   /** Runs before a server is deleted (the push key is unregistered there). Task 10 sets it. */

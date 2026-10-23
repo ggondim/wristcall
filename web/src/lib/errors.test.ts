@@ -9,6 +9,10 @@ describe("error texts", () => {
     expect(cloudMessage(plan)).toBe("This account has no Wristcall Cloud plan.")
     expect(userMessage(noNode)).toBe("Wristcall Cloud is temporarily unavailable. Try again in a minute.")
     expect(cloudMessage(noNode)).toBe("Wristcall Cloud is temporarily unavailable. Try again in a minute.")
+    // The code alone is not enough: plan_required counts only with 402, no_node_available only with 503.
+    expect(userMessage(new ApiError(400, "plan_required", "odd reply"))).toBe("odd reply")
+    expect(cloudMessage(new ApiError(400, "plan_required", "odd reply"))).toBe("wristcall Cloud refused the request.")
+    expect(userMessage(new ApiError(500, "no_node_available", "odd reply"))).toBe("odd reply")
     // The texts that were there stay.
     expect(userMessage(new ApiError(402, "quota_exceeded", "minutes used up"))).toBe("minutes used up")
     expect(userMessage(new ApiError(503, "unavailable", "down for a moment"))).toBe("down for a moment")

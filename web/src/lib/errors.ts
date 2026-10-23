@@ -33,7 +33,7 @@ export const NO_NODE_AVAILABLE = "Wristcall Cloud is temporarily unavailable. Tr
 
 /** The fixed text of a Wristcall Cloud refusal (`402 plan_required`, `503 no_node_available`), or null. */
 function cloudRefusal(e: ApiError): string | null {
-  if (e.code === "plan_required") return PLAN_REQUIRED
+  if (e.status === 402 && e.code === "plan_required") return PLAN_REQUIRED
   if (e.status === 503 && e.code === "no_node_available") return NO_NODE_AVAILABLE
   return null
 }
