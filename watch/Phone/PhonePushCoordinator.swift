@@ -75,7 +75,8 @@ final class PhonePushCoordinator {
         self.init(
             state: state,
             relayURL: relayURL,
-            relay: PushRelayClient(relayURL: relayURL),
+            // The relay is the Cloud: it gets the client header too (decision D13).
+            relay: PushRelayClient(relayURL: relayURL, client: ClientIdentity.fromBundle(bundle, platform: .ios)),
             environment: (bundle.object(forInfoDictionaryKey: "WristcallPushEnvironment") as? String)
                 .flatMap(PushEnvironment.init(rawValue:)) ?? .production,
             topic: bundle.bundleIdentifier ?? "")

@@ -33,8 +33,10 @@ struct PhoneApp: App {
         let cloud = AccountModel.cloudURL(fromInfoValue: Bundle.main.object(forInfoDictionaryKey: "WristcallCloudURL") as? String)
         // The device session is the account; the 0.3.x Zitadel tokens are only read to move them over (and by
         // the email restore). The account keys live in the shared Keychain group (iCloud Keychain).
-        let session = cloud.map { DeviceSession(cloud: $0, store: KeychainDeviceSessionStore()) }
-        let legacy = cloud.map { AccountSession(cloud: $0, kind: .ios, store: KeychainTokenStore()) }
+        // Every Cloud request says who calls: `X-Wristcall-Client: ios/<WristcallClientVersion>`.
+        let client = ClientIdentity.fromBundle(platform: .ios)
+        let session = cloud.map { DeviceSession(cloud: $0, store: KeychainDeviceSessionStore(), client: client) }
+        let legacy = cloud.map { AccountSession(cloud: $0, kind: .ios, store: KeychainTokenStore(), client: client) }
         let group = (Bundle.main.object(forInfoDictionaryKey: "WristcallKeychainGroup") as? String)
             .flatMap { $0.isEmpty || $0.contains("$(") ? nil : $0 }
         let account = AccountModel(

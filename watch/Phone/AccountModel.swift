@@ -81,6 +81,9 @@ final class AccountModel {
     @ObservationIgnored private(set) var watchPairing: Task<WatchLink.SendResult, Never>?
 
     @ObservationIgnored private let session: DeviceSession?
+    /// The Cloud route of this account (`nil` when `.unavailable`): the Wristcall Cloud entry's requests go to the
+    /// node it names. Dropped whenever the account goes.
+    @ObservationIgnored private let router: (any CloudRouting)?
     @ObservationIgnored private let keys: any AccountKeyStore
     /// The 0.3.x Zitadel sign-in: read to move it over, and the email restore's login. Nothing else uses it.
     @ObservationIgnored private let legacy: AccountSession?
@@ -148,11 +151,15 @@ final class AccountModel {
         state appState: AppState,
         device: CloudDeviceInfo,
         defaults: UserDefaults = .standard,
-        sleep: @escaping @Sendable (TimeInterval) async -> Void = { try? await Task.sleep(for: .seconds($0)) }
+        sleep: @escaping @Sendable (TimeInterval) async -> Void = { try? await Task.sleep(for: .seconds($0)) },
+        router: (any CloudRouting)? = nil
     ) {
         let session = cloudURL == nil ? nil : session
         self.cloudURL = session == nil ? nil : cloudURL
         self.session = session
+        let router = session.map { router ?? CloudRouter(access: $0) }
+        self.router = router
+        appState.cloudAPI = router.map { RoutedServerAPI(router: $0, make: appState.serverAPIFactory) }
         self.keys = keys
         self.legacy = session == nil ? nil : legacy
         self.web = web
@@ -340,6 +347,8 @@ final class AccountModel {
         publishWatchCodeInBackground()
         // The watch's context may have come before the account was ready (at launch).
         pairWatchWithMissingServersInBackground()
+        // D16: the Wristcall Cloud entry, at launch and back in the foreground (both end here).
+        await agenda?.refreshCloudEntry()
     }
 
     /// `accountID` from now on; another account than before forgets which servers got a watch code.
@@ -354,6 +363,7 @@ final class AccountModel {
         let previous = defaults.string(forKey: Self.lastIDKey)
         if let previous, previous != Self.unknownAccount, previous != account {
             appState.forgetAccount()
+            dropCloudRouteInBackground()
             watchCode = nil
         }
         // In this account now (a restore back into one whose key "Delete account" set aside, say): its keys count
@@ -413,6 +423,8 @@ final class AccountModel {
     private func sessionEnded() {
         guard session != nil, state == .ready else { return }
         agenda?.suspend()
+        appState.setCloudEntry(nil)
+        dropCloudRouteInBackground()
         info = nil
         hasLocalKey = false
         watchCode = nil
@@ -431,6 +443,12 @@ final class AccountModel {
     /// `GET /v1/account` into `info`, and whether this iPhone holds the account's key.
     func refreshAccount() async {
         _ = await readAccount()
+    }
+
+    /// Reads the Wristcall Cloud entry from the agenda again (Agents opening, after an invite). Only when ready.
+    func refreshCloudEntry() async {
+        guard state == .ready else { return }
+        await agenda?.refreshCloudEntry()
     }
 
     /// `refreshAccount`; `true` when the Cloud answered (a failure keeps the last known `info`).
@@ -455,9 +473,12 @@ final class AccountModel {
             let plan = try await session.cloudClient.redeemInvite(code, accessToken: try await session.accessToken())
             info?.plan = plan
             await refreshAccount()
+            // A plan brings the Wristcall Cloud entry into the agenda.
+            await refreshCloudEntry()
             return info?.plan ?? plan
         } catch APIError.conflict(let reason, _) where reason == "already_entitled" {
             await refreshAccount()
+            await refreshCloudEntry()
             guard let plan = info?.plan else { throw APIError.malformedResponse }
             return plan
         } catch {
@@ -526,6 +547,9 @@ final class AccountModel {
         }
         agenda?.suspend()
         try await session.start(tokens)
+        // Another account now: neither the Cloud entry nor the route of the one before stays.
+        appState.setCloudEntry(nil)
+        await router?.invalidate()
         await legacy.signOut()
         info = nil
         hasLocalKey = false
@@ -547,9 +571,9 @@ final class AccountModel {
 
     /// Unlinks the linked servers (best effort, with their personal tokens), then `DELETE /v1/account` (the
     /// Cloud deletes the agenda, the devices and the sign-ins). Then nothing of it stays here: its key (also on
-    /// the user's other devices) and the pending key, session, the last account, dead keys, onboarding, push keys (`accountDeleted`)
-    /// and the local servers. On failure the account stays and `error` says so. Nothing new is made until the
-    /// next `start()`, which creates a new account (`freshStartKey`).
+    /// the user's other devices) and the pending key, session, the last account, dead keys, onboarding, push keys (`accountDeleted`),
+    /// the Cloud entry and its route, and the local servers. On failure the account stays and `error` says so.
+    /// Nothing new is made until the next `start()`, which creates a new account (`freshStartKey`).
     func deleteAccount() async {
         guard let session, state == .ready, !restoring else { return }
         error = nil
@@ -585,6 +609,8 @@ final class AccountModel {
         didMigrate = false
         watchCode = nil
         adoptAccountID(nil)
+        appState.setCloudEntry(nil)
+        await router?.invalidate()
         state = .starting
         await accountDeleted?()
         for server in appState.servers {
@@ -986,6 +1012,13 @@ final class AccountModel {
     }
 
     // MARK: - Plumbing
+
+    /// No route of an account survives it (the session ended, another account came in): the next Cloud entry
+    /// request asks for a new one.
+    private func dropCloudRouteInBackground() {
+        guard let router else { return }
+        Task { await router.invalidate() }
+    }
 
     private func configuredSession() throws -> DeviceSession {
         guard let session else { throw AccountError.notConfigured }

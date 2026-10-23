@@ -74,7 +74,7 @@ final class AgendaSync {
     }
 
     func serverAdded(_ server: ManagedServer) {
-        guard !suspended, !queuedServers.contains(server.id) else { return }
+        guard !suspended, !server.isCloudEntry, !queuedServers.contains(server.id) else { return }
         queuedServers.insert(server.id)
         enqueue { generation in
             self.queuedServers.remove(server.id)
@@ -90,14 +90,16 @@ final class AgendaSync {
     /// Deletes the entry (already gone counts as done). Without a known id, the entry is found by its URL.
     func serverRemoved(_ server: ManagedServer) {
         pendingAgents[server.id] = nil
-        guard !suspended else { return }
+        guard !suspended, !server.isCloudEntry else { return }
         enqueue { generation in
             await self.run(generation, failure: Self.writeNotice) {
                 let token = try await self.token()
                 var id = server.cloudServerID
                 if id == nil {
                     let canonical = ServerAddress.canonical(server.url)
-                    id = try await self.cloud.servers(accessToken: token).first { Self.canonical($0.url) == canonical }?.id
+                    let entries = try await self.cloud.servers(accessToken: token)
+                    self.adoptCloudEntry(from: entries, generation)
+                    id = entries.first { !$0.isCloudEntry && Self.canonical($0.url) == canonical }?.id
                 }
                 guard let id else { return }
                 try self.check(generation)
@@ -108,7 +110,7 @@ final class AgendaSync {
 
     /// `PUT` of the agents' summary, the first 50 in the server's order. Only the latest list is sent.
     func agentsChanged(_ server: ManagedServer, _ agents: [AgentDetail]) {
-        guard !suspended else { return }
+        guard !suspended, !server.isCloudEntry else { return }
         let queued = pendingAgents[server.id] != nil
         pendingAgents[server.id] = agents
         guard !queued else { return }
@@ -162,15 +164,18 @@ final class AgendaSync {
     // MARK: - Reading
 
     /// Agenda servers with no token on this iPhone (compared by canonical URL), to set up here. Entries whose
-    /// URL the app would not use (`http://` off localhost: the Cloud accepts any) are left out.
+    /// URL the app would not use (`http://` off localhost: the Cloud accepts any) are left out, and so is the
+    /// Cloud's own entry (never set up here: the read puts it in `AppState.cloudEntry`).
     func pendingSetup() async -> [CloudServer] {
         guard await session.isSignedIn else { return [] }
         let local = Set(state.servers.map { ServerAddress.canonical($0.url) })
+        let generation = generation
         do {
             let entries = try await cloud.servers(accessToken: try await token())
             notice = nil
+            adoptCloudEntry(from: entries, generation)
             return entries.filter { entry in
-                guard let url = ServerAddress.parse(entry.url) else { return false }
+                guard !entry.isCloudEntry, let url = ServerAddress.parse(entry.url) else { return false }
                 return !local.contains(ServerAddress.canonical(url))
             }
         } catch AccountError.signedOut {
@@ -179,6 +184,27 @@ final class AgendaSync {
             notice = "Can't read your servers from wristcall Cloud."
         }
         return []
+    }
+
+    /// `GET /v1/servers` for the Wristcall Cloud's own entry (`kind == "cloud"`), into `AppState.cloudEntry`; read
+    /// when the account is ready, back in the foreground, after an invite and when Agents opens. Never written
+    /// back. A failure keeps the entry the app has, and sets no notice (nothing the user can act on).
+    func refreshCloudEntry() async {
+        guard !suspended, await session.isSignedIn else { return }
+        let generation = generation
+        do {
+            adoptCloudEntry(from: try await cloud.servers(accessToken: try await token()), generation)
+        } catch AccountError.signedOut {
+            await signedOut()
+        } catch {
+            // The entry the app has stays.
+        }
+    }
+
+    /// The agenda as read just now: its Cloud entry, or none. Not after `invalidate()` (signed out meanwhile).
+    private func adoptCloudEntry(from entries: [CloudServer], _ generation: Int) {
+        guard generation == self.generation, !suspended else { return }
+        state.setCloudEntry(entries.first(where: \.isCloudEntry))
     }
 
     // MARK: - Plumbing

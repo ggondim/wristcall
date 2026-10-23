@@ -10,6 +10,8 @@ protocol ServerAPI: Sendable {
     func health() async throws -> ServerHealth
     /// Succeeds for a personal token; `APIError.forbidden` for a device token.
     func verify() async throws
+    /// `GET /v1/me` of a cloud-mode node: the account's plan and month usage.
+    func me() async throws -> NodeAccount
 
     func agents() async throws -> [AgentDetail]
     func agent(_ ref: String) async throws -> AgentDetail
@@ -69,6 +71,7 @@ struct LiveServerAPI: ServerAPI {
         try await push.health()
     }
     func verify() async throws { try await management.verify() }
+    func me() async throws -> NodeAccount { try await management.me() }
 
     func agents() async throws -> [AgentDetail] { try await management.agents() }
     func agent(_ ref: String) async throws -> AgentDetail { try await management.agent(ref) }
