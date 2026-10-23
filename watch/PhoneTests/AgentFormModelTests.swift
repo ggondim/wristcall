@@ -590,6 +590,17 @@ struct AgentFormModelTests {
         #expect(model.noneLabel(for: .action) == "Choose…")
     }
 
+    @Test func endpointFooterSaysHistoryWhenNoWebhookOnAHistoryOnlyServer() {
+        let model = AgentFormModel(editing: .sample(callType: "one-shot", action: .null), providers: historyOnly)
+        #expect(model.endpointFooter == "The transcript is saved to History.")
+        model.action = .custom
+        #expect(model.endpointFooter == "Your server sends the transcript to this webhook.")
+        let selfHosted = AgentFormModel(editing: .sample(callType: "one-shot", action: .null), providers: .sample)
+        #expect(selfHosted.endpointFooter == "Your server sends the transcript to this webhook.")
+        let chat = AgentFormModel(editing: .sample(callType: "conversation", action: .null), providers: historyOnly)
+        #expect(chat.endpointFooter == "Your server turns your voice into text, sends it to this endpoint and speaks the answer.")
+    }
+
     @Test func historyOnlyDoesNotApplyToConversations() {
         let model = AgentFormModel(editing: .sample(callType: "conversation", action: .null), providers: historyOnly)
         #expect(model.validationMessage == "Choose Responder.")

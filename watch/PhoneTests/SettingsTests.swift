@@ -46,9 +46,11 @@ struct SettingsTests {
     @Test func planRowSaysUsageUnavailable() {
         let row = SettingsContent.planRow(for: Plan(plan: .full, source: "beta"), usageUnavailable: true)
         #expect(row.usage == "Usage unavailable right now.")
-        // The last reading wins over the notice.
+        // A failed reading wins over the last one (`UsageModel` keeps it): no stale figure.
         let usage = CloudUsage(month: "2026-10", usedS: 600, quotaS: 36_000, remainingS: 35_400)
         #expect(SettingsContent.planRow(for: Plan(plan: .full, source: "beta"), usage: usage, usageUnavailable: true).usage
+            == "Usage unavailable right now.")
+        #expect(SettingsContent.planRow(for: Plan(plan: .full, source: "beta"), usage: usage).usage
             == "10 of 600 min used this month")
         // Nothing read yet and nothing failed: no line.
         #expect(SettingsContent.planRow(for: Plan(plan: .full, source: "beta")).usage == nil)

@@ -105,6 +105,16 @@ struct AllAgentsModelTests {
         #expect(AgentSummary.subtitle(.sample(action: .object(["type": .string("openai_chat")]))) == "Conversation · your server")
     }
 
+    @Test func cloudEntryAgentsNameWristcallCloudInsteadOfYourServer() {
+        let note = AgentDetail.sample(callType: "one-shot", action: .object(["type": .string("none")]))
+        #expect(AgentSummary.subtitle(note, cloud: true) == "One-shot · Wristcall Cloud")
+        #expect(AgentSummary.subtitle(note) == "One-shot · your server")
+        let hook = AgentDetail.sample(callType: "one-shot", action: .object([
+            "type": .string("webhook"), "url": .string("https://hooks.example.org/notes"),
+        ]))
+        #expect(AgentSummary.subtitle(hook, cloud: true) == "One-shot · hooks.example.org")
+    }
+
     @Test func footerNamesTheFirstAgentForSiri() {
         #expect(AgentSummary.footer(firstAgent: "Assistant")
             == "Tap an agent to edit it. Call agents from your watch, or ask Siri: \u{201C}Call Assistant with wristcall\u{201D}.")

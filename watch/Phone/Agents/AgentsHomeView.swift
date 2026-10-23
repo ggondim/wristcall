@@ -163,7 +163,7 @@ private struct AgentsHomeContent: View {
             Button { editor = EditorSession(server: section.server, editing: agent) } label: {
                 AgentRow(
                     icon: agent.icon, color: agent.color, name: agent.displayName,
-                    subtitle: AgentSummary.subtitle(agent)
+                    subtitle: AgentSummary.subtitle(agent, cloud: section.server.isCloudEntry)
                 ) {
                     Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
                 }

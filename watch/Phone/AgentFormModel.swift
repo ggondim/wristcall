@@ -269,6 +269,15 @@ final class AgentFormModel {
         }
     }
 
+    /// The text under the endpoint section: where the transcript (or the voice) goes.
+    var endpointFooter: String {
+        guard isOneWay else {
+            return "Your server turns your voice into text, sends it to this endpoint and speaks the answer."
+        }
+        if action == .none, allowsHistoryOnly { return "The transcript is saved to History." }
+        return "Your server sends the transcript to this webhook."
+    }
+
     /// What "no endpoint" is called in the picker of a stage.
     func noneLabel(for stage: Stage) -> String {
         if isEditing, stage == .action, isOneWay, allowsHistoryOnly { return "None, save to History" }

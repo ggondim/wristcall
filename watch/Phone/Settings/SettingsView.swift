@@ -39,7 +39,8 @@ enum SettingsContent {
     /// With a plan, the second line says the month's call minutes (`usage`), or that they cannot be read.
     static func planRow(for plan: Plan?, usage: CloudUsage? = nil, usageUnavailable: Bool = false) -> PlanRow {
         guard let plan else { return PlanRow(title: "No plan", detail: "Choose how to start") }
-        let line = usage?.summary ?? (usageUnavailable ? usageUnavailableText : nil)
+        // A failed reading says so: the last figure (kept by `UsageModel`) would be stale.
+        let line = usageUnavailable ? usageUnavailableText : usage?.summary
         switch plan.plan {
         case .full: return PlanRow(title: PlanOption.cloud.title, detail: "Beta · \(sourceText(plan.source))", usage: line)
         case .custom: return PlanRow(title: PlanOption.cloudCustom.title, detail: "Beta · \(sourceText(plan.source))", usage: line)

@@ -84,6 +84,42 @@ struct CloudEntryAPITests {
         #expect(router.invalidationCount == 0)
     }
 
+    @Test func cloudUnauthorizedOnTheRouteIsNotRetried() async throws {
+        // The Cloud itself refused the route (the account's session): no node answered, so nothing to invalidate.
+        let router = FakeRouter { throw APIError.unauthorized }
+        let nodes = Nodes([FakeServerAPI()])
+
+        await #expect(throws: APIError.unauthorized) {
+            try await RoutedServerAPI(router: router, make: nodes.factory).agents()
+        }
+        #expect(router.manageCount == 1)
+        #expect(router.invalidationCount == 0)
+        #expect(nodes.made.isEmpty)
+    }
+
+    @Test func cloudUnauthorizedOnTheSecondRoutePassesThrough() async throws {
+        // The node refused the first route's token; the Cloud then refuses the new route: its error, no third try.
+        let refused = FakeServerAPI()
+        refused.agentsError = APIError.unauthorized
+        let nodes = Nodes([refused])
+        let answers = Mutex(0)
+        let router = FakeRouter {
+            let index = answers.withLock { value in
+                defer { value += 1 }
+                return value
+            }
+            if index == 0 { return Self.route() }
+            throw APIError.unauthorized
+        }
+
+        await #expect(throws: APIError.unauthorized) {
+            try await RoutedServerAPI(router: router, make: nodes.factory).agents()
+        }
+        #expect(router.manageCount == 2)
+        #expect(router.invalidationCount == 1)
+        #expect(nodes.made.count == 1)
+    }
+
     @Test func nodeOnlyRoutesThrowWithoutNetwork() async throws {
         let router = FakeRouter { Self.route() }
         let nodes = Nodes([FakeServerAPI()])

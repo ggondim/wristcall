@@ -20,12 +20,16 @@ struct RoutedServerAPI: ServerAPI {
     }
 
     private func routed<T: Sendable>(_ work: (any ServerAPI) async throws -> T) async throws -> T {
+        // The route's own errors (a `401` from the Cloud included) pass through unchanged: only the node's `401`
+        // means the route token is stale.
+        let first = try await node()
         do {
-            return try await work(try await node())
+            return try await work(first)
         } catch APIError.unauthorized {
             await router.invalidate()
+            let second = try await node()
             do {
-                return try await work(try await node())
+                return try await work(second)
             } catch APIError.unauthorized {
                 // Refused again: the next request starts from a new route too.
                 await router.invalidate()

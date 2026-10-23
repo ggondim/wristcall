@@ -323,9 +323,7 @@ struct AgentEditorView: View {
         } header: {
             Text("AGENT ENDPOINT")
         } footer: {
-            Text(form.isOneWay
-                ? "Your server sends the transcript to this webhook."
-                : "Your server turns your voice into text, sends it to this endpoint and speaks the answer.")
+            Text(form.endpointFooter)
         }
     }
 

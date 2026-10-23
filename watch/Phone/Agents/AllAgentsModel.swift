@@ -124,9 +124,9 @@ enum AgentSummary {
     }
 
     /// "Conversation · api.openai.com": the host the agent's action calls (a custom `openai_chat` endpoint or a
-    /// webhook), "your server" when the server's own provider answers.
-    static func subtitle(_ agent: AgentDetail) -> String {
-        "\(callTypeLabel(agent.callType)) · \(host(of: agent.action) ?? "your server")"
+    /// webhook), "your server" when the server's own provider answers ("Wristcall Cloud" for the Cloud entry's agents).
+    static func subtitle(_ agent: AgentDetail, cloud: Bool = false) -> String {
+        "\(callTypeLabel(agent.callType)) · \(host(of: agent.action) ?? (cloud ? "Wristcall Cloud" : "your server"))"
     }
 
     static func host(of action: JSONValue?) -> String? {
